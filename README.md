@@ -1,73 +1,64 @@
-# tegg app
+# Jarvis
 
-[Hacker News](https://news.ycombinator.com/) showcase using [tegg](https://github.com/eggjs/tegg)
+A Rust agent runtime built around a small, well-typed **harness**: a runtime-independent core
+(`harness-core`) defines the agent loop, message types, and `Tool` / `LlmProvider` traits;
+sibling crates plug in concrete LLM providers and an HTTP transport.
 
-## QuickStart
+> Status: scaffold. The harness loop, an OpenAI provider, and an OpenAI-compatible
+> `/v1/chat/completions` endpoint are working end to end. Memory, MCP, persistence,
+> streaming, and additional providers are intentionally not yet implemented — see
+> the roadmap below.
 
-### Development
+## Workspace layout
 
-```bash
-npm i
-npm run dev
-open http://localhost:7001/
+```
+crates/
+  harness-core/    # Agent loop, Conversation, Message, Tool / LlmProvider traits
+  harness-llm/     # LlmProvider implementations (OpenAI today)
+  harness-server/  # Axum HTTP facade
+apps/
+  jarvis/          # Binary that wires the crates together and serves HTTP
 ```
 
-Don't tsc compile at development mode, if you had run `tsc` then you need to `npm run clean` before `npm run dev`.
-
-### Deploy
+## Run it
 
 ```bash
-npm run tsc
-npm start
+export OPENAI_API_KEY=sk-...
+# optional:
+export JARVIS_MODEL=gpt-4o-mini        # default
+export OPENAI_BASE_URL=https://...     # for OpenAI-compatible gateways
+export JARVIS_ADDR=0.0.0.0:7001        # default
+export RUST_LOG=info,jarvis=debug
+
+cargo run -p jarvis
 ```
 
-### Npm Scripts
+Then:
 
-- Use `npm run lint` to check code style
-- Use `npm test` to run unit test
-- se `npm run clean` to clean compiled js at development mode once
+```bash
+curl localhost:7001/health
+curl localhost:7001/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Say hi via the echo tool."}]}'
+```
 
-### Requirement
+The response includes the final assistant message, the iteration count, and the full
+message history (including any tool calls and tool results).
 
-- Node.js >= 18.x
-- Typescript >= 5.x
+## Development
 
-## Agent记忆功能
+```bash
+cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release -p jarvis
+```
 
-系统支持Agent短期记忆和长期记忆功能，增强对话连贯性和个性化体验。
+## Roadmap
 
-### 记忆类型
-
-1. **短期记忆**：
-   - 存储在内存中，针对当前会话
-   - 用于维持会话上下文和临时状态
-   - 随会话结束而清除
-
-2. **长期记忆**：
-   - 存储在数据库中，持久化保存
-   - 用于记住用户偏好、事实和重要信息
-   - 在会话中被检索并加入到对话上下文
-
-### API接口
-
-系统提供以下API接口管理Agent记忆：
-
-- `GET /api/agent-memories` - 获取Agent的长期记忆
-- `POST /api/agent-memories` - 添加或更新长期记忆
-- `DELETE /api/agent-memories` - 删除长期记忆
-- `POST /api/agent-memories/short-term/clear` - 清除短期记忆
-- `POST /api/agent-memories/process` - 从对话中提取记忆
-
-### 记忆处理流程
-
-1. 用户发送消息时，系统检索相关长期记忆
-2. 相关记忆和RAG检索结果一起加入到Agent的系统提示中
-3. 对话完成后，系统自动分析对话内容，提取重要信息存入长期记忆
-4. 记忆按重要性和最近访问时间排序，确保优先使用最相关的信息
-
-### 技术实现
-
-- 使用内存Map存储短期记忆
-- 使用MySQL数据库存储长期记忆
-- 通过LLM分析确定记忆的重要性和相关性
-- 实现按需检索，只加载与当前对话相关的记忆
+- `harness-tools` — built-in tools (HTTP fetch, shell, fs read).
+- `harness-mcp` — MCP client + server (`rmcp`).
+- `harness-memory` — short-term (in-process) and long-term (DB) memory tiers.
+- `harness-store` — `sqlx` persistence for agents, conversations, tools.
+- Streaming chat completions (SSE).
+- Additional providers: Anthropic, Google.
