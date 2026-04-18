@@ -89,6 +89,13 @@ cargo test --workspace
 cargo build --release -p jarvis
 ```
 
+## Docs
+
+- `ARCHITECTURE.md` — layering, crate responsibilities, agent loop,
+  request lifecycle, extension points.
+- `DB.md` — `ConversationStore` trait, backends, schema.
+- `CLAUDE.md` — working rules and gotchas for contributors (and Claude).
+
 ## Roadmap
 
 - `harness-memory` — short-term (in-process) and long-term (DB) memory tiers.
