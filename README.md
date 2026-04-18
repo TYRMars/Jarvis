@@ -16,6 +16,7 @@ crates/
   harness-core/    # Agent loop, Conversation, Message, Tool / LlmProvider traits
   harness-llm/     # LlmProvider implementations (OpenAI today)
   harness-server/  # Axum HTTP facade
+  harness-tools/   # Built-in tools: echo, time.now, http.fetch, fs.{read,list,write}
 apps/
   jarvis/          # Binary that wires the crates together and serves HTTP
 ```
@@ -28,6 +29,8 @@ export OPENAI_API_KEY=sk-...
 export JARVIS_MODEL=gpt-4o-mini        # default
 export OPENAI_BASE_URL=https://...     # for OpenAI-compatible gateways
 export JARVIS_ADDR=0.0.0.0:7001        # default
+export JARVIS_FS_ROOT=./workspace      # sandbox dir for fs.* tools (default: .)
+export JARVIS_ENABLE_FS_WRITE=1        # opt in to fs.write (off by default)
 export RUST_LOG=info,jarvis=debug
 
 cargo run -p jarvis
@@ -56,7 +59,6 @@ cargo build --release -p jarvis
 
 ## Roadmap
 
-- `harness-tools` — built-in tools (HTTP fetch, shell, fs read).
 - `harness-mcp` — MCP client + server (`rmcp`).
 - `harness-memory` — short-term (in-process) and long-term (DB) memory tiers.
 - `harness-store` — `sqlx` persistence for agents, conversations, tools.

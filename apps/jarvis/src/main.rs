@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use async_trait::async_trait;
-use harness_core::{Agent, AgentConfig, BoxError, Tool, ToolRegistry};
+use harness_core::{Agent, AgentConfig, ToolRegistry};
 use harness_llm::{OpenAiConfig, OpenAiProvider};
 use harness_server::{serve, AppState};
-use serde_json::{json, Value};
+use harness_tools::{register_builtins, BuiltinsConfig};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -16,8 +16,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .context("OPENAI_API_KEY must be set")?;
+    let api_key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY must be set")?;
     let model = std::env::var("JARVIS_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     let base_url = std::env::var("OPENAI_BASE_URL").ok();
 
@@ -28,7 +27,17 @@ async fn main() -> anyhow::Result<()> {
     let llm: Arc<dyn harness_core::LlmProvider> = Arc::new(OpenAiProvider::new(cfg));
 
     let mut tools = ToolRegistry::new();
-    tools.register(EchoTool);
+    register_builtins(
+        &mut tools,
+        BuiltinsConfig {
+            fs_root: PathBuf::from(
+                std::env::var("JARVIS_FS_ROOT").unwrap_or_else(|_| ".".into()),
+            ),
+            enable_fs_write: std::env::var("JARVIS_ENABLE_FS_WRITE").is_ok(),
+            ..BuiltinsConfig::default()
+        },
+    );
+    info!(registered = tools.len(), "tools registered");
 
     let agent_cfg = AgentConfig::new(model)
         .with_system_prompt("You are Jarvis, a concise and capable assistant.")
@@ -43,36 +52,4 @@ async fn main() -> anyhow::Result<()> {
     info!(%addr, "jarvis listening");
     serve(addr, AppState::new(agent)).await?;
     Ok(())
-}
-
-/// Trivial built-in tool used to prove the wiring end-to-end.
-struct EchoTool;
-
-#[async_trait]
-impl Tool for EchoTool {
-    fn name(&self) -> &str {
-        "echo"
-    }
-
-    fn description(&self) -> &str {
-        "Echo the `text` argument back verbatim. Useful for testing the tool loop."
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "text": { "type": "string", "description": "Text to echo." }
-            },
-            "required": ["text"]
-        })
-    }
-
-    async fn invoke(&self, args: Value) -> Result<String, BoxError> {
-        let text = args
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| -> BoxError { "missing `text` argument".into() })?;
-        Ok(text.to_string())
-    }
 }

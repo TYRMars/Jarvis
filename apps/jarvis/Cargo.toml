@@ -14,11 +14,9 @@ path = "src/main.rs"
 harness-core.workspace = true
 harness-llm.workspace = true
 harness-server.workspace = true
+harness-tools.workspace = true
 
 tokio.workspace = true
-async-trait.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

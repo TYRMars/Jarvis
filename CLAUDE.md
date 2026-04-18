@@ -20,6 +20,7 @@ crates/
   harness-core/    # Agent, Conversation, Message, Tool, LlmProvider traits + run loop
   harness-llm/     # LlmProvider impls; today: OpenAI (`OpenAiProvider`)
   harness-server/  # Axum router + `serve(addr, AppState)` helper
+  harness-tools/   # Built-in `Tool` impls: echo, time.now, http.fetch, fs.{read,list,write}
 apps/
   jarvis/          # Binary that wires everything and exposes the HTTP API
 ```
@@ -42,7 +43,9 @@ cargo build --release -p jarvis
 
 Env vars consumed by the `jarvis` binary: `OPENAI_API_KEY` (required),
 `JARVIS_MODEL` (default `gpt-4o-mini`), `OPENAI_BASE_URL`, `JARVIS_ADDR`
-(default `0.0.0.0:7001`), `RUST_LOG`.
+(default `0.0.0.0:7001`), `JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*`
+tools), `JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
+`RUST_LOG`.
 
 ## Architecture
 
@@ -86,6 +89,24 @@ pub trait Tool: Send + Sync {
 `ToolRegistry` is a thin `HashMap<String, Arc<dyn Tool>>` and is the only thing the agent
 loop talks to — `register` inserts by `Tool::name()`, so two tools with the same name
 silently overwrite each other.
+
+### Built-in tools (`harness-tools`)
+
+`register_builtins(&mut ToolRegistry, BuiltinsConfig)` is the one-shot entry point the
+binary uses. The individual tools are also pub so callers can register selectively:
+
+- `echo` — returns its `text` arg; useful for smoke-testing the tool loop.
+- `time.now` — `{unix, iso}` UTC.
+- `http.fetch` — GET/POST with headers/body, response truncated to `http_max_bytes`
+  (default 256 KiB). Returns a `HTTP <status>\n<headers>\n\n<body>` string.
+- `fs.read` / `fs.list` / `fs.write` — every `fs.*` tool is scoped to a `root`
+  supplied at construction. `resolve_under` rejects absolute paths and any
+  component equal to `..`. **`fs.write` is not registered by default**; flip
+  `BuiltinsConfig::enable_fs_write` (or set `JARVIS_ENABLE_FS_WRITE`).
+
+When adding a new built-in tool, keep tool names namespaced (`<group>.<verb>`) and add
+it to the right module under `crates/harness-tools/src/`, then export from `lib.rs` and
+add a line to `register_builtins` if it should be on by default.
 
 ### LLM providers (`harness-llm`)
 
