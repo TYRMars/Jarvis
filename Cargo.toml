@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/harness-core",
     "crates/harness-llm",
+    "crates/harness-mcp",
     "crates/harness-server",
     "crates/harness-tools",
     "apps/jarvis",
@@ -17,6 +18,7 @@ rust-version = "1.80"
 [workspace.dependencies]
 harness-core = { path = "crates/harness-core" }
 harness-llm = { path = "crates/harness-llm" }
+harness-mcp = { path = "crates/harness-mcp" }
 harness-server = { path = "crates/harness-server" }
 harness-tools = { path = "crates/harness-tools" }
 
@@ -37,6 +39,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 tempfile = "3"
+rmcp = { version = "1.5", default-features = false, features = ["server", "client", "transport-io", "transport-child-process", "macros"] }
 
 [profile.release]
 lto = "thin"

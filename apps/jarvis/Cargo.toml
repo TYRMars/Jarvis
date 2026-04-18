@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 harness-core.workspace = true
 harness-llm.workspace = true
+harness-mcp.workspace = true
 harness-server.workspace = true
 harness-tools.workspace = true
 

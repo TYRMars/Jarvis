@@ -19,6 +19,8 @@ crates plug in.
 crates/
   harness-core/    # Agent, Conversation, Message, Tool, LlmProvider traits + run loop
   harness-llm/     # LlmProvider impls; today: OpenAI (`OpenAiProvider`)
+  harness-mcp/     # MCP bridge (rmcp): McpClient adapts remote tools into Tool;
+                   # McpServer exposes a local ToolRegistry over stdio
   harness-server/  # Axum router + `serve(addr, AppState)` helper
   harness-tools/   # Built-in `Tool` impls: echo, time.now, http.fetch, fs.{read,list,write}
 apps/
@@ -41,11 +43,16 @@ cargo run -p jarvis                                     # needs OPENAI_API_KEY
 cargo build --release -p jarvis
 ```
 
-Env vars consumed by the `jarvis` binary: `OPENAI_API_KEY` (required),
-`JARVIS_MODEL` (default `gpt-4o-mini`), `OPENAI_BASE_URL`, `JARVIS_ADDR`
-(default `0.0.0.0:7001`), `JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*`
-tools), `JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
-`RUST_LOG`.
+Env vars consumed by the `jarvis` binary: `OPENAI_API_KEY` (required
+unless `--mcp-serve` is passed), `JARVIS_MODEL` (default `gpt-4o-mini`),
+`OPENAI_BASE_URL`, `JARVIS_ADDR` (default `0.0.0.0:7001`),
+`JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*` tools),
+`JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
+`JARVIS_MCP_SERVERS` (comma-separated `prefix=command args...` list of
+external MCP servers to spawn and adapt into Tools), `RUST_LOG`.
+
+Passing `--mcp-serve` runs the binary as an MCP server on stdio,
+exposing the local ToolRegistry — no LLM/HTTP setup is performed.
 
 ## Architecture
 
@@ -131,6 +138,38 @@ add a line to `register_builtins` if it should be on by default.
 Add new providers by creating a module under `harness-llm/src/` (or a separate crate),
 implementing `LlmProvider`, and re-exporting from `lib.rs`.
 
+### MCP bridge (`harness-mcp`)
+
+Two directions on top of the `rmcp` SDK:
+
+- **Client** (`client.rs`): `McpClient::connect(&McpClientConfig)` spawns an external
+  MCP server as a child process over stdio (via `TokioChildProcess`), performs the
+  handshake, then `register_into(&mut ToolRegistry)` lists every remote tool and
+  inserts a private `RemoteTool` adapter for each. The adapter's `Tool::invoke`
+  forwards to `CallToolRequestParams::new(name).with_arguments(obj)` and flattens
+  the `Vec<Content>` back into a single string. Remote tools are renamed
+  `<prefix>.<name>` so multiple MCP servers don't collide. The `McpClient` owns the
+  running child — drop it (or call `shutdown()`) to kill the server.
+  `connect_all_mcp(configs, &mut registry)` is the batch helper the binary uses.
+- **Server** (`server.rs`): `McpServer::new(Arc<ToolRegistry>)` implements the
+  `rmcp::ServerHandler` trait by hand (the `#[tool_router]` macro doesn't fit —
+  our tool set is runtime-known, not compile-time). `list_tools` maps
+  `ToolSpec` → `rmcp::model::Tool`; `call_tool` resolves the name, invokes the
+  harness `Tool`, and wraps the result in a `CallToolResult::success` /
+  `::error`. Tool errors are surfaced as an `is_error` result rather than a
+  JSON-RPC error so clients can read the error text.
+  `serve_registry_stdio(registry)` is the one-liner the `--mcp-serve` mode calls.
+
+When the harness `Tool::parameters` isn't a JSON object (e.g. it returns `true` or
+`null`), `list_tools` substitutes an empty object so we always send a valid MCP
+`inputSchema`. Keep tool `parameters()` returning object schemas to avoid
+surprising MCP clients.
+
+Transport features are pinned via `rmcp` features `server, client, transport-io,
+transport-child-process, macros`. If you need HTTP/streamable-http transports,
+add the corresponding rmcp feature and drop to `rmcp` directly — the helpers in
+this crate only wire stdio.
+
 ### HTTP server (`harness-server`)
 
 `router(AppState)` returns an `axum::Router`; `serve(addr, state)` is the `tokio::net`
@@ -171,7 +210,9 @@ not read `std::env`. New tools, providers, or middlewares get registered here.
   errors get wrapped in `Error::Provider(String)` rather than leaking `reqwest::Error`.
 - **Clippy is the gate.** `cargo clippy --workspace --all-targets -- -D warnings` must
   pass; the existing code is clean against it.
-- **No streaming yet.** If you add it, do it as a parallel method on `LlmProvider`
-  (e.g. `complete_stream`) rather than retrofitting `complete`'s return type.
+- **Streaming lives on its own method.** `LlmProvider::complete_stream` is a
+  parallel entry point to `complete`; don't retrofit `complete`'s return type.
+  New providers can skip it — the default impl returns a stream that calls
+  `complete` and emits a single `Finish` chunk.
 - **Tool naming collisions** are silent — if you register two tools with the same
   `name()`, the second wins. Prefer unique, namespaced names (`fs.read`, `http.fetch`).
