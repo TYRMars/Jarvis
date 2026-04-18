@@ -194,10 +194,29 @@ SSE and WS both call `Agent::run_stream` and just serialise events — keep new 
 on that same path rather than reimplementing the loop.
 
 `AppState` holds `Arc<Agent>` and an optional `Arc<dyn ConversationStore>`
-(populated when `JARVIS_DB_URL` is set). No handler currently reads the store
-— that's the next increment. When per-request agent selection or multiple
-registered models are needed, extend `AppState` rather than threading a
-registry through every handler.
+(populated when `JARVIS_DB_URL` is set). Persistence handlers live in
+`routes.rs`:
+
+- Both `POST /v1/chat/completions` and its `/stream` variant accept an
+  optional `conversation_id`. When supplied with a configured store, the
+  handler loads the prior history, appends the incoming messages, runs
+  the agent, and saves the result. Without a store, supplying
+  `conversation_id` is a 400 — we don't silently drop state the caller
+  asked us to keep.
+- The WebSocket endpoint gains a `{"type":"resume","id":"..."}` client
+  message that loads an existing conversation (missing id → empty
+  conversation, same id reused for subsequent saves); every `user` turn
+  saves the updated state when an id is active.
+- `GET /v1/conversations` lists (newest first, `?limit=` clamped to
+  1..=500, default 50), `GET /v1/conversations/:id` fetches, and
+  `DELETE /v1/conversations/:id` removes. All three are 400 when no
+  store is configured.
+
+Tests live in `crates/harness-server/tests/routes.rs`; they use a
+`ScriptedProvider` mock and a `MemoryConversationStore` so they don't
+need a real OpenAI key or on-disk DB. When per-request agent selection
+or multiple registered models are needed, extend `AppState` rather than
+threading a registry through every handler.
 
 ### Persistence (`harness-store`)
 

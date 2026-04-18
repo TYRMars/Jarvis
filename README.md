@@ -76,8 +76,25 @@ curl -N localhost:7001/v1/chat/completions/stream \
   -d '{"messages":[{"role":"user","content":"Count to three slowly."}]}'
 
 # WebSocket at ws://localhost:7001/v1/chat/ws, multi-turn.
-# Client sends: {"type":"user","content":"..."} or {"type":"reset"}
+# Client sends: {"type":"user","content":"..."}, {"type":"reset"}, or
+#              {"type":"resume","id":"sess-1"} (requires JARVIS_DB_URL).
 # Server streams the same AgentEvent shape as SSE.
+```
+
+### Persisting conversations
+
+When `JARVIS_DB_URL` is set, pass a `conversation_id` to load prior
+history and save the result:
+
+```bash
+curl localhost:7001/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"conversation_id":"sess-1","messages":[{"role":"user","content":"hi"}]}'
+
+# List / fetch / delete stored conversations
+curl localhost:7001/v1/conversations
+curl localhost:7001/v1/conversations/sess-1
+curl -X DELETE localhost:7001/v1/conversations/sess-1
 ```
 
 ## Development

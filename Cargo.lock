@@ -654,13 +654,17 @@ name = "harness-server"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "async-trait",
  "axum",
  "futures",
  "harness-core",
+ "harness-store",
+ "http-body-util",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tower",
  "tracing",
 ]
 

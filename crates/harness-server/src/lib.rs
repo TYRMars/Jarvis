@@ -4,12 +4,21 @@
 //!
 //! - `GET  /health` — liveness check.
 //! - `POST /v1/chat/completions` — non-streaming: runs the agent loop to
-//!   completion and returns `{message, iterations, history}`.
+//!   completion and returns `{message, iterations, history}`. Accepts an
+//!   optional `conversation_id` that, when the server is configured with
+//!   a `ConversationStore`, loads prior turns and saves the result.
 //! - `POST /v1/chat/completions/stream` — SSE stream of `AgentEvent`s.
+//!   Same `conversation_id` semantics as the blocking variant.
 //! - `GET  /v1/chat/ws` — WebSocket. Client sends
-//!   `{"type":"user","content":"..."}` messages; server streams `AgentEvent`s
-//!   per turn. Conversation state is preserved for the lifetime of the
-//!   connection.
+//!   `{"type":"user","content":"..."}`, `{"type":"reset"}`, or
+//!   `{"type":"resume","id":"..."}` messages; server streams
+//!   `AgentEvent`s per turn. Conversation state is preserved for the
+//!   lifetime of the connection; `resume` + `user` turns save to the
+//!   store after each turn.
+//! - `GET    /v1/conversations` — list persisted conversations
+//!   (newest first). Requires a store.
+//! - `GET    /v1/conversations/:id` — fetch a conversation's messages.
+//! - `DELETE /v1/conversations/:id` — delete a conversation.
 
 mod routes;
 mod state;
