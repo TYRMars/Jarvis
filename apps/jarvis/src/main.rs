@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Context;
-use harness_core::{Agent, AgentConfig, ToolRegistry};
-use harness_llm::{OpenAiConfig, OpenAiProvider};
+use anyhow::{anyhow, Context};
+use harness_core::{Agent, AgentConfig, LlmProvider, ToolRegistry};
+use harness_llm::{AnthropicConfig, AnthropicProvider, OpenAiConfig, OpenAiProvider};
 use harness_mcp::{connect_all_mcp, serve_registry_stdio, McpClientConfig};
 use harness_server::{serve, AppState};
 use harness_tools::{register_builtins, BuiltinsConfig};
@@ -39,15 +39,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let api_key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY must be set")?;
-    let model = std::env::var("JARVIS_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-    let base_url = std::env::var("OPENAI_BASE_URL").ok();
-
-    let mut cfg = OpenAiConfig::new(api_key);
-    if let Some(base) = base_url {
-        cfg = cfg.with_base_url(base);
-    }
-    let llm: Arc<dyn harness_core::LlmProvider> = Arc::new(OpenAiProvider::new(cfg));
+    let (llm, model) = build_provider()?;
 
     // Optional: connect to external MCP servers listed in JARVIS_MCP_SERVERS.
     // Format: comma-separated `prefix=command arg1 arg2` entries.
@@ -91,6 +83,44 @@ async fn main() -> anyhow::Result<()> {
     // Keep clients alive until here; drop explicitly so the Drop order is clear.
     drop(mcp_clients);
     Ok(())
+}
+
+/// Pick the LLM provider based on `JARVIS_PROVIDER` (default `openai`).
+/// Returns the boxed provider and the model id to use for requests.
+///
+/// - `openai`: needs `OPENAI_API_KEY`; honours `OPENAI_BASE_URL`; model
+///   defaults to `gpt-4o-mini`.
+/// - `anthropic`: needs `ANTHROPIC_API_KEY`; honours `ANTHROPIC_BASE_URL`;
+///   model defaults to `claude-sonnet-4-6`.
+fn build_provider() -> anyhow::Result<(Arc<dyn LlmProvider>, String)> {
+    let kind = std::env::var("JARVIS_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+    match kind.as_str() {
+        "openai" => {
+            let api_key =
+                std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY must be set")?;
+            let model =
+                std::env::var("JARVIS_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+            let mut cfg = OpenAiConfig::new(api_key);
+            if let Ok(base) = std::env::var("OPENAI_BASE_URL") {
+                cfg = cfg.with_base_url(base);
+            }
+            Ok((Arc::new(OpenAiProvider::new(cfg)), model))
+        }
+        "anthropic" => {
+            let api_key =
+                std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY must be set")?;
+            let model =
+                std::env::var("JARVIS_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+            let mut cfg = AnthropicConfig::new(api_key);
+            if let Ok(base) = std::env::var("ANTHROPIC_BASE_URL") {
+                cfg = cfg.with_base_url(base);
+            }
+            Ok((Arc::new(AnthropicProvider::new(cfg)), model))
+        }
+        other => Err(anyhow!(
+            "unknown JARVIS_PROVIDER `{other}`: expected `openai` or `anthropic`"
+        )),
+    }
 }
 
 fn parse_mcp_servers(spec: &str) -> anyhow::Result<Vec<McpClientConfig>> {

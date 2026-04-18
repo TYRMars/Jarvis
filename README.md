@@ -29,10 +29,18 @@ apps/
 ## Run it
 
 ```bash
+# Pick a provider. `openai` (default) or `anthropic`.
+export JARVIS_PROVIDER=openai
+
+# OpenAI:
 export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://...     # optional, for OpenAI-compatible gateways
+# Anthropic (when JARVIS_PROVIDER=anthropic):
+# export ANTHROPIC_API_KEY=sk-ant-...
+# export ANTHROPIC_BASE_URL=https://... # optional
+
 # optional:
-export JARVIS_MODEL=gpt-4o-mini        # default
-export OPENAI_BASE_URL=https://...     # for OpenAI-compatible gateways
+export JARVIS_MODEL=gpt-4o-mini        # default `gpt-4o-mini` (openai) / `claude-sonnet-4-6` (anthropic)
 export JARVIS_ADDR=0.0.0.0:7001        # default
 export JARVIS_FS_ROOT=./workspace      # sandbox dir for fs.* tools (default: .)
 export JARVIS_ENABLE_FS_WRITE=1        # opt in to fs.write (off by default)
@@ -119,4 +127,4 @@ cargo build --release -p jarvis
 - HTTP endpoints that read/write via `ConversationStore` (the trait and
   SQLite/Postgres/MySQL backends are wired into `AppState`, but no routes
   consume them yet).
-- Additional providers: Anthropic, Google.
+- Additional providers: Google (OpenAI + Anthropic shipped).

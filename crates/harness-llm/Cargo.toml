@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "LLM provider implementations for harness-core (OpenAI today, more later)."
+description = "LLM provider implementations for harness-core (OpenAI today, Anthropic behind a feature)."
 
 [dependencies]
 harness-core.workspace = true
@@ -16,3 +16,8 @@ tracing.workspace = true
 futures.workspace = true
 async-stream.workspace = true
 bytes.workspace = true
+
+[features]
+default = ["openai", "anthropic"]
+openai = []
+anthropic = []

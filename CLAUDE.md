@@ -45,10 +45,15 @@ cargo run -p jarvis                                     # needs OPENAI_API_KEY
 cargo build --release -p jarvis
 ```
 
-Env vars consumed by the `jarvis` binary: `OPENAI_API_KEY` (required
-unless `--mcp-serve` is passed), `JARVIS_MODEL` (default `gpt-4o-mini`),
-`OPENAI_BASE_URL`, `JARVIS_ADDR` (default `0.0.0.0:7001`),
-`JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*` tools),
+Env vars consumed by the `jarvis` binary:
+`JARVIS_PROVIDER` (default `openai`; also accepts `anthropic`),
+`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` (required unless `--mcp-serve`;
+which one depends on the provider),
+`JARVIS_MODEL` (default depends on provider: `gpt-4o-mini` for openai,
+`claude-sonnet-4-6` for anthropic),
+`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` (optional; points at an
+OpenAI/Anthropic-compatible gateway), `JARVIS_ADDR` (default
+`0.0.0.0:7001`), `JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*` tools),
 `JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
 `JARVIS_MCP_SERVERS` (comma-separated `prefix=command args...` list of
 external MCP servers to spawn and adapt into Tools),
