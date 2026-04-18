@@ -5,10 +5,11 @@ A Rust agent runtime built around a small, well-typed **harness**: a runtime-ind
 sibling crates plug in concrete LLM providers and an HTTP transport.
 
 > Status: scaffold. The harness loop, an OpenAI provider, an OpenAI-compatible
-> `/v1/chat/completions` endpoint with SSE + WebSocket streaming, and an MCP
-> bridge (client + server, stdio transport) are working end to end. Memory,
-> persistence, and additional providers are intentionally not yet implemented
-> — see the roadmap below.
+> `/v1/chat/completions` endpoint with SSE + WebSocket streaming, an MCP bridge
+> (client + server, stdio transport), and a pluggable `ConversationStore`
+> (SQLite by default; Postgres / MySQL behind features) are working end to end.
+> Short-term memory and additional providers are intentionally not yet
+> implemented — see the roadmap below.
 
 ## Workspace layout
 
@@ -19,6 +20,7 @@ crates/
   harness-mcp/     # MCP bridge: adapt external MCP servers as Tools,
                    # expose a local ToolRegistry as an MCP server
   harness-server/  # Axum HTTP facade
+  harness-store/   # Pluggable sqlx ConversationStore (sqlite/postgres/mysql)
   harness-tools/   # Built-in tools: echo, time.now, http.fetch, fs.{read,list,write}
 apps/
   jarvis/          # Binary that wires the crates together and serves HTTP
@@ -37,6 +39,13 @@ export JARVIS_ENABLE_FS_WRITE=1        # opt in to fs.write (off by default)
 # optional: spawn external MCP servers and adopt their tools. Format:
 #   prefix=command arg1 arg2, next_prefix=other_cmd ...
 export JARVIS_MCP_SERVERS='fs=uvx mcp-server-filesystem /tmp,git=uvx mcp-server-git'
+# optional: persist conversations. Scheme selects the backend
+# (sqlite default; postgres / mysql behind cargo features).
+#   sqlite::memory:            — ephemeral, test-only
+#   sqlite://./jarvis.db       — file-backed
+#   postgres://user:pw@host/db — requires `--features postgres` on harness-store
+#   mysql://user:pw@host/db    — requires `--features mysql` on harness-store
+export JARVIS_DB_URL=sqlite://./jarvis.db
 export RUST_LOG=info,jarvis=debug
 
 cargo run -p jarvis
@@ -83,5 +92,7 @@ cargo build --release -p jarvis
 ## Roadmap
 
 - `harness-memory` — short-term (in-process) and long-term (DB) memory tiers.
-- `harness-store` — `sqlx` persistence for agents, conversations, tools.
+- HTTP endpoints that read/write via `ConversationStore` (the trait and
+  SQLite/Postgres/MySQL backends are wired into `AppState`, but no routes
+  consume them yet).
 - Additional providers: Anthropic, Google.

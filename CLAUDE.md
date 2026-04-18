@@ -22,6 +22,8 @@ crates/
   harness-mcp/     # MCP bridge (rmcp): McpClient adapts remote tools into Tool;
                    # McpServer exposes a local ToolRegistry over stdio
   harness-server/  # Axum router + `serve(addr, AppState)` helper
+  harness-store/   # sqlx-backed ConversationStore; sqlite default,
+                   # postgres/mysql behind cargo features
   harness-tools/   # Built-in `Tool` impls: echo, time.now, http.fetch, fs.{read,list,write}
 apps/
   jarvis/          # Binary that wires everything and exposes the HTTP API
@@ -49,7 +51,9 @@ unless `--mcp-serve` is passed), `JARVIS_MODEL` (default `gpt-4o-mini`),
 `JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*` tools),
 `JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
 `JARVIS_MCP_SERVERS` (comma-separated `prefix=command args...` list of
-external MCP servers to spawn and adapt into Tools), `RUST_LOG`.
+external MCP servers to spawn and adapt into Tools),
+`JARVIS_DB_URL` (optional; opens a `ConversationStore` at startup — scheme
+picks backend: `sqlite:`, `postgres://`, `mysql://`), `RUST_LOG`.
 
 Passing `--mcp-serve` runs the binary as an MCP server on stdio,
 exposing the local ToolRegistry — no LLM/HTTP setup is performed.
@@ -189,9 +193,37 @@ same agent:
 SSE and WS both call `Agent::run_stream` and just serialise events — keep new transports
 on that same path rather than reimplementing the loop.
 
-`AppState` currently holds a single `Arc<Agent>`. When per-request agent selection or
-multiple registered models are needed, extend `AppState` rather than threading a
+`AppState` holds `Arc<Agent>` and an optional `Arc<dyn ConversationStore>`
+(populated when `JARVIS_DB_URL` is set). No handler currently reads the store
+— that's the next increment. When per-request agent selection or multiple
+registered models are needed, extend `AppState` rather than threading a
 registry through every handler.
+
+### Persistence (`harness-store`)
+
+`harness-core::ConversationStore` is the trait (async `save` / `load` / `list` /
+`delete`); `harness-store` provides the concrete backends. Driver selection is
+both **compile-time** (cargo features) and **runtime** (URL scheme):
+
+| feature    | URL prefixes                    | backend                      |
+|------------|---------------------------------|------------------------------|
+| `sqlite`   | `sqlite:`, `sqlite::memory:`    | SQLite (default)             |
+| `postgres` | `postgres://`, `postgresql://`  | Postgres                     |
+| `mysql`    | `mysql://`, `mariadb://`        | MySQL / MariaDB              |
+
+`harness_store::connect(url)` returns `Arc<dyn ConversationStore>` — higher
+layers don't name the backend. Every backend uses the same schema: a single
+`conversations(id, messages, created_at, updated_at)` table where `messages`
+is the JSON-serialised `Conversation`. Timestamps are stored as RFC-3339
+strings so `harness-core` doesn't need a time crate in its public surface.
+
+There's also `MemoryConversationStore` (always compiled) for tests / examples;
+it's not selectable via `connect()` by design — wire it up directly.
+
+When adding a new backend, copy the pattern from `sqlite.rs`: a pool wrapper,
+an idempotent `migrate()`, and a `ConversationStore` impl that serialises the
+conversation as JSON and writes RFC-3339 timestamps. Gate the module and its
+dep via a cargo feature, then add a match arm to `connect()` in `lib.rs`.
 
 ### Binary (`apps/jarvis`)
 

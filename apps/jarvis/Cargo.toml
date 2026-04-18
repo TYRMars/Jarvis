@@ -15,6 +15,7 @@ harness-core.workspace = true
 harness-llm.workspace = true
 harness-mcp.workspace = true
 harness-server.workspace = true
+harness-store.workspace = true
 harness-tools.workspace = true
 
 tokio.workspace = true

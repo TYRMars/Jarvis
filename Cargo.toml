@@ -5,6 +5,7 @@ members = [
     "crates/harness-llm",
     "crates/harness-mcp",
     "crates/harness-server",
+    "crates/harness-store",
     "crates/harness-tools",
     "apps/jarvis",
 ]
@@ -20,6 +21,7 @@ harness-core = { path = "crates/harness-core" }
 harness-llm = { path = "crates/harness-llm" }
 harness-mcp = { path = "crates/harness-mcp" }
 harness-server = { path = "crates/harness-server" }
+harness-store = { path = "crates/harness-store" }
 harness-tools = { path = "crates/harness-tools" }
 
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
@@ -40,6 +42,7 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 tempfile = "3"
 rmcp = { version = "1.5", default-features = false, features = ["server", "client", "transport-io", "transport-child-process", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
 
 [profile.release]
 lto = "thin"

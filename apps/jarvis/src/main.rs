@@ -69,12 +69,24 @@ async fn main() -> anyhow::Result<()> {
         .with_max_iterations(8);
     let agent = Arc::new(Agent::new(llm, agent_cfg));
 
+    // Optional persistence. `JARVIS_DB_URL` picks the backend by scheme
+    // (`sqlite:...`, `postgres://...`, `mysql://...`); omit it to run fully
+    // in memory.
+    let mut state = AppState::new(agent);
+    if let Ok(db_url) = std::env::var("JARVIS_DB_URL") {
+        let store = harness_store::connect(&db_url)
+            .await
+            .with_context(|| format!("opening JARVIS_DB_URL `{db_url}`"))?;
+        info!(url = %db_url, "conversation store connected");
+        state = state.with_store(store);
+    }
+
     let addr: SocketAddr = std::env::var("JARVIS_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:7001".to_string())
         .parse()
         .context("invalid JARVIS_ADDR")?;
     info!(%addr, "jarvis listening");
-    serve(addr, AppState::new(agent)).await?;
+    serve(addr, state).await?;
 
     // Keep clients alive until here; drop explicitly so the Drop order is clear.
     drop(mcp_clients);
