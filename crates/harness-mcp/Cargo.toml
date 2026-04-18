@@ -1,0 +1,21 @@
+[package]
+name = "harness-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "MCP client / server bridge for the agent harness: adapt external MCP servers into harness Tools and expose a local ToolRegistry over MCP stdio."
+
+[dependencies]
+harness-core.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+harness-tools.workspace = true

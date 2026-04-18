@@ -1,0 +1,24 @@
+[package]
+name = "jarvis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Jarvis agent runtime: wires the harness crates into a runnable HTTP server."
+
+[[bin]]
+name = "jarvis"
+path = "src/main.rs"
+
+[dependencies]
+harness-core.workspace = true
+harness-llm.workspace = true
+harness-mcp.workspace = true
+harness-server.workspace = true
+harness-store.workspace = true
+harness-tools.workspace = true
+
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

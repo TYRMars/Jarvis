@@ -1,141 +1,134 @@
-# 数据库表结构文档
+# Database
 
-## 1. Agent（智能体表）
+Persistence lives in the `harness-store` crate. `harness-core` only defines
+the `ConversationStore` trait; everything concrete is here. Higher layers
+open a store via `harness_store::connect(url)` and receive an
+`Arc<dyn ConversationStore>` — they never name the backend type directly.
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| user_id | INTEGER | 否 | - | 用户ID |
-| name | STRING | 否 | - | 名称 |
-| description | TEXT | 是 | - | 描述 |
-| system_prompt | TEXT | 是 | - | 系统提示词 |
-| tools | TEXT | 是 | - | 工具ID列表，JSON格式 |
-| knowledge_base_ids | TEXT | 是 | - | 知识库ID列表，JSON格式 |
-| prompt_id | INTEGER | 是 | - | 提示模板ID |
-| prompt_variables | TEXT | 是 | - | 提示模板变量值，JSON格式 |
-| custom_prompt | TEXT | 是 | - | 自定义提示词 |
-| model_name | STRING | 否 | 'gpt-3.5-turbo' | 使用的模型名称 |
-| model_parameters | TEXT | 是 | - | 模型参数，JSON格式 |
-| provider | STRING | 否 | 'openai' | LLM提供商 |
-| provider_config_id | INTEGER | 是 | - | LLM提供商配置ID |
-| status | INTEGER | 否 | 1 | 状态：0-禁用，1-启用 |
-| workflow_type | STRING | 是 | 'simple' | 工作流类型 |
-| created_at | DATE | 否 | NOW() | 创建时间 |
-| updated_at | DATE | 否 | NOW() | 更新时间 |
+See `ARCHITECTURE.md` for how persistence fits into the overall system.
 
-## 2. Conversation（对话表）
+## Selecting a backend
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| user_id | INTEGER | 否 | - | 用户ID |
-| agent_id | INTEGER | 否 | - | 关联的Agent ID |
-| session_id | STRING(100) | 否 | - | 会话ID |
-| user_input | TEXT | 否 | - | 用户输入 |
-| agent_response | TEXT | 否 | - | Agent响应 |
-| tools_used | TEXT | 是 | - | 使用的工具，JSON格式 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+Driver selection is **compile-time** (cargo features on `harness-store`)
+and **runtime** (URL scheme):
 
-## 3. AgentWorkflow（工作流表）
+| feature    | URL prefixes                    | backend            |
+|------------|---------------------------------|--------------------|
+| `sqlite`   | `sqlite:`, `sqlite::memory:`    | SQLite (default)   |
+| `postgres` | `postgres://`, `postgresql://`  | Postgres           |
+| `mysql`    | `mysql://`, `mariadb://`        | MySQL / MariaDB    |
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| user_id | INTEGER | 否 | - | 用户ID |
-| name | STRING(100) | 否 | - | 工作流名称 |
-| description | TEXT | 是 | - | 工作流描述 |
-| workflow_type | STRING(50) | 否 | 'intent_classification' | 工作流类型 |
-| config | JSON | 否 | - | 工作流配置 |
-| state | JSON | 是 | - | 工作流状态 |
-| status | INTEGER | 否 | 1 | 状态：0-禁用，1-启用 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+Only `sqlite` is on by default. Enable others at the binary level, e.g.:
 
-## 4. AgentWorkflowNode（工作流节点表）
+```toml
+# apps/jarvis/Cargo.toml
+harness-store = { workspace = true, features = ["postgres"] }
+```
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| workflow_id | INTEGER | 否 | - | 工作流ID |
-| node_type | STRING(50) | 否 | - | 节点类型 |
-| name | STRING(100) | 否 | - | 节点名称 |
-| config | JSON | 否 | - | 节点配置 |
-| position | JSON | 否 | - | 节点位置 |
-| edges | JSON | 是 | - | 节点连接关系 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+`harness-store` also ships `MemoryConversationStore` (always compiled) for
+tests and examples. It isn't selectable via `connect()` by design — wire
+it up directly.
 
-## 5. User（用户表）
+## Wire-up in the binary
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| name | STRING | 否 | - | 用户名 |
-| email | STRING | 否 | - | 邮箱 |
-| password | STRING | 否 | - | 密码 |
-| status | INTEGER | 否 | 1 | 状态 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+Set `JARVIS_DB_URL` and `apps/jarvis` opens the store at startup and
+places it on `AppState`:
 
-## 6. Prompt（提示模板表）
+```bash
+JARVIS_DB_URL=sqlite://./jarvis.db cargo run -p jarvis
+```
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| name | STRING | 否 | - | 模板名称 |
-| content | TEXT | 否 | - | 模板内容 |
-| variables | TEXT | 是 | - | 变量定义 |
-| status | INTEGER | 否 | 1 | 状态 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+No HTTP handler reads the store yet — that's the next increment. The
+trait and the `AppState` slot are ready; endpoints that save / load /
+list / delete conversations by id plug into `routes.rs`.
 
-## 7. LlmProviderConfig（LLM提供商配置表）
+## Schema
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| provider | STRING | 否 | - | 提供商名称 |
-| config | TEXT | 否 | - | 配置信息 |
-| status | INTEGER | 否 | 1 | 状态 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+Every backend uses the same shape — a single table storing each
+conversation as a JSON blob plus RFC-3339 timestamp strings. The
+`harness-core` public API deliberately avoids naming a time crate; ISO
+strings cross the boundary cleanly.
 
-## 8. Tool（工具表）
+```sql
+-- sqlite / postgres
+CREATE TABLE IF NOT EXISTS conversations (
+    id         TEXT PRIMARY KEY,
+    messages   TEXT NOT NULL,   -- JSON-serialised Conversation
+    created_at TEXT NOT NULL,   -- RFC-3339
+    updated_at TEXT NOT NULL    -- RFC-3339
+);
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| name | STRING | 否 | - | 工具名称 |
-| description | TEXT | 是 | - | 工具描述 |
-| parameters | TEXT | 是 | - | 参数定义 |
-| status | INTEGER | 否 | 1 | 状态 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+-- mysql (TEXT can't be a primary key without a prefix length, and the
+-- JSON payload can easily exceed TEXT's 64 KiB limit).
+CREATE TABLE IF NOT EXISTS conversations (
+    id         VARCHAR(255) NOT NULL PRIMARY KEY,
+    messages   LONGTEXT     NOT NULL,
+    created_at VARCHAR(64)  NOT NULL,
+    updated_at VARCHAR(64)  NOT NULL
+);
+```
 
-## 9. KnowledgeBase（知识库表）
+Upserts use the dialect-native path (`ON CONFLICT … DO UPDATE` on
+SQLite / Postgres; `ON DUPLICATE KEY UPDATE` on MySQL) so `save()` is
+idempotent for a given `id`.
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| id | INTEGER | 否 | 自增 | 主键 |
-| name | STRING | 否 | - | 知识库名称 |
-| description | TEXT | 是 | - | 知识库描述 |
-| status | INTEGER | 否 | 1 | 状态 |
-| created_at | DATE | 否 | - | 创建时间 |
-| updated_at | DATE | 否 | - | 更新时间 |
+Migrations are run idempotently inside each backend's `connect()`; there
+is no separate migration tool today. When the schema grows (messages as
+a child table, metadata columns, etc.) we'll switch to `sqlx migrate`
+with a `migrations/` directory per backend.
 
-## 10. 关联表
+## Trait surface
 
-### Agent_Tool（Agent工具关联表）
+```rust
+// harness-core
+#[async_trait]
+pub trait ConversationStore: Send + Sync {
+    async fn save(&self, id: &str, c: &Conversation) -> Result<(), BoxError>;
+    async fn load(&self, id: &str) -> Result<Option<Conversation>, BoxError>;
+    async fn list(&self, limit: u32) -> Result<Vec<ConversationRecord>, BoxError>;
+    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
+}
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| agent_id | INTEGER | 否 | - | Agent ID |
-| tool_id | INTEGER | 否 | - | 工具 ID |
+pub struct ConversationRecord {
+    pub id: String,
+    pub created_at: String,   // RFC-3339
+    pub updated_at: String,   // RFC-3339
+    pub message_count: usize,
+}
+```
 
-### Agent_KnowledgeBase（Agent知识库关联表）
+- `id` is opaque — the caller chooses (session UUID, user id, etc.).
+- `save` is upsert: updating an existing id bumps `updated_at` and
+  replaces the blob.
+- `list` returns newest-first, capped at `limit`.
+- `delete` returns `Ok(false)` for a missing id (never an error).
 
-| 字段名 | 类型 | 允许空 | 默认值 | 说明 |
-|--------|------|--------|---------|------|
-| agent_id | INTEGER | 否 | - | Agent ID |
-| knowledge_base_id | INTEGER | 否 | - | 知识库 ID |
+## Adding a backend
+
+Copy the pattern from `crates/harness-store/src/sqlite.rs`:
+
+1. New module `crates/harness-store/src/<backend>.rs` with a pool
+   wrapper, an idempotent `migrate()`, and a `ConversationStore` impl
+   that round-trips JSON + RFC-3339 timestamps.
+2. Gate the module and its sqlx feature via a cargo feature in
+   `crates/harness-store/Cargo.toml`.
+3. Add a `match` arm for the URL scheme in `connect()` in
+   `crates/harness-store/src/lib.rs`.
+4. Add tests — mirror `sqlite.rs`'s in-module tests and the dispatcher
+   test in `tests/connect.rs`. Skip Postgres / MySQL tests in CI if no
+   server is available; use `#[ignore]` or env-gated `#[test]`s.
+
+## Not yet persisted
+
+Only `Conversation` has a store. The repository does **not** persist:
+
+- Agent configuration / prompts / tool manifests (recreated on each
+  boot from env vars + `register_builtins`).
+- Tool call history separately from the embedded `Conversation` blob —
+  it's all inside the JSON.
+- Users, sessions, auth tokens, rate-limit counters, or any kind of
+  memory tier.
+
+These were all in the previous TypeScript codebase but were not carried
+over. Treat that earlier schema as a feature inventory, not a design to
+copy — most of those tables stored JSON blobs in `TEXT` columns anyway.

@@ -1,73 +1,105 @@
-# tegg app
+# Jarvis
 
-[Hacker News](https://news.ycombinator.com/) showcase using [tegg](https://github.com/eggjs/tegg)
+A Rust agent runtime built around a small, well-typed **harness**: a runtime-independent core
+(`harness-core`) defines the agent loop, message types, and `Tool` / `LlmProvider` traits;
+sibling crates plug in concrete LLM providers and an HTTP transport.
 
-## QuickStart
+> Status: scaffold. The harness loop, an OpenAI provider, an OpenAI-compatible
+> `/v1/chat/completions` endpoint with SSE + WebSocket streaming, an MCP bridge
+> (client + server, stdio transport), and a pluggable `ConversationStore`
+> (SQLite by default; Postgres / MySQL behind features) are working end to end.
+> Short-term memory and additional providers are intentionally not yet
+> implemented — see the roadmap below.
 
-### Development
+## Workspace layout
 
-```bash
-npm i
-npm run dev
-open http://localhost:7001/
+```
+crates/
+  harness-core/    # Agent loop, Conversation, Message, Tool / LlmProvider traits
+  harness-llm/     # LlmProvider implementations (OpenAI today)
+  harness-mcp/     # MCP bridge: adapt external MCP servers as Tools,
+                   # expose a local ToolRegistry as an MCP server
+  harness-server/  # Axum HTTP facade
+  harness-store/   # Pluggable sqlx ConversationStore (sqlite/postgres/mysql)
+  harness-tools/   # Built-in tools: echo, time.now, http.fetch, fs.{read,list,write}
+apps/
+  jarvis/          # Binary that wires the crates together and serves HTTP
 ```
 
-Don't tsc compile at development mode, if you had run `tsc` then you need to `npm run clean` before `npm run dev`.
-
-### Deploy
+## Run it
 
 ```bash
-npm run tsc
-npm start
+export OPENAI_API_KEY=sk-...
+# optional:
+export JARVIS_MODEL=gpt-4o-mini        # default
+export OPENAI_BASE_URL=https://...     # for OpenAI-compatible gateways
+export JARVIS_ADDR=0.0.0.0:7001        # default
+export JARVIS_FS_ROOT=./workspace      # sandbox dir for fs.* tools (default: .)
+export JARVIS_ENABLE_FS_WRITE=1        # opt in to fs.write (off by default)
+# optional: spawn external MCP servers and adopt their tools. Format:
+#   prefix=command arg1 arg2, next_prefix=other_cmd ...
+export JARVIS_MCP_SERVERS='fs=uvx mcp-server-filesystem /tmp,git=uvx mcp-server-git'
+# optional: persist conversations. Scheme selects the backend
+# (sqlite default; postgres / mysql behind cargo features).
+#   sqlite::memory:            — ephemeral, test-only
+#   sqlite://./jarvis.db       — file-backed
+#   postgres://user:pw@host/db — requires `--features postgres` on harness-store
+#   mysql://user:pw@host/db    — requires `--features mysql` on harness-store
+export JARVIS_DB_URL=sqlite://./jarvis.db
+export RUST_LOG=info,jarvis=debug
+
+cargo run -p jarvis
 ```
 
-### Npm Scripts
+To run Jarvis itself as an MCP server (exposing built-in tools over stdio so
+another MCP-aware agent can call them):
 
-- Use `npm run lint` to check code style
-- Use `npm test` to run unit test
-- se `npm run clean` to clean compiled js at development mode once
+```bash
+cargo run -p jarvis -- --mcp-serve
+```
 
-### Requirement
+Then:
 
-- Node.js >= 18.x
-- Typescript >= 5.x
+```bash
+# Liveness
+curl localhost:7001/health
 
-## Agent记忆功能
+# Blocking: returns final message + full history when the agent loop finishes.
+curl localhost:7001/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Say hi via the echo tool."}]}'
 
-系统支持Agent短期记忆和长期记忆功能，增强对话连贯性和个性化体验。
+# SSE: each event is a JSON-encoded AgentEvent (delta / tool_start / tool_end /
+# assistant_message / done / error).
+curl -N localhost:7001/v1/chat/completions/stream \
+  -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Count to three slowly."}]}'
 
-### 记忆类型
+# WebSocket at ws://localhost:7001/v1/chat/ws, multi-turn.
+# Client sends: {"type":"user","content":"..."} or {"type":"reset"}
+# Server streams the same AgentEvent shape as SSE.
+```
 
-1. **短期记忆**：
-   - 存储在内存中，针对当前会话
-   - 用于维持会话上下文和临时状态
-   - 随会话结束而清除
+## Development
 
-2. **长期记忆**：
-   - 存储在数据库中，持久化保存
-   - 用于记住用户偏好、事实和重要信息
-   - 在会话中被检索并加入到对话上下文
+```bash
+cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release -p jarvis
+```
 
-### API接口
+## Docs
 
-系统提供以下API接口管理Agent记忆：
+- `ARCHITECTURE.md` — layering, crate responsibilities, agent loop,
+  request lifecycle, extension points.
+- `DB.md` — `ConversationStore` trait, backends, schema.
+- `CLAUDE.md` — working rules and gotchas for contributors (and Claude).
 
-- `GET /api/agent-memories` - 获取Agent的长期记忆
-- `POST /api/agent-memories` - 添加或更新长期记忆
-- `DELETE /api/agent-memories` - 删除长期记忆
-- `POST /api/agent-memories/short-term/clear` - 清除短期记忆
-- `POST /api/agent-memories/process` - 从对话中提取记忆
+## Roadmap
 
-### 记忆处理流程
-
-1. 用户发送消息时，系统检索相关长期记忆
-2. 相关记忆和RAG检索结果一起加入到Agent的系统提示中
-3. 对话完成后，系统自动分析对话内容，提取重要信息存入长期记忆
-4. 记忆按重要性和最近访问时间排序，确保优先使用最相关的信息
-
-### 技术实现
-
-- 使用内存Map存储短期记忆
-- 使用MySQL数据库存储长期记忆
-- 通过LLM分析确定记忆的重要性和相关性
-- 实现按需检索，只加载与当前对话相关的记忆
+- `harness-memory` — short-term (in-process) and long-term (DB) memory tiers.
+- HTTP endpoints that read/write via `ConversationStore` (the trait and
+  SQLite/Postgres/MySQL backends are wired into `AppState`, but no routes
+  consume them yet).
+- Additional providers: Anthropic, Google.
