@@ -39,14 +39,24 @@ cargo run -p jarvis
 Then:
 
 ```bash
+# Liveness
 curl localhost:7001/health
+
+# Blocking: returns final message + full history when the agent loop finishes.
 curl localhost:7001/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"messages":[{"role":"user","content":"Say hi via the echo tool."}]}'
-```
 
-The response includes the final assistant message, the iteration count, and the full
-message history (including any tool calls and tool results).
+# SSE: each event is a JSON-encoded AgentEvent (delta / tool_start / tool_end /
+# assistant_message / done / error).
+curl -N localhost:7001/v1/chat/completions/stream \
+  -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Count to three slowly."}]}'
+
+# WebSocket at ws://localhost:7001/v1/chat/ws, multi-turn.
+# Client sends: {"type":"user","content":"..."} or {"type":"reset"}
+# Server streams the same AgentEvent shape as SSE.
+```
 
 ## Development
 
@@ -62,5 +72,4 @@ cargo build --release -p jarvis
 - `harness-mcp` — MCP client + server (`rmcp`).
 - `harness-memory` — short-term (in-process) and long-term (DB) memory tiers.
 - `harness-store` — `sqlx` persistence for agents, conversations, tools.
-- Streaming chat completions (SSE).
 - Additional providers: Anthropic, Google.

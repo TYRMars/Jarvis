@@ -1,4 +1,7 @@
+use std::pin::Pin;
+
 use async_trait::async_trait;
+use futures::{stream, Stream};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -35,7 +38,42 @@ pub enum FinishReason {
     Other(String),
 }
 
+/// One piece of a streamed LLM response. Providers emit `ContentDelta` for
+/// each partial content token, optionally `ToolCallDelta` for tool-call
+/// assembly progress, and finally exactly one `Finish` carrying the fully
+/// reconstructed message.
+#[derive(Debug, Clone)]
+pub enum LlmChunk {
+    ContentDelta(String),
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments_fragment: Option<String>,
+    },
+    Finish {
+        message: Message,
+        finish_reason: FinishReason,
+    },
+}
+
+/// Boxed stream of `LlmChunk` results. The stream ends after the `Finish`
+/// variant (or earlier on error).
+pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmChunk>> + Send>>;
+
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse>;
+
+    /// Stream a completion. The default implementation calls `complete` and
+    /// emits a single synthesised `Finish` chunk, so providers that do not
+    /// yet implement real streaming still satisfy the trait.
+    async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream> {
+        let resp = self.complete(req).await?;
+        let chunk = LlmChunk::Finish {
+            message: resp.message,
+            finish_reason: resp.finish_reason,
+        };
+        Ok(Box::pin(stream::once(async move { Ok(chunk) })))
+    }
 }

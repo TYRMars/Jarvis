@@ -1,13 +1,15 @@
 //! HTTP facade for the agent harness.
 //!
-//! Exposes a minimal OpenAI-compatible surface:
+//! Exposes:
 //!
-//! - `GET  /health` — liveness check
-//! - `POST /v1/chat/completions` — runs the configured `Agent` against the
-//!   supplied messages and returns the final assistant message.
-//!
-//! Streaming, multiple-model dispatch, and auth are intentionally out of
-//! scope for this scaffold.
+//! - `GET  /health` — liveness check.
+//! - `POST /v1/chat/completions` — non-streaming: runs the agent loop to
+//!   completion and returns `{message, iterations, history}`.
+//! - `POST /v1/chat/completions/stream` — SSE stream of `AgentEvent`s.
+//! - `GET  /v1/chat/ws` — WebSocket. Client sends
+//!   `{"type":"user","content":"..."}` messages; server streams `AgentEvent`s
+//!   per turn. Conversation state is preserved for the lifetime of the
+//!   connection.
 
 mod routes;
 mod state;

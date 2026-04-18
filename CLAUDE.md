@@ -51,20 +51,23 @@ tools), `JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
 
 ### The harness loop (`harness-core`)
 
-`Agent::run(&mut Conversation)` is the entire runtime:
+Two entry points, same loop:
 
-1. Prepend the configured system prompt if the conversation has none.
-2. Loop up to `max_iterations`:
-   - Build a `ChatRequest` from the conversation + tool specs and call `LlmProvider::complete`.
-   - Append the returned assistant message to the conversation.
-   - If `finish_reason == ToolCalls`, invoke each tool via `ToolRegistry`, append a
-     `Message::Tool` for each result, and continue.
-   - Any other finish reason returns `RunOutcome::{Stopped, LengthLimited}`.
-3. Hitting the iteration cap returns `Error::MaxIterations`.
+- `Agent::run(&mut Conversation) -> Result<RunOutcome>` — blocking. Calls
+  `LlmProvider::complete`, appends the assistant message, dispatches tool calls,
+  loops until a non-`ToolCalls` finish reason or `max_iterations`.
+- `Agent::run_stream(self: Arc<Self>, Conversation) -> AgentStream` — streaming.
+  Calls `LlmProvider::complete_stream`, forwards `ContentDelta`s as
+  `AgentEvent::Delta`, emits `ToolStart` / `ToolEnd` around each invocation, and
+  finishes with exactly one `AgentEvent::Done` (carrying the final `Conversation`)
+  or `AgentEvent::Error`. The streaming version takes the conversation by value
+  because it lives inside an `async_stream!` block; consumers rebuild state from
+  the event stream.
 
-Tool errors are **caught and surfaced as text** in the tool result message
-(`format!("tool error: {e}")`) so the model can recover, rather than aborting the loop.
-Preserve that behaviour when editing `agent.rs`.
+Before the first LLM call, the configured `system_prompt` is prepended to the
+conversation iff it has no system message already. Tool errors are **caught and
+surfaced as text** (`format!("tool error: {e}")`) on both paths so the model can
+recover — preserve that when editing `agent.rs`.
 
 ### Message model (`message.rs`)
 
@@ -113,11 +116,17 @@ add a line to `register_builtins` if it should be on by default.
 `OpenAiProvider` implements `LlmProvider` over `reqwest`. Notable wire-shape details:
 
 - OpenAI requires tool-call `arguments` as a **JSON-encoded string**, not an object.
-  Conversion happens in `OaFunctionCallOut::From<ToolCall>` (out) and
-  `OpenAiResponse::into_chat_response` (in, where empty strings become `{}`).
+  Conversion happens in `OaFunctionCallOut::From<ToolCall>` (out) and `parse_tool_call`
+  (in, where empty strings become `{}`).
 - `finish_reason` defaults: missing reason + non-empty `tool_calls` → `ToolCalls`,
   otherwise `Stop`. Don't change this without checking `Agent::run`'s match arm.
 - Configurable `base_url` lets you point at any OpenAI-compatible gateway.
+- Streaming uses `reqwest::Response::bytes_stream()` with a manual SSE parser
+  (`data: <json>\n\n`, `data: [DONE]` sentinel). `StreamAccumulator` reassembles
+  tool-call argument fragments (OpenAI delivers them as string slices that must
+  be concatenated in index order) and emits exactly one `LlmChunk::Finish` at
+  the end. `StreamAccumulator::finalise` is also called if the connection
+  closes without a `finish_reason`.
 
 Add new providers by creating a module under `harness-llm/src/` (or a separate crate),
 implementing `LlmProvider`, and re-exporting from `lib.rs`.
@@ -125,9 +134,21 @@ implementing `LlmProvider`, and re-exporting from `lib.rs`.
 ### HTTP server (`harness-server`)
 
 `router(AppState)` returns an `axum::Router`; `serve(addr, state)` is the `tokio::net`
-+ `axum::serve` one-liner. Handlers live in `routes.rs`. The `/v1/chat/completions`
-handler intentionally does **not** stream — it runs the agent loop to completion and
-returns `{message, iterations, history}`. Streaming is on the roadmap.
++ `axum::serve` one-liner. Handlers live in `routes.rs`. Three transports expose the
+same agent:
+
+- `POST /v1/chat/completions` — blocking. Runs the loop to completion, returns
+  `{message, iterations, history}`.
+- `POST /v1/chat/completions/stream` — SSE. Each event's `data:` payload is a single
+  JSON-encoded `AgentEvent`. Axum's `Sse` layer handles framing and keep-alives.
+- `GET  /v1/chat/ws` — WebSocket. Multi-turn: client sends
+  `{"type":"user","content":"..."}` (or `{"type":"reset"}`), server streams
+  `AgentEvent`s per turn as text frames. **Conversation state is kept server-side
+  for the life of the socket** — the WS handler captures `AgentEvent::Done.conversation`
+  and carries it into the next turn, so clients don't need to resend history.
+
+SSE and WS both call `Agent::run_stream` and just serialise events — keep new transports
+on that same path rather than reimplementing the loop.
 
 `AppState` currently holds a single `Arc<Agent>`. When per-request agent selection or
 multiple registered models are needed, extend `AppState` rather than threading a

@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 use crate::message::Message;
 
 /// Mutable conversation state. The agent appends to this on every turn.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Conversation {
     pub messages: Vec<Message>,
 }
