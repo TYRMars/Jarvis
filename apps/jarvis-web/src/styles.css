@@ -1280,6 +1280,59 @@ body.workspace-rail-closed #app {
   outline: none;
 }
 
+.sidebar-search {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  margin: 2px 10px 10px;
+  padding: 0 8px;
+  color: var(--text-soft);
+  background: var(--panel-raised);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+
+.sidebar-search:focus-within {
+  border-color: var(--accent, #0969da);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #0969da) 16%, transparent);
+}
+
+.sidebar-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-13);
+}
+
+.sidebar-search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.sidebar-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidebar-search-clear:hover {
+  color: var(--text);
+  background: var(--surface-hover, var(--pre-bg));
+}
+
 #pinned-list,
 #convo-list {
   list-style: none;
