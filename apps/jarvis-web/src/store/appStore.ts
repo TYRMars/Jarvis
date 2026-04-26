@@ -14,6 +14,7 @@ import {
   initialEffort,
   initialLang,
   initialPlanCardOpen,
+  initialSidebarOpen,
   initialTheme,
   initialWorkspaceRailOpen,
   safeSet,
@@ -166,6 +167,9 @@ interface AppStoreState {
   pastedBlobs: PastedBlobs;
 
   // ---- Workspace rail / panel toggles ----
+  /// Whether the left-hand sidebar (conversation list + nav) is open.
+  /// Drives `body.sidebar-closed`. Persisted to localStorage.
+  sidebarOpen: boolean;
   /// Whether the right-hand workspace rail (tasks + plan) is open.
   /// Drives `body.workspace-rail-closed`. Persisted to localStorage.
   workspaceRailOpen: boolean;
@@ -290,6 +294,7 @@ interface AppStoreActions {
   /// Drop all blobs (e.g. after submit).
   clearPastedBlobs: () => void;
   // ---- UI toggles ----
+  setSidebarOpen: (open: boolean) => void;
   setWorkspaceRailOpen: (open: boolean) => void;
   setPlanCardOpen: (open: boolean) => void;
   setWorkspacePanelMenuOpen: (open: boolean) => void;
@@ -346,6 +351,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   composerValue: "",
   pastedBlobs: {},
 
+  sidebarOpen: initialSidebarOpen(),
   workspaceRailOpen: initialWorkspaceRailOpen(),
   planCardOpen: initialPlanCardOpen(),
   workspacePanelMenuOpen: false,
@@ -677,6 +683,11 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   clearPastedBlobs: () => set({ pastedBlobs: {} }),
 
   // ---- UI toggles ----
+  setSidebarOpen: (open) => {
+    document.body.classList.toggle("sidebar-closed", !open);
+    safeSet("jarvis.sidebarOpen", open ? "true" : "false");
+    set({ sidebarOpen: open });
+  },
   setWorkspaceRailOpen: (open) => {
     document.body.classList.toggle("workspace-rail-closed", !open);
     safeSet("jarvis.workspaceRailOpen", open ? "true" : "false");

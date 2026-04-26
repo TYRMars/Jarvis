@@ -202,6 +202,26 @@ body.workspace-rail-closed #app {
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0;
 }
 
+body.sidebar-closed #app {
+  grid-template-columns: 0 minmax(0, 1fr) var(--rail-width);
+}
+
+body.sidebar-closed.workspace-rail-closed #app {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+body.sidebar-closed #sidebar {
+  display: none;
+}
+
+body.sidebar-closed .resize-sidebar {
+  display: none;
+}
+
+body.sidebar-closed #input-area {
+  left: 10px;
+}
+
 #sidebar {
   display: flex;
   flex-direction: column;
@@ -550,6 +570,13 @@ body.workspace-rail-closed #app {
   align-items: center;
   gap: 6px;
   color: var(--text-soft);
+}
+
+.header-leading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 #chat-header {

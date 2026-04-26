@@ -50,6 +50,8 @@ export function showHelpOverlay(): void {
   md += `- \`Shift + Enter\` — ${t("shortcutNewline")}\n`;
   md += `- \`Cmd / Ctrl + K\` — ${t("shortcutNew")}\n`;
   md += `- \`Cmd / Ctrl + L\` — ${t("shortcutFocusList")}\n`;
+  md += `- \`Cmd / Ctrl + B\` — ${t("shortcutToggleSidebar")}\n`;
+  md += `- \`Cmd / Ctrl + J\` — ${t("shortcutToggleWorkspace")}\n`;
   md += `- \`Cmd / Ctrl + P\` — ${t("shortcutQuickSwitcher")}\n`;
   md += `- \`Cmd / Ctrl + /\` — ${t("shortcutPalette")}\n`;
   md += `- \`Esc\` — ${t("shortcutClose")}\n`;

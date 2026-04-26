@@ -40,6 +40,7 @@ export function boot(): void {
   const s = appStore.getState();
   s.setTheme(s.theme);
   s.setLang(s.lang);
+  s.setSidebarOpen(s.sidebarOpen);
   s.setWorkspaceRailOpen(s.workspaceRailOpen);
   s.setPlanCardOpen(s.planCardOpen);
 

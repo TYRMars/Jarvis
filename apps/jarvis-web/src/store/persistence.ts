@@ -137,6 +137,10 @@ export function initialPlanCardOpen(): boolean {
   return safeGet("jarvis.planCardOpen") !== "false";
 }
 
+export function initialSidebarOpen(): boolean {
+  return safeGet("jarvis.sidebarOpen") !== "false";
+}
+
 // ---- Title resolution --------------------------------------------
 
 /// Resolve a conversation row's displayed title in priority order:

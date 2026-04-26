@@ -8,7 +8,7 @@ import { Composer } from "./Composer/Composer";
 import { MessageList } from "./Chat/MessageList";
 import { ModelMenu } from "./ModelMenu/ModelMenu";
 import { UsageBadge } from "./UsageBadge";
-import { WorkspaceRailToggleButton } from "./Workspace/WorkspaceToggles";
+import { OpenSidebarButton, WorkspaceRailToggleButton } from "./Workspace/WorkspaceToggles";
 import { pickedRouting } from "../services/socket";
 import { slashCommands } from "../services/slash_commands";
 
@@ -16,7 +16,10 @@ export function AppChatPane() {
   return (
     <main id="chat">
       <header id="chat-header">
-        <ChatHeader />
+        <div className="header-leading">
+          <OpenSidebarButton />
+          <ChatHeader />
+        </div>
         <div className="header-actions">
           <WorkspaceRailToggleButton />
         </div>
