@@ -44,8 +44,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use harness_core::{
-    default_estimator, BoxError, ChatRequest, Conversation, ConversationStore, LlmProvider, Memory,
-    Message, TokenEstimator,
+    default_estimator, BoxError, ChatRequest, Conversation, ConversationStore, Error as CoreError,
+    LlmProvider, Memory, Message, TokenEstimator,
 };
 use tracing::{debug, warn};
 
@@ -175,10 +175,23 @@ impl Memory for SummarizingMemory {
             .flat_map(|t| t.iter().map(|&i| messages[i].clone()))
             .collect();
 
+        // Summary failures are *soft*: a flaky LLM call (network
+        // hiccup, provider 5xx) shouldn't blow up the whole user
+        // turn. Fall back to a placeholder note — same shape as
+        // `SlidingWindowMemory`'s "[N earlier turn(s) omitted ...]"
+        // so the model still sees a clear gap marker. The error is
+        // logged so it's not invisible.
         let summary = if dropped_msgs.is_empty() {
             None
         } else {
-            Some(self.summarise(&dropped_msgs).await?)
+            match self.summarise(&dropped_msgs).await {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    warn!(error = %e, dropped = dropped_count,
+                          "summary failed; falling back to placeholder note");
+                    None
+                }
+            }
         };
 
         let mut out: Vec<Message> = Vec::with_capacity(
@@ -190,6 +203,13 @@ impl Memory for SummarizingMemory {
         if let Some(s) = summary {
             out.push(Message::system(format!(
                 "Earlier conversation summary ({dropped_count} turn(s) compressed):\n{s}"
+            )));
+        } else if dropped_count > 0 {
+            // Surfacing the gap explicitly is better than silent
+            // truncation; keeps the model from getting confused
+            // about why the conversation seems to start mid-thought.
+            out.push(Message::system(format!(
+                "[{dropped_count} earlier turn(s) omitted — summary unavailable]"
             )));
         }
         for turn in kept {
@@ -251,11 +271,24 @@ impl SummarizingMemory {
             max_tokens: Some(self.summary_max_tokens),
         };
 
-        let resp = self
-            .llm
-            .complete(req)
-            .await
-            .map_err(|e| -> BoxError { format!("summary llm error: {e}").into() })?;
+        // One retry on transient transport errors — the summariser
+        // shares a connection pool with the foreground agent and
+        // sometimes hits a half-closed keep-alive on first send.
+        // Auth refreshes / 401s / 4xxs are NOT retried (the second
+        // attempt would just fail the same way).
+        let resp = match self.llm.complete(req.clone()).await {
+            Ok(r) => r,
+            Err(e) if is_transport_error(&e) => {
+                warn!(error = %e, "summary llm transport error; retrying once");
+                self.llm
+                    .complete(req)
+                    .await
+                    .map_err(|e| -> BoxError { format!("summary llm error: {e}").into() })?
+            }
+            Err(e) => {
+                return Err(format!("summary llm error: {e}").into());
+            }
+        };
 
         let text = match resp.message {
             Message::Assistant {
@@ -290,6 +323,16 @@ impl SummarizingMemory {
             text: text.to_string(),
         });
     }
+}
+
+/// Heuristic — does this look like a network-layer flake worth
+/// retrying once? We don't retry HTTP-level rejections (4xx / 5xx
+/// produce `Error::Provider("status NNN: ...")`) because those
+/// won't fix themselves on a second attempt, but a `transport: …`
+/// prefix from a `reqwest` `send()` failure (DNS, TLS handshake,
+/// half-closed keep-alive) often does.
+fn is_transport_error(e: &CoreError) -> bool {
+    matches!(e, CoreError::Provider(msg) if msg.starts_with("transport:"))
 }
 
 fn persist_key(fingerprint: &str) -> String {
@@ -510,7 +553,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn surface_llm_error_as_box_error() {
+    async fn llm_failure_falls_back_to_placeholder_not_hard_error() {
+        // Soft-fail behaviour: a flaky summariser shouldn't bring
+        // down the user's turn. We expect compact() to succeed with
+        // a placeholder gap marker in place of the real summary.
         let mem = SummarizingMemory::new(Arc::new(FailingLlm), "test-model", 64);
         let msgs = vec![
             system("sys"),
@@ -519,8 +565,123 @@ mod tests {
             user("recent"),
             assistant("recent reply"),
         ];
-        let err = mem.compact(&msgs).await.unwrap_err();
-        assert!(err.to_string().contains("summary llm error"), "got: {err}");
+        let out = mem.compact(&msgs).await.unwrap();
+        // System prompt + placeholder note + recent turn.
+        assert!(out.iter().any(|m| matches!(m,
+            Message::System { content, .. } if content.contains("summary unavailable")
+        )), "missing placeholder note in: {out:?}");
+        // Recent turn must still be there — that's the whole point
+        // of falling back instead of erroring.
+        assert!(out.iter().any(|m| matches!(m,
+            Message::User { content } if content == "recent"
+        )));
+    }
+
+    struct FlakyLlm {
+        succeeds_after: usize,
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl LlmProvider for FlakyLlm {
+        async fn complete(&self, _req: ChatRequest) -> CoreResult<ChatResponse> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.succeeds_after {
+                Err(CoreError::Provider("transport: connection reset".into()))
+            } else {
+                Ok(ChatResponse {
+                    message: Message::assistant_text("EVENTUAL SUMMARY"),
+                    finish_reason: FinishReason::Stop,
+                })
+            }
+        }
+        async fn complete_stream(&self, _req: ChatRequest) -> CoreResult<LlmStream> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_error_retries_once() {
+        let llm = Arc::new(FlakyLlm {
+            succeeds_after: 1,
+            calls: AtomicUsize::new(0),
+        });
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 64);
+        let msgs = vec![
+            system("sys"),
+            user("old"),
+            assistant("old reply"),
+            user("recent"),
+            assistant("recent reply"),
+        ];
+        let out = mem.compact(&msgs).await.unwrap();
+        assert_eq!(llm.calls.load(Ordering::SeqCst), 2, "expected 1 retry");
+        assert!(out.iter().any(|m| matches!(m,
+            Message::System { content, .. } if content.contains("EVENTUAL SUMMARY")
+        )), "expected real summary after retry, got: {out:?}");
+    }
+
+    struct AlwaysTransportErrLlm {
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl LlmProvider for AlwaysTransportErrLlm {
+        async fn complete(&self, _req: ChatRequest) -> CoreResult<ChatResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::Provider("transport: dns error".into()))
+        }
+        async fn complete_stream(&self, _req: ChatRequest) -> CoreResult<LlmStream> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn persistent_transport_error_retries_once_then_falls_back() {
+        let llm = Arc::new(AlwaysTransportErrLlm { calls: AtomicUsize::new(0) });
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 64);
+        let msgs = vec![
+            system("sys"),
+            user("old"),
+            assistant("old reply"),
+            user("recent"),
+            assistant("recent reply"),
+        ];
+        let out = mem.compact(&msgs).await.unwrap();
+        assert_eq!(llm.calls.load(Ordering::SeqCst), 2, "expected exactly 1 retry");
+        assert!(out.iter().any(|m| matches!(m,
+            Message::System { content, .. } if content.contains("summary unavailable")
+        )));
+    }
+
+    #[tokio::test]
+    async fn non_transport_error_does_not_retry() {
+        // FailingLlm returns "nope" (not a transport error). Should
+        // bail straight to the soft-fallback after one call.
+        let calls_seen = Arc::new(AtomicUsize::new(0));
+        struct CountingFailingLlm(Arc<AtomicUsize>);
+        #[async_trait]
+        impl LlmProvider for CountingFailingLlm {
+            async fn complete(&self, _req: ChatRequest) -> CoreResult<ChatResponse> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(CoreError::Provider("status 401: bad auth".into()))
+            }
+            async fn complete_stream(&self, _req: ChatRequest) -> CoreResult<LlmStream> {
+                unimplemented!()
+            }
+        }
+        let mem = SummarizingMemory::new(
+            Arc::new(CountingFailingLlm(calls_seen.clone())),
+            "test-model",
+            64,
+        );
+        let msgs = vec![
+            system("sys"),
+            user("old"),
+            assistant("old reply"),
+            user("recent"),
+            assistant("recent reply"),
+        ];
+        let _ = mem.compact(&msgs).await.unwrap();
+        assert_eq!(calls_seen.load(Ordering::SeqCst), 1, "401 should not retry");
     }
 
     #[tokio::test]
