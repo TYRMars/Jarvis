@@ -57,6 +57,10 @@ impl Tool for HttpFetchTool {
         })
     }
 
+    fn cacheable(&self) -> bool {
+        true
+    }
+
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
         let url = args
             .get("url")

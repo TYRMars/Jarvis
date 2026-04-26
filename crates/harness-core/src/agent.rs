@@ -6,11 +6,13 @@ use futures::{Stream, StreamExt};
 use serde::Serialize;
 use tracing::{debug, info};
 
+use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
 use crate::conversation::Conversation;
 use crate::error::{Error, Result};
-use crate::llm::{ChatRequest, FinishReason, LlmChunk, LlmProvider};
+use crate::llm::{ChatRequest, FinishReason, LlmChunk, LlmProvider, Usage};
+use crate::memory::Memory;
 use crate::message::{Message, ToolCall};
-use crate::tool::{invoke_tool, ToolRegistry};
+use crate::tool::{ToolRegistry};
 
 /// Static configuration for an agent. Cheap to clone — wraps shared state in
 /// `Arc`.
@@ -21,6 +23,15 @@ pub struct AgentConfig {
     pub tools: Arc<ToolRegistry>,
     pub max_iterations: usize,
     pub temperature: Option<f32>,
+    /// Optional short-term memory hook. When set, every LLM iteration
+    /// runs the canonical conversation through `memory.compact` and sends
+    /// the result instead. The canonical `Conversation` is never mutated.
+    pub memory: Option<Arc<dyn Memory>>,
+    /// Optional approval gate. When set, every tool whose
+    /// `Tool::requires_approval` returns `true` runs through this
+    /// approver before invocation. Without an approver, all tools run
+    /// unconditionally — preserves historical behaviour.
+    pub approver: Option<Arc<dyn Approver>>,
 }
 
 impl AgentConfig {
@@ -31,6 +42,8 @@ impl AgentConfig {
             tools: Arc::new(ToolRegistry::new()),
             max_iterations: 10,
             temperature: None,
+            memory: None,
+            approver: None,
         }
     }
 
@@ -51,6 +64,16 @@ impl AgentConfig {
 
     pub fn with_temperature(mut self, t: f32) -> Self {
         self.temperature = Some(t);
+        self
+    }
+
+    pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
+    pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
+        self.approver = Some(approver);
         self
     }
 }
@@ -77,18 +100,60 @@ pub enum AgentEvent {
         message: Message,
         finish_reason: FinishReason,
     },
-    /// The agent is about to invoke a tool.
+    /// The agent paused to consult an approver before invoking a
+    /// sensitive tool. Emitted only when an approver is configured and
+    /// the tool's `requires_approval()` is true.
+    ApprovalRequest {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    /// The approver replied. Always paired with an immediately preceding
+    /// `ApprovalRequest`. A `Deny` outcome means the tool will *not* run
+    /// — the matching `ToolEnd` will carry `tool denied: <reason>`.
+    ApprovalDecision {
+        id: String,
+        name: String,
+        decision: ApprovalDecision,
+    },
+    /// The agent is about to invoke a tool. Emitted even on the deny
+    /// path so transports can keep `ToolStart` / `ToolEnd` paired.
     ToolStart {
         id: String,
         name: String,
         arguments: serde_json::Value,
     },
+    /// Streaming chunk from a still-running tool — e.g. a line of
+    /// stdout from `shell.exec`. Tools opt in by calling
+    /// [`crate::progress::emit`] from inside their `invoke`; the
+    /// agent loop relays each chunk as it arrives. Always wrapped
+    /// by a matching `ToolStart` / `ToolEnd` pair.
+    ToolProgress {
+        id: String,
+        name: String,
+        /// Tool-defined stream label (`"stdout"` / `"stderr"` for
+        /// shell, free-form for other tools).
+        stream: String,
+        chunk: String,
+    },
     /// A tool finished. `content` is the text surfaced back to the model
-    /// (may be the verbatim error text for failed tools).
+    /// (may be the verbatim error text for failed tools, or the
+    /// `tool denied: ...` sentinel when an approver rejected the call).
     ToolEnd {
         id: String,
         name: String,
         content: String,
+    },
+    /// Provider-reported token usage for the LLM call that just
+    /// finished. Optional fields — see [`crate::Usage`]. Emitted at
+    /// most once per LLM iteration; transports typically aggregate
+    /// these for "context: X / Y · cached: Z" displays. Flattened
+    /// onto the wire so the JSON shape is
+    /// `{"type":"usage","prompt_tokens":...,...}` rather than nested
+    /// under a tuple-style key.
+    Usage {
+        #[serde(flatten)]
+        usage: Usage,
     },
     /// Terminal event: the agent loop has finished successfully.
     Done {
@@ -122,7 +187,7 @@ impl Agent {
         Self::ensure_system_prompt(conversation, self.config.system_prompt.as_deref());
 
         for iter in 1..=self.config.max_iterations {
-            let req = self.build_request(conversation);
+            let req = self.build_request(conversation).await?;
 
             debug!(iteration = iter, "calling llm");
             let resp = self.llm.complete(req).await?;
@@ -133,7 +198,18 @@ impl Agent {
                     if !tool_calls.is_empty() =>
                 {
                     for call in tool_calls {
-                        let output = Self::invoke_one(&self.config.tools, call).await;
+                        let approval = Self::maybe_request_approval(
+                            &self.config.tools,
+                            self.config.approver.as_deref(),
+                            call,
+                        )
+                        .await;
+                        let output = Self::run_one(
+                            &self.config.tools,
+                            call,
+                            approval.as_ref().map(|(_, d)| d),
+                        )
+                        .await;
                         conversation
                             .messages
                             .push(Message::tool_result(&call.id, output));
@@ -162,7 +238,13 @@ impl Agent {
             Self::ensure_system_prompt(&mut conversation, agent.config.system_prompt.as_deref());
 
             for iter in 1..=agent.config.max_iterations {
-                let req = agent.build_request(&conversation);
+                let req = match agent.build_request(&conversation).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield AgentEvent::Error { message: e.to_string() };
+                        return;
+                    }
+                };
 
                 debug!(iteration = iter, "calling llm (streaming)");
                 let mut llm_stream = match agent.llm.complete_stream(req).await {
@@ -183,6 +265,9 @@ impl Agent {
                             // Providers also deliver the assembled tool calls
                             // inside `Finish`; we surface them at that point
                             // rather than streaming partial arguments.
+                        }
+                        Ok(LlmChunk::Usage(usage)) => {
+                            yield AgentEvent::Usage { usage };
                         }
                         Ok(LlmChunk::Finish { message, finish_reason }) => {
                             finish = Some((message, finish_reason));
@@ -216,12 +301,105 @@ impl Agent {
                         if !tool_calls.is_empty() =>
                     {
                         for call in tool_calls {
+                            // Decide whether this call goes through the
+                            // approver. We check the trait flag inline
+                            // so that the `ApprovalRequest` event lands
+                            // BEFORE we await the approver — otherwise
+                            // an interactive transport never has a
+                            // chance to respond, because by the time it
+                            // sees the request the decision is already
+                            // sealed.
+                            let needs_approval =
+                                agent.config.approver.is_some()
+                                    && agent
+                                        .config
+                                        .tools
+                                        .resolve(&call.name)
+                                        .map(|t| t.requires_approval())
+                                        .unwrap_or(false);
+
+                            let decision = if needs_approval {
+                                yield AgentEvent::ApprovalRequest {
+                                    id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    arguments: call.arguments.clone(),
+                                };
+                                let request = ApprovalRequest {
+                                    tool_call_id: call.id.clone(),
+                                    tool_name: call.name.clone(),
+                                    arguments: call.arguments.clone(),
+                                };
+                                let approver = agent
+                                    .config
+                                    .approver
+                                    .as_deref()
+                                    .expect("checked needs_approval");
+                                let dec = match approver.approve(request).await {
+                                    Ok(d) => d,
+                                    Err(e) => ApprovalDecision::Deny {
+                                        reason: Some(format!("approver failed: {e}")),
+                                    },
+                                };
+                                yield AgentEvent::ApprovalDecision {
+                                    id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    decision: dec.clone(),
+                                };
+                                Some(dec)
+                            } else {
+                                None
+                            };
+
                             yield AgentEvent::ToolStart {
                                 id: call.id.clone(),
                                 name: call.name.clone(),
                                 arguments: call.arguments.clone(),
                             };
-                            let output = Self::invoke_one(&agent.config.tools, call).await;
+                            // Per-invocation progress channel. The
+                            // tool publishes via `emit_progress` (a
+                            // task_local lookup); we relay each
+                            // chunk as a `ToolProgress` event in
+                            // step with `invoke`. Receiver dropped
+                            // implicitly on scope exit.
+                            let (prog_tx, mut prog_rx) =
+                                tokio::sync::mpsc::unbounded_channel::<crate::progress::ToolProgress>();
+                            let invoke = crate::progress::with_progress(
+                                prog_tx,
+                                Self::run_one(
+                                    &agent.config.tools,
+                                    call,
+                                    decision.as_ref(),
+                                ),
+                            );
+                            tokio::pin!(invoke);
+                            let output = loop {
+                                tokio::select! {
+                                    biased;
+                                    Some(p) = prog_rx.recv() => {
+                                        yield AgentEvent::ToolProgress {
+                                            id: call.id.clone(),
+                                            name: call.name.clone(),
+                                            stream: p.stream,
+                                            chunk: p.chunk,
+                                        };
+                                    }
+                                    res = &mut invoke => {
+                                        // Drain any chunks the tool
+                                        // queued in the same wake as
+                                        // its return so the client
+                                        // sees them before ToolEnd.
+                                        while let Ok(p) = prog_rx.try_recv() {
+                                            yield AgentEvent::ToolProgress {
+                                                id: call.id.clone(),
+                                                name: call.name.clone(),
+                                                stream: p.stream,
+                                                chunk: p.chunk,
+                                            };
+                                        }
+                                        break res;
+                                    }
+                                }
+                            };
                             conversation
                                 .messages
                                 .push(Message::tool_result(&call.id, output.clone()));
@@ -270,20 +448,295 @@ impl Agent {
         }
     }
 
-    fn build_request(&self, conv: &Conversation) -> ChatRequest {
-        ChatRequest {
+    async fn build_request(&self, conv: &Conversation) -> Result<ChatRequest> {
+        let messages = match &self.config.memory {
+            Some(mem) => mem
+                .compact(&conv.messages)
+                .await
+                .map_err(|e| Error::Memory(e.to_string()))?,
+            None => conv.messages.clone(),
+        };
+        Ok(ChatRequest {
             model: self.config.model.clone(),
-            messages: conv.messages.clone(),
+            messages,
             tools: self.config.tools.specs(),
             temperature: self.config.temperature,
             max_tokens: None,
+        })
+    }
+
+    /// Ask the configured approver about `call` if both an approver is
+    /// set and the tool's `requires_approval()` is true. Returns the
+    /// matched `(request, decision)` pair when an approval round-trip
+    /// happened, or `None` to mean "no approval needed, just run". An
+    /// approver `Err` is converted into a synthetic `Deny` so the agent
+    /// can keep moving instead of aborting the whole turn.
+    async fn maybe_request_approval(
+        tools: &ToolRegistry,
+        approver: Option<&dyn Approver>,
+        call: &ToolCall,
+    ) -> Option<(ApprovalRequest, ApprovalDecision)> {
+        let approver = approver?;
+        let tool = tools.resolve(&call.name)?;
+        if !tool.requires_approval() {
+            return None;
+        }
+        let request = ApprovalRequest {
+            tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+        };
+        let decision = match approver.approve(request.clone()).await {
+            Ok(d) => d,
+            Err(e) => {
+                debug!(error = %e, name = %call.name, "approver failed");
+                ApprovalDecision::Deny {
+                    reason: Some(format!("approver failed: {e}")),
+                }
+            }
+        };
+        Some((request, decision))
+    }
+
+    /// Invoke `call` if `decision` permits, else surface the deny reason
+    /// as a synthetic tool result so the model can read it and adapt.
+    /// Tool errors are caught and surfaced as text on either path —
+    /// preserve that when editing.
+    async fn run_one(
+        tools: &ToolRegistry,
+        call: &ToolCall,
+        decision: Option<&ApprovalDecision>,
+    ) -> String {
+        if let Some(ApprovalDecision::Deny { reason }) = decision {
+            let r = reason
+                .clone()
+                .unwrap_or_else(|| "no reason given".to_string());
+            return format!("tool denied: {r}");
+        }
+        debug!(name = %call.name, id = %call.id, "invoking tool");
+        match tools.resolve(&call.name) {
+            Some(tool) => tool
+                .invoke(call.arguments.clone())
+                .await
+                .unwrap_or_else(|e| format!("tool error: {e}"))
+                ,
+            None => format!("tool error: tool not found: {}", call.name),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::approval::{AlwaysApprove, AlwaysDeny};
+    use crate::error::BoxError;
+    use crate::llm::{ChatResponse, FinishReason};
+    use crate::message::ToolCall;
+    use crate::tool::Tool;
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Two-step LLM: first reply asks for one tool call; second reply stops.
+    struct ScriptedLlm {
+        iter: AtomicUsize,
+        tool_name: String,
+    }
+
+    impl ScriptedLlm {
+        fn new(tool_name: impl Into<String>) -> Arc<Self> {
+            Arc::new(Self {
+                iter: AtomicUsize::new(0),
+                tool_name: tool_name.into(),
+            })
         }
     }
 
-    async fn invoke_one(tools: &ToolRegistry, call: &ToolCall) -> String {
-        debug!(name = %call.name, id = %call.id, "invoking tool");
-        invoke_tool(tools, &call.name, call.arguments.clone())
-            .await
-            .unwrap_or_else(|e| format!("tool error: {e}"))
+    #[async_trait::async_trait]
+    impl LlmProvider for ScriptedLlm {
+        async fn complete(&self, _req: ChatRequest) -> Result<ChatResponse> {
+            let i = self.iter.fetch_add(1, Ordering::SeqCst);
+            if i == 0 {
+                Ok(ChatResponse {
+                    message: Message::Assistant {
+                        content: None,
+                        tool_calls: vec![ToolCall {
+                            id: "call_1".into(),
+                            name: self.tool_name.clone(),
+                            arguments: json!({"x": 1}),
+                        }],
+                        reasoning_content: None,
+                    },
+                    finish_reason: FinishReason::ToolCalls,
+                })
+            } else {
+                Ok(ChatResponse {
+                    message: Message::assistant_text("done"),
+                    finish_reason: FinishReason::Stop,
+                })
+            }
+        }
+    }
+
+    struct CountingTool {
+        name: &'static str,
+        gated: bool,
+        invoked: AtomicUsize,
+    }
+
+    impl CountingTool {
+        fn new(name: &'static str, gated: bool) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                gated,
+                invoked: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for CountingTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "test tool"
+        }
+        fn parameters(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn requires_approval(&self) -> bool {
+            self.gated
+        }
+        async fn invoke(&self, _args: Value) -> std::result::Result<String, BoxError> {
+            self.invoked.fetch_add(1, Ordering::SeqCst);
+            Ok("ran".into())
+        }
+    }
+
+    fn make_agent(
+        tool: Arc<CountingTool>,
+        approver: Option<Arc<dyn Approver>>,
+    ) -> Arc<Agent> {
+        let mut registry = ToolRegistry::new();
+        let dynamic: Arc<dyn Tool> = tool.clone();
+        registry.register_arc(dynamic);
+        let mut cfg = AgentConfig::new("test-model").with_tools(registry);
+        if let Some(a) = approver {
+            cfg = cfg.with_approver(a);
+        }
+        Arc::new(Agent::new(ScriptedLlm::new(tool.name) as _, cfg))
+    }
+
+    #[tokio::test]
+    async fn denies_gated_tool_when_approver_says_no() {
+        let tool = CountingTool::new("danger", true);
+        let agent = make_agent(tool.clone(), Some(Arc::new(AlwaysDeny)));
+
+        let mut conv = Conversation::new();
+        agent.run(&mut conv).await.unwrap();
+
+        assert_eq!(tool.invoked.load(Ordering::SeqCst), 0);
+        let denied = conv.messages.iter().any(|m| {
+            matches!(m, Message::Tool { content, .. } if content.starts_with("tool denied:"))
+        });
+        assert!(denied, "expected a `tool denied:` message in {:?}", conv.messages);
+    }
+
+    #[tokio::test]
+    async fn invokes_gated_tool_when_approver_says_yes() {
+        let tool = CountingTool::new("danger", true);
+        let agent = make_agent(tool.clone(), Some(Arc::new(AlwaysApprove)));
+
+        let mut conv = Conversation::new();
+        agent.run(&mut conv).await.unwrap();
+
+        assert_eq!(tool.invoked.load(Ordering::SeqCst), 1);
+        assert!(conv
+            .messages
+            .iter()
+            .any(|m| matches!(m, Message::Tool { content, .. } if content == "ran")));
+    }
+
+    #[tokio::test]
+    async fn invokes_unconditionally_without_approver() {
+        let tool = CountingTool::new("danger", true);
+        let agent = make_agent(tool.clone(), None);
+
+        let mut conv = Conversation::new();
+        agent.run(&mut conv).await.unwrap();
+
+        assert_eq!(tool.invoked.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn harmless_tool_skips_approver() {
+        let tool = CountingTool::new("safe", false);
+        let agent = make_agent(tool.clone(), Some(Arc::new(AlwaysDeny)));
+
+        let mut conv = Conversation::new();
+        agent.run(&mut conv).await.unwrap();
+
+        // Approver wasn't consulted because the tool is non-gated.
+        assert_eq!(tool.invoked.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn streaming_emits_approval_events_paired_with_tool_events() {
+        use futures::StreamExt;
+        let tool = CountingTool::new("danger", true);
+        let agent = make_agent(tool.clone(), Some(Arc::new(AlwaysDeny)));
+
+        let mut stream = agent.run_stream(Conversation::new());
+        let mut saw = (false, false, false, false); // req, dec, start, end
+        while let Some(ev) = stream.next().await {
+            match ev {
+                AgentEvent::ApprovalRequest { name, .. } if name == "danger" => saw.0 = true,
+                AgentEvent::ApprovalDecision { decision, .. } => {
+                    assert!(matches!(decision, ApprovalDecision::Deny { .. }));
+                    saw.1 = true;
+                }
+                AgentEvent::ToolStart { name, .. } if name == "danger" => saw.2 = true,
+                AgentEvent::ToolEnd { content, .. } => {
+                    assert!(content.starts_with("tool denied:"), "got: {content}");
+                    saw.3 = true;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(saw, (true, true, true, true));
+        assert_eq!(tool.invoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// Wire-shape check for the `Usage` agent event. Both SSE and WS
+    /// transports just call `serde_json::to_string(&ev)`, so the
+    /// JSON layout here is the public contract clients build against.
+    #[test]
+    fn usage_event_serialises_flat_with_optional_fields_skipped() {
+        let ev = AgentEvent::Usage {
+            usage: Usage {
+                prompt_tokens: Some(1234),
+                completion_tokens: Some(56),
+                cached_prompt_tokens: Some(800),
+                reasoning_tokens: None,
+            },
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
+        assert_eq!(v["type"], "usage");
+        assert_eq!(v["prompt_tokens"], 1234);
+        assert_eq!(v["completion_tokens"], 56);
+        assert_eq!(v["cached_prompt_tokens"], 800);
+        // None fields are omitted, not serialised as null.
+        assert!(v.get("reasoning_tokens").is_none(), "got: {v}");
+    }
+
+    #[test]
+    fn usage_event_with_all_none_still_emits_type_tag() {
+        let ev = AgentEvent::Usage { usage: Usage::default() };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
+        assert_eq!(v["type"], "usage");
+        // Object should be exactly `{type: "usage"}` — every field None.
+        assert_eq!(v.as_object().unwrap().len(), 1);
     }
 }

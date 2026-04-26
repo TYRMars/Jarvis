@@ -8,3 +8,7 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.swp
+apps/jarvis-web/node_modules/
+apps/jarvis-web/tsconfig.tsbuildinfo
+apps/jarvis-web/dist/
+.claude/

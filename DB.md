@@ -12,22 +12,33 @@ See `ARCHITECTURE.md` for how persistence fits into the overall system.
 Driver selection is **compile-time** (cargo features on `harness-store`)
 and **runtime** (URL scheme):
 
-| feature    | URL prefixes                    | backend            |
-|------------|---------------------------------|--------------------|
-| `sqlite`   | `sqlite:`, `sqlite::memory:`    | SQLite (default)   |
-| `postgres` | `postgres://`, `postgresql://`  | Postgres           |
-| `mysql`    | `mysql://`, `mariadb://`        | MySQL / MariaDB    |
+| feature    | URL prefixes                    | backend                  |
+|------------|---------------------------------|--------------------------|
+| (always on)| `json:`, `json://`              | JSON files in a directory — the `jarvis init` default |
+| `sqlite`   | `sqlite:`, `sqlite::memory:`    | SQLite                   |
+| `postgres` | `postgres://`, `postgresql://`  | Postgres                 |
+| `mysql`    | `mysql://`, `mariadb://`        | MySQL / MariaDB          |
 
-Only `sqlite` is on by default. Enable others at the binary level, e.g.:
+`json` and `sqlite` are on by default; enable Postgres / MySQL at the
+binary level, e.g.:
 
 ```toml
 # apps/jarvis/Cargo.toml
 harness-store = { workspace = true, features = ["postgres"] }
 ```
 
-`harness-store` also ships `MemoryConversationStore` (always compiled) for
-tests and examples. It isn't selectable via `connect()` by design — wire
-it up directly.
+`harness-store` also ships `MemoryConversationStore` (always compiled,
+in-process only) for tests and examples. It isn't selectable via
+`connect()` by design — wire it up directly.
+
+### Why JSON is the default
+
+Zero-dep, zero-setup, `cat conversations/<id>.json` debuggable, the
+file is also the "git-friendly" format if anyone wants to commit
+their convos. The trade-off: `list()` is O(N) file reads, so this
+backend isn't right past a few hundred conversations. Switch to
+sqlite for personal-but-heavy use; postgres / mysql for
+multi-process / multi-server.
 
 ## Wire-up in the binary
 
@@ -35,19 +46,55 @@ Set `JARVIS_DB_URL` and `apps/jarvis` opens the store at startup and
 places it on `AppState`:
 
 ```bash
+# Default — JSON files
+JARVIS_DB_URL=json:///Users/me/.local/share/jarvis/conversations cargo run -p jarvis
+
+# Switch to sqlite when needed
 JARVIS_DB_URL=sqlite://./jarvis.db cargo run -p jarvis
 ```
 
-No HTTP handler reads the store yet — that's the next increment. The
-trait and the `AppState` slot are ready; endpoints that save / load /
-list / delete conversations by id plug into `routes.rs`.
+`jarvis init` writes the JSON URL into config.toml automatically
+when the user opts into persistence.
+
+The HTTP layer reads the store via `harness-server`'s
+`/v1/conversations` CRUD routes plus the WebSocket `resume` / `new`
+frames; see `CLAUDE.md` for the route shapes. `AppState` carries the
+optional `Arc<dyn ConversationStore>` and routes return `503` when
+no store is configured.
 
 ## Schema
 
-Every backend uses the same shape — a single table storing each
-conversation as a JSON blob plus RFC-3339 timestamp strings. The
-`harness-core` public API deliberately avoids naming a time crate; ISO
-strings cross the boundary cleanly.
+All backends store the same logical shape — a record per conversation
+with id + RFC-3339 timestamps + JSON messages. Layout differs:
+
+### JSON file backend
+
+One file per conversation in a directory.
+
+```text
+<dir>/
+  <id>.json                # one per conversation
+  <id>.json.tmp            # transient, only during writes
+```
+
+The id is the on-disk filename, percent-encoded for any byte that
+isn't `[A-Za-z0-9._-]` (so internal `__memory__.summary:<hash>`
+ids land as `__memory__.summary%3A<hash>.json`, safe on Windows).
+File contents:
+
+```json
+{
+  "id": "...",
+  "created_at": "RFC-3339",
+  "updated_at": "RFC-3339",
+  "messages": [/* Vec<Message> */]
+}
+```
+
+Atomic write: `<id>.json.tmp` then rename. Permissions on unix are
+`0700` for the directory, `0600` for each file.
+
+### SQL backends
 
 ```sql
 -- sqlite / postgres

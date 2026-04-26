@@ -22,4 +22,10 @@ pub enum StoreError {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    /// Catch-all for backend-specific errors that don't fit the
+    /// other variants — used today by the JSON-file backend for
+    /// directory creation / IO problems.
+    #[error("{0}")]
+    Other(Box<dyn std::error::Error + Send + Sync + 'static>),
 }

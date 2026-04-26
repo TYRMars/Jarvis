@@ -16,3 +16,12 @@ tracing.workspace = true
 futures.workspace = true
 async-stream.workspace = true
 tokio-stream.workspace = true
+uuid.workspace = true
+include_dir.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+harness-store.workspace = true
+tower = { workspace = true, features = ["util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+async-trait.workspace = true

@@ -21,6 +21,12 @@ pub enum Error {
     #[error("llm provider error: {0}")]
     Provider(String),
 
+    #[error("memory error: {0}")]
+    Memory(String),
+
+    #[error("approval error: {0}")]
+    Approval(String),
+
     #[error("agent reached max iterations ({0}) without terminating")]
     MaxIterations(usize),
 

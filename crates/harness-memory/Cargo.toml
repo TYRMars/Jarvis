@@ -1,0 +1,19 @@
+[package]
+name = "harness-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Short-term memory implementations for the harness Agent (sliding window, ...)."
+
+[dependencies]
+harness-core.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+futures.workspace = true
+harness-store.workspace = true

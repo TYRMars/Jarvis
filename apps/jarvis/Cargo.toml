@@ -14,11 +14,26 @@ path = "src/main.rs"
 harness-core.workspace = true
 harness-llm.workspace = true
 harness-mcp.workspace = true
+harness-memory.workspace = true
 harness-server.workspace = true
 harness-store.workspace = true
 harness-tools.workspace = true
 
-tokio.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+clap.workspace = true
+toml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dialoguer.workspace = true
+sha2.workspace = true
+rand.workspace = true
+base64.workspace = true
+open.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
