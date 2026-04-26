@@ -795,41 +795,57 @@ mod tests {
         assert!(l.max_processes.is_some());
     }
 
-    /// End-to-end: cap NOFILE at 8 then ask the shell to open 64
-    /// descriptors. With the cap installed, the open loop fails before
-    /// hitting 64 and we see a non-zero exit + an error message in
-    /// stderr. Without it (default `ShellLimits`) the same command
-    /// succeeds, so the pre_exec hook is doing real work.
+    /// End-to-end: with `max_open_files = 64` set, the shell child
+    /// inherits an `RLIMIT_NOFILE` soft limit of 64. We assert via
+    /// `ulimit -n` rather than trying to actually exhaust file
+    /// descriptors — exhaustion is shell-specific (POSIX `dash` on
+    /// Ubuntu and `bash` on macOS allocate stock fds differently,
+    /// and `exec N< /dev/null` *replaces* fd N rather than adding
+    /// new ones). Asking the shell directly is portable and tests
+    /// the same thing: did the `pre_exec` hook actually call
+    /// `setrlimit`?
     #[cfg(unix)]
     #[tokio::test]
     async fn limits_nofile_cap_enforced() {
         let dir = tempdir().unwrap();
-        // Reference: no cap → command succeeds.
+
+        // Reference: no cap → ulimit reports the default (typically
+        // 1024+ on Linux, 256+ on macOS, anything but 64).
         let baseline = ShellExecTool::new(dir.path());
-        let out_ok = baseline
-            .invoke(json!({
-                "command": "for i in $(seq 1 64); do exec 9< /dev/null; done; echo ok"
-            }))
+        let out_default = baseline
+            .invoke(json!({ "command": "ulimit -n" }))
             .await
             .unwrap();
-        assert!(out_ok.contains("exit=0"), "baseline failed: {out_ok}");
+        assert!(out_default.contains("exit=0"), "baseline failed: {out_default}");
+        assert!(
+            !contains_ulimit_value(&out_default, 64),
+            "baseline already at NOFILE=64; can't distinguish from a cap. got: {out_default}"
+        );
 
-        // Capped → opens beyond the limit fail. We pick 8 because some
-        // stock shells cling to ~5 fds for stdin/out/err/dotfiles.
+        // Capped → ulimit reports exactly 64.
         let limited = ShellExecTool::new(dir.path()).with_limits(ShellLimits {
-            max_open_files: Some(8),
+            max_open_files: Some(64),
             ..Default::default()
         });
-        let out = limited
-            .invoke(json!({
-                "command": "for i in $(seq 1 64); do exec 9< /dev/null; done; echo never"
-            }))
+        let out_capped = limited
+            .invoke(json!({ "command": "ulimit -n" }))
             .await
             .unwrap();
         assert!(
-            !out.contains("exit=0"),
-            "expected non-zero exit under NOFILE=8, got: {out}"
+            contains_ulimit_value(&out_capped, 64),
+            "expected ulimit -n to report 64 under NOFILE cap, got: {out_capped}"
         );
+    }
+
+    /// Pull the numeric `ulimit -n` line out of a captured shell
+    /// output and check it equals `expected`. Tolerates any amount
+    /// of leading/trailing whitespace from different shells.
+    #[cfg(unix)]
+    fn contains_ulimit_value(captured: &str, expected: u64) -> bool {
+        captured
+            .lines()
+            .map(str::trim)
+            .any(|line| line.parse::<u64>().is_ok_and(|n| n == expected))
     }
 
     /// macOS: end-to-end smoke test that `sandbox-exec` actually denies
