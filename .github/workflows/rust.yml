@@ -11,12 +11,36 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+
+      # The web UI is bundled into `harness-server` at compile time
+      # via `include_dir!("...apps/jarvis-web/dist")`. Build it first
+      # so the macro has the real assets to embed; otherwise
+      # `harness-server`'s `build.rs` plants a placeholder note and
+      # the binary ships without a usable UI.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/jarvis-web/package-lock.json
+      - name: Build web UI
+        working-directory: apps/jarvis-web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Cargo build
+        run: cargo build --workspace --verbose
+      - name: Cargo test
+        run: cargo test --workspace --verbose
+
+      - name: Vitest
+        working-directory: apps/jarvis-web
+        run: npm test
+      - name: ESLint
+        working-directory: apps/jarvis-web
+        run: npm run lint
