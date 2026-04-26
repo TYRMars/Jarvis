@@ -21,6 +21,10 @@ impl Tool for TimeNowTool {
         json!({ "type": "object", "properties": {} })
     }
 
+    fn cacheable(&self) -> bool {
+        true
+    }
+
     async fn invoke(&self, _args: Value) -> Result<String, BoxError> {
         let now = Utc::now();
         let body = json!({

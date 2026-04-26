@@ -1,111 +1,187 @@
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
+//! `jarvis` binary — clap dispatcher.
+//!
+//! Subcommands:
+//!
+//! - (none) / `serve` — start the HTTP server. Default behaviour, no
+//!   change for env-var-driven setups.
+//! - `mcp-serve` — expose the local tool registry over MCP stdio.
+//!   The legacy `--mcp-serve` flag is still accepted as an alias.
+//! - `init` / `login` / `logout` / `status` — onboarding stubs;
+//!   landing in the next PR (see `docs/proposals/onboarding.md`).
+//!
+//! Resolution layers, highest priority first:
+//!
+//! 1. command-line flags (e.g. `--addr`, `--model`)
+//! 2. environment variables (the existing `JARVIS_*` surface)
+//! 3. config file (TOML — see [`config`])
+//! 4. compiled-in defaults
 
-use anyhow::Context;
-use harness_core::{Agent, AgentConfig, ToolRegistry};
-use harness_llm::{OpenAiConfig, OpenAiProvider};
-use harness_mcp::{connect_all_mcp, serve_registry_stdio, McpClientConfig};
-use harness_server::{serve, AppState};
-use harness_tools::{register_builtins, BuiltinsConfig};
+use std::path::PathBuf;
+
+use anyhow::Result;
+use clap::{Args, Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod auth_store;
+mod config;
+mod init;
+mod login;
+mod serve;
+mod status;
+
+#[cfg(test)]
+mod test_env;
+
+use config::Config;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "jarvis",
+    version,
+    about = "Local agent runtime: pluggable LLM providers, tools, memory.",
+    long_about = None,
+)]
+struct Cli {
+    /// Path to a TOML config file. If unset, jarvis searches
+    /// `$JARVIS_CONFIG`, `$XDG_CONFIG_HOME/jarvis/config.toml`,
+    /// `~/.config/jarvis/config.toml`, and (on Windows)
+    /// `%APPDATA%\jarvis\config.toml` in that order.
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// (deprecated) Use `jarvis mcp-serve` instead.
+    #[arg(long, global = true, hide = true)]
+    mcp_serve: bool,
+
+    #[command(subcommand)]
+    command: Option<Cmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Start the HTTP server (default if no subcommand is given).
+    Serve(ServeArgs),
+    /// Expose the local tool registry as an MCP server over stdio.
+    /// No LLM credentials required.
+    #[command(name = "mcp-serve")]
+    McpServe,
+    /// Interactive setup wizard — writes config + auth files.
+    Init {
+        /// Overwrite an existing config file.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Authenticate against a provider. For `codex` this runs the
+    /// PKCE OAuth flow against `auth.openai.com`; for API-key
+    /// providers (`openai`, `anthropic`, `google`, `kimi`) it
+    /// stores the key on disk — pass it via `--key`, pipe it on
+    /// stdin, or fall back to the interactive (hidden) prompt.
+    Login {
+        /// Defaults to `codex` (the only provider that needs OAuth).
+        #[arg(long)]
+        provider: Option<String>,
+        /// API key for non-OAuth providers. Skips the interactive
+        /// prompt. Avoid in shell history — prefer stdin (pipe) or
+        /// the prompt if the key is sensitive.
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
+        /// Use the OAuth device-code flow instead of opening a
+        /// browser. Useful over SSH or in containers without a
+        /// browser. Only meaningful for `--provider codex`.
+        #[arg(long)]
+        device_code: bool,
+        /// Don't update `[provider].name` in `config.toml` after a
+        /// successful login. By default, `jarvis login --provider X`
+        /// makes `X` the active provider so the next `jarvis serve`
+        /// uses it without further setup.
+        #[arg(long)]
+        no_set_default: bool,
+    },
+    /// Drop stored credentials for a provider.
+    Logout {
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Print current config and auth status.
+    Status,
+}
+
+#[derive(Args, Debug, Default)]
+pub(crate) struct ServeArgs {
+    /// Listen address. Overrides config and `JARVIS_ADDR`.
+    #[arg(long, value_name = "HOST:PORT")]
+    pub addr: Option<String>,
+
+    /// LLM provider. Overrides config and `JARVIS_PROVIDER`.
+    #[arg(long)]
+    pub provider: Option<String>,
+
+    /// Default model. Overrides config and `JARVIS_MODEL`.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Additional provider to construct at startup. Repeat the flag
+    /// to enable several. Each enabled provider must have its own
+    /// auth on disk (`jarvis login --provider <name>`) — startup
+    /// fails fast otherwise. Merges with `[provider].enabled` from
+    /// the config file; the primary `--provider` is always enabled.
+    #[arg(long = "enable", value_name = "NAME")]
+    pub enable: Vec<String>,
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_writer(std::io::stderr)
         .init();
 
-    let mut tools = ToolRegistry::new();
-    register_builtins(
-        &mut tools,
-        BuiltinsConfig {
-            fs_root: PathBuf::from(
-                std::env::var("JARVIS_FS_ROOT").unwrap_or_else(|_| ".".into()),
-            ),
-            enable_fs_write: std::env::var("JARVIS_ENABLE_FS_WRITE").is_ok(),
-            ..BuiltinsConfig::default()
-        },
-    );
+    let cli = Cli::parse();
 
-    // If invoked with --mcp-serve, expose the local ToolRegistry over MCP stdio
-    // instead of starting the HTTP server. No LLM provider is needed for this
-    // mode, so we skip OpenAI setup and any MCP *client* connections.
-    if std::env::args().any(|a| a == "--mcp-serve") {
-        info!(registered = tools.len(), "serving tools over mcp stdio");
-        serve_registry_stdio(Arc::new(tools)).await?;
-        return Ok(());
+    let loaded = Config::discover(cli.config.as_deref())?;
+    if let Some((path, _)) = &loaded {
+        info!(config_path = %path.display(), "loaded config file");
+    }
+    let cfg = loaded.map(|(_, c)| c);
+
+    // Backwards-compat: the historic `--mcp-serve` flag still routes
+    // to the new subcommand.
+    if cli.mcp_serve {
+        return serve::run_mcp(cfg).await;
     }
 
-    let api_key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY must be set")?;
-    let model = std::env::var("JARVIS_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-    let base_url = std::env::var("OPENAI_BASE_URL").ok();
-
-    let mut cfg = OpenAiConfig::new(api_key);
-    if let Some(base) = base_url {
-        cfg = cfg.with_base_url(base);
+    match cli.command.unwrap_or(Cmd::Serve(ServeArgs::default())) {
+        Cmd::Serve(args) => serve::run(cfg, args).await,
+        Cmd::McpServe => serve::run_mcp(cfg).await,
+        Cmd::Init { force } => init::run(force),
+        Cmd::Login {
+            provider,
+            key,
+            device_code,
+            no_set_default,
+        } => login::run(provider, key, device_code, no_set_default).await,
+        Cmd::Logout { provider } => logout(provider),
+        Cmd::Status => status::run(cli.config.as_deref()),
     }
-    let llm: Arc<dyn harness_core::LlmProvider> = Arc::new(OpenAiProvider::new(cfg));
+}
 
-    // Optional: connect to external MCP servers listed in JARVIS_MCP_SERVERS.
-    // Format: comma-separated `prefix=command arg1 arg2` entries.
-    let mcp_clients = if let Ok(spec) = std::env::var("JARVIS_MCP_SERVERS") {
-        let configs = parse_mcp_servers(&spec)?;
-        connect_all_mcp(&configs, &mut tools).await?
-    } else {
-        Vec::new()
+fn logout(provider: Option<String>) -> Result<()> {
+    let p = provider.unwrap_or_else(|| "codex".to_string());
+    // Provider aliases that share an auth file by convention:
+    //   `openai-responses` shares with `openai`
+    //   `moonshot` shares with `kimi`
+    let canonical = match p.as_str() {
+        "openai-responses" => "openai",
+        "moonshot" => "kimi",
+        other => other,
     };
-    info!(
-        registered = tools.len(),
-        mcp_servers = mcp_clients.len(),
-        "tools registered"
-    );
-
-    let agent_cfg = AgentConfig::new(model)
-        .with_system_prompt("You are Jarvis, a concise and capable assistant.")
-        .with_tools(tools)
-        .with_max_iterations(8);
-    let agent = Arc::new(Agent::new(llm, agent_cfg));
-
-    // Optional persistence. `JARVIS_DB_URL` picks the backend by scheme
-    // (`sqlite:...`, `postgres://...`, `mysql://...`); omit it to run fully
-    // in memory.
-    let mut state = AppState::new(agent);
-    if let Ok(db_url) = std::env::var("JARVIS_DB_URL") {
-        let store = harness_store::connect(&db_url)
-            .await
-            .with_context(|| format!("opening JARVIS_DB_URL `{db_url}`"))?;
-        info!(url = %db_url, "conversation store connected");
-        state = state.with_store(store);
+    let removed = auth_store::delete(canonical)?;
+    if removed {
+        eprintln!("✓ removed credentials for `{canonical}`");
+    } else {
+        eprintln!("(no credentials on file for `{canonical}`)");
     }
-
-    let addr: SocketAddr = std::env::var("JARVIS_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:7001".to_string())
-        .parse()
-        .context("invalid JARVIS_ADDR")?;
-    info!(%addr, "jarvis listening");
-    serve(addr, state).await?;
-
-    // Keep clients alive until here; drop explicitly so the Drop order is clear.
-    drop(mcp_clients);
     Ok(())
 }
 
-fn parse_mcp_servers(spec: &str) -> anyhow::Result<Vec<McpClientConfig>> {
-    let mut out = Vec::new();
-    for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let (prefix, cmdline) = entry
-            .split_once('=')
-            .with_context(|| format!("expected `prefix=command ...`, got `{entry}`"))?;
-        let mut parts = cmdline.split_whitespace();
-        let command = parts
-            .next()
-            .with_context(|| format!("mcp server `{prefix}` has no command"))?
-            .to_string();
-        let args = parts.map(str::to_string).collect();
-        out.push(McpClientConfig::new(prefix, command, args));
-    }
-    Ok(out)
-}

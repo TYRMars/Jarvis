@@ -41,6 +41,41 @@ async fn connect_sqlite_file() {
 }
 
 #[tokio::test]
+async fn connect_json_file_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    let convo_dir = dir.path().join("conversations");
+    let url = format!("json://{}", convo_dir.display());
+
+    let store = connect(&url).await.unwrap();
+    let mut conv = Conversation::new();
+    conv.push(Message::user("hello from json"));
+    store.save("c-json", &conv).await.unwrap();
+    drop(store);
+
+    // Reopen, verify survival on disk.
+    let store = connect(&url).await.unwrap();
+    let loaded = store.load("c-json").await.unwrap().unwrap();
+    assert_eq!(loaded.messages.len(), 1);
+
+    let rows = store.list(10).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "c-json");
+}
+
+#[tokio::test]
+async fn connect_json_short_form_also_works() {
+    // `json:path` (no double slash) — useful when the path is
+    // relative or when avoiding URL escaping for the leading `/`.
+    let dir = tempfile::tempdir().unwrap();
+    let convo_dir = dir.path().join("conversations");
+    let url = format!("json:{}", convo_dir.display());
+    let store = connect(&url).await.unwrap();
+    let conv = Conversation::new();
+    store.save("empty", &conv).await.unwrap();
+    assert!(store.load("empty").await.unwrap().is_some());
+}
+
+#[tokio::test]
 async fn unknown_scheme_errors() {
     match connect("redis://localhost:6379").await {
         Err(StoreError::UnsupportedScheme(s)) => assert_eq!(s, "redis"),

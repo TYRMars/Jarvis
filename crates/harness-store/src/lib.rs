@@ -23,9 +23,11 @@
 //! ```
 
 mod error;
+mod json_file;
 mod memory;
 
 pub use error::StoreError;
+pub use json_file::JsonFileConversationStore;
 pub use memory::MemoryConversationStore;
 
 #[cfg(feature = "sqlite")]
@@ -49,15 +51,35 @@ use harness_core::ConversationStore;
 
 /// Open a store for the given database URL. The scheme selects the backend:
 ///
+/// - `json:...` / `json://...` — JSON files in a directory (no external
+///   deps; the default for `jarvis init`).
 /// - `sqlite:...` / `sqlite::memory:` — SQLite (feature `sqlite`)
 /// - `postgres://...` / `postgresql://...` — Postgres (feature `postgres`)
 /// - `mysql://...` / `mariadb://...` — MySQL (feature `mysql`)
 ///
 /// The returned store is boxed behind `Arc<dyn ConversationStore>` so higher
-/// layers don't need to name the backend type. Schema migrations run on open.
+/// layers don't need to name the backend type. Schema migrations / directory
+/// creation happen on open.
 pub async fn connect(url: &str) -> Result<Arc<dyn ConversationStore>, StoreError> {
     let scheme = url.split(':').next().unwrap_or("");
     match scheme {
+        "json" => {
+            // Accept both `json://path` and `json:path`; the literal
+            // bytes after the prefix are the directory path.
+            let path = url
+                .strip_prefix("json://")
+                .or_else(|| url.strip_prefix("json:"))
+                .unwrap_or("");
+            if path.is_empty() {
+                return Err(StoreError::Other(
+                    "json: requires a directory path (e.g. \
+                     `json:///Users/me/.local/share/jarvis/conversations`)"
+                        .into(),
+                ));
+            }
+            let store = JsonFileConversationStore::open(path)?;
+            Ok(Arc::new(store))
+        }
         #[cfg(feature = "sqlite")]
         "sqlite" => {
             let store = SqliteConversationStore::connect(url).await?;

@@ -26,6 +26,10 @@ impl Tool for EchoTool {
         })
     }
 
+    fn cacheable(&self) -> bool {
+        true
+    }
+
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
         let text = args
             .get("text")

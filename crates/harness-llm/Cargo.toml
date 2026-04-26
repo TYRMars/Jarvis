@@ -16,3 +16,9 @@ tracing.workspace = true
 futures.workspace = true
 async-stream.workspace = true
 bytes.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tiktoken-rs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
