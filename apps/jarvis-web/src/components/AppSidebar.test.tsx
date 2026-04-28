@@ -1,7 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { AppSidebar } from "./AppSidebar";
 import { useAppStore } from "../store/appStore";
+
+afterEach(() => {
+  // Reset toggle state so cross-test ordering doesn't leak.
+  useAppStore.getState().setSidebarOpen(true);
+});
 
 describe("AppSidebar search", () => {
   it("filters conversations from the restored search box", () => {
@@ -39,5 +44,21 @@ describe("AppSidebar search", () => {
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
 
     expect(screen.getByRole("searchbox", { name: "Search conversations" })).toHaveFocus();
+  });
+});
+
+describe("AppSidebar collapse", () => {
+  it("toggles the sidebar-closed body class and persists the state", () => {
+    render(<AppSidebar />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle sidebar" }));
+    expect(useAppStore.getState().sidebarOpen).toBe(false);
+    expect(document.body.classList.contains("sidebar-closed")).toBe(true);
+    expect(localStorage.getItem("jarvis.sidebarOpen")).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle sidebar" }));
+    expect(useAppStore.getState().sidebarOpen).toBe(true);
+    expect(document.body.classList.contains("sidebar-closed")).toBe(false);
+    expect(localStorage.getItem("jarvis.sidebarOpen")).toBe("true");
   });
 });

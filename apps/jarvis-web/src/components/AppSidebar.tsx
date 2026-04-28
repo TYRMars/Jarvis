@@ -2,10 +2,9 @@
 // nav-list (New session + Routines/Customize stubs), conversation
 // list, sidebar footer with the account chip + connection status.
 //
-// Topbar / mode-row / Routines+Customize are still UI placeholders
-// (no real action yet) — kept so the visual frame matches the
-// design while we land the rest of the app, not because they do
-// anything.
+// Mode-row / Routines+Customize are still UI placeholders (no real
+// action yet) — kept so the visual frame matches the design while we
+// land the rest of the app, not because they do anything.
 
 import { useAppStore } from "../store/appStore";
 import { ConnectionStatus } from "./ConnectionStatus";
@@ -14,6 +13,8 @@ import { AccountMenu } from "./Settings/AccountMenu";
 import { newConversation } from "../services/conversations";
 
 export function AppSidebar() {
+  const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useAppStore((s) => s.setSidebarOpen);
   const focusSearch = () => {
     document.getElementById("convo-search")?.focus();
   };
@@ -21,7 +22,16 @@ export function AppSidebar() {
   return (
     <aside id="sidebar" aria-label="Conversations">
       <div className="sidebar-topbar">
-        <button type="button" className="ghost-icon" title="Toggle sidebar" aria-label="Toggle sidebar">
+        <button
+          id="toggle-sidebar"
+          type="button"
+          className="ghost-icon"
+          title="Toggle sidebar"
+          aria-label="Toggle sidebar"
+          aria-expanded={sidebarOpen}
+          aria-controls="sidebar"
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+        >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <rect x="3" y="5" width="18" height="14" rx="2" />
             <path d="M9 5v14" />

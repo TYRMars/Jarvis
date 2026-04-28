@@ -57,6 +57,11 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
         store.setWorkspaceRailOpen(!store.workspaceRailOpen);
         return;
       }
+      if (meta && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        store.setSidebarOpen(!store.sidebarOpen);
+        return;
+      }
 
       // ---- Esc cascade ----
       if (e.key === "Escape") {

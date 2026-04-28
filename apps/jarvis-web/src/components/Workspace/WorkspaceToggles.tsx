@@ -11,6 +11,33 @@ import { useEffect, useRef } from "react";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 
+/// Floating "open sidebar" affordance shown in the chat header when
+/// the sidebar is collapsed. Mirrors the in-sidebar toggle so the
+/// user can always get back to the conversation list. Renders nothing
+/// while the sidebar is open — the in-sidebar topbar owns it then.
+export function OpenSidebarButton() {
+  const open = useAppStore((s) => s.sidebarOpen);
+  const setOpen = useAppStore((s) => s.setSidebarOpen);
+  if (open) return null;
+  return (
+    <button
+      id="open-sidebar"
+      type="button"
+      className="ghost-icon"
+      title="Open sidebar"
+      aria-label="Open sidebar"
+      aria-controls="sidebar"
+      aria-expanded={false}
+      onClick={() => setOpen(true)}
+    >
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="M9 5v14" />
+      </svg>
+    </button>
+  );
+}
+
 export function WorkspaceRailToggleButton() {
   const open = useAppStore((s) => s.workspaceRailOpen);
   const setOpen = useAppStore((s) => s.setWorkspaceRailOpen);
