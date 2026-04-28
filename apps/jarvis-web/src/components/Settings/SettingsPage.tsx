@@ -24,6 +24,7 @@ import { ServerSection } from "./sections/ServerSection";
 import { PreferencesSection } from "./sections/PreferencesSection";
 import { ProjectsSettingsSection } from "./sections/ProjectsSettingsSection";
 import { PermissionsSection } from "./sections/PermissionsSection";
+import { McpSection } from "./sections/McpSection";
 import { SoulSection } from "./sections/SoulSection";
 import { AboutSection } from "./sections/AboutSection";
 import { t } from "../../utils/i18n";
@@ -43,6 +44,7 @@ const NAV: NavItem[] = [
   { id: "workspace", labelKey: "settingsNavWorkspace", fallback: "Workspace" },
   { id: "projects", labelKey: "settingsNavProjects", fallback: "Projects" },
   { id: "providers", labelKey: "settingsNavProviders", fallback: "Providers" },
+  { id: "mcp", labelKey: "settingsNavMcp", fallback: "MCP" },
   { id: "server", labelKey: "settingsNavServer", fallback: "Server" },
   { id: "about", labelKey: "settingsNavAbout", fallback: "About" },
 ];
@@ -56,6 +58,7 @@ const SECTIONS: Record<string, ComponentType> = {
   workspace: WorkspaceSection,
   projects: ProjectsSettingsSection,
   providers: ProvidersSection,
+  mcp: McpSection,
   server: ServerSection,
   about: AboutSection,
 };

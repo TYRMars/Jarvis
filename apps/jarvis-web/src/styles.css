@@ -7367,3 +7367,84 @@ select.settings-input {
 .perm-add-matcher {
   align-self: flex-start;
 }
+
+/* ---- MCP runtime section ---- */
+.settings-mcp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-mcp-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-mcp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-mcp-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.settings-mcp-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px 12px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.settings-mcp-health {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.settings-mcp-health.ok {
+  color: #15803d;
+}
+.settings-mcp-health.error {
+  color: #b91c1c;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-form-label {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.settings-form-error {
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.settings-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}

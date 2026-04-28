@@ -944,6 +944,7 @@ dependencies = [
  "axum",
  "futures",
  "harness-core",
+ "harness-mcp",
  "harness-store",
  "include_dir",
  "serde",

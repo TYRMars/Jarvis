@@ -49,6 +49,7 @@ pub fn router(state: AppState) -> Router {
         .merge(projects::router())
         .merge(permissions::router())
         .merge(workspace_diff::router())
+        .merge(crate::mcp_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .with_state(state)

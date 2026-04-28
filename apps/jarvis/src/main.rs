@@ -27,6 +27,7 @@ mod auth_store;
 mod config;
 mod init;
 mod login;
+mod mcp_cli;
 mod project_cmd;
 mod serve;
 mod status;
@@ -127,6 +128,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: project_cmd::ProjectCmd,
     },
+    /// Manage runtime MCP servers on a running `jarvis serve`.
+    Mcp {
+        #[command(subcommand)]
+        action: mcp_cli::McpAction,
+    },
 }
 
 #[derive(Args, Debug, Default)]
@@ -215,6 +221,7 @@ async fn main() -> Result<()> {
         Cmd::Status => status::run(cli.config.as_deref()),
         Cmd::Workspace { workspace, json } => serve::run_workspace(cfg, workspace, json).await,
         Cmd::Project { cmd } => project_cmd::run(cfg, cmd).await,
+        Cmd::Mcp { action } => mcp_cli::run(action, cfg.as_ref()).await,
     }
 }
 

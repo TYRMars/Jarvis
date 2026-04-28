@@ -23,6 +23,7 @@
 //! - `POST   /v1/conversations/:id/messages/stream` — append + run (SSE)
 
 mod conversations;
+mod mcp_routes;
 mod permissions;
 mod project_binder;
 mod projects;
