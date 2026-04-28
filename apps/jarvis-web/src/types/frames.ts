@@ -45,11 +45,61 @@ export interface ApprovalRequestFrame {
   arguments: any;
 }
 
+/// Where the approval decision came from. Matches
+/// `harness_core::permission::HitSource`. The `kind` discriminator
+/// drives the per-variant fields:
+///   - "rule"          → scope, bucket, index of the matched rule
+///   - "mode_default"  → the active mode that supplied the default
+///   - "user_prompt"   → the user clicked Approve / Deny
+export type ApprovalSource =
+  | { kind: "rule"; scope: "user" | "project" | "session"; bucket: "deny" | "ask" | "allow"; index: number }
+  | { kind: "mode_default"; mode: "ask" | "accept-edits" | "plan" | "auto" | "bypass" }
+  | { kind: "user_prompt" };
+
 export interface ApprovalDecisionFrame {
   type: "approval_decision";
   id: string;
   name: string;
   decision: { decision: "approve" | "deny"; reason?: string };
+  /// Optional. Older servers (or builds without the permission
+  /// store wired up) omit it; new servers always set it. The UI
+  /// uses this to render "auto-approved by user-scope rule" chips
+  /// rather than implying every approval was a user click.
+  source?: ApprovalSource;
+}
+
+export interface HitlOption {
+  value: string;
+  label: string;
+}
+
+export interface HitlRequest {
+  id: string;
+  transport?: "text" | "voice" | "video";
+  kind: "confirm" | "input" | "choice" | "review";
+  title: string;
+  body?: string | null;
+  options?: HitlOption[];
+  default_value?: any;
+  response_schema?: any;
+  metadata?: any;
+}
+
+export interface HitlResponse {
+  request_id: string;
+  status: "approved" | "denied" | "submitted" | "cancelled" | "expired";
+  payload?: any;
+  reason?: string | null;
+}
+
+export interface HitlRequestFrame {
+  type: "hitl_request";
+  request: HitlRequest;
+}
+
+export interface HitlResponseFrame {
+  type: "hitl_response";
+  response: HitlResponse;
 }
 
 export interface DoneFrame {
@@ -99,6 +149,8 @@ export type ServerFrame =
   | ToolEndFrame
   | ApprovalRequestFrame
   | ApprovalDecisionFrame
+  | HitlRequestFrame
+  | HitlResponseFrame
   | DoneFrame
   | ErrorFrame
   | StartedFrame
@@ -115,6 +167,7 @@ export interface UserClientFrame {
   content: string;
   model?: string;
   provider?: string;
+  soul_prompt?: string;
 }
 
 export interface ResetClientFrame { type: "reset"; }
@@ -141,6 +194,13 @@ export interface ConfigureClientFrame {
 
 export interface ApproveClientFrame { type: "approve"; tool_call_id: string; }
 export interface DenyClientFrame { type: "deny"; tool_call_id: string; reason?: string | null; }
+export interface HitlResponseClientFrame {
+  type: "hitl_response";
+  request_id: string;
+  status: "approved" | "denied" | "submitted" | "cancelled" | "expired";
+  payload?: any;
+  reason?: string | null;
+}
 export interface InterruptClientFrame { type: "interrupt"; }
 export interface ForkClientFrame {
   type: "fork";
@@ -148,6 +208,7 @@ export interface ForkClientFrame {
   content: string;
   model?: string;
   provider?: string;
+  soul_prompt?: string;
 }
 
 export type ClientFrame =
@@ -158,6 +219,7 @@ export type ClientFrame =
   | ConfigureClientFrame
   | ApproveClientFrame
   | DenyClientFrame
+  | HitlResponseClientFrame
   | InterruptClientFrame
   | ForkClientFrame;
 
@@ -189,11 +251,46 @@ export interface ConvoListRow {
   message_count: number;
   created_at?: string | null;
   updated_at?: string | null;
+  /// Stable id of the project this conversation is bound to, when
+  /// the server has projects configured. Free-chat conversations omit
+  /// this field. Resolve to a name by looking up `appStore.projectsById`.
+  project_id?: string | null;
 }
 
 export interface ConvoDetail {
   id: string;
   messages: AnyMessage[];
+  project_id?: string | null;
+}
+
+/// Wire shape returned by `GET /v1/projects` (and the create / get /
+/// update endpoints). Mirrors `harness_core::Project` field-for-field
+/// plus the optional `conversation_count` only the list endpoint
+/// supplies.
+export interface Project {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  instructions: string;
+  tags: string[];
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+  conversation_count?: number;
+}
+
+export type RequirementStatus = "backlog" | "in_progress" | "review" | "done";
+
+export interface Requirement {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string | null;
+  status: RequirementStatus;
+  conversation_ids: string[];
+  created_at: string;
+  updated_at: string;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";

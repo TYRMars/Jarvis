@@ -17,29 +17,89 @@ import type { ToolBlockEntry } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { FsEditDiff } from "./FsEditDiff";
 import { FsWriteCard } from "./FsWriteCard";
+import { UnifiedDiffViewer } from "./UnifiedDiffViewer";
+import { WorkspaceContextCard } from "./WorkspaceContextCard";
+import { ProjectChecksCard } from "./ProjectChecksCard";
+import { DecisionSourceChip } from "../Approvals/DecisionSourceChip";
+import {
+  APPROVAL_GATED_TOOLS,
+  SUMMARISABLE_TOOLS,
+  summarise,
+} from "./toolSummaries";
 
 const TOOL_PREVIEW_CHARS = 1200;
 
-export function ToolBlock({ entry }: { entry: ToolBlockEntry }) {
+interface ToolBlockProps {
+  entry: ToolBlockEntry;
+  /// When the parent has decided this block should default to OPEN
+  /// (e.g. the step row above is expanded → the user has already
+  /// said "show me more"), pass `true` so we don't force a second
+  /// click to see args + output. The user's manual chevron click
+  /// still overrides — `manualOpen ?? defaultOpen` keeps the same
+  /// "user toggle wins" semantics.
+  forceOpen?: boolean;
+}
+
+export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const status = entry.status;
   const streaming = status === "running" && entry.progress.length > 0;
-  // Auto-open while streaming so the user watches output live; once
-  // it finishes, fall back to whatever the user last clicked.
-  const open = manualOpen ?? streaming;
+  // Four-tier default for the open state, overridable by user click:
+  //   • errored / denied → open (user needs to debug the failure)
+  //   • streaming → open (live scroll-back is the point)
+  //   • parent says forceOpen → open (drill-into-step UX)
+  //   • approval-gated + finished → open (diff / output IS the result)
+  //   • read-only inspection finished cleanly → closed, with a
+  //     one-line teaser chip in the header.
+  const defaultOpen =
+    status === "error" || status === "denied"
+      ? true
+      : streaming
+        ? true
+        : forceOpen
+          ? true
+          : status === "ok" && APPROVAL_GATED_TOOLS.has(entry.name)
+            ? true
+            : false;
+  const open = manualOpen ?? defaultOpen;
 
-  const badge = ({
-    running: t("running"),
-    ok: t("done"),
-    denied: t("denied", ""),
-    error: t("error"),
-  } as Record<string, string>)[status] || status;
+  // Status badge is rendered only when the result is informative:
+  //   - running: show "Running" so the user sees the live state
+  //   - error / denied: show in red (must surface the failure)
+  //   - ok: SUPPRESS — success is the default expectation, a green
+  //     "Done" badge on every row is celebratory noise that crowds
+  //     out the actually-interesting signals (duration, summary
+  //     chip, decision-source). The chevron / row state already
+  //     conveys "this finished".
+  const badge =
+    status === "ok"
+      ? null
+      : (({
+          running: t("running"),
+          denied: t("denied", ""),
+          error: t("error"),
+        } as Record<string, string>)[status] || status);
+
+  // Compute the header teaser: only for known read-only tools that
+  // have finished running. Streaming tools still write into
+  // `entry.progress`, but the final `entry.output` may differ
+  // (error vs. ok), so we wait for completion before parsing.
+  const teaser =
+    status !== "running" && SUMMARISABLE_TOOLS.has(entry.name)
+      ? summarise(entry.name, entry.args, entry.output)
+      : null;
+
+  // Execution duration chip — gives the user a glanceable signal
+  // for "how slow was this tool". Hidden when timestamps are
+  // synthetic (history-restored entries; both stamps == 0) or
+  // still running (would just be flickering).
+  const duration = computeDuration(entry);
 
   return (
     <div className="tool" data-status={status} data-open={open ? "true" : "false"}>
       <div className="tool-header" onClick={() => setManualOpen(!open)}>
-        <span className="tool-chevron">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <span className="tool-chevron" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </span>
@@ -49,7 +109,12 @@ export function ToolBlock({ entry }: { entry: ToolBlockEntry }) {
           </svg>
         </span>
         <span className="tool-name">{entry.name}</span>
-        <span className="tool-badge">{badge}</span>
+        {badge ? <span className="tool-badge">{badge}</span> : null}
+        {duration ? <span className="tool-duration" title={t("toolDurationHint") || "Execution time"}>{duration}</span> : null}
+        {teaser ? (
+          <span className="tool-summary" title={teaser}>{teaser}</span>
+        ) : null}
+        {entry.decisionSource ? <DecisionSourceChip source={entry.decisionSource} /> : null}
       </div>
       {open && (
         <div className="tool-body">
@@ -61,6 +126,11 @@ export function ToolBlock({ entry }: { entry: ToolBlockEntry }) {
               </>
             ) : entry.name === "fs.write" ? (
               <FsWriteCard args={entry.args || {}} />
+            ) : entry.name === "fs.patch" && typeof entry.args?.diff === "string" ? (
+              <>
+                <div className="tool-label">{t("toolArguments")}</div>
+                <UnifiedDiffViewer content={entry.args.diff} />
+              </>
             ) : (
               <>
                 <div className="tool-label">{t("toolArguments")}</div>
@@ -77,7 +147,15 @@ export function ToolBlock({ entry }: { entry: ToolBlockEntry }) {
           {entry.output != null && (
             <div className="tool-section">
               <div className="tool-label">{t("output")}</div>
-              <ToolOutput content={entry.output} />
+              {entry.name === "git.diff" && entry.output.trim() && entry.output !== "(no changes)" ? (
+                <UnifiedDiffViewer content={entry.output} />
+              ) : entry.name === "workspace.context" ? (
+                <WorkspaceContextCard content={entry.output} />
+              ) : entry.name === "project.checks" ? (
+                <ProjectChecksCard content={entry.output} />
+              ) : (
+                <ToolOutput content={entry.output} />
+              )}
             </div>
           )}
         </div>
@@ -138,4 +216,23 @@ function safeStringify(value: any): string {
   } catch {
     return String(value);
   }
+}
+
+/// Format the tool's wall-clock duration as a chip-friendly string.
+/// Returns `null` when:
+///   - the tool is still running (would just flicker as time passes)
+///   - the timestamps are synthetic (history-restored entries — both
+///     stored as 0 by `loadHistory`)
+///   - the duration is zero (sub-millisecond; not worth surfacing)
+function computeDuration(entry: ToolBlockEntry): string | null {
+  if (entry.finishedAt == null) return null;
+  if (entry.startedAt === 0 && entry.finishedAt === 0) return null;
+  const ms = Math.max(0, entry.finishedAt - entry.startedAt);
+  if (ms === 0) return null;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  return s > 0 ? `${m}m${s}s` : `${m}m`;
 }

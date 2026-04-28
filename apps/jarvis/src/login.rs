@@ -26,12 +26,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use dialoguer::{theme::ColorfulTheme, Input, Password};
-use std::io::IsTerminal;
-use std::io::Read as _;
 use rand::RngCore;
 use reqwest::Url;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::io::IsTerminal;
+use std::io::Read as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -61,7 +61,9 @@ pub async fn run(
     match provider.as_str() {
         "codex" => {
             if key.is_some() {
-                bail!("--key is for API-key providers; use `jarvis login --provider codex` for OAuth");
+                bail!(
+                    "--key is for API-key providers; use `jarvis login --provider codex` for OAuth"
+                );
             }
             if device_code {
                 login_codex_device_code().await?;
@@ -138,18 +140,13 @@ fn set_default_provider(provider: &str) -> Result<std::path::PathBuf> {
             .map(|s| (*s).to_string())
             .collect();
     }
-    let text = cfg
-        .to_json_string()
-        .context("serialize config.json")?;
+    let text = cfg.to_json_string().context("serialize config.json")?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text)
-        .with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("rename onto {}", path.display()))?;
+    std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("rename onto {}", path.display()))?;
     Ok(path)
 }
 
@@ -197,7 +194,10 @@ fn login_api_key(provider: &str, cli_key: Option<String>) -> Result<()> {
         other => other,
     };
     let path = auth_store::save_api_key(canonical, &key)?;
-    eprintln!("✓ Stored {env_var} in {} (mode 0600 on unix)", path.display());
+    eprintln!(
+        "✓ Stored {env_var} in {} (mode 0600 on unix)",
+        path.display()
+    );
     Ok(())
 }
 
@@ -302,7 +302,10 @@ async fn login_codex_device_code() -> Result<()> {
     eprintln!("And enter the code:");
     eprintln!("  {}", dc.user_code);
     eprintln!();
-    eprintln!("Waiting for you to complete the flow (expires in {}s)...", dc.expires_in);
+    eprintln!(
+        "Waiting for you to complete the flow (expires in {}s)...",
+        dc.expires_in
+    );
 
     let mut interval = Duration::from_secs(dc.interval.max(1) as u64);
     let deadline = std::time::Instant::now() + Duration::from_secs(dc.expires_in as u64);
@@ -324,10 +327,7 @@ async fn login_codex_device_code() -> Result<()> {
             .context("device-code poll transport")?;
 
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .context("device-code poll body")?;
+        let body = resp.text().await.context("device-code poll body")?;
 
         if status.is_success() {
             let tokens: TokenResponse = serde_json::from_str(&body)
@@ -338,8 +338,9 @@ async fn login_codex_device_code() -> Result<()> {
         }
 
         // Standard OAuth device-flow error semantics.
-        let err: DeviceCodeErr = serde_json::from_str(&body)
-            .unwrap_or(DeviceCodeErr { error: "unknown".into() });
+        let err: DeviceCodeErr = serde_json::from_str(&body).unwrap_or(DeviceCodeErr {
+            error: "unknown".into(),
+        });
         match err.error.as_str() {
             "authorization_pending" => continue,
             "slow_down" => {
@@ -370,7 +371,10 @@ impl Pkce {
         let verifier = URL_SAFE_NO_PAD.encode(bytes);
         let challenge_bytes = Sha256::digest(verifier.as_bytes());
         let challenge = URL_SAFE_NO_PAD.encode(challenge_bytes);
-        Self { verifier, challenge }
+        Self {
+            verifier,
+            challenge,
+        }
     }
 }
 
@@ -406,10 +410,7 @@ async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Resul
     // 127.0.0.1:1455 while we're listening, but defending against
     // bots probing localhost is cheap.
     loop {
-        let (mut stream, _peer) = listener
-            .accept()
-            .await
-            .context("accept on loopback")?;
+        let (mut stream, _peer) = listener.accept().await.context("accept on loopback")?;
 
         let mut buf = vec![0u8; 8192];
         let n = stream
@@ -428,8 +429,7 @@ async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Resul
             continue;
         }
 
-        let url = Url::parse(&format!("http://localhost{target}"))
-            .context("parse callback url")?;
+        let url = Url::parse(&format!("http://localhost{target}")).context("parse callback url")?;
         let params: HashMap<String, String> = url
             .query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
@@ -616,8 +616,8 @@ async fn exchange_code(
     if !status.is_success() {
         bail!("token exchange failed: status {status}; body {text}");
     }
-    let tokens: TokenResponse = serde_json::from_str(&text)
-        .with_context(|| format!("decode token response: {text}"))?;
+    let tokens: TokenResponse =
+        serde_json::from_str(&text).with_context(|| format!("decode token response: {text}"))?;
     Ok(tokens)
 }
 
@@ -626,8 +626,7 @@ async fn exchange_code(
 fn persist_codex_tokens(tokens: &TokenResponse) -> Result<std::path::PathBuf> {
     let path = auth_store::auth_path("codex")?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -651,8 +650,8 @@ fn persist_codex_tokens(tokens: &TokenResponse) -> Result<std::path::PathBuf> {
 
     let tmp = path.with_extension("json.tmp");
     {
-        let mut f = std::fs::File::create(&tmp)
-            .with_context(|| format!("create {}", tmp.display()))?;
+        let mut f =
+            std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
         f.write_all(&pretty)
             .with_context(|| format!("write {}", tmp.display()))?;
         f.flush().ok();
@@ -663,8 +662,7 @@ fn persist_codex_tokens(tokens: &TokenResponse) -> Result<std::path::PathBuf> {
         let perm = std::fs::Permissions::from_mode(0o600);
         let _ = std::fs::set_permissions(&tmp, perm);
     }
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("rename onto {}", path.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("rename onto {}", path.display()))?;
     Ok(path)
 }
 
@@ -711,7 +709,10 @@ mod tests {
             url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"),
             "got: {url}"
         );
-        assert!(url.contains(&format!("client_id={CLIENT_ID}")), "got: {url}");
+        assert!(
+            url.contains(&format!("client_id={CLIENT_ID}")),
+            "got: {url}"
+        );
     }
 
     #[test]
@@ -726,8 +727,7 @@ mod tests {
                 "chatgpt_user_id": "user_xyz",
             }
         });
-        let payload_b64 = URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&payload).unwrap());
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
         let jwt = format!("header.{payload_b64}.signature");
 
         let resp = TokenResponse {
@@ -754,12 +754,7 @@ mod tests {
     impl ConfigHomeGuard {
         fn isolate(home: &std::path::Path) -> Self {
             let lock = crate::test_env::lock();
-            let keys = [
-                "JARVIS_CONFIG_HOME",
-                "XDG_CONFIG_HOME",
-                "HOME",
-                "APPDATA",
-            ];
+            let keys = ["JARVIS_CONFIG_HOME", "XDG_CONFIG_HOME", "HOME", "APPDATA"];
             let mut saved = Vec::new();
             for k in keys {
                 saved.push((k, std::env::var(k).ok()));

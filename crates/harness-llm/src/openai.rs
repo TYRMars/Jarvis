@@ -113,7 +113,10 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(cfg: OpenAiConfig) -> Self {
-        Self { cfg, http: reqwest::Client::new() }
+        Self {
+            cfg,
+            http: reqwest::Client::new(),
+        }
     }
 
     pub fn with_client(cfg: OpenAiConfig, http: reqwest::Client) -> Self {
@@ -132,7 +135,10 @@ impl OpenAiProvider {
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse> {
-        let Outbound { request: body, name_map } = OpenAiRequest::from_request(
+        let Outbound {
+            request: body,
+            name_map,
+        } = OpenAiRequest::from_request(
             req,
             false,
             self.cfg.include_empty_reasoning_content_for_tool_calls,
@@ -166,7 +172,10 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream> {
-        let Outbound { request: body, name_map } = OpenAiRequest::from_request(
+        let Outbound {
+            request: body,
+            name_map,
+        } = OpenAiRequest::from_request(
             req,
             true,
             self.cfg.include_empty_reasoning_content_for_tool_calls,
@@ -335,28 +344,22 @@ impl OpenAiRequest {
             messages: r
                 .messages
                 .into_iter()
-                .map(|m| {
-                    OaMessage::from_message(
-                        m,
-                        include_empty_reasoning_content_for_tool_calls,
-                    )
-                })
+                .map(|m| OaMessage::from_message(m, include_empty_reasoning_content_for_tool_calls))
                 .collect(),
             tools: r.tools.into_iter().map(OaTool::from).collect(),
             temperature: r.temperature,
             max_tokens: r.max_tokens,
             stream,
-            stream_options: stream.then_some(OaStreamOptions { include_usage: true }),
+            stream_options: stream.then_some(OaStreamOptions {
+                include_usage: true,
+            }),
         };
         Outbound { request, name_map }
     }
 }
 
 impl OaMessage {
-    fn from_message(
-        m: Message,
-        include_empty_reasoning_content_for_tool_calls: bool,
-    ) -> Self {
+    fn from_message(m: Message, include_empty_reasoning_content_for_tool_calls: bool) -> Self {
         match m {
             Message::System { content, .. } => OaMessage {
                 role: "system",
@@ -374,7 +377,9 @@ impl OaMessage {
             },
             Message::Assistant {
                 content,
-                tool_calls, reasoning_content: captured_reasoning } => {
+                tool_calls,
+                reasoning_content: captured_reasoning,
+            } => {
                 let tool_calls: Vec<OaToolCallOut> = tool_calls
                     .into_iter()
                     .map(|tc| OaToolCallOut {
@@ -410,7 +415,10 @@ impl OaMessage {
                     tool_call_id: None,
                 }
             }
-            Message::Tool { tool_call_id, content } => OaMessage {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => OaMessage {
                 role: "tool",
                 content: Some(content),
                 reasoning_content: None,
@@ -477,10 +485,7 @@ struct OaFunctionCallIn {
 }
 
 impl OpenAiResponse {
-    fn into_chat_response(
-        mut self,
-        name_map: &HashMap<String, String>,
-    ) -> Result<ChatResponse> {
+    fn into_chat_response(mut self, name_map: &HashMap<String, String>) -> Result<ChatResponse> {
         let choice = self
             .choices
             .pop()
@@ -501,7 +506,9 @@ impl OpenAiResponse {
         Ok(ChatResponse {
             message: Message::Assistant {
                 content: choice.message.content,
-                tool_calls, reasoning_content: choice.message.reasoning_content },
+                tool_calls,
+                reasoning_content: choice.message.reasoning_content,
+            },
             finish_reason,
         })
     }
@@ -516,7 +523,11 @@ fn parse_tool_call(id: String, name: String, raw_args: &str) -> Result<ToolCall>
             message: format!("{e}; raw={raw_args}"),
         })?
     };
-    Ok(ToolCall { id, name, arguments })
+    Ok(ToolCall {
+        id,
+        name,
+        arguments,
+    })
 }
 
 fn map_finish_reason(raw: Option<&str>, tool_calls: &[ToolCall]) -> FinishReason {
@@ -729,9 +740,7 @@ impl StreamAccumulator {
             .tool_calls
             .drain(..)
             .filter_map(|b| match (b.id, b.name) {
-                (Some(id), Some(name)) => {
-                    parse_tool_call(id, name, &b.arguments).ok()
-                }
+                (Some(id), Some(name)) => parse_tool_call(id, name, &b.arguments).ok(),
                 _ => None,
             })
             .collect();
@@ -792,10 +801,17 @@ mod tests {
         assert!(matches!(out1.as_slice(), [LlmChunk::ContentDelta(s)] if s == "Hel"));
         assert!(matches!(out2.as_slice(), [LlmChunk::ContentDelta(s)] if s == "lo"));
         match &out3[..] {
-            [LlmChunk::Finish { message, finish_reason }] => {
+            [LlmChunk::Finish {
+                message,
+                finish_reason,
+            }] => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {
-                    Message::Assistant { content, tool_calls, .. } => {
+                    Message::Assistant {
+                        content,
+                        tool_calls,
+                        ..
+                    } => {
                         assert_eq!(content.as_deref(), Some("Hello"));
                         assert!(tool_calls.is_empty());
                     }
@@ -839,7 +855,10 @@ mod tests {
             .unwrap();
 
         match &out[..] {
-            [LlmChunk::Finish { message, finish_reason }] => {
+            [LlmChunk::Finish {
+                message,
+                finish_reason,
+            }] => {
                 assert!(matches!(finish_reason, FinishReason::ToolCalls));
                 match message {
                     Message::Assistant { tool_calls, .. } => {

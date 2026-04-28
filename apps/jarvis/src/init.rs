@@ -342,7 +342,11 @@ pub fn run(force: bool) -> Result<()> {
         .default(0)
         .interact()
         .context("language prompt")?;
-    let locale = if locale_idx == 0 { Locale::En } else { Locale::Zh };
+    let locale = if locale_idx == 0 {
+        Locale::En
+    } else {
+        Locale::Zh
+    };
     let s = Strings::new(locale);
 
     eprintln!("{}", s.welcome(&cfg_path));
@@ -552,25 +556,25 @@ pub(crate) fn default_model_for(provider: &str) -> &'static str {
 pub(crate) fn model_choices_for(provider: &str) -> &'static [&'static str] {
     match provider {
         "openai" => &[
-            "gpt-4o-mini",  // default — fast, cheap, good for tools
+            "gpt-4o-mini", // default — fast, cheap, good for tools
             "gpt-4o",
             "gpt-4-turbo",
             "gpt-3.5-turbo",
         ],
         "openai-responses" => &[
-            "gpt-4o-mini",  // default
-            "o3-mini",      // reasoning, light
-            "o3",           // reasoning, full
+            "gpt-4o-mini", // default
+            "o3-mini",     // reasoning, light
+            "o3",          // reasoning, full
             "o1-mini",
             "o1",
         ],
         "anthropic" => &[
-            "claude-3-5-sonnet-latest",  // default — best balance
-            "claude-3-5-haiku-latest",   // cheap + fast
-            "claude-3-opus-latest",      // strongest
+            "claude-3-5-sonnet-latest", // default — best balance
+            "claude-3-5-haiku-latest",  // cheap + fast
+            "claude-3-opus-latest",     // strongest
         ],
         "google" => &[
-            "gemini-1.5-flash",  // default
+            "gemini-1.5-flash", // default
             "gemini-1.5-pro",
             "gemini-2.0-flash",
         ],
@@ -579,11 +583,11 @@ pub(crate) fn model_choices_for(provider: &str) -> &'static [&'static str] {
         // actually accepts — the API-key path on api.openai.com has
         // a different (and broader) lineup.
         "codex" => &[
-            "gpt-5.4-mini",     // default — small, fast, cheap; simple coding tasks
-            "gpt-5.4",          // strong daily coding
-            "gpt-5.5",          // strongest general; complex projects, research
-            "gpt-5.3-codex",    // coding-tuned older
-            "gpt-5.2",          // long-running agent / professional work
+            "gpt-5.4-mini",  // default — small, fast, cheap; simple coding tasks
+            "gpt-5.4",       // strong daily coding
+            "gpt-5.5",       // strongest general; complex projects, research
+            "gpt-5.3-codex", // coding-tuned older
+            "gpt-5.2",       // long-running agent / professional work
         ],
         // Moonshot Kimi lineup — IDs as accepted by api.moonshot.cn.
         // The `kimi-k2-*` family is the flagship thinking model
@@ -591,12 +595,12 @@ pub(crate) fn model_choices_for(provider: &str) -> &'static [&'static str] {
         // variants; `kimi-latest` auto-routes to whatever Moonshot
         // currently exposes as their flagship.
         "kimi" | "moonshot" => &[
-            "kimi-k2-thinking",       // default — latest K2 thinking
-            "kimi-k2-turbo-preview",  // turbo / cheaper K2
-            "kimi-k2-0905-preview",   // pinned September 2025 K2 release
-            "kimi-latest",            // auto-routes to current flagship
-            "moonshot-v1-auto",       // legacy v1, auto-pick context size
-            "moonshot-v1-128k",       // legacy v1, long context
+            "kimi-k2-thinking",      // default — latest K2 thinking
+            "kimi-k2-turbo-preview", // turbo / cheaper K2
+            "kimi-k2-0905-preview",  // pinned September 2025 K2 release
+            "kimi-latest",           // auto-routes to current flagship
+            "moonshot-v1-auto",      // legacy v1, auto-pick context size
+            "moonshot-v1-128k",      // legacy v1, long context
             "moonshot-v1-32k",
             "moonshot-v1-8k",
         ],
@@ -647,12 +651,7 @@ fn pick_model(theme: &ColorfulTheme, s: &Strings, provider: &str) -> Result<Stri
     }
 }
 
-fn prompt_api_key(
-    theme: &ColorfulTheme,
-    s: &Strings,
-    provider: &str,
-    env_var: &str,
-) -> Result<()> {
+fn prompt_api_key(theme: &ColorfulTheme, s: &Strings, provider: &str, env_var: &str) -> Result<()> {
     // If the env var is already set, offer to also persist it.
     if let Ok(existing) = std::env::var(env_var) {
         let store = Confirm::with_theme(theme)
@@ -693,22 +692,20 @@ fn handle_codex_auth(_theme: &ColorfulTheme) -> Result<PathBuf> {
     // adds our own PKCE flow that bypasses the Codex CLI.
     let codex_home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
         .ok_or_else(|| anyhow!("can't locate $HOME — set CODEX_HOME explicitly"))?;
     let auth_json = codex_home.join("auth.json");
     if auth_json.is_file() {
-        eprintln!("  ✓ found existing Codex credentials at {}", auth_json.display());
+        eprintln!(
+            "  ✓ found existing Codex credentials at {}",
+            auth_json.display()
+        );
         eprintln!(
             "    (To re-authenticate: run `codex login`. \
              Native `jarvis login` lands in a future release.)"
         );
     } else {
-        eprintln!(
-            "  ⚠ no Codex credentials found at {}.",
-            auth_json.display()
-        );
+        eprintln!("  ⚠ no Codex credentials found at {}.", auth_json.display());
         eprintln!("    Run `codex login` (from the OpenAI Codex CLI) before starting jarvis.");
     }
     Ok(codex_home)
@@ -777,12 +774,16 @@ pub fn build_config(a: &InitAnswers) -> Config {
     };
 
     let persistence = match &a.persist {
-        Some(url) => PersistenceSection { url: Some(url.clone()) },
+        Some(url) => PersistenceSection {
+            url: Some(url.clone()),
+        },
         None => PersistenceSection::default(),
     };
 
     let approval = match &a.approval {
-        Some(mode) => ApprovalSection { mode: Some(mode.clone()) },
+        Some(mode) => ApprovalSection {
+            mode: Some(mode.clone()),
+        },
         None => ApprovalSection::default(),
     };
 
@@ -791,6 +792,7 @@ pub fn build_config(a: &InitAnswers) -> Config {
         language: Some(a.locale.code().into()),
         default_provider: Some(a.default_provider.clone()),
         providers,
+        agent: Default::default(),
         tools,
         memory,
         persistence,
@@ -814,14 +816,11 @@ pub(crate) fn locale_from_config(cfg: &Config) -> Locale {
 
 fn write_config_file(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, contents)
-        .with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("rename onto {}", path.display()))?;
+    std::fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("rename onto {}", path.display()))?;
     Ok(())
 }
 
@@ -910,10 +909,7 @@ mod tests {
         assert_eq!(cfg.tools.enable_shell_exec, Some(false));
         assert_eq!(cfg.memory.tokens, Some(8000));
         assert_eq!(cfg.memory.mode.as_deref(), Some("summary"));
-        assert_eq!(
-            cfg.persistence.url.as_deref(),
-            Some("sqlite://./db.sqlite")
-        );
+        assert_eq!(cfg.persistence.url.as_deref(), Some("sqlite://./db.sqlite"));
         assert_eq!(cfg.approval.mode.as_deref(), Some("deny"));
     }
 
@@ -956,7 +952,13 @@ mod tests {
         // pick the same model the user would have had as the
         // free-text default.
         for provider in [
-            "openai", "openai-responses", "anthropic", "google", "codex", "kimi", "kimi-code",
+            "openai",
+            "openai-responses",
+            "anthropic",
+            "google",
+            "codex",
+            "kimi",
+            "kimi-code",
         ] {
             let choices = model_choices_for(provider);
             assert!(

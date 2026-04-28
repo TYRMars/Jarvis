@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use harness_core::{BoxError, Tool};
+use harness_core::{BoxError, Tool, ToolCategory};
 use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
@@ -99,6 +99,16 @@ impl Tool for CodeGrepTool {
         true
     }
 
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Read
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("pattern")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
         let pattern = args
             .get("pattern")
@@ -126,10 +136,7 @@ impl Tool for CodeGrepTool {
             .build()
             .map_err(|e| -> BoxError { format!("invalid regex: {e}").into() })?;
 
-        let glob = args
-            .get("glob")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let glob = args.get("glob").and_then(Value::as_str).map(str::to_owned);
 
         let display_root = self.root.clone();
         let max_bytes = self.max_bytes;
@@ -175,8 +182,7 @@ impl Tool for CodeGrepTool {
                         continue;
                     }
                     let snippet = if line.chars().count() > MAX_LINE_CHARS {
-                        let truncated_line: String =
-                            line.chars().take(MAX_LINE_CHARS).collect();
+                        let truncated_line: String = line.chars().take(MAX_LINE_CHARS).collect();
                         format!("{truncated_line} …")
                     } else {
                         line.to_string()
@@ -231,10 +237,7 @@ mod tests {
         write(&dir.path().join("sub/b.rs"), "fn gamma() {}\n");
         let tool = CodeGrepTool::new(dir.path());
 
-        let out = tool
-            .invoke(json!({ "pattern": r"^fn \w+" }))
-            .await
-            .unwrap();
+        let out = tool.invoke(json!({ "pattern": r"^fn \w+" })).await.unwrap();
         assert!(out.contains("a.rs:1:"), "got: {out}");
         assert!(out.contains("a.rs:2:"), "got: {out}");
         assert!(out.contains("b.rs:1:"), "got: {out}");
@@ -282,10 +285,7 @@ mod tests {
     async fn invalid_regex_errors() {
         let dir = tempdir().unwrap();
         let tool = CodeGrepTool::new(dir.path());
-        let err = tool
-            .invoke(json!({ "pattern": "[" }))
-            .await
-            .unwrap_err();
+        let err = tool.invoke(json!({ "pattern": "[" })).await.unwrap_err();
         assert!(err.to_string().contains("invalid regex"), "got: {err}");
     }
 

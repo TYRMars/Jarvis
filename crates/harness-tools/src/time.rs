@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use harness_core::{BoxError, Tool};
+use harness_core::{BoxError, Tool, ToolCategory};
 use serde_json::{json, Value};
 
 /// Returns the current UTC time as both a Unix timestamp and an RFC3339
@@ -23,6 +23,10 @@ impl Tool for TimeNowTool {
 
     fn cacheable(&self) -> bool {
         true
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Read
     }
 
     async fn invoke(&self, _args: Value) -> Result<String, BoxError> {

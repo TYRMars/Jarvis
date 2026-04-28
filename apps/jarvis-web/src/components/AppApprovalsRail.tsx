@@ -1,9 +1,6 @@
-// Right-most slide-out: list of approval cards (pending / decided)
-// + close button. Visibility is toggled at the body level — when
-// the agent yields an `approval_request` the store-driven panel
-// adds `approvals-open`, animating the rail in. The close button
-// just removes that class; React doesn't need to keep state for
-// "is rail visible" because the CSS transition does the work.
+// Right-most slide-out: approval history + close button. Active
+// approval prompts now live above the composer, Claude-Code style;
+// this rail is only opened manually for review.
 
 import { ApprovalsPanel } from "./Approvals/ApprovalsPanel";
 import { CloseApprovalsButton } from "./Workspace/WorkspaceToggles";

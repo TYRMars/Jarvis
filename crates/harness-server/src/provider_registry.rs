@@ -179,7 +179,10 @@ impl ProviderRegistry {
             let resolved_model = model
                 .map(str::to_string)
                 .unwrap_or_else(|| entry.default_model.clone());
-            return Ok(Routed { entry, model: resolved_model });
+            return Ok(Routed {
+                entry,
+                model: resolved_model,
+            });
         }
 
         // 2. `provider/model` form on the `model` field.
@@ -224,7 +227,10 @@ impl ProviderRegistry {
         let resolved_model = model
             .map(str::to_string)
             .unwrap_or_else(|| entry.default_model.clone());
-        Ok(Routed { entry, model: resolved_model })
+        Ok(Routed {
+            entry,
+            model: resolved_model,
+        })
     }
 }
 
@@ -258,7 +264,11 @@ mod tests {
             .with_prefix_rule("claude-", "anthropic");
         r.insert("openai", Arc::new(NoopLlm("o")), "gpt-4o-mini");
         r.insert("kimi", Arc::new(NoopLlm("k")), "kimi-k2-thinking");
-        r.insert("anthropic", Arc::new(NoopLlm("a")), "claude-3-5-sonnet-latest");
+        r.insert(
+            "anthropic",
+            Arc::new(NoopLlm("a")),
+            "claude-3-5-sonnet-latest",
+        );
         r
     }
 
@@ -328,9 +338,17 @@ mod tests {
     fn list_is_alpha_sorted_with_default_flagged() {
         let r = fixture();
         let infos = r.list();
-        assert_eq!(infos.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
-                   vec!["anthropic", "kimi", "openai"]);
-        assert!(infos.iter().find(|i| i.name == "openai").unwrap().is_default);
+        assert_eq!(
+            infos.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+            vec!["anthropic", "kimi", "openai"]
+        );
+        assert!(
+            infos
+                .iter()
+                .find(|i| i.name == "openai")
+                .unwrap()
+                .is_default
+        );
         assert!(!infos.iter().find(|i| i.name == "kimi").unwrap().is_default);
     }
 }

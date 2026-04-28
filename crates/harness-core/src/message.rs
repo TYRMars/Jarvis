@@ -71,7 +71,9 @@ impl Message {
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self::User { content: content.into() }
+        Self::User {
+            content: content.into(),
+        }
     }
 
     pub fn assistant_text(content: impl Into<String>) -> Self {

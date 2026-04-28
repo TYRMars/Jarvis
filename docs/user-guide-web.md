@@ -57,8 +57,15 @@ apps/jarvis-web/
 │   │   └── boot.ts               # 应用初始化
 │   └── store/
 │       └── appStore.ts           # Zustand 全局状态
-└── vite.config.ts           # base: '/ui/'
+└── vite.config.ts           # base: '/' (与 harness-server 同域，无 /ui/ 前缀)
 ```
+
+### 路由（react-router-dom v7）
+
+- `/`         —— 主聊天界面（`ChatLayout`：sidebar + 聊天 + 工作区栏 + 审批栏）
+- `/settings` —— 设置中心（外观 / API / 工作区 / Provider / 关于）
+
+> 老地址 `/ui/*` 已**不再保留兼容**；请直接使用根路径。
 
 ---
 
@@ -69,7 +76,7 @@ apps/jarvis-web/
 确保后端服务已启动（默认监听 `0.0.0.0:7001`），然后在浏览器打开：
 
 ```
-http://<服务器地址>:7001/ui/
+http://<服务器地址>:7001/
 ```
 
 如果是本地开发：
@@ -80,7 +87,7 @@ pnpm install
 pnpm dev
 ```
 
-开发服务器运行在 `http://localhost:5173/ui/`。
+开发服务器运行在 `http://localhost:5173/`。
 
 ### 2. 界面布局
 
@@ -148,6 +155,24 @@ Web UI 采用三栏布局：
 - **主题切换**：明亮 / 暗色模式。
 - **语言切换**：切换界面显示语言（如中/英文）。
 
+#### 8a. 设置中心（`/settings`）
+
+点 sidebar 底部的账户头像，下拉菜单底部有 **Settings** 链接，进入
+设置中心。也可以直接打开 `http://<host>:7001/settings`。
+
+设置中心分五个区段：
+
+| 区段 | 内容 |
+|---|---|
+| **Appearance** | 主题（light / dark）、界面语言（English / 中文）。改动即时生效，写入 localStorage。 |
+| **API** | 后端 origin 覆盖。同源部署不需要填；只有 `vite preview`、`file://` 打开 dist、或前后端跨域时才需要。保存后需要刷新页面让 WebSocket 用新 origin 重连。 |
+| **Workspace** | 只读展示当前 `/v1/workspace` 输出：root 路径、git branch / HEAD / dirty 状态。点 Refresh 重新探一次。 |
+| **Providers** | 只读展示后端注册的所有 provider 与各自的模型清单（来自 `/v1/providers`）。要改请编辑 `~/.config/jarvis/config.toml` 或跑 `jarvis login --provider X`。 |
+| **About** | 版本号、构建模式、文档外链。 |
+
+> 设置中心是独立页面，不是模态弹层 —— 直接走浏览器路由。可以独立
+> 收藏 `/settings`，cmd-click Settings 链接也能在新 tab 打开。
+
 ### 9. 快捷键
 
 | 快捷键 | 作用 |
@@ -168,7 +193,8 @@ Web UI 采用三栏布局：
 
 - 确认后端服务已启动且能访问 `http://<host>:7001/health`。
 - 检查浏览器控制台是否有网络错误（如 404、CORS）。
-- 若通过反向代理访问，确认代理规则包含 `/ui/` 路径。
+- 若通过反向代理访问，确认代理规则把 `/`、`/assets/*`、`/v1/*`
+  全部转给后端。老的 `/ui/*` 不再处理，请把代理规则切到根路径。
 
 ### WebSocket 连接不上
 
@@ -197,7 +223,7 @@ Web UI 采用三栏布局：
 1. **数据持久化**：若后端未配置数据库，刷新页面或关闭浏览器后，当前对话将丢失。
 2. **敏感操作**：`fs.write`、`fs.edit`、`shell.exec` 等工具可能修改你的文件系统，请谨慎审批。
 3. **Token 消耗**：长对话会消耗更多模型上下文。若响应变慢，建议开启后端 Memory 功能或新建会话。
-4. **多标签页**：同一浏览器打开多个 `/ui/` 标签页时，每个标签页独立维护 WebSocket 连接和本地状态，不会自动同步。
+4. **多标签页**：同一浏览器打开多个 `/` 标签页时，每个标签页独立维护 WebSocket 连接和本地状态，不会自动同步。
 
 ---
 

@@ -18,9 +18,10 @@ import { installCopyAffordances } from "./copy";
 import { installResize } from "./resize";
 import { setStatus } from "./status";
 import { apiUrl } from "./api";
-import { connect } from "./socket";
+import { connect, installConnectivityListeners } from "./socket";
 import { refreshConvoList } from "./conversations";
 import { loadProviders } from "./providers";
+import { refreshProjects } from "./projects";
 
 let booted = false;
 
@@ -58,6 +59,8 @@ export function boot(): void {
   //    store's banner.
   void loadProviders(apiUrl);
   void refreshConvoList();
+  void refreshProjects();
+  installConnectivityListeners();
   connect();
 }
 

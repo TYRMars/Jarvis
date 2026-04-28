@@ -32,14 +32,13 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
         newConversation();
         return;
       }
-      if (meta && e.key.toLowerCase() === "l") {
-        e.preventDefault();
-        document.getElementById("convo-search")?.focus();
-        return;
-      }
-      if (meta && e.key.toLowerCase() === "p") {
-        // Cmd + P shadows browser Print, but in a chat app the
-        // muscle memory points at "find a thing" not "print a page".
+      if (meta && (e.key.toLowerCase() === "l" || e.key.toLowerCase() === "p")) {
+        // Cmd+P (and the legacy Cmd+L) both open the QuickSwitcher
+        // modal — unified surface for "find a chat" by title or by
+        // message body. Cmd+P shadows browser Print, but in a chat
+        // app the muscle memory points at "find a thing" not "print
+        // a page". Cmd+L used to focus the inline sidebar input;
+        // that input is gone (the modal covers its job + more).
         e.preventDefault();
         store.setQuickOpen(true);
         return;

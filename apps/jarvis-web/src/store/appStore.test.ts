@@ -32,6 +32,32 @@ describe("approvals", () => {
     expect(get().approvals[1]).toMatchObject({ id: "b", status: "denied", reason: "no thanks" });
   });
 
+  it("setApprovalDecision stamps the source onto the matching tool block", () => {
+    // Seed a tool block first so the source has somewhere to land.
+    get().pushToolStart("call_x", "fs.edit", { path: "src/foo.rs" });
+    get().pushApprovalRequest("call_x", "fs.edit", { path: "src/foo.rs" });
+    get().setApprovalDecision("call_x", "approve", null, {
+      kind: "rule",
+      scope: "user",
+      bucket: "allow",
+      index: 0,
+    });
+    const block = get().toolBlocks["call_x"];
+    expect(block.decisionSource).toEqual({
+      kind: "rule",
+      scope: "user",
+      bucket: "allow",
+      index: 0,
+    });
+  });
+
+  it("setApprovalDecision without a source leaves decisionSource null", () => {
+    get().pushToolStart("call_y", "fs.edit", { path: "src/bar.rs" });
+    get().pushApprovalRequest("call_y", "fs.edit", { path: "src/bar.rs" });
+    get().setApprovalDecision("call_y", "approve");
+    expect(get().toolBlocks["call_y"].decisionSource).toBeNull();
+  });
+
   it("finalizePendingApprovals only touches still-pending entries", () => {
     get().pushApprovalRequest("a", "shell.exec", {});
     get().pushApprovalRequest("b", "shell.exec", {});
@@ -178,6 +204,142 @@ describe("messages slice", () => {
     const last = get().messages.at(-1);
     expect(last?.kind).toBe("assistant");
     if (last?.kind === "assistant") expect(last.content).toBe("Hello!");
+  });
+
+  it("multi-iteration tool calls without intervening text attach to the right assistant", () => {
+    // Reproduces the rendering bug where iteration 2's tool call
+    // shows up under iteration 1's assistant bubble because
+    // `finalizeAssistant` updated the already-finalised trailing
+    // message instead of creating a new one.
+    //
+    // Frame replay (matches the server's emit order in agent.rs):
+    //   user → delta → assistant_message[t1] → tool_start[t1] → tool_end[t1]
+    //                → assistant_message[t2] (no delta!) → tool_start[t2] → tool_end[t2]
+    //                → delta "all done" → assistant_message[]
+    get().pushUserMessage("do the thing");
+    // Iteration 1: delta then tool call
+    get().appendDelta("Let me check.");
+    get().finalizeAssistant({ content: "Let me check." });
+    get().pushToolStart("t1", "fs.read", { path: "a" });
+    get().setToolEnd("t1", "<file body>");
+    // Iteration 2: pure tool call — NO delta. This is where the
+    // bug used to fire.
+    get().finalizeAssistant({ content: "" });
+    get().pushToolStart("t2", "fs.read", { path: "b" });
+    get().setToolEnd("t2", "<other body>");
+    // Iteration 3: final reply, no tools.
+    get().appendDelta("all done");
+    get().finalizeAssistant({ content: "all done" });
+
+    const assistants = get().messages.filter((m) => m.kind === "assistant");
+    expect(assistants).toHaveLength(3);
+    // Tool t1 belongs to iter-1's assistant; t2 to iter-2's.
+    if (assistants[0].kind === "assistant") {
+      expect(assistants[0].content).toBe("Let me check.");
+      expect(assistants[0].toolCallIds).toEqual(["t1"]);
+    }
+    if (assistants[1].kind === "assistant") {
+      expect(assistants[1].content).toBe("");
+      expect(assistants[1].toolCallIds).toEqual(["t2"]);
+    }
+    if (assistants[2].kind === "assistant") {
+      expect(assistants[2].content).toBe("all done");
+      expect(assistants[2].toolCallIds).toEqual([]);
+    }
+  });
+
+  it("loadHistory hides ask.* tool-only assistant messages", () => {
+    get().loadHistory([
+      { role: "user", content: "ask me" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "ask_1",
+            name: "ask.text",
+            arguments: { title: "Deployment target" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "ask_1",
+        content: JSON.stringify({
+          request_id: "hitl_1",
+          status: "submitted",
+          payload: "staging",
+        }),
+      },
+      { role: "assistant", content: "Using staging." },
+    ]);
+
+    const assistants = get().messages.filter((m) => m.kind === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "assistant") {
+      expect(assistants[0].content).toBe("Using staging.");
+      expect(assistants[0].toolCallIds).toEqual([]);
+    }
+    expect(get().toolBlocks.ask_1).toBeUndefined();
+  });
+
+  it("loadHistory rebuilds the tasks rail from persisted tool calls", () => {
+    // Seed leftover tasks from a previous conversation so the test
+    // also asserts they get cleared (no leakage across switches).
+    get().upsertTask({ id: "stale", name: "shell.exec", args: {}, status: "ok" });
+    expect(get().tasks).toHaveLength(1);
+
+    get().loadHistory([
+      { role: "user", content: "look at git" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "tc_1", name: "git.status", arguments: {} },
+          { id: "tc_2", name: "fs.read", arguments: { path: "README.md" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "tc_1", content: "## main" },
+      { role: "tool", tool_call_id: "tc_2", content: "abc\ndef\n" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "tc_3", name: "shell.exec", arguments: { command: "ls" } }],
+      },
+      { role: "tool", tool_call_id: "tc_3", content: "tool denied: not allowed" },
+    ]);
+
+    const tasks = get().tasks;
+    expect(tasks).toHaveLength(3);
+    // Stale task from before the load is gone.
+    expect(tasks.find((t) => t.id === "stale")).toBeUndefined();
+    // Insertion order matches walking the history top-down.
+    expect(tasks.map((t) => t.id)).toEqual(["tc_1", "tc_2", "tc_3"]);
+    // Status pulled through from the matching tool blocks.
+    expect(tasks[2].status).toBe("denied");
+    // Timestamps are monotonic so a future live tool call sorts later.
+    expect(tasks[0].startedAt).toBeLessThan(tasks[2].startedAt);
+  });
+
+  it("clearMessages resets per-conversation slices including tasks/plan", () => {
+    get().upsertTask({ id: "t1", name: "shell.exec", args: {}, status: "ok" });
+    get().setPlan([{ id: "p1", title: "step", status: "completed" }]);
+    get().setProposedPlan("draft");
+    get().clearMessages();
+    expect(get().tasks).toEqual([]);
+    expect(get().plan).toEqual([]);
+    expect(get().proposedPlan).toBeNull();
+  });
+
+  it("loadHistory hides persisted system prompt messages", () => {
+    get().loadHistory([
+      { role: "system", content: "large operational prompt" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ]);
+
+    expect(get().messages.map((m) => m.kind)).toEqual(["user", "assistant"]);
+    expect(get().messages.some((m) => m.kind === "system")).toBe(false);
   });
 
   it("applyForked drops messages from the matching userOrdinal forward", () => {

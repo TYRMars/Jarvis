@@ -564,6 +564,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "diffy"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b545b8c50194bdd008283985ab0b31dba153cfd5b3066a92770634fbc0d7d291"
+dependencies = [
+ "nu-ansi-term",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -868,12 +877,14 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
+ "chrono",
  "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -967,6 +978,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "diffy",
  "harness-core",
  "ignore",
  "libc",
@@ -1407,6 +1419,24 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "jarvis-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "harness-core",
+ "harness-llm",
+ "harness-memory",
+ "harness-store",
+ "harness-tools",
+ "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

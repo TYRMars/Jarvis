@@ -1,43 +1,147 @@
 // Single-tenant WebSocket client. Owns the live connection, tracks
-// reconnection intent, and exposes `sendFrame` so other modules can
-// ship `ClientFrame`s without touching the raw socket. The legacy
-// state singleton no longer carries `state.ws` — this module is the
-// source of truth.
+// reconnection intent + backoff, exposes `sendFrame` so other modules
+// can ship `ClientFrame`s without touching the raw socket.
+//
+// **Auto-reconnect contract.** When the socket closes unexpectedly we
+// enter a backoff loop:
+//
+//   attempt 1 → wait 1s   (+ jitter)
+//   attempt 2 → wait 2s
+//   ...
+//   attempt N → min(30s, 2^(N-1) seconds)
+//
+// Each attempt updates the status badge ("reconnecting (N)…") so
+// the user can see we're actively trying. Exponential backoff stops
+// us hammering a bouncing server. We listen to `navigator.onLine` /
+// `online` events and re-attempt immediately when connectivity comes
+// back instead of waiting out the full backoff.
+//
+// On successful reopen we:
+//   1. reset in-flight (a turn that was running when the socket
+//      dropped is gone — server can't stream into a dead socket);
+//   2. re-apply the user's routing pick (`configure` frame);
+//   3. if there was an `activeId`, send a fresh `resume {id}` so the
+//      conversation state matches the persisted one.
 //
 // Frame routing (`handleFrame`) lives in `services/frames.ts`;
 // `connect()` wires it as the `message` listener.
 
 import { wsUrl } from "./api";
-import { setStatus, setInFlight, showError } from "./status";
+import { setStatus, setInFlight } from "./status";
 import { handleFrame } from "./frames";
 import { appStore } from "../store/appStore";
+import { showError } from "./status";
 import { t } from "../utils/i18n";
 
 let socket: WebSocket | null = null;
 let shouldReconnect = true;
+let reconnectAttempt = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+/// Was the previous open ever-successful? Used to distinguish "never
+/// connected" (probably a config / boot issue → log loud) from "we
+/// were online a moment ago" (network blip → quiet retry).
+let everConnected = false;
+
+/// Cap on the exponential delay. 30 s is short enough that a bored
+/// user doesn't think the app is dead, long enough that a flapping
+/// server isn't getting hammered.
+const MAX_BACKOFF_MS = 30_000;
+const BASE_BACKOFF_MS = 1_000;
+
+/// Compute the delay before retry attempt `n` (1-indexed). Jitter is
+/// ±20 % so a fleet of clients doesn't synchronise their reconnect
+/// volleys at the same wall-clock instant.
+function backoffMs(attempt: number): number {
+  const base = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
+  const jitter = base * 0.2 * (Math.random() * 2 - 1);
+  return Math.max(BASE_BACKOFF_MS, Math.floor(base + jitter));
+}
+
+function clearReconnectTimer(): void {
+  if (reconnectTimer != null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function scheduleReconnect(): void {
+  if (!shouldReconnect) return;
+  clearReconnectTimer();
+  reconnectAttempt += 1;
+  const delay = backoffMs(reconnectAttempt);
+  // Render "reconnecting (N) in 4s..." so the user sees we're alive.
+  appStore.getState().setStatus("reconnecting", "warn");
+  appStore.getState().setReconnectAttempt?.(reconnectAttempt);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
+}
 
 /// Open the socket if it isn't already. Idempotent — calls during a
 /// live connection are no-ops; calls during a `CLOSING` cycle wait
-/// for the close to land before opening a fresh one.
+/// for the close to land before opening a fresh one (the next tick's
+/// `close` listener triggers `scheduleReconnect`).
 export function connect(): void {
   if (socket && socket.readyState <= WebSocket.OPEN) return;
   shouldReconnect = true;
+  clearReconnectTimer();
+
   const ws = new WebSocket(wsUrl());
   socket = ws;
-  setStatus("connecting");
+  // Distinguish first-attempt vs reconnect for the badge text.
+  if (reconnectAttempt === 0) setStatus("connecting");
+  else setStatus("reconnecting", "warn");
 
   ws.addEventListener("open", () => {
+    everConnected = true;
+    reconnectAttempt = 0;
+    appStore.getState().setReconnectAttempt?.(0);
     setStatus("connected", "connected");
-    // Push the user's saved routing as soon as the socket opens so
-    // the *first* `user` frame doesn't ride the server's default.
-    applyRouting({ reconnectOnDefault: false });
-  });
-  ws.addEventListener("close", () => {
-    setStatus("disconnected", "error");
+    // The server can't stream into a socket that's gone; whatever
+    // turn was in flight when we dropped is over from the client's
+    // perspective. Reset so the composer's Send button isn't stuck.
     setInFlight(false);
-    if (shouldReconnect) setTimeout(connect, 1000);
+
+    // Re-apply the user's routing first (server starts on its own
+    // default after reconnect — same as initial open).
+    applyRouting({ reconnectOnDefault: false });
+
+    // If we had an active conversation when the socket dropped,
+    // ask the server to resume it so subsequent user turns land
+    // in the right thread. We import lazily to avoid the
+    // socket/conversations cyclic dependency at module-eval time.
+    const activeId = appStore.getState().activeId;
+    if (activeId) {
+      void import("./conversations").then(({ resumeConversation }) => {
+        // resumeConversation is a no-op if `activeId === id` already
+        // — we transiently null the activeId so the resume frame
+        // actually goes out.
+        const store = appStore.getState();
+        store.setActiveId(null);
+        void resumeConversation(activeId);
+      });
+    }
   });
-  ws.addEventListener("error", () => setStatus("websocketError", "error"));
+
+  ws.addEventListener("close", () => {
+    setInFlight(false);
+    if (shouldReconnect) {
+      scheduleReconnect();
+    } else {
+      setStatus("disconnected", "error");
+    }
+  });
+
+  ws.addEventListener("error", () => {
+    // Don't update status here — the close event always follows and
+    // will set the right state. Just log noisily on the very first
+    // failed attempt so config / boot issues are obvious in DevTools.
+    if (!everConnected && reconnectAttempt === 0) {
+      console.warn("WebSocket error on initial connect — check the server");
+    }
+  });
+
   ws.addEventListener("message", (e) => {
     let frame: any;
     try {
@@ -53,8 +157,13 @@ export function connect(): void {
 /// Tear down the live socket and wait a beat before reopening. Used
 /// when the user picks the "server default" routing so the new
 /// socket negotiates against the server's idea of the default
-/// instead of carrying the previous turn's sticky pick.
+/// instead of carrying the previous turn's sticky pick. Also exposed
+/// as the "Reconnect now" button on the connection-status badge so
+/// users can short-circuit backoff.
 export function reconnectSocket(): void {
+  clearReconnectTimer();
+  reconnectAttempt = 0;
+  appStore.getState().setReconnectAttempt?.(0);
   if (socket && socket.readyState <= WebSocket.OPEN) {
     shouldReconnect = false;
     socket.close();
@@ -128,4 +237,35 @@ export function selectModel(value: string): void {
 export function requestInterrupt(): void {
   if (!appStore.getState().inFlight) return;
   sendFrame({ type: "interrupt" });
+}
+
+/// Wire up `online` / `offline` listeners so we react to network
+/// changes without waiting for the next backoff tick. Called once
+/// from the boot module.
+export function installConnectivityListeners(): void {
+  if (typeof window === "undefined") return;
+  window.addEventListener("online", () => {
+    // Only fast-path if we're currently in the backoff loop.
+    if (reconnectTimer != null) {
+      clearReconnectTimer();
+      reconnectAttempt = 0;
+      appStore.getState().setReconnectAttempt?.(0);
+      connect();
+    }
+  });
+  window.addEventListener("offline", () => {
+    // Don't actively close — the WS will detect on its own and the
+    // close listener will start backoff. We just update the badge
+    // so the user sees a clear reason.
+    appStore.getState().setStatus("offline", "error");
+  });
+  // Some browsers (Firefox in particular) drop WS quietly on tab
+  // suspend + resume. Re-test the connection on `pageshow` /
+  // `visibilitychange` so we recover faster than the next ping.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !isOpen() && reconnectTimer != null) {
+      clearReconnectTimer();
+      connect();
+    }
+  });
 }

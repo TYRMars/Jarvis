@@ -23,14 +23,22 @@
 //! - `POST   /v1/conversations/:id/messages/stream` — append + run (SSE)
 
 mod conversations;
+mod permissions;
+mod project_binder;
+mod projects;
 mod provider_registry;
 mod routes;
 mod state;
 mod ui;
+mod workspace_diff;
 
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
 pub use routes::router;
-pub use state::AppState;
+pub use state::{AppState, ServerInfo};
+
+// Re-export so binaries can construct stores / modes without depending
+// on harness-core directly when they only need the permission types.
+pub use harness_core::{PermissionMode, PermissionStore};
 
 use std::net::SocketAddr;
 

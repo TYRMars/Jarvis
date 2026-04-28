@@ -10,6 +10,7 @@ import { t } from "../../utils/i18n";
 import { SendButton, StopButton } from "../ComposerButtons";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { sendFrame, isOpen } from "../../services/socket";
+import { currentJarvisSoulPrompt } from "../../store/persistence";
 
 const PASTE_THRESHOLD_BYTES = 2048;
 
@@ -99,6 +100,8 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
     const frame: any = { type: "user", content };
     if (provider) frame.provider = provider;
     if (model) frame.model = model;
+    const soulPrompt = currentJarvisSoulPrompt();
+    if (soulPrompt) frame.soul_prompt = soulPrompt;
     if (!sendFrame(frame)) {
       store.setInFlight(false);
       return;

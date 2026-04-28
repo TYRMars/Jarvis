@@ -73,6 +73,56 @@ describe("handleFrame: chat / tool flow", () => {
     expect(get().toolBlocks.c.status).toBe("error");
     expect(get().tasks[0].status).toBe("error");
   });
+
+  it("ask.* tool lifecycle stays out of chat tool blocks and task rail", () => {
+    handleFrame({
+      type: "tool_start",
+      id: "ask_1",
+      name: "ask.text",
+      arguments: { title: "Deployment target" },
+    });
+    handleFrame({
+      type: "tool_end",
+      id: "ask_1",
+      name: "ask.text",
+      content: '{"status":"submitted","payload":"staging"}',
+    });
+    expect(get().toolBlocks.ask_1).toBeUndefined();
+    expect(get().tasks).toHaveLength(0);
+  });
+});
+
+describe("handleFrame: native ask flow", () => {
+  it("hitl_request creates a pending ask entry and response resolves it", () => {
+    handleFrame({
+      type: "hitl_request",
+      request: {
+        id: "hitl_1",
+        transport: "text",
+        kind: "input",
+        title: "Deployment target",
+        body: "Which target?",
+      },
+    });
+    expect(get().hitls).toHaveLength(1);
+    expect(get().hitls[0]).toMatchObject({
+      request: { id: "hitl_1", title: "Deployment target" },
+      status: "pending",
+    });
+
+    handleFrame({
+      type: "hitl_response",
+      response: {
+        request_id: "hitl_1",
+        status: "submitted",
+        payload: "staging",
+      },
+    });
+    expect(get().hitls[0]).toMatchObject({
+      status: "submitted",
+      payload: "staging",
+    });
+  });
 });
 
 describe("handleFrame: approval flow", () => {

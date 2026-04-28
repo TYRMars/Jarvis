@@ -12,6 +12,7 @@ import { relTime } from "../../utils/time";
 import { resumeConversation, deleteConversation } from "../../services/conversations";
 import { exportConversationMarkdown } from "../../services/export";
 import type { ConvoListRow } from "../../types/frames";
+import { chipColor } from "./ProjectsList";
 
 interface Props {
   row: ConvoListRow;
@@ -22,6 +23,8 @@ export function ConvoRow({ row, isPinned }: Props) {
   const activeId = useAppStore((s) => s.activeId);
   const togglePin = useAppStore((s) => s.togglePin);
   const setTitleOverride = useAppStore((s) => s.setTitleOverride);
+  const projectsById = useAppStore((s) => s.projectsById);
+  const project = row.project_id ? projectsById[row.project_id] : null;
   // Subscribing to titleOverrides triggers a re-render after rename.
   useAppStore((s) => s.titleOverrides);
 
@@ -106,6 +109,16 @@ export function ConvoRow({ row, isPinned }: Props) {
         </div>
       </div>
       <div className="convo-sub">
+        {project && (
+          <span
+            className="convo-project-chip"
+            title={`Project: ${project.name}`}
+            style={{ ['--chip-color' as any]: chipColor(project.slug) }}
+          >
+            <span className="convo-project-chip-dot" aria-hidden="true" />
+            {project.name}
+          </span>
+        )}
         <span className="meta count">{t("msgCount", row.message_count)}</span>
         <span className="meta time">{relTime(row.updated_at || row.created_at)}</span>
         <span className="id">{row.id.slice(0, 8)}</span>

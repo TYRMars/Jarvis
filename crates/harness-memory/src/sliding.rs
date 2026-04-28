@@ -83,7 +83,9 @@ fn compact(
     let budget = max_tokens.saturating_sub(system_tokens);
 
     let kept = select_recent_turns(&turns, budget, |turn| {
-        turn.iter().map(|&i| estimator.estimate_message(&messages[i])).sum()
+        turn.iter()
+            .map(|&i| estimator.estimate_message(&messages[i]))
+            .sum()
     });
 
     let dropped_turns = turns.len() - kept.len();
@@ -94,9 +96,8 @@ fn compact(
         "compact (sliding)",
     );
 
-    let mut out: Vec<Message> = Vec::with_capacity(
-        system_idxs.len() + kept.iter().map(|t| t.len()).sum::<usize>() + 1,
-    );
+    let mut out: Vec<Message> =
+        Vec::with_capacity(system_idxs.len() + kept.iter().map(|t| t.len()).sum::<usize>() + 1);
     for &i in &system_idxs {
         out.push(messages[i].clone());
     }
@@ -178,7 +179,9 @@ mod tests {
         let out = compact(&msgs, budget, true, &CharRatioEstimator);
 
         // System + marker + turn 2 + turn 3
-        assert!(out.iter().any(|m| matches!(m, Message::System { content, .. } if content == "sys")));
+        assert!(out
+            .iter()
+            .any(|m| matches!(m, Message::System { content, .. } if content == "sys")));
         assert!(out
             .iter()
             .any(|m| matches!(m, Message::User { content } if content == "turn 3 user")));
@@ -296,18 +299,25 @@ mod tests {
         let marker1 = out1
             .iter()
             .find_map(|m| match m {
-                Message::System { content, .. } if content.contains("omitted") => Some(content.clone()),
+                Message::System { content, .. } if content.contains("omitted") => {
+                    Some(content.clone())
+                }
                 _ => None,
             })
             .unwrap();
         let marker2 = out2
             .iter()
             .find_map(|m| match m {
-                Message::System { content, .. } if content.contains("omitted") => Some(content.clone()),
+                Message::System { content, .. } if content.contains("omitted") => {
+                    Some(content.clone())
+                }
                 _ => None,
             })
             .unwrap();
-        assert_eq!(marker1, marker2, "marker must be byte-stable for cache hits");
+        assert_eq!(
+            marker1, marker2,
+            "marker must be byte-stable for cache hits"
+        );
     }
 
     #[test]

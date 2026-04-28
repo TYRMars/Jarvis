@@ -21,15 +21,39 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::BoxError;
+use crate::permission::HitSource;
+use crate::tool::ToolCategory;
 
 /// What the agent shows to the approver. Mirrors the on-the-wire shape
 /// emitted as `AgentEvent::ApprovalRequest` so transports can
 /// re-serialise without translation.
+///
+/// `category` is the tool's `ToolCategory` — the rule engine's
+/// mode-default mapping uses it so [`crate::permission::RuleApprover`]
+/// can compute "auto-allow if mode is `accept-edits` and category is
+/// `Write`" without re-fetching the tool object. The wire shape
+/// serialises it as a snake_case string; transports that don't care
+/// can ignore the field.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApprovalRequest {
     pub tool_call_id: String,
     pub tool_name: String,
     pub arguments: Value,
+    /// Side-effect category of the tool being requested. Defaults to
+    /// `Write` for backward compatibility with hand-built `ApprovalRequest`
+    /// values in tests; the agent loop fills this in correctly from
+    /// `Tool::category()`.
+    #[serde(default = "default_category")]
+    pub category: ToolCategory,
+}
+
+// Wired via `#[serde(default = "...")]` above; the compiler can't see
+// that path so it warns about dead code. Silence the warning rather
+// than work around it — this `default_category` deliberately exists
+// for the serde derive's benefit.
+#[allow(dead_code)]
+fn default_category() -> ToolCategory {
+    ToolCategory::Write
 }
 
 /// The approver's verdict. Includes an optional human-readable reason
@@ -55,8 +79,23 @@ impl ApprovalDecision {
 /// Decide whether a tool invocation should proceed.
 #[async_trait]
 pub trait Approver: Send + Sync {
-    async fn approve(&self, request: ApprovalRequest)
-        -> Result<ApprovalDecision, BoxError>;
+    async fn approve(&self, request: ApprovalRequest) -> Result<ApprovalDecision, BoxError>;
+
+    /// Like [`Self::approve`] but also returns where the decision came
+    /// from. Default impl calls `approve` and tags the source as
+    /// [`HitSource::UserPrompt`] — the right answer for any approver
+    /// that's just a UI prompt or a fixed-policy stub. Rule-driven
+    /// approvers ([`crate::permission::RuleApprover`]) override to
+    /// surface the actual rule / mode-default that fired, so
+    /// transports can render "auto-allowed by user-scope rule" in the
+    /// audit timeline.
+    async fn approve_with_source(
+        &self,
+        request: ApprovalRequest,
+    ) -> Result<(ApprovalDecision, HitSource), BoxError> {
+        let d = self.approve(request).await?;
+        Ok((d, HitSource::UserPrompt))
+    }
 }
 
 /// Always say yes. Useful as an explicit no-op when wiring the trait to
@@ -65,10 +104,7 @@ pub struct AlwaysApprove;
 
 #[async_trait]
 impl Approver for AlwaysApprove {
-    async fn approve(
-        &self,
-        _request: ApprovalRequest,
-    ) -> Result<ApprovalDecision, BoxError> {
+    async fn approve(&self, _request: ApprovalRequest) -> Result<ApprovalDecision, BoxError> {
         Ok(ApprovalDecision::Approve)
     }
 }
@@ -79,10 +115,7 @@ pub struct AlwaysDeny;
 
 #[async_trait]
 impl Approver for AlwaysDeny {
-    async fn approve(
-        &self,
-        _request: ApprovalRequest,
-    ) -> Result<ApprovalDecision, BoxError> {
+    async fn approve(&self, _request: ApprovalRequest) -> Result<ApprovalDecision, BoxError> {
         Ok(ApprovalDecision::deny("default deny policy"))
     }
 }
@@ -122,10 +155,7 @@ impl ChannelApprover {
 
 #[async_trait]
 impl Approver for ChannelApprover {
-    async fn approve(
-        &self,
-        request: ApprovalRequest,
-    ) -> Result<ApprovalDecision, BoxError> {
+    async fn approve(&self, request: ApprovalRequest) -> Result<ApprovalDecision, BoxError> {
         let (responder, rx) = oneshot::channel();
         let pending = PendingApproval { request, responder };
         self.tx
@@ -147,6 +177,7 @@ mod tests {
             tool_call_id: "call_1".into(),
             tool_name: "fs.write".into(),
             arguments: json!({"path":"a.txt"}),
+            category: ToolCategory::Write,
         }
     }
 

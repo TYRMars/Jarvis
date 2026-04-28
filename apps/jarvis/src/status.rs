@@ -40,11 +40,7 @@ pub fn run(explicit: Option<&Path>) -> Result<()> {
     println!();
 
     // ---- provider ----
-    let provider = pick_string(
-        "JARVIS_PROVIDER",
-        cfg.default_provider.as_deref(),
-        "openai",
-    );
+    let provider = pick_string("JARVIS_PROVIDER", cfg.default_provider.as_deref(), "openai");
     let primary_section = cfg.provider(&provider);
     let model = pick_string_opt("JARVIS_MODEL", primary_section.default_model.as_deref())
         .unwrap_or_else(|| default_model_for(&provider).to_string());
@@ -75,6 +71,7 @@ pub fn run(explicit: Option<&Path>) -> Result<()> {
         ("codex", None),
         ("kimi", Some("KIMI_API_KEY")),
         ("kimi-code", Some("KIMI_CODE_API_KEY")),
+        ("ollama", Some("OLLAMA_API_KEY")),
     ] {
         let active = id == provider;
         let marker = if active { "▸" } else { " " };
@@ -88,15 +85,23 @@ pub fn run(explicit: Option<&Path>) -> Result<()> {
         .unwrap_or_else(|| ".".to_string());
     let fs_write = pick_bool("JARVIS_ENABLE_FS_WRITE", cfg.tools.enable_fs_write);
     let fs_edit = pick_bool("JARVIS_ENABLE_FS_EDIT", cfg.tools.enable_fs_edit);
+    let fs_patch = pick_bool("JARVIS_ENABLE_FS_PATCH", cfg.tools.enable_fs_patch);
     let shell = pick_bool("JARVIS_ENABLE_SHELL_EXEC", cfg.tools.enable_shell_exec);
+    let git_disabled = std::env::var_os("JARVIS_DISABLE_GIT_READ").is_some()
+        || cfg.tools.enable_git_read == Some(false);
     println!("Tools:");
     println!("  fs_root:      {fs_root}");
+    println!("  workspace.context  always on");
+    println!("  project.checks     always on");
+    println!("  plan.update        always on");
     println!("  fs.read       always on");
     println!("  fs.list       always on");
     println!("  code.grep     always on");
     println!("  http.fetch    always on");
+    println!("  git.*         {}", on_off(!git_disabled));
     println!("  fs.write      {}", on_off(fs_write));
     println!("  fs.edit       {}", on_off(fs_edit));
+    println!("  fs.patch      {}", on_off(fs_patch));
     println!("  shell.exec    {}", on_off(shell));
     let mcp_count = mcp_count(&cfg);
     println!(
@@ -177,6 +182,15 @@ fn describe_auth(provider: &str, env_var: Option<&str>, cfg: &Config) -> String 
     } else if let Some(env_var) = env_var {
         if std::env::var_os(env_var).is_some() {
             return format!("✓ {} env var set", env_var);
+        }
+        // Ollama doesn't require a key — only some hosted proxies do.
+        // Skip the "✗ no key" pessimism in the common local-server case.
+        if provider == "ollama" {
+            let disk = auth_store::load_api_key("ollama").ok().flatten();
+            return match disk {
+                Some(key) => format!("✓ disk: {}", redact(&key)),
+                None => "○ no key (local server doesn't need one)".into(),
+            };
         }
         // `openai-responses` reuses the same key as `openai` (same
         // `OPENAI_API_KEY`). Look up under both names so we don't
@@ -262,6 +276,14 @@ fn endpoint_hint(provider: &str, cfg: &Config) -> String {
                 "KIMI_CODE_BASE_URL",
                 section.base_url.as_deref(),
                 "https://api.kimi.com/coding/v1",
+            )
+        ),
+        "ollama" => format!(
+            "{}/chat/completions",
+            base(
+                "OLLAMA_BASE_URL",
+                section.base_url.as_deref(),
+                "http://localhost:11434/v1",
             )
         ),
         other => format!("(unknown provider: {other})"),

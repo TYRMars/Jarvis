@@ -89,7 +89,11 @@ pub fn estimate_tokens(message: &Message) -> usize {
 
     let chars: usize = match message {
         Message::System { content, .. } | Message::User { content } => content.chars().count(),
-        Message::Assistant { content, tool_calls, reasoning_content } => {
+        Message::Assistant {
+            content,
+            tool_calls,
+            reasoning_content,
+        } => {
             let body = content.as_deref().map(|s| s.chars().count()).unwrap_or(0);
             let reasoning = reasoning_content
                 .as_deref()
@@ -105,9 +109,10 @@ pub fn estimate_tokens(message: &Message) -> usize {
                 .sum();
             body + reasoning + calls
         }
-        Message::Tool { tool_call_id, content } => {
-            tool_call_id.chars().count() + content.chars().count()
-        }
+        Message::Tool {
+            tool_call_id,
+            content,
+        } => tool_call_id.chars().count() + content.chars().count(),
     };
     chars.div_ceil(4) + PER_MESSAGE_OVERHEAD
 }
