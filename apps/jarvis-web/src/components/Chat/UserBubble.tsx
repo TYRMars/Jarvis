@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { sendFrame, isOpen } from "../../services/socket";
+import { currentJarvisSoulPrompt } from "../../store/persistence";
 
 interface Props {
   uid: string;
@@ -69,6 +70,8 @@ export function UserBubble({ uid: _uid, content, userOrdinal }: Props) {
                 if (provider) frame.provider = provider;
                 if (model) frame.model = model;
               }
+              const soulPrompt = currentJarvisSoulPrompt();
+              if (soulPrompt) frame.soul_prompt = soulPrompt;
               if (!sendFrame(frame)) {
                 setEditing(false);
                 return;

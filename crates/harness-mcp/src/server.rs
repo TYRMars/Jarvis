@@ -64,10 +64,7 @@ impl McpServer {
                 None,
             ));
         };
-        let args = params
-            .arguments
-            .map(Value::Object)
-            .unwrap_or(Value::Null);
+        let args = params.arguments.map(Value::Object).unwrap_or(Value::Null);
         match tool.invoke(args).await {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
@@ -122,8 +119,12 @@ mod tests {
 
     #[async_trait]
     impl Tool for HelloTool {
-        fn name(&self) -> &str { "hello" }
-        fn description(&self) -> &str { "Say hello." }
+        fn name(&self) -> &str {
+            "hello"
+        }
+        fn description(&self) -> &str {
+            "Say hello."
+        }
         fn parameters(&self) -> Value {
             json!({ "type": "object", "properties": { "who": { "type": "string" } } })
         }
@@ -148,12 +149,11 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(HelloTool);
         let server = McpServer::new(Arc::new(registry));
-        let params = CallToolRequestParams::new("hello")
-            .with_arguments({
-                let mut m = JsonObject::new();
-                m.insert("who".into(), json!("jarvis"));
-                m
-            });
+        let params = CallToolRequestParams::new("hello").with_arguments({
+            let mut m = JsonObject::new();
+            m.insert("who".into(), json!("jarvis"));
+            m
+        });
         let res = server.call_tool_sync(params).await.unwrap();
         assert!(res.is_error != Some(true));
         let text = match &res.content[0].raw {

@@ -372,9 +372,7 @@ impl LlmProvider for ResponsesProvider {
         let mut last_finish: Option<(Message, FinishReason)> = None;
         while let Some(chunk) = stream.next().await {
             match chunk? {
-                LlmChunk::ContentDelta(_)
-                | LlmChunk::ToolCallDelta { .. }
-                | LlmChunk::Usage(_) => {
+                LlmChunk::ContentDelta(_) | LlmChunk::ToolCallDelta { .. } | LlmChunk::Usage(_) => {
                     // Aggregated form arrives in the trailing `Finish`
                     // chunk; the per-token deltas are noise here.
                 }
@@ -389,7 +387,10 @@ impl LlmProvider for ResponsesProvider {
         let (message, finish_reason) = last_finish.ok_or_else(|| {
             Error::Provider("responses stream ended without a Finish chunk".into())
         })?;
-        Ok(ChatResponse { message, finish_reason })
+        Ok(ChatResponse {
+            message,
+            finish_reason,
+        })
     }
 
     async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream> {
@@ -564,10 +565,7 @@ impl ResponsesRequest {
         }
         // Emit the `reasoning` block when EITHER summary or effort
         // is configured. Both are optional independently.
-        let reasoning = match (
-            cfg.reasoning_summary.clone(),
-            cfg.reasoning_effort.clone(),
-        ) {
+        let reasoning = match (cfg.reasoning_summary.clone(), cfg.reasoning_effort.clone()) {
             (None, None) => None,
             (summary, effort) => Some(ReasoningConfig { summary, effort }),
         };
@@ -650,7 +648,9 @@ fn convert_messages(messages: Vec<Message>) -> (Option<String>, Vec<InputItem>) 
             }
             Message::Assistant {
                 content,
-                tool_calls, reasoning_content: _ } => {
+                tool_calls,
+                reasoning_content: _,
+            } => {
                 if let Some(text) = content {
                     if !text.is_empty() {
                         input.push(InputItem::Message {
@@ -799,10 +799,7 @@ struct IncompleteDetails {
 
 impl ResponsesResponseBody {
     #[allow(dead_code)]
-    fn into_chat_response(
-        self,
-        name_map: &HashMap<String, String>,
-    ) -> Result<ChatResponse> {
+    fn into_chat_response(self, name_map: &HashMap<String, String>) -> Result<ChatResponse> {
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         for item in self.output {
@@ -839,7 +836,9 @@ impl ResponsesResponseBody {
         Ok(ChatResponse {
             message: Message::Assistant {
                 content,
-                tool_calls, reasoning_content: None },
+                tool_calls,
+                reasoning_content: None,
+            },
             finish_reason,
         })
     }
@@ -936,10 +935,7 @@ impl StreamAccumulator {
     fn ingest(&mut self, ev: StreamEvent) -> Result<Vec<LlmChunk>> {
         let mut out = Vec::new();
         match ev {
-            StreamEvent::OutputItemAdded {
-                output_index,
-                item,
-            } => {
+            StreamEvent::OutputItemAdded { output_index, item } => {
                 if let OutputItem::FunctionCall { call_id, name, .. } = &item {
                     let original = restore_tool_name(&self.name_map, name);
                     out.push(LlmChunk::ToolCallDelta {
@@ -1005,14 +1001,12 @@ impl StreamAccumulator {
     fn finalise(&mut self) -> LlmChunk {
         self.finished = true;
         let tool_calls = std::mem::take(&mut self.tool_calls);
-        let incomplete = self.incomplete_reason.take().map(|r| IncompleteDetails {
-            reason: Some(r),
-        });
-        let finish_reason = map_finish_reason(
-            self.status.as_deref(),
-            incomplete.as_ref(),
-            &tool_calls,
-        );
+        let incomplete = self
+            .incomplete_reason
+            .take()
+            .map(|r| IncompleteDetails { reason: Some(r) });
+        let finish_reason =
+            map_finish_reason(self.status.as_deref(), incomplete.as_ref(), &tool_calls);
         let content = if self.text.is_empty() {
             None
         } else {
@@ -1021,7 +1015,9 @@ impl StreamAccumulator {
         LlmChunk::Finish {
             message: Message::Assistant {
                 content,
-                tool_calls, reasoning_content: None },
+                tool_calls,
+                reasoning_content: None,
+            },
             finish_reason,
         }
     }
@@ -1059,10 +1055,7 @@ mod tests {
     #[test]
     fn convert_pulls_system_to_instructions() {
         let body = build(
-            req_with(vec![
-                Message::system("you are jarvis"),
-                Message::user("hi"),
-            ]),
+            req_with(vec![Message::system("you are jarvis"), Message::user("hi")]),
             &default_codex_cfg(),
             false,
         );
@@ -1326,7 +1319,11 @@ mod tests {
 
     #[test]
     fn convert_default_omits_optional_fields() {
-        let body = build(req_with(vec![Message::user("hi")]), &default_codex_cfg(), false);
+        let body = build(
+            req_with(vec![Message::user("hi")]),
+            &default_codex_cfg(),
+            false,
+        );
         let v = body_value(&body);
         assert_eq!(v["store"], false);
         assert_eq!(v["tool_choice"], "auto");
@@ -1439,7 +1436,9 @@ mod tests {
         match resp.message {
             Message::Assistant {
                 content,
-                tool_calls, reasoning_content: _ } => {
+                tool_calls,
+                reasoning_content: _,
+            } => {
                 assert_eq!(content.as_deref(), Some("hello world"));
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "fc_1");
@@ -1536,7 +1535,9 @@ mod tests {
                 match message {
                     Message::Assistant {
                         content,
-                        tool_calls, reasoning_content: _ } => {
+                        tool_calls,
+                        reasoning_content: _,
+                    } => {
                         assert_eq!(content.as_deref(), Some("Hello"));
                         assert!(tool_calls.is_empty());
                     }
@@ -1649,7 +1650,9 @@ mod tests {
                 match message {
                     Message::Assistant {
                         content,
-                        tool_calls, reasoning_content: _ } => {
+                        tool_calls,
+                        reasoning_content: _,
+                    } => {
                         assert!(content.is_none());
                         assert!(tool_calls.is_empty());
                     }

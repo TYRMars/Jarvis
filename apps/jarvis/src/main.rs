@@ -27,6 +27,7 @@ mod auth_store;
 mod config;
 mod init;
 mod login;
+mod project_cmd;
 mod serve;
 mod status;
 
@@ -105,6 +106,27 @@ enum Cmd {
     },
     /// Print current config and auth status.
     Status,
+    /// Print the resolved workspace root + git state. Useful for
+    /// scripts and ops checks: confirms what `JARVIS_FS_ROOT` /
+    /// `--workspace` / `[tools].fs_root` collapsed to without
+    /// starting the server.
+    Workspace {
+        /// Workspace path (same precedence as `jarvis serve --workspace`).
+        /// Falls back to env / config / `.` when omitted.
+        #[arg(long, alias = "fs-root", value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        /// Emit JSON instead of the human-readable lines. Same shape
+        /// as `GET /v1/workspace`.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage Project context containers. Talks directly to the
+    /// configured store (`JARVIS_DB_URL` / `[persistence].url`); no
+    /// running server required.
+    Project {
+        #[command(subcommand)]
+        cmd: project_cmd::ProjectCmd,
+    },
 }
 
 #[derive(Args, Debug, Default)]
@@ -128,6 +150,33 @@ pub(crate) struct ServeArgs {
     /// the config file; the primary `--provider` is always enabled.
     #[arg(long = "enable", value_name = "NAME")]
     pub enable: Vec<String>,
+
+    /// Workspace root for all `fs.*`, `git.*`, `code.grep`, and
+    /// `shell.exec` tools. Overrides config and `JARVIS_FS_ROOT`.
+    /// `--fs-root` is kept as an alias for symmetry with the env var.
+    /// Defaults to the current working directory.
+    #[arg(long, alias = "fs-root", value_name = "PATH")]
+    pub workspace: Option<PathBuf>,
+
+    /// Default permission mode for new WS sessions. Each session can
+    /// flip its own mode at runtime; this is just the boot baseline.
+    /// Accepts `ask` (default), `accept-edits`, `plan`, `auto`, or
+    /// `bypass` (the last requires `--dangerously-skip-permissions`).
+    #[arg(long, value_name = "MODE")]
+    pub permission_mode: Option<String>,
+
+    /// Allow `--permission-mode bypass`. The flag name is the warning:
+    /// bypass mode skips the rule engine entirely. Recommended only
+    /// inside isolated sandboxes (containers, VMs).
+    #[arg(long)]
+    pub dangerously_skip_permissions: bool,
+
+    /// Permit bypass mode while listening on a non-loopback address.
+    /// Without this, `serve --addr 0.0.0.0:... --permission-mode bypass`
+    /// refuses to start so you don't accidentally expose a no-prompt
+    /// agent on your LAN.
+    #[arg(long)]
+    pub bypass_on_network: bool,
 }
 
 #[tokio::main]
@@ -143,6 +192,7 @@ async fn main() -> Result<()> {
     if let Some((path, _)) = &loaded {
         info!(config_path = %path.display(), "loaded config file");
     }
+    let config_path = loaded.as_ref().map(|(p, _)| p.clone());
     let cfg = loaded.map(|(_, c)| c);
 
     // Backwards-compat: the historic `--mcp-serve` flag still routes
@@ -152,7 +202,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command.unwrap_or(Cmd::Serve(ServeArgs::default())) {
-        Cmd::Serve(args) => serve::run(cfg, args).await,
+        Cmd::Serve(args) => serve::run(cfg, args, config_path).await,
         Cmd::McpServe => serve::run_mcp(cfg).await,
         Cmd::Init { force } => init::run(force),
         Cmd::Login {
@@ -163,6 +213,8 @@ async fn main() -> Result<()> {
         } => login::run(provider, key, device_code, no_set_default).await,
         Cmd::Logout { provider } => logout(provider),
         Cmd::Status => status::run(cli.config.as_deref()),
+        Cmd::Workspace { workspace, json } => serve::run_workspace(cfg, workspace, json).await,
+        Cmd::Project { cmd } => project_cmd::run(cfg, cmd).await,
     }
 }
 
@@ -184,4 +236,3 @@ fn logout(provider: Option<String>) -> Result<()> {
     }
     Ok(())
 }
-

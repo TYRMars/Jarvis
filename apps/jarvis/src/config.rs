@@ -56,6 +56,8 @@ pub struct Config {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(skip_serializing_if = "is_default")]
+    pub agent: AgentSection,
+    #[serde(skip_serializing_if = "is_default")]
     pub tools: ToolsSection,
     #[serde(skip_serializing_if = "is_default")]
     pub memory: MemorySection,
@@ -82,6 +84,36 @@ pub struct ServerSection {
     /// e.g. `"127.0.0.1:7001"`. Maps to `JARVIS_ADDR`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addr: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentSection {
+    /// Explicit override for the agent's system prompt. When set,
+    /// this string is used verbatim and the auto coding-prompt
+    /// pick is skipped. Use this when you want a fixed persona
+    /// (e.g. `"You are a Rust mentor reviewing PRs"`) regardless
+    /// of which tools are enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Whether to swap the default system prompt for a coding-aware
+    /// one when any mutation tool (`fs.edit`, `fs.write`,
+    /// `shell.exec`) is enabled. Defaults to `true`. Set to `false`
+    /// to keep the simple "you are Jarvis" prompt even in coding
+    /// mode. Ignored when `system_prompt` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coding_prompt_auto: Option<bool>,
+    /// Whether to auto-load `AGENTS.md` / `CLAUDE.md` / `AGENT.md`
+    /// from the workspace root and append them to the system prompt.
+    /// Defaults to `true` (the de-facto standard for coding agents).
+    /// Env override: `JARVIS_NO_PROJECT_CONTEXT=1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_project_context: Option<bool>,
+    /// Cap on combined size (bytes) of the auto-loaded project
+    /// context. Defaults to 32 KiB. Env override:
+    /// `JARVIS_PROJECT_CONTEXT_BYTES`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_context_max_bytes: Option<usize>,
 }
 
 /// Per-provider config. All fields optional; provider-specific
@@ -173,7 +205,19 @@ pub struct ToolsSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_fs_edit: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_fs_patch: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_shell_exec: Option<bool>,
+    /// Whether to register the read-only `git.*` tools. Defaults to `true`;
+    /// set to `false` (or `JARVIS_DISABLE_GIT_READ=1`) to skip them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_git_read: Option<bool>,
+    /// Whether to register the write-side git tools (`git.add`,
+    /// `git.commit`, `git.merge`). Defaults to `false`; flip to `true`
+    /// (or set `JARVIS_ENABLE_GIT_WRITE=1`) to enable. All three are
+    /// approval-gated regardless of this flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_git_write: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_timeout_ms: Option<u64>,
     /// `none` (default), `auto`, `bubblewrap` / `bwrap`,
@@ -411,10 +455,12 @@ mod tests {
 
     #[test]
     fn discover_explicit_missing_errors() {
-        let err = Config::discover(Some(Path::new("/no/such/file.json")))
-            .unwrap_err();
+        let err = Config::discover(Some(Path::new("/no/such/file.json"))).unwrap_err();
         let s = err.to_string();
-        assert!(s.contains("read config") || s.contains("/no/such"), "got: {s}");
+        assert!(
+            s.contains("read config") || s.contains("/no/such"),
+            "got: {s}"
+        );
     }
 
     #[test]

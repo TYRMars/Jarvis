@@ -33,11 +33,7 @@ pub struct McpClientConfig {
 }
 
 impl McpClientConfig {
-    pub fn new(
-        prefix: impl Into<String>,
-        command: impl Into<String>,
-        args: Vec<String>,
-    ) -> Self {
+    pub fn new(prefix: impl Into<String>, command: impl Into<String>, args: Vec<String>) -> Self {
         Self {
             prefix: prefix.into(),
             command: command.into(),
@@ -77,11 +73,7 @@ impl McpClient {
         let mut count = 0;
         for tool in tools {
             let name = format!("{}.{}", self.prefix, tool.name);
-            let description = tool
-                .description
-                .as_deref()
-                .unwrap_or("")
-                .to_string();
+            let description = tool.description.as_deref().unwrap_or("").to_string();
             let parameters = Value::Object((*tool.input_schema).clone());
             let remote_name = tool.name.to_string();
             registry.register_arc(Arc::new(RemoteTool {
@@ -145,24 +137,28 @@ impl Tool for RemoteTool {
         if matches!(result.is_error, Some(true)) {
             return Err(format_error(&result.content).into());
         }
-        Ok(format_content(&result.content, result.structured_content.as_ref()))
+        Ok(format_content(
+            &result.content,
+            result.structured_content.as_ref(),
+        ))
     }
 }
 
-fn format_content(
-    content: &[rmcp::model::Content],
-    structured: Option<&Value>,
-) -> String {
+fn format_content(content: &[rmcp::model::Content], structured: Option<&Value>) -> String {
     let mut parts = Vec::new();
     for c in content {
         match &c.raw {
             RawContent::Text(t) => parts.push(t.text.clone()),
-            RawContent::Image(i) => {
-                parts.push(format!("<image mime={} size={}>", i.mime_type, i.data.len()))
-            }
-            RawContent::Audio(a) => {
-                parts.push(format!("<audio mime={} size={}>", a.mime_type, a.data.len()))
-            }
+            RawContent::Image(i) => parts.push(format!(
+                "<image mime={} size={}>",
+                i.mime_type,
+                i.data.len()
+            )),
+            RawContent::Audio(a) => parts.push(format!(
+                "<audio mime={} size={}>",
+                a.mime_type,
+                a.data.len()
+            )),
             RawContent::Resource(r) => parts.push(format!("<resource: {:?}>", r.resource)),
             RawContent::ResourceLink(l) => parts.push(format!("<resource link: {}>", l.uri)),
         }

@@ -3,44 +3,54 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::{
-        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse, Json, Response,
+        sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
-    Router,
 };
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use harness_core::{
-    AgentEvent, ApprovalDecision, Approver, ChannelApprover, Conversation, Message,
-    RunOutcome,
+    AgentEvent, ApprovalDecision, Approver, ChannelApprover, Conversation, ConversationMetadata,
+    HitlResponse, HitlStatus, Message, PendingHitl, RunOutcome,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
 use uuid::Uuid;
 
 use crate::conversations::{self, is_internal_id};
+use crate::permissions;
+use crate::project_binder::{materialise, strip_project_block};
+use crate::projects::{self, lookup_project};
 use crate::state::AppState;
 use crate::ui;
+use crate::workspace_diff;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/providers", get(list_providers))
+        .route("/v1/workspace", get(get_workspace))
+        .route("/v1/server/info", get(get_server_info))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/chat/completions/stream", post(chat_completions_stream))
         .route("/v1/chat/ws", get(chat_ws))
         .merge(conversations::router())
+        .merge(projects::router())
+        .merge(permissions::router())
+        .merge(workspace_diff::router())
         .merge(ui::router())
+        .fallback(ui::spa_fallback)
         .with_state(state)
 }
 
@@ -53,6 +63,191 @@ async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
         "default": state.providers.default_name(),
         "providers": state.providers.list(),
     }))
+}
+
+/// `GET /v1/workspace` — what root and VCS state am I operating in?
+///
+/// Returns `{root, vcs, branch?, head?, dirty?}`. Same shape as a
+/// trimmed `workspace.context` (no manifest scan, no top-level
+/// listing) — meant for at-a-glance UI badges and ops scripts. The
+/// git probe runs each call so a long-lived UI sees branch /
+/// dirty changes when it refreshes.
+///
+/// Returns 503 if the binary didn't pin a workspace root (test
+/// harnesses, raw `AppState::new` callers) — the field is optional
+/// on `AppState` but every realistic deployment sets it.
+async fn get_workspace(State(state): State<AppState>) -> Response {
+    let Some(root) = state.workspace_root.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "workspace root not configured" })),
+        )
+            .into_response();
+    };
+    let snapshot = workspace_snapshot(root).await;
+    Json(snapshot).into_response()
+}
+
+/// `GET /v1/server/info` — runtime snapshot of the jarvis serve
+/// process. Read-only; the Settings page uses it to render the
+/// "Server" section without the user having to grep env vars / read
+/// the config file.
+///
+/// Response shape:
+///
+/// ```json
+/// {
+///   "version": "0.1.0",
+///   "listen_addr": "0.0.0.0:7001" | null,
+///   "config_path": "/.../config.json" | null,
+///   "persistence": "sqlite" | null,         // URL scheme only — never the URL
+///   "project_store": true,
+///   "memory": { "mode": "summary", "budget_tokens": 8000 } | null,
+///   "approval_mode": "auto" | "deny" | null,
+///   "coding_mode": true,
+///   "project_context": { "loaded": true, "max_bytes": 32768 } | null,
+///   "system_prompt": { "length": 1234, "preview": "..." },
+///   "max_iterations": 30,
+///   "tools": ["fs.read", "fs.list", ...],
+///   "tool_count": 17,
+///   "mcp_servers": ["github"],
+///   "providers": [...same shape as /v1/providers...],
+///   "workspace_root": "/path" | null
+/// }
+/// ```
+///
+/// **No secrets**: persistence URL credentials, API keys, OAuth
+/// tokens are never included.
+async fn get_server_info(State(state): State<AppState>) -> Response {
+    let info = &state.server_info;
+    let template = &state.agent_template;
+
+    // Tool list — sort for stable order in the UI.
+    let mut tools: Vec<String> = template.tools.specs().into_iter().map(|s| s.name).collect();
+    tools.sort();
+    let tool_count = tools.len();
+
+    let memory = info
+        .memory_mode
+        .as_ref()
+        .map(|mode| {
+            json!({
+                "mode": mode,
+                "budget_tokens": info.memory_budget_tokens,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null);
+
+    let project_context = if info.project_context_loaded {
+        json!({
+            "loaded": true,
+            "max_bytes": info.project_context_bytes_cap,
+        })
+    } else {
+        json!({
+            "loaded": false,
+            "max_bytes": info.project_context_bytes_cap,
+        })
+    };
+
+    let prompt_text = template.system_prompt.as_deref().unwrap_or("");
+    let prompt_len = prompt_text.chars().count();
+    let preview_len = prompt_len.min(280);
+    let preview: String = prompt_text.chars().take(preview_len).collect();
+
+    Json(json!({
+        "version": info.version,
+        "listen_addr": info.listen_addr,
+        "config_path": info.config_path.as_ref().map(|p| p.display().to_string()),
+        "persistence": info.persistence_scheme,
+        "project_store": state.projects.is_some(),
+        "memory": memory,
+        "approval_mode": info.approval_mode,
+        "coding_mode": info.coding_mode,
+        "project_context": project_context,
+        "system_prompt": {
+            "length": prompt_len,
+            "preview": preview,
+        },
+        "max_iterations": template.max_iterations,
+        "tools": tools,
+        "tool_count": tool_count,
+        "mcp_servers": info.mcp_prefixes,
+        "providers": state.providers.list(),
+        "workspace_root": state.workspace_root.as_ref().map(|p| p.display().to_string()),
+    }))
+    .into_response()
+}
+
+async fn workspace_snapshot(root: &std::path::Path) -> serde_json::Value {
+    let canonical = tokio::fs::canonicalize(root)
+        .await
+        .unwrap_or_else(|_| root.to_path_buf());
+    let display = canonical.display().to_string();
+    let git = probe_git(&canonical).await;
+    match git {
+        Some(g) => json!({
+            "root": display,
+            "vcs": "git",
+            "branch": g.branch,
+            "head": g.head,
+            "dirty": g.dirty,
+        }),
+        None => json!({
+            "root": display,
+            "vcs": "none",
+        }),
+    }
+}
+
+struct GitSnapshot {
+    branch: Option<String>,
+    head: Option<String>,
+    dirty: bool,
+}
+
+async fn probe_git(root: &std::path::Path) -> Option<GitSnapshot> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+    let run = |args: Vec<&'static str>| {
+        let root = root.to_path_buf();
+        async move {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .output()
+                .await
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+    };
+    let inside = run(vec!["rev-parse", "--is-inside-work-tree"]).await?;
+    if inside != "true" {
+        return None;
+    }
+    let branch = run(vec!["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .filter(|s| !s.is_empty() && s != "HEAD");
+    let head = run(vec!["rev-parse", "--short", "HEAD"])
+        .await
+        .filter(|s| !s.is_empty());
+    let dirty = !run(vec!["status", "--porcelain"])
+        .await
+        .unwrap_or_default()
+        .is_empty();
+    Some(GitSnapshot {
+        branch,
+        head,
+        dirty,
+    })
 }
 
 // ----------------------- /v1/chat/completions (JSON) -----------------------
@@ -79,7 +274,9 @@ async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionsRequest>,
 ) -> Response {
-    let mut conv = Conversation { messages: req.messages };
+    let mut conv = Conversation {
+        messages: req.messages,
+    };
     let agent = match state.build_agent(req.provider.as_deref(), req.model.as_deref()) {
         Ok(a) => a,
         Err(e) => return route_error(e),
@@ -110,7 +307,10 @@ async fn chat_completions(
         }
         Err(e) => {
             error!(error = %e, "agent run failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
                 .into_response()
         }
     }
@@ -122,7 +322,9 @@ async fn chat_completions_stream(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionsRequest>,
 ) -> Response {
-    let conv = Conversation { messages: req.messages };
+    let conv = Conversation {
+        messages: req.messages,
+    };
     let agent = match state.build_agent(req.provider.as_deref(), req.model.as_deref()) {
         Ok(a) => a,
         Err(e) => return route_error(e),
@@ -132,7 +334,9 @@ async fn chat_completions_stream(
             .unwrap_or_else(|e| format!(r#"{{"type":"error","message":"serialize: {e}"}}"#));
         Ok::<_, Infallible>(Event::default().data(payload))
     });
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 fn route_error(e: crate::provider_registry::RouteError) -> Response {
@@ -162,6 +366,8 @@ enum WsClientMessage {
         model: Option<String>,
         #[serde(default)]
         provider: Option<String>,
+        #[serde(default)]
+        soul_prompt: Option<String>,
     },
     /// Drop all prior turns from the in-memory conversation. Also exits
     /// persisted mode, so subsequent turns won't be saved unless the
@@ -178,7 +384,10 @@ enum WsClientMessage {
         provider: Option<String>,
     },
     /// Start a fresh persisted conversation. If `id` is omitted, the
-    /// server allocates a UUID and reports it back.
+    /// server allocates a UUID and reports it back. Optional
+    /// `project_id` (UUID or slug) binds the new conversation to a
+    /// project — its instructions are then re-injected as a system
+    /// message at every turn (see `crate::project_binder`).
     New {
         #[serde(default)]
         id: Option<String>,
@@ -186,6 +395,8 @@ enum WsClientMessage {
         model: Option<String>,
         #[serde(default)]
         provider: Option<String>,
+        #[serde(default)]
+        project_id: Option<String>,
     },
     /// Update the socket's default provider/model selection without
     /// running a turn. Subsequent `User` frames without their own
@@ -203,6 +414,15 @@ enum WsClientMessage {
     /// `tool denied: <reason>` result back to the model so it can adapt.
     Deny {
         tool_call_id: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Respond to a native HITL request emitted by an `ask.*` tool.
+    HitlResponse {
+        request_id: String,
+        status: HitlStatus,
+        #[serde(default)]
+        payload: Option<Value>,
         #[serde(default)]
         reason: Option<String>,
     },
@@ -226,7 +446,24 @@ enum WsClientMessage {
         model: Option<String>,
         #[serde(default)]
         provider: Option<String>,
+        #[serde(default)]
+        soul_prompt: Option<String>,
     },
+    /// Switch the per-socket permission mode at runtime. Bypass is
+    /// rejected — that mode requires `--dangerously-skip-permissions`
+    /// at process start and isn't reachable via WS.
+    SetMode { mode: harness_core::PermissionMode },
+    /// Accept a previously-emitted plan (`AgentEvent::PlanProposed`)
+    /// and switch to `post_mode` so subsequent turns can execute.
+    /// The agent does not auto-resume — the user's next message
+    /// kicks off the next turn in the new mode.
+    AcceptPlan {
+        post_mode: harness_core::PermissionMode,
+    },
+    /// Send refinement feedback for a proposed plan. Equivalent to
+    /// sending a `User` frame with the same content; kept as a
+    /// distinct frame so the client can label the bubble.
+    RefinePlan { feedback: String },
 }
 
 /// Static label for a `WsClientMessage` variant — used by the
@@ -241,9 +478,59 @@ fn client_msg_kind(msg: &WsClientMessage) -> &'static str {
         WsClientMessage::Configure { .. } => "configure",
         WsClientMessage::Approve { .. } => "approve",
         WsClientMessage::Deny { .. } => "deny",
+        WsClientMessage::HitlResponse { .. } => "hitl_response",
         WsClientMessage::Interrupt => "interrupt",
         WsClientMessage::Fork { .. } => "fork",
+        WsClientMessage::SetMode { .. } => "set_mode",
+        WsClientMessage::AcceptPlan { .. } => "accept_plan",
+        WsClientMessage::RefinePlan { .. } => "refine_plan",
     }
+}
+
+struct TurnInjection {
+    project: crate::project_binder::PreparedConversation,
+    soul_injected_at: Option<usize>,
+}
+
+fn inject_soul_prompt(
+    conv: Conversation,
+    soul_prompt: Option<&str>,
+) -> (Conversation, Option<usize>) {
+    let Some(prompt) = soul_prompt.map(str::trim).filter(|s| !s.is_empty()) else {
+        return (conv, None);
+    };
+    let mut messages = conv.messages;
+    let pos = leading_system_count(&messages);
+    messages.insert(
+        pos,
+        Message::system(format!("=== Jarvis soul ===\n{prompt}")),
+    );
+    (Conversation { messages }, Some(pos))
+}
+
+fn strip_turn_injections(conv: Conversation, prepared: &TurnInjection) -> Conversation {
+    let mut conv = strip_project_block(conv, &prepared.project);
+    let Some(idx) = prepared.soul_injected_at else {
+        return conv;
+    };
+    if idx >= conv.messages.len() {
+        return conv;
+    }
+    let should_remove = matches!(
+        &conv.messages[idx],
+        Message::System { content, .. } if content.starts_with("=== Jarvis soul ===\n")
+    );
+    if should_remove {
+        conv.messages.remove(idx);
+    }
+    conv
+}
+
+fn leading_system_count(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .take_while(|m| matches!(m, Message::System { .. }))
+        .count()
 }
 
 async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
@@ -259,12 +546,45 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // socket with our channel-driven one so the client gets a real
     // say.
     let (channel_approver, mut pending_rx) = ChannelApprover::new(8);
-    let socket_approver: Arc<dyn Approver> = Arc::new(channel_approver);
+    // Per-socket mode handle. Drives `RuleApprover`'s mode-default
+    // computation; flipped at runtime via the `set_mode` /
+    // `accept_plan` WS frames. Process-wide rules + per-socket mode
+    // is the right split: rules persist across reconnects but each
+    // session can be in a different mode.
+    let mode_handle = std::sync::Arc::new(tokio::sync::RwLock::new(state.default_permission_mode));
+    // If a permission store is wired up, wrap the channel approver
+    // in a `RuleApprover` so allow / deny rules + mode defaults
+    // short-circuit before reaching the WS prompt. Without a store
+    // we fall back to the historical "always prompt" behaviour for
+    // every gated call.
+    let channel_approver_arc: Arc<dyn Approver> = Arc::new(channel_approver);
+    let socket_approver: Arc<dyn Approver> = match state.permission_store.as_ref() {
+        Some(store) => Arc::new(harness_core::permission::RuleApprover::new(
+            store.clone(),
+            channel_approver_arc.clone(),
+            mode_handle.clone(),
+        )),
+        None => channel_approver_arc.clone(),
+    };
+    // Subscribe to permission-store mutations so we can fan a
+    // `PermissionRulesChanged` event out to this socket whenever any
+    // socket (or external file edit) changes the rule table.
+    let mut rules_changed_rx = state.permission_store.as_ref().map(|s| s.subscribe());
+    let (hitl_tx, mut pending_hitl_rx) = mpsc::channel::<PendingHitl>(8);
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut conv = Conversation::new();
     let mut persisted_id: Option<String> = None;
+    // Project binding for the persisted conversation (only meaningful
+    // when `persisted_id` is `Some`). Drives the `ProjectBinder`'s
+    // per-turn instruction injection. Set on `New { project_id }` /
+    // re-loaded on `Resume`. `None` = "free chat" persisted session.
+    let mut persisted_project_id: Option<String> = None;
+    // State carried from binder.materialise → terminal Done so the
+    // strip step removes the right injected message.
+    let mut last_injection: Option<TurnInjection> = None;
     let mut pending: HashMap<String, oneshot::Sender<ApprovalDecision>> = HashMap::new();
+    let mut pending_hitl: HashMap<String, oneshot::Sender<HitlResponse>> = HashMap::new();
     // `Some` while a turn is in flight; `None` between turns.
     let mut event_rx: Option<mpsc::Receiver<AgentEvent>> = None;
     // Handle to the spawned agent task so `Interrupt` can abort it
@@ -275,6 +595,19 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // turn by `User { model, provider }`.
     let mut sticky_provider: Option<String> = None;
     let mut sticky_model: Option<String> = None;
+
+    // Tell the client the initial mode so it can render the badge
+    // before any user interaction. Always sent; even when no
+    // permission store is configured the value is meaningful (it's
+    // the binary's default mode).
+    {
+        let initial = mode_handle.read().await;
+        let _ = ws_tx
+            .send(WsMessage::Text(
+                json!({ "type": "permission_mode", "mode": *initial }).to_string(),
+            ))
+            .await;
+    }
 
     loop {
         // The `event_rx` arm needs to be permanently selectable but
@@ -305,13 +638,18 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     &mut ws_tx,
                     &state,
                     &socket_approver,
+                    &mode_handle,
                     &mut conv,
                     &mut persisted_id,
+                    &mut persisted_project_id,
+                    &mut last_injection,
                     &mut pending,
+                    &mut pending_hitl,
                     &mut event_rx,
                     &mut current_task,
                     &mut sticky_provider,
                     &mut sticky_model,
+                    &hitl_tx,
                 )
                 .await
                 {
@@ -326,12 +664,39 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
             Some(p) = pending_rx.recv() => {
                 pending.insert(p.request.tool_call_id.clone(), p.responder);
             }
+            // ---- permission rules changed ----
+            // Fan a single short event out so connected clients can
+            // refetch `/v1/permissions`. We keep the wire-side
+            // payload empty to avoid sending the (potentially large)
+            // table on every keystroke of `Add rule`.
+            Ok(()) = async {
+                match rules_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map(|_| ()).map_err(|_| ()),
+                    None => std::future::pending::<Result<(), ()>>().await,
+                }
+            } => {
+                let _ = ws_tx
+                    .send(WsMessage::Text(
+                        json!({ "type": "permission_rules_changed" }).to_string(),
+                    ))
+                    .await;
+            }
+            // ---- native HITL tool → server ----
+            Some(p) = pending_hitl_rx.recv() => {
+                let id = p.request.id.clone();
+                let payload = json!({ "type": "hitl_request", "request": p.request }).to_string();
+                pending_hitl.insert(id, p.responder);
+                if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
+                    return;
+                }
+            }
             // ---- agent → server ----
             ev = event_fut => {
                 let Some(ev) = ev else {
                     // Sender dropped → turn is fully drained.
                     event_rx = None;
                     pending.clear();
+                    pending_hitl.clear();
                     continue;
                 };
 
@@ -340,7 +705,15 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     AgentEvent::Done { .. } | AgentEvent::Error { .. }
                 );
                 let is_error = matches!(ev, AgentEvent::Error { .. });
-                if let AgentEvent::Done { conversation, .. } = &ev {
+                // Strip the synthetic project block (if any) before
+                // mutating either the local mirror or what we send to
+                // the client. The client never sees it; the persisted
+                // history never stores it.
+                let mut ev_to_send = ev;
+                if let AgentEvent::Done { conversation, .. } = &mut ev_to_send {
+                    if let Some(prepared) = last_injection.as_ref() {
+                        *conversation = strip_turn_injections(conversation.clone(), prepared);
+                    }
                     conv = conversation.clone();
                 }
                 // Failed turn: the user message we pushed in
@@ -355,7 +728,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     }
                 }
 
-                let payload = serde_json::to_string(&ev).unwrap_or_else(|e| {
+                let payload = serde_json::to_string(&ev_to_send).unwrap_or_else(|e| {
                     json!({ "type": "error", "message": format!("serialize: {e}") })
                         .to_string()
                 });
@@ -366,13 +739,18 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 if is_terminal {
                     event_rx = None;
                     current_task = None;
+                    last_injection = None;
                     // Drop any leftover responders — the agent has
                     // stopped so nothing is waiting on them anyway.
                     pending.clear();
+                    pending_hitl.clear();
                     if let (Some(id), Some(store)) =
                         (persisted_id.as_ref(), state.store.as_ref())
                     {
-                        if let Err(e) = store.save(id, &conv).await {
+                        let metadata = ConversationMetadata {
+                            project_id: persisted_project_id.clone(),
+                        };
+                        if let Err(e) = store.save_envelope(id, &conv, &metadata).await {
                             warn!(error = %e, %id, "ws post-run save failed");
                         }
                     }
@@ -391,13 +769,18 @@ async fn handle_client_frame(
     ws_tx: &mut SplitSink<WebSocket, WsMessage>,
     state: &AppState,
     socket_approver: &Arc<dyn Approver>,
+    mode_handle: &Arc<tokio::sync::RwLock<harness_core::PermissionMode>>,
     conv: &mut Conversation,
     persisted_id: &mut Option<String>,
+    persisted_project_id: &mut Option<String>,
+    last_injection: &mut Option<TurnInjection>,
     pending: &mut HashMap<String, oneshot::Sender<ApprovalDecision>>,
+    pending_hitl: &mut HashMap<String, oneshot::Sender<HitlResponse>>,
     event_rx: &mut Option<mpsc::Receiver<AgentEvent>>,
     current_task: &mut Option<tokio::task::JoinHandle<()>>,
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
+    hitl_tx: &mpsc::Sender<PendingHitl>,
 ) -> bool {
     let text = match msg {
         WsMessage::Text(t) => t,
@@ -438,17 +821,44 @@ async fn handle_client_frame(
                 warn!(%tool_call_id, "approve frame for unknown id (already resolved or stale)");
             }
         }
-        WsClientMessage::Deny { tool_call_id, reason } => {
+        WsClientMessage::Deny {
+            tool_call_id,
+            reason,
+        } => {
             if let Some(responder) = pending.remove(&tool_call_id) {
                 let _ = responder.send(ApprovalDecision::Deny { reason });
             } else {
                 warn!(%tool_call_id, "deny frame for unknown id (already resolved or stale)");
             }
         }
+        WsClientMessage::HitlResponse {
+            request_id,
+            status,
+            payload,
+            reason,
+        } => {
+            let response = HitlResponse {
+                request_id: request_id.clone(),
+                status,
+                payload,
+                reason,
+            };
+            if let Some(responder) = pending_hitl.remove(&request_id) {
+                let _ = responder.send(response.clone());
+                let _ = ws_tx
+                    .send(WsMessage::Text(
+                        json!({ "type": "hitl_response", "response": response }).to_string(),
+                    ))
+                    .await;
+            } else {
+                warn!(%request_id, "hitl_response frame for unknown id (already resolved or stale)");
+            }
+        }
         WsClientMessage::User {
             content,
             model,
             provider,
+            soul_prompt,
         } => {
             if event_rx.is_some() {
                 send_error(ws_tx, "turn already in progress").await;
@@ -458,8 +868,17 @@ async fn handle_client_frame(
             let provider_pick = provider.as_deref().or(sticky_provider.as_deref());
             let model_pick = model.as_deref().or(sticky_model.as_deref());
             let approver = socket_approver.clone();
+            let hitl = hitl_tx.clone();
+            // Apply Plan-Mode tool filter if the per-socket mode says
+            // so. Done per-turn (not once at socket open) so a mid-
+            // session `set_mode` flip takes effect on the next message.
+            let active_mode = *mode_handle.read().await;
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
+                cfg.hitl_tx = Some(hitl);
+                if matches!(active_mode, harness_core::PermissionMode::Plan) {
+                    cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
             }) {
                 Ok(a) => a,
                 Err(e) => {
@@ -475,9 +894,31 @@ async fn handle_client_frame(
                 *sticky_model = model;
             }
             conv.push(Message::user(content));
+            let (soul_conv, soul_injected_at) =
+                inject_soul_prompt(conv.clone(), soul_prompt.as_deref());
+            // Late-bind the project (no-op for free-chat sessions).
+            let prepared = match materialise(
+                state.projects.as_ref(),
+                soul_conv,
+                persisted_project_id.as_deref(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    send_error(ws_tx, &format!("project binder: {e}")).await;
+                    // Roll back the user message we just pushed.
+                    conv.messages.pop();
+                    return true;
+                }
+            };
+            let snapshot = prepared.conversation.clone();
+            *last_injection = Some(TurnInjection {
+                project: prepared,
+                soul_injected_at,
+            });
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
-            let snapshot = conv.clone();
             let handle = tokio::spawn(async move {
                 let mut stream = agent.run_stream(snapshot);
                 while let Some(ev) = stream.next().await {
@@ -496,10 +937,7 @@ async fn handle_client_frame(
             // Validate the picked combination by routing once; if
             // it's invalid we surface a clear error instead of
             // failing on the next `User` frame.
-            if let Err(e) = state
-                .providers
-                .pick(provider.as_deref(), model.as_deref())
-            {
+            if let Err(e) = state.providers.pick(provider.as_deref(), model.as_deref()) {
                 send_error(ws_tx, &e.to_string()).await;
                 return true;
             }
@@ -527,11 +965,16 @@ async fn handle_client_frame(
             }
             *conv = Conversation::new();
             *persisted_id = None;
+            *persisted_project_id = None;
             let _ = ws_tx
                 .send(WsMessage::Text(json!({ "type": "reset" }).to_string()))
                 .await;
         }
-        WsClientMessage::Resume { id, model, provider } => {
+        WsClientMessage::Resume {
+            id,
+            model,
+            provider,
+        } => {
             if provider.is_some() {
                 *sticky_provider = provider;
             }
@@ -550,17 +993,20 @@ async fn handle_client_frame(
                 send_error(ws_tx, "persistence not configured").await;
                 return true;
             };
-            match store.load(&id).await {
-                Ok(Some(loaded)) => {
+            match store.load_envelope(&id).await {
+                Ok(Some((loaded, meta))) => {
                     let count = loaded.messages.len();
+                    let bound_project = meta.project_id.clone();
                     *conv = loaded;
                     *persisted_id = Some(id.clone());
+                    *persisted_project_id = bound_project.clone();
                     let _ = ws_tx
                         .send(WsMessage::Text(
                             json!({
                                 "type": "resumed",
                                 "id": id,
                                 "message_count": count,
+                                "project_id": bound_project,
                             })
                             .to_string(),
                         ))
@@ -575,7 +1021,12 @@ async fn handle_client_frame(
                 }
             }
         }
-        WsClientMessage::New { id, model, provider } => {
+        WsClientMessage::New {
+            id,
+            model,
+            provider,
+            project_id,
+        } => {
             if event_rx.is_some() {
                 send_error(ws_tx, "turn in progress; cannot start new").await;
                 return true;
@@ -600,17 +1051,58 @@ async fn handle_client_frame(
                 send_error(ws_tx, "persistence not configured").await;
                 return true;
             };
+
+            // Resolve project binding (UUID or slug → UUID) before
+            // creating the row. Refuse archived / missing.
+            let resolved_project_id: Option<String> = match project_id.as_ref() {
+                None => None,
+                Some(needle) => {
+                    let Some(ps) = state.projects.as_ref() else {
+                        send_error(
+                            ws_tx,
+                            "project store not configured; cannot bind to a project",
+                        )
+                        .await;
+                        return true;
+                    };
+                    match lookup_project(ps.as_ref(), needle).await {
+                        Ok(Some(p)) if !p.archived => Some(p.id),
+                        Ok(Some(_)) => {
+                            send_error(ws_tx, &format!("project `{needle}` is archived")).await;
+                            return true;
+                        }
+                        Ok(None) => {
+                            send_error(ws_tx, &format!("project `{needle}` not found")).await;
+                            return true;
+                        }
+                        Err(e) => {
+                            send_error(ws_tx, &format!("project lookup failed: {e}")).await;
+                            return true;
+                        }
+                    }
+                }
+            };
+
             let new_id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
             *conv = Conversation::new();
-            if let Err(e) = store.save(&new_id, conv).await {
+            let metadata = ConversationMetadata {
+                project_id: resolved_project_id.clone(),
+            };
+            if let Err(e) = store.save_envelope(&new_id, conv, &metadata).await {
                 error!(error = %e, "ws new save failed");
                 send_error(ws_tx, &format!("save failed: {e}")).await;
                 return true;
             }
             *persisted_id = Some(new_id.clone());
+            *persisted_project_id = resolved_project_id.clone();
             let _ = ws_tx
                 .send(WsMessage::Text(
-                    json!({ "type": "started", "id": new_id }).to_string(),
+                    json!({
+                        "type": "started",
+                        "id": new_id,
+                        "project_id": resolved_project_id,
+                    })
+                    .to_string(),
                 ))
                 .await;
         }
@@ -619,6 +1111,7 @@ async fn handle_client_frame(
                 handle.abort();
             }
             *event_rx = None;
+            *last_injection = None;
             // Roll back the trailing user message: the assistant
             // never replied, so leaving it in `conv` would make the
             // next turn look like back-to-back user turns to the
@@ -627,6 +1120,7 @@ async fn handle_client_frame(
                 conv.messages.pop();
             }
             pending.clear();
+            pending_hitl.clear();
             let _ = ws_tx
                 .send(WsMessage::Text(
                     json!({ "type": "interrupted" }).to_string(),
@@ -638,6 +1132,7 @@ async fn handle_client_frame(
             content,
             model,
             provider,
+            soul_prompt,
         } => {
             if event_rx.is_some() {
                 send_error(ws_tx, "turn already in progress").await;
@@ -671,8 +1166,14 @@ async fn handle_client_frame(
             let provider_pick = provider.as_deref().or(sticky_provider.as_deref());
             let model_pick = model.as_deref().or(sticky_model.as_deref());
             let approver = socket_approver.clone();
+            let hitl = hitl_tx.clone();
+            let active_mode = *mode_handle.read().await;
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
+                cfg.hitl_tx = Some(hitl);
+                if matches!(active_mode, harness_core::PermissionMode::Plan) {
+                    cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
             }) {
                 Ok(a) => a,
                 Err(e) => {
@@ -701,9 +1202,132 @@ async fn handle_client_frame(
                     .to_string(),
                 ))
                 .await;
+            let (soul_conv, soul_injected_at) =
+                inject_soul_prompt(conv.clone(), soul_prompt.as_deref());
+            // Same late-binding dance as `User`.
+            let prepared = match materialise(
+                state.projects.as_ref(),
+                soul_conv,
+                persisted_project_id.as_deref(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    send_error(ws_tx, &format!("project binder: {e}")).await;
+                    conv.messages.pop(); // roll back the new user message
+                    return true;
+                }
+            };
+            let snapshot = prepared.conversation.clone();
+            *last_injection = Some(TurnInjection {
+                project: prepared,
+                soul_injected_at,
+            });
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
-            let snapshot = conv.clone();
+            let handle = tokio::spawn(async move {
+                let mut stream = agent.run_stream(snapshot);
+                while let Some(ev) = stream.next().await {
+                    if event_tx.send(ev).await.is_err() {
+                        return;
+                    }
+                }
+            });
+            *current_task = Some(handle);
+        }
+        WsClientMessage::SetMode { mode } => {
+            // Bypass used to require boot-time `--dangerously-skip-permissions`
+            // for runtime entry too. We've since relaxed that: the
+            // operator who opened the browser already has the same
+            // privileges as the operator who started the server, so
+            // forcing a process restart just to flip a UI switch is
+            // bureaucratic. The CLI flag still exists for unattended
+            // / CI use where there's no human to click confirm.
+            // We log loudly so the audit trail captures it.
+            if matches!(mode, harness_core::PermissionMode::Bypass) {
+                tracing::warn!(
+                    "permission mode set to BYPASS at runtime via WS — \
+                     all gated tools will run without prompting until reset",
+                );
+            }
+            *mode_handle.write().await = mode;
+            let _ = ws_tx
+                .send(WsMessage::Text(
+                    json!({ "type": "permission_mode", "mode": mode }).to_string(),
+                ))
+                .await;
+        }
+        WsClientMessage::AcceptPlan { post_mode } => {
+            if matches!(post_mode, harness_core::PermissionMode::Bypass) {
+                tracing::warn!(
+                    "plan accepted with post-mode=BYPASS — all gated tools \
+                     will run without prompting for the rest of this session",
+                );
+            }
+            *mode_handle.write().await = post_mode;
+            let _ = ws_tx
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "permission_mode",
+                        "mode": post_mode,
+                        "via": "plan_accepted",
+                    })
+                    .to_string(),
+                ))
+                .await;
+        }
+        WsClientMessage::RefinePlan { feedback } => {
+            // Equivalent to a User frame — feed the feedback back to
+            // the agent in the current (Plan) mode so it iterates on
+            // the plan rather than executing.
+            if event_rx.is_some() {
+                send_error(ws_tx, "turn already in progress").await;
+                return true;
+            }
+            let provider_pick = sticky_provider.as_deref();
+            let model_pick = sticky_model.as_deref();
+            let approver = socket_approver.clone();
+            let hitl = hitl_tx.clone();
+            // Plan Mode tool filter applied here too — same as the User
+            // arm. We rebuild on each turn so per-socket mode is
+            // honoured even if the user just toggled it.
+            let active_mode = *mode_handle.read().await;
+            let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
+                cfg.approver = Some(approver);
+                cfg.hitl_tx = Some(hitl);
+                if matches!(active_mode, harness_core::PermissionMode::Plan) {
+                    cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+            }) {
+                Ok(a) => a,
+                Err(e) => {
+                    send_error(ws_tx, &e.to_string()).await;
+                    return true;
+                }
+            };
+            conv.push(Message::user(feedback));
+            let prepared = match materialise(
+                state.projects.as_ref(),
+                conv.clone(),
+                persisted_project_id.as_deref(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    send_error(ws_tx, &format!("project binder: {e}")).await;
+                    conv.messages.pop();
+                    return true;
+                }
+            };
+            let snapshot = prepared.conversation.clone();
+            *last_injection = Some(TurnInjection {
+                project: prepared,
+                soul_injected_at: None,
+            });
+            let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
+            *event_rx = Some(new_rx);
             let handle = tokio::spawn(async move {
                 let mut stream = agent.run_stream(snapshot);
                 while let Some(ev) = stream.next().await {
@@ -716,6 +1340,16 @@ async fn handle_client_frame(
         }
     }
     true
+}
+
+/// Tool filter applied to every agent turn while the per-socket mode
+/// is `Plan`: keep only `Read` tools (plus `exit_plan`, which is also
+/// `Read`-categorised). Hides write/exec/network tools from the
+/// LLM's catalogue entirely so the model can't even attempt them
+/// — the deny-loop alternative wastes turns and confuses models.
+fn plan_mode_tool_filter() -> Arc<harness_core::agent::ToolFilter> {
+    use harness_core::ToolCategory;
+    Arc::new(|t| matches!(t.category(), ToolCategory::Read))
 }
 
 async fn send_error(ws_tx: &mut SplitSink<WebSocket, WsMessage>, message: &str) {

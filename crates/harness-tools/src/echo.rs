@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use harness_core::{BoxError, Tool};
+use harness_core::{BoxError, Tool, ToolCategory};
 use serde_json::{json, Value};
 
 /// Trivial echo tool — returns its `text` argument verbatim. Useful for
@@ -28,6 +28,10 @@ impl Tool for EchoTool {
 
     fn cacheable(&self) -> bool {
         true
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Read
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {

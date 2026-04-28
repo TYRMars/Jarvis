@@ -5,6 +5,7 @@
 // have to wait for the user to open the menu.
 
 import { appStore, type ProviderInfo } from "../store/appStore";
+import { initialDefaultRouting } from "../store/persistence";
 
 interface ProvidersBody {
   providers?: ProviderInfo[];
@@ -25,12 +26,28 @@ export async function loadProviders(apiUrl: (path: string) => string): Promise<v
     const data = (await r.json()) as ProvidersBody;
     const providers = data.providers || [];
     appStore.getState().setProviders(providers);
-    // Preselect the default provider's default model only if the
-    // user hasn't already chosen one (e.g. resumed a conversation
-    // with persisted routing during boot).
+    // Preselect routing only if the user hasn't already chosen one
+    // (e.g. resumed a conversation with persisted routing during
+    // boot). Priority order:
+    //   1. user's `jarvis.defaultRouting` (set via Preferences page)
+    //   2. server's `is_default` provider/model
+    //
+    // Step (1) is validated against the live catalog so a stale
+    // default (provider since renamed, model retired) silently falls
+    // through to step (2).
     if (!appStore.getState().routing) {
-      const def = pickDefaultRouting(providers);
-      if (def) appStore.getState().setRouting(def);
+      const userDefault = initialDefaultRouting();
+      const valid = userDefault
+        ? providers.some((p) =>
+            [p.default_model, ...p.models].some((m) => `${p.name}|${m}` === userDefault),
+          )
+        : false;
+      if (valid) {
+        appStore.getState().setRouting(userDefault);
+      } else {
+        const def = pickDefaultRouting(providers);
+        if (def) appStore.getState().setRouting(def);
+      }
     }
   } catch (e) {
     console.warn("provider list fetch failed", e);

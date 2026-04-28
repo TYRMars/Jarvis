@@ -22,7 +22,11 @@ export async function refreshConvoList(): Promise<void> {
   const mySeq = ++convoListSeq;
   appStore.getState().setConvoListLoading(true);
   try {
-    const r = await fetch(apiUrl("/v1/conversations?limit=50"));
+    const filter = appStore.getState().activeProjectFilter;
+    const url = filter
+      ? `/v1/conversations?limit=50&project_id=${encodeURIComponent(filter)}`
+      : "/v1/conversations?limit=50";
+    const r = await fetch(apiUrl(url));
     if (mySeq !== convoListSeq) return; // newer fetch superseded us
     if (r.status === 503) {
       appStore.getState().setPersistEnabled(false);
@@ -41,7 +45,12 @@ export async function refreshConvoList(): Promise<void> {
   }
 }
 
-export function newConversation(): void {
+/// Open a fresh persisted session (or reset the in-memory free-chat
+/// session). When `opts.projectId` is set, the new conversation is
+/// bound to that project so every turn re-injects its instructions
+/// (see `harness-server::project_binder`). Pass `null` (the default)
+/// for a free-chat session.
+export function newConversation(opts: { projectId?: string | null } = {}): void {
   const store = appStore.getState();
   if (store.inFlight) {
     showError(t("turnInProgress"));
@@ -57,6 +66,7 @@ export function newConversation(): void {
   const { provider, model } = pickedRouting();
   if (provider) frame.provider = provider;
   if (model) frame.model = model;
+  if (opts.projectId) frame.project_id = opts.projectId;
   if (!sendFrame(frame)) return;
   store.clearMessages();
 }

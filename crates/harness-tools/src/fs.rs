@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use harness_core::{BoxError, Tool};
+use harness_core::{BoxError, Tool, ToolCategory};
 use serde_json::{json, Value};
 use tokio::fs;
 
@@ -53,6 +53,14 @@ impl Tool for FsReadTool {
         true
     }
 
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Read
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("path").and_then(Value::as_str).map(str::to_string)
+    }
+
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
         let rel = arg_str(&args, "path")?;
         let abs = resolve_under(&self.root, rel)?;
@@ -98,6 +106,14 @@ impl Tool for FsListTool {
 
     fn cacheable(&self) -> bool {
         true
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Read
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("path").and_then(Value::as_str).map(str::to_string)
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
@@ -166,6 +182,10 @@ impl Tool for FsWriteTool {
         true
     }
 
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("path").and_then(Value::as_str).map(str::to_string)
+    }
+
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
         let rel = arg_str(&args, "path")?;
         let content = arg_str(&args, "content")?;
@@ -231,6 +251,10 @@ impl Tool for FsEditTool {
         true
     }
 
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("path").and_then(Value::as_str).map(str::to_string)
+    }
+
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
         let rel = arg_str(&args, "path")?;
         let old = arg_str(&args, "old_string")?;
@@ -287,7 +311,10 @@ mod tests {
             .invoke(json!({ "path": "sub/hello.txt", "content": "world" }))
             .await
             .unwrap();
-        let got = read.invoke(json!({ "path": "sub/hello.txt" })).await.unwrap();
+        let got = read
+            .invoke(json!({ "path": "sub/hello.txt" }))
+            .await
+            .unwrap();
         assert_eq!(got, "world");
     }
 

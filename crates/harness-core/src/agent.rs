@@ -9,10 +9,17 @@ use tracing::{debug, info};
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
 use crate::conversation::Conversation;
 use crate::error::{Error, Result};
+use crate::hitl::PendingHitl;
 use crate::llm::{ChatRequest, FinishReason, LlmChunk, LlmProvider, Usage};
 use crate::memory::Memory;
 use crate::message::{Message, ToolCall};
-use crate::tool::{ToolRegistry};
+use crate::tool::{Tool, ToolRegistry};
+
+/// Predicate used by [`AgentConfig::tool_filter`]. Returning `false`
+/// hides the tool from the LLM's catalogue (e.g. Plan Mode hiding
+/// write/exec tools). Aliased so the `Arc<dyn Fn>` type doesn't
+/// trigger clippy's `type_complexity` lint at every use site.
+pub type ToolFilter = dyn Fn(&dyn Tool) -> bool + Send + Sync;
 
 /// Static configuration for an agent. Cheap to clone — wraps shared state in
 /// `Arc`.
@@ -32,6 +39,18 @@ pub struct AgentConfig {
     /// approver before invocation. Without an approver, all tools run
     /// unconditionally — preserves historical behaviour.
     pub approver: Option<Arc<dyn Approver>>,
+    /// Optional native HITL channel used by tools such as `ask.text`.
+    /// Interactive transports install a per-connection sender; tools
+    /// invoked outside that scope surface a normal tool error instead.
+    pub hitl_tx: Option<tokio::sync::mpsc::Sender<PendingHitl>>,
+    /// Optional predicate that decides which registered tools reach
+    /// the LLM's tool catalogue. Returning `false` filters the tool
+    /// out of `ChatRequest::tools` for every iteration — Plan Mode
+    /// uses this to hide write/exec/network tools so the model can't
+    /// even attempt them. The tool is still resolvable via
+    /// `ToolRegistry::resolve` (so any in-flight tool calls from a
+    /// previous turn can finish), but new calls become impossible.
+    pub tool_filter: Option<Arc<ToolFilter>>,
 }
 
 impl AgentConfig {
@@ -44,7 +63,18 @@ impl AgentConfig {
             temperature: None,
             memory: None,
             approver: None,
+            hitl_tx: None,
+            tool_filter: None,
         }
+    }
+
+    /// Install a tool filter — typically used by Plan Mode to hide
+    /// write/exec/network tools from the LLM. The filter is consulted
+    /// on every iteration when assembling the `tools` field of
+    /// `ChatRequest`.
+    pub fn with_tool_filter(mut self, filter: Arc<ToolFilter>) -> Self {
+        self.tool_filter = Some(filter);
+        self
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
@@ -74,6 +104,11 @@ impl AgentConfig {
 
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
         self.approver = Some(approver);
+        self
+    }
+
+    pub fn with_hitl_sender(mut self, tx: tokio::sync::mpsc::Sender<PendingHitl>) -> Self {
+        self.hitl_tx = Some(tx);
         self
     }
 }
@@ -111,10 +146,17 @@ pub enum AgentEvent {
     /// The approver replied. Always paired with an immediately preceding
     /// `ApprovalRequest`. A `Deny` outcome means the tool will *not* run
     /// — the matching `ToolEnd` will carry `tool denied: <reason>`.
+    /// `source` tells the UI **why** this decision was made — the user
+    /// clicked, a stored rule fired, or the active mode's default
+    /// took effect. Lets audit timelines render
+    /// "auto-allowed by user-scope rule fs.edit" rather than silently
+    /// running write-tools.
     ApprovalDecision {
         id: String,
         name: String,
         decision: ApprovalDecision,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<crate::permission::HitSource>,
     },
     /// The agent is about to invoke a tool. Emitted even on the deny
     /// path so transports can keep `ToolStart` / `ToolEnd` paired.
@@ -144,6 +186,20 @@ pub enum AgentEvent {
         name: String,
         content: String,
     },
+    /// The agent updated its working plan. Each event carries the
+    /// **full latest snapshot** of the plan (replace, not patch) so
+    /// transports can render the current state without replaying
+    /// history. Emitted by the `plan.update` tool via
+    /// [`crate::plan::emit`]. UIs typically render this as a
+    /// checklist that updates in place.
+    PlanUpdate { items: Vec<crate::plan::PlanItem> },
+    /// In Plan Mode, the agent finished its read-only investigation
+    /// and called the terminal `exit_plan` tool with the plan body.
+    /// Transports surface this as a "review the plan" card with
+    /// "Accept (and switch to mode X)" / "Refine" actions; the agent
+    /// stays in Plan Mode until the user accepts via the WS frame
+    /// `{type:"accept_plan", post_mode:"..."}`.
+    PlanProposed { plan: String },
     /// Provider-reported token usage for the LLM call that just
     /// finished. Optional fields — see [`crate::Usage`]. Emitted at
     /// most once per LLM iteration; transports typically aggregate
@@ -166,6 +222,19 @@ pub enum AgentEvent {
 
 /// Boxed stream of `AgentEvent`s. After `Done` or `Error` the stream ends.
 pub type AgentStream = Pin<Box<dyn Stream<Item = AgentEvent> + Send>>;
+
+async fn run_one_with_optional_hitl<F, R>(
+    tx: Option<tokio::sync::mpsc::Sender<PendingHitl>>,
+    fut: F,
+) -> R
+where
+    F: std::future::Future<Output = R>,
+{
+    match tx {
+        Some(tx) => crate::hitl::with_hitl(tx, fut).await,
+        None => fut.await,
+    }
+}
 
 /// The harness-style agent loop. Holds an `LlmProvider` and a frozen config.
 pub struct Agent {
@@ -319,6 +388,12 @@ impl Agent {
                                         .unwrap_or(false);
 
                             let decision = if needs_approval {
+                                let category = agent
+                                    .config
+                                    .tools
+                                    .resolve(&call.name)
+                                    .map(|t| t.category())
+                                    .unwrap_or(crate::tool::ToolCategory::Write);
                                 yield AgentEvent::ApprovalRequest {
                                     id: call.id.clone(),
                                     name: call.name.clone(),
@@ -328,22 +403,30 @@ impl Agent {
                                     tool_call_id: call.id.clone(),
                                     tool_name: call.name.clone(),
                                     arguments: call.arguments.clone(),
+                                    category,
                                 };
                                 let approver = agent
                                     .config
                                     .approver
                                     .as_deref()
                                     .expect("checked needs_approval");
-                                let dec = match approver.approve(request).await {
-                                    Ok(d) => d,
-                                    Err(e) => ApprovalDecision::Deny {
-                                        reason: Some(format!("approver failed: {e}")),
-                                    },
+                                let (dec, source) = match approver
+                                    .approve_with_source(request)
+                                    .await
+                                {
+                                    Ok(pair) => pair,
+                                    Err(e) => (
+                                        ApprovalDecision::Deny {
+                                            reason: Some(format!("approver failed: {e}")),
+                                        },
+                                        crate::permission::HitSource::UserPrompt,
+                                    ),
                                 };
                                 yield AgentEvent::ApprovalDecision {
                                     id: call.id.clone(),
                                     name: call.name.clone(),
                                     decision: dec.clone(),
+                                    source: Some(source),
                                 };
                                 Some(dec)
                             } else {
@@ -355,20 +438,29 @@ impl Agent {
                                 name: call.name.clone(),
                                 arguments: call.arguments.clone(),
                             };
-                            // Per-invocation progress channel. The
-                            // tool publishes via `emit_progress` (a
-                            // task_local lookup); we relay each
-                            // chunk as a `ToolProgress` event in
-                            // step with `invoke`. Receiver dropped
-                            // implicitly on scope exit.
+                            // Per-invocation channels. The tool
+                            // publishes intermediate output via
+                            // `emit_progress` and plan snapshots via
+                            // `emit_plan` — both task_local lookups.
+                            // We relay each chunk as a typed event
+                            // in step with `invoke`. Receivers
+                            // dropped implicitly on scope exit.
                             let (prog_tx, mut prog_rx) =
                                 tokio::sync::mpsc::unbounded_channel::<crate::progress::ToolProgress>();
+                            let (plan_tx, mut plan_rx) =
+                                tokio::sync::mpsc::unbounded_channel::<Vec<crate::plan::PlanItem>>();
                             let invoke = crate::progress::with_progress(
                                 prog_tx,
-                                Self::run_one(
-                                    &agent.config.tools,
-                                    call,
-                                    decision.as_ref(),
+                                crate::plan::with_plan(
+                                    plan_tx,
+                                    run_one_with_optional_hitl(
+                                        agent.config.hitl_tx.clone(),
+                                        Self::run_one(
+                                            &agent.config.tools,
+                                            call,
+                                            decision.as_ref(),
+                                        ),
+                                    ),
                                 ),
                             );
                             tokio::pin!(invoke);
@@ -383,11 +475,14 @@ impl Agent {
                                             chunk: p.chunk,
                                         };
                                     }
+                                    Some(items) = plan_rx.recv() => {
+                                        yield AgentEvent::PlanUpdate { items };
+                                    }
                                     res = &mut invoke => {
-                                        // Drain any chunks the tool
+                                        // Drain anything the tool
                                         // queued in the same wake as
                                         // its return so the client
-                                        // sees them before ToolEnd.
+                                        // sees it before ToolEnd.
                                         while let Ok(p) = prog_rx.try_recv() {
                                             yield AgentEvent::ToolProgress {
                                                 id: call.id.clone(),
@@ -395,6 +490,9 @@ impl Agent {
                                                 stream: p.stream,
                                                 chunk: p.chunk,
                                             };
+                                        }
+                                        while let Ok(items) = plan_rx.try_recv() {
+                                            yield AgentEvent::PlanUpdate { items };
                                         }
                                         break res;
                                     }
@@ -406,8 +504,33 @@ impl Agent {
                             yield AgentEvent::ToolEnd {
                                 id: call.id.clone(),
                                 name: call.name.clone(),
-                                content: output,
+                                content: output.clone(),
                             };
+                            // Terminal tools (today: `exit_plan`) end
+                            // the agent's turn even if the model
+                            // emitted more tool calls in the same
+                            // batch — Plan Mode uses this to hand the
+                            // proposed plan to the user. We emit
+                            // PlanProposed + Done immediately and
+                            // skip processing any later calls in this
+                            // batch (which would be moot anyway:
+                            // mode hasn't changed yet, so the model's
+                            // hypothetical next call would still be
+                            // restricted to read-only tools).
+                            let is_terminal = agent
+                                .config
+                                .tools
+                                .resolve(&call.name)
+                                .map(|t| t.is_terminal())
+                                .unwrap_or(false);
+                            if is_terminal {
+                                yield AgentEvent::PlanProposed { plan: output };
+                                yield AgentEvent::Done {
+                                    conversation: conversation.clone(),
+                                    outcome: RunOutcome::Stopped { iterations: iter },
+                                };
+                                return;
+                            }
                         }
                     }
                     (_, FinishReason::Length) => {
@@ -456,10 +579,14 @@ impl Agent {
                 .map_err(|e| Error::Memory(e.to_string()))?,
             None => conv.messages.clone(),
         };
+        let tools = match &self.config.tool_filter {
+            Some(filter) => self.config.tools.specs_filtered(|t| filter(t)),
+            None => self.config.tools.specs(),
+        };
         Ok(ChatRequest {
             model: self.config.model.clone(),
             messages,
-            tools: self.config.tools.specs(),
+            tools,
             temperature: self.config.temperature,
             max_tokens: None,
         })
@@ -485,6 +612,7 @@ impl Agent {
             tool_call_id: call.id.clone(),
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
+            category: tool.category(),
         };
         let decision = match approver.approve(request.clone()).await {
             Ok(d) => d,
@@ -518,8 +646,7 @@ impl Agent {
             Some(tool) => tool
                 .invoke(call.arguments.clone())
                 .await
-                .unwrap_or_else(|e| format!("tool error: {e}"))
-                ,
+                .unwrap_or_else(|e| format!("tool error: {e}")),
             None => format!("tool error: tool not found: {}", call.name),
         }
     }
@@ -613,10 +740,7 @@ mod tests {
         }
     }
 
-    fn make_agent(
-        tool: Arc<CountingTool>,
-        approver: Option<Arc<dyn Approver>>,
-    ) -> Arc<Agent> {
+    fn make_agent(tool: Arc<CountingTool>, approver: Option<Arc<dyn Approver>>) -> Arc<Agent> {
         let mut registry = ToolRegistry::new();
         let dynamic: Arc<dyn Tool> = tool.clone();
         registry.register_arc(dynamic);
@@ -636,10 +760,14 @@ mod tests {
         agent.run(&mut conv).await.unwrap();
 
         assert_eq!(tool.invoked.load(Ordering::SeqCst), 0);
-        let denied = conv.messages.iter().any(|m| {
-            matches!(m, Message::Tool { content, .. } if content.starts_with("tool denied:"))
-        });
-        assert!(denied, "expected a `tool denied:` message in {:?}", conv.messages);
+        let denied = conv.messages.iter().any(
+            |m| matches!(m, Message::Tool { content, .. } if content.starts_with("tool denied:")),
+        );
+        assert!(
+            denied,
+            "expected a `tool denied:` message in {:?}",
+            conv.messages
+        );
     }
 
     #[tokio::test]
@@ -732,7 +860,9 @@ mod tests {
 
     #[test]
     fn usage_event_with_all_none_still_emits_type_tag() {
-        let ev = AgentEvent::Usage { usage: Usage::default() };
+        let ev = AgentEvent::Usage {
+            usage: Usage::default(),
+        };
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
         assert_eq!(v["type"], "usage");

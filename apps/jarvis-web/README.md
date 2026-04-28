@@ -1,8 +1,10 @@
 # jarvis-web - browser client
 
-Vite + React + TypeScript client for the Jarvis HTTP/WebSocket UI.
+Vite + React 19 + TypeScript client for the Jarvis HTTP/WebSocket UI.
 The production build in `dist/` is loaded into the binary at compile
-time via `include_dir!` and served from `/ui/` by `harness-server`.
+time via `include_dir!` and served from the server root `/` by
+`harness-server`. Routing is handled client-side by `react-router-dom`
+v7 (`/` → chat, `/settings` → settings center).
 
 ## Run
 
@@ -12,7 +14,7 @@ npm run build
 cargo run -p jarvis
 ```
 
-Then open `http://localhost:7001/ui/`. The page connects to
+Then open `http://localhost:7001/`. The page connects to
 `ws://localhost:7001/v1/chat/ws` and uses the REST CRUD endpoints
 under `/v1/conversations/`. Persistence is optional: set
 `JARVIS_DB_URL` to enable the conversation rail.

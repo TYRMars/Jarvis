@@ -16,6 +16,7 @@ import {
   initialPlanCardOpen,
   initialSidebarOpen,
   initialTheme,
+  initialWorkspacePanel,
   initialWorkspaceRailOpen,
   safeSet,
   savePinned,
@@ -26,6 +27,9 @@ import type {
   AnyMessage,
   ConnectionStatus,
   ConvoListRow,
+  HitlRequest,
+  HitlResponse,
+  Project,
   ToolCall,
 } from "../types/frames";
 
@@ -43,6 +47,18 @@ export interface TaskRailEntry {
   status: "running" | "ok" | "error" | "denied";
   startedAt: number;
   updatedAt: number;
+}
+
+/// One step in the agent's working plan. Shape mirrors
+/// `harness_core::PlanItem` (snake_case wire format → camelCase note
+/// is identical here since `note` matches both). The plan card
+/// renders these as a checklist; each `plan_update` event replaces
+/// the whole array (typed snapshot, not patch).
+export interface PlanItem {
+  id: string;
+  title: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  note?: string | null;
 }
 
 /// Provider description served by `GET /v1/providers`. The model
@@ -87,6 +103,10 @@ export type UiMessage =
     }
   | { uid: string; kind: "system_hint"; idShort: string };
 
+function isAskToolName(name: string | undefined): boolean {
+  return typeof name === "string" && name.startsWith("ask.");
+}
+
 /// One imperative tool invocation. Lives in a flat map keyed by id;
 /// the `<AssistantBubble>` looks them up by the ids it owns.
 ///
@@ -101,6 +121,20 @@ export interface ToolBlockEntry {
   status: "running" | "ok" | "error" | "denied";
   output: string | null;
   progress: string;
+  /// Where the approval decision came from. Set by the
+  /// `approval_decision` frame handler when the server attaches
+  /// a `source` field. `null` means the tool didn't go through
+  /// the approval gate (read-only tools), or the server didn't
+  /// supply a source (older builds without the permission store).
+  decisionSource: import("../types/frames").ApprovalSource | null;
+  /// Wall-clock millis at `tool_start`. Used by `<ToolBlock>` to
+  /// render an execution-duration chip alongside the result, so
+  /// users can spot a slow `code.grep` / `shell.exec` without
+  /// reading raw logs. Synthesised at `loadHistory` time for
+  /// historical entries (no real timestamp persisted).
+  startedAt: number;
+  /// Wall-clock millis at `tool_end`; null while running.
+  finishedAt: number | null;
 }
 
 /// Pending or resolved approval card in the right rail.
@@ -109,6 +143,14 @@ export interface ApprovalCardState {
   name: string;
   arguments: any;
   status: "pending" | "approved" | "denied";
+  reason: string | null;
+}
+
+/// Pending or resolved native HITL card in the right rail.
+export interface HitlCardState {
+  request: HitlRequest;
+  status: "pending" | HitlResponse["status"];
+  payload?: any;
   reason: string | null;
 }
 
@@ -129,6 +171,10 @@ interface AppStoreState {
   connection: ConnectionStatus;
   statusKey: string | null;
   statusClass: string | null;
+  /// Number of consecutive failed reconnect attempts. Bumped by the
+  /// socket layer's backoff loop, reset to 0 on a successful open.
+  /// Used by `<ConnectionStatus>` to render "reconnecting (N)…".
+  reconnectAttempt: number;
   bannerError: string | null;
   /// Per-turn token usage. Mirrored from the imperative usage module
   /// via `setUsage()`; React `<UsageBadge>` reads this.
@@ -159,6 +205,8 @@ interface AppStoreState {
   /// Order = arrival order; React renders newest at the bottom of
   /// the list.
   approvals: ApprovalCardState[];
+  /// Native `ask.*` requests rendered beside approval cards.
+  hitls: HitlCardState[];
   /// Composer textarea value (controlled by React). The legacy
   /// imperative composer used to read straight from the DOM; the
   /// React `<Composer>` uses this as its sole source of truth.
@@ -170,13 +218,21 @@ interface AppStoreState {
   /// Whether the left-hand sidebar (conversation list + nav) is open.
   /// Drives `body.sidebar-closed`. Persisted to localStorage.
   sidebarOpen: boolean;
-  /// Whether the right-hand workspace rail (tasks + plan) is open.
-  /// Drives `body.workspace-rail-closed`. Persisted to localStorage.
+  /// Whether the right-hand workspace rail is open at all. Drives
+  /// `body.workspace-rail-closed`. When false, NO panels render
+  /// regardless of their individual visibility flags.
+  /// Persisted to localStorage.
   workspaceRailOpen: boolean;
-  /// Plan card visibility within the workspace rail. Persisted.
+  /// Legacy plan-card-open switch — kept for one release while
+  /// downstream callers migrate to `workspacePanelVisible.plan`.
+  /// New code should NOT read this directly.
   planCardOpen: boolean;
-  /// Workspace "panel" dropdown menu (preview/diff/terminal/files
-  /// stubs). Transient — not persisted.
+  /// Per-panel visibility within the workspace rail. Each panel
+  /// is independently togglable from the panel-selector dropdown
+  /// (Claude Code style). Defaults: diff + tasks visible, plan +
+  /// changeReport hidden. Persisted per key as `jarvis.panel.<key>`.
+  workspacePanelVisible: Record<import("./persistence").WorkspacePanelKey, boolean>;
+  /// Workspace "panel" dropdown menu open/closed state. Transient.
   workspacePanelMenuOpen: boolean;
   /// Account chip dropdown (theme + language switcher). Transient.
   accountMenuOpen: boolean;
@@ -213,6 +269,10 @@ interface AppStoreState {
   /// Workspace tasks rail entries. Pushed by `pushToolStart` /
   /// `setToolEnd` in addition to the `toolBlocks` map.
   tasks: TaskRailEntry[];
+  /// Latest agent plan snapshot. Replaced wholesale on every
+  /// `plan_update` event; cleared on `reset`. Empty array means
+  /// "no plan yet" — the rail's empty-state UI handles that.
+  plan: PlanItem[];
 
   // ---- Sidebar / conversation list ----
   /// Pinned conversation ids. Persisted to localStorage by
@@ -226,20 +286,37 @@ interface AppStoreState {
   /// resume so switching to a chat that started on Anthropic doesn't
   /// silently flip you to the global current selection.
   convoRouting: Record<string, string>;
-  /// Live filter text typed into the sidebar search row.
-  convoSearch: string;
   /// Empty-state hint kind for the recents column.
   convoStatus: ConvoStatusKind;
   /// `false` means the server reported a 503 from the conversation
   /// CRUD routes — we hide the New button and show the "persistence
   /// disabled" banner.
   persistEnabled: boolean;
+
+  // ---- Projects ----
+  /// `false` means the server has no `ProjectStore` configured (503
+  /// from `/v1/projects`). The whole project UI hides itself in that
+  /// case — the "new conversation" button reverts to its bare form.
+  projectsAvailable: boolean;
+  /// Newest-updated-first list of (non-archived by default) projects.
+  /// Maintained by `services/projects.ts::refreshProjects`.
+  projects: Project[];
+  /// O(1) lookup keyed by `Project.id`. Used by `<ConvoRow>` to
+  /// render a project chip without iterating `projects`.
+  projectsById: Record<string, Project>;
+  /// Sidebar conversation-list filter. When set, `refreshConvoList`
+  /// passes `?project_id=X` and the rail header shows a chip the user
+  /// can click to clear.
+  activeProjectFilter: string | null;
+
+  // ---- Deep search ----
 }
 
 interface AppStoreActions {
   markStateChanged: () => void;
   setConnection: (status: ConnectionStatus) => void;
   setStatus: (key: string | null, cls?: string | null) => void;
+  setReconnectAttempt: (n: number) => void;
   showBanner: (msg: string | null) => void;
   setUsage: (u: UsageSnapshot) => void;
   setActiveId: (id: string | null) => void;
@@ -273,13 +350,23 @@ interface AppStoreActions {
   applyForked: (userOrdinal: number) => void;
   // ---- Approvals ----
   pushApprovalRequest: (id: string, name: string, args: any) => void;
-  setApprovalDecision: (id: string, decision: "approve" | "deny", reason?: string | null) => void;
+  setApprovalDecision: (
+    id: string,
+    decision: "approve" | "deny",
+    reason?: string | null,
+    source?: import("../types/frames").ApprovalSource | null,
+  ) => void;
   /// Mark every still-pending approval as denied. Called when a turn
   /// terminates so stale cards don't tempt the user into a click that
   /// would error with "no pending approval" against the now-cleared
   /// server-side responder map.
   finalizePendingApprovals: () => void;
   clearApprovals: () => void;
+  // ---- Native HITL ----
+  pushHitlRequest: (request: HitlRequest) => void;
+  setHitlResponse: (response: HitlResponse) => void;
+  finalizePendingHitls: () => void;
+  clearHitls: () => void;
   // ---- Composer ----
   setComposerValue: (v: string) => void;
   /// Add a paste blob and return its placeholder string. The composer
@@ -297,6 +384,13 @@ interface AppStoreActions {
   setSidebarOpen: (open: boolean) => void;
   setWorkspaceRailOpen: (open: boolean) => void;
   setPlanCardOpen: (open: boolean) => void;
+  /// Toggle one panel's visibility. Persists per-key. Auto-opens
+  /// the rail if it's closed and the user is enabling a panel,
+  /// auto-closes the rail if disabling the last visible panel.
+  setWorkspacePanelVisible: (
+    key: import("./persistence").WorkspacePanelKey,
+    open: boolean,
+  ) => void;
   setWorkspacePanelMenuOpen: (open: boolean) => void;
   setAccountMenuOpen: (open: boolean) => void;
   // ---- Settings ----
@@ -314,15 +408,57 @@ interface AppStoreActions {
   // ---- Tasks rail ----
   upsertTask: (entry: Omit<TaskRailEntry, "startedAt" | "updatedAt"> & { startedAt?: number }) => void;
   clearTasks: () => void;
+  /// Replace the plan snapshot. Empty `items` clears the plan.
+  setPlan: (items: PlanItem[]) => void;
   // ---- Sidebar ----
   togglePin: (id: string) => void;
   setTitleOverride: (id: string, title: string | null) => void;
   /// Persist `value` (or clear when null) as the pinned routing for
   /// `id`. Skipped if the entry is already what we'd write.
   setConvoRoutingFor: (id: string, value: string | null) => void;
-  setConvoSearch: (q: string) => void;
   setConvoStatus: (kind: ConvoStatusKind) => void;
   setPersistEnabled: (v: boolean) => void;
+
+  // ---- Projects ----
+  setProjectsAvailable: (v: boolean) => void;
+  setProjects: (rows: Project[]) => void;
+  /// Insert or update a single project in the cache + the ordered list
+  /// (used by create/update/restore so the rail re-renders without a
+  /// full refetch).
+  upsertProject: (p: Project) => void;
+  setActiveProjectFilter: (id: string | null) => void;
+
+  // ---- Permission system ----
+  permissionMode: "ask" | "accept-edits" | "plan" | "auto" | "bypass";
+  /// Bumped every time the server emits `permission_rules_changed`.
+  /// Settings/Permissions section watches this and re-fetches.
+  permissionRulesVersion: number;
+  /// Plan proposed by the agent (Plan Mode) waiting for user accept.
+  /// Cleared when the user accepts or refines.
+  proposedPlan: string | null;
+  setPermissionMode: (mode: "ask" | "accept-edits" | "plan" | "auto" | "bypass") => void;
+  bumpPermissionRulesVersion?: () => void;
+  setProposedPlan: (plan: string | null) => void;
+
+  // ---- Workspace diff (right-rail review card) ----
+  /// `null` = not fetched yet; `"unavailable"` = server returned 503
+  /// (no workspace root pinned; UI hides the card); a `WorkspaceDiff`
+  /// = the latest snapshot. Fetching is push-style — the card mounts
+  /// and calls `refreshWorkspaceDiff()`.
+  workspaceDiff: import("../services/workspaceDiff").WorkspaceDiffState;
+  /// True while a refresh is in flight. Drives the spinner on the
+  /// refresh button without leaving stale data on screen.
+  workspaceDiffLoading: boolean;
+  /// Per-file diff cache so re-expanding a row doesn't refetch.
+  /// Keyed by `<base>::<path>` to keep the namespace tidy when the
+  /// user changes the base. Cleared on every full refresh.
+  workspaceDiffFileCache: Record<string, string>;
+  setWorkspaceDiff: (
+    diff: import("../services/workspaceDiff").WorkspaceDiffState,
+  ) => void;
+  setWorkspaceDiffLoading: (loading: boolean) => void;
+  setWorkspaceDiffFileEntry: (key: string, diff: string) => void;
+  clearWorkspaceDiffFileCache: () => void;
 }
 
 let uidSeq = 0;
@@ -335,6 +471,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   version: 0,
   connection: "connecting",
   statusKey: null,
+  reconnectAttempt: 0,
   statusClass: null,
   bannerError: null,
   usage: { prompt: 0, completion: 0, cached: 0, reasoning: 0, calls: 0 },
@@ -348,12 +485,19 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   emptyHintIdShort: null,
   toolBlocks: {},
   approvals: [],
+  hitls: [],
   composerValue: "",
   pastedBlobs: {},
 
   sidebarOpen: initialSidebarOpen(),
   workspaceRailOpen: initialWorkspaceRailOpen(),
   planCardOpen: initialPlanCardOpen(),
+  workspacePanelVisible: {
+    diff: initialWorkspacePanel("diff"),
+    tasks: initialWorkspacePanel("tasks"),
+    plan: initialWorkspacePanel("plan"),
+    changeReport: initialWorkspacePanel("changeReport"),
+  },
   workspacePanelMenuOpen: false,
   accountMenuOpen: false,
   theme: initialTheme(),
@@ -364,17 +508,28 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   modelMenuOpen: false,
   quickOpen: false,
   tasks: [],
+  plan: [],
 
   pinned: loadPinned(),
   titleOverrides: loadTitleOverrides(),
   convoRouting: loadConvoRouting(),
-  convoSearch: "",
   convoStatus: "",
   persistEnabled: true,
+  projectsAvailable: true,
+  projects: [],
+  projectsById: {},
+  activeProjectFilter: null,
+  permissionMode: "ask",
+  permissionRulesVersion: 0,
+  proposedPlan: null,
+  workspaceDiff: null,
+  workspaceDiffLoading: false,
+  workspaceDiffFileCache: {},
 
   markStateChanged: () => set((s) => ({ version: s.version + 1 })),
   setConnection: (status) => set({ connection: status }),
   setStatus: (statusKey, statusClass = null) => set({ statusKey, statusClass }),
+  setReconnectAttempt: (reconnectAttempt) => set({ reconnectAttempt }),
   showBanner: (msg) => set({ bannerError: msg }),
   setUsage: (usage) => set({ usage }),
   setActiveId: (id) => set({ activeId: id }),
@@ -391,7 +546,19 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
 
   // ---- Chat-area surface ----
 
-  clearMessages: () => set({ messages: [], emptyHintIdShort: null, toolBlocks: {} }),
+  clearMessages: () =>
+    // Reset every per-conversation slice so switching to a fresh /
+    // empty thread doesn't leak the previous conversation's tasks
+    // rail, plan card, change report, or pending HITL prompts.
+    set({
+      messages: [],
+      emptyHintIdShort: null,
+      toolBlocks: {},
+      hitls: [],
+      tasks: [],
+      plan: [],
+      proposedPlan: null,
+    }),
 
   showEmptyHint: (idShort) =>
     set({ messages: [], toolBlocks: {}, emptyHintIdShort: idShort }),
@@ -455,11 +622,23 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].kind === "assistant") { lastIdx = i; break; }
     }
-    if (lastIdx < 0) {
-      // Server sent an assistant-only message before any delta — append.
-      const uid = nextUid("a");
+    const trailing = lastIdx >= 0
+      ? (msgs[lastIdx] as Extract<UiMessage, { kind: "assistant" }>)
+      : null;
+    // Append a fresh assistant entry when there isn't one to merge
+    // into, OR when the trailing one is already finalised. The
+    // already-finalised case fires on multi-iteration turns where
+    // iteration N+1 jumps straight to a tool call without any
+    // delta text first: without this, `assistant_message` would
+    // silently update iteration N's bubble (the previous turn's,
+    // visually) and the next `tool_start` would attach this
+    // iteration's tool calls to it — exactly the "tool call shows
+    // up under the previous assistant message" rendering bug.
+    // `appendDelta` already applies the same tail-finalised rule;
+    // matching it here keeps the two entry-points symmetric.
+    if (!trailing || trailing.finalised) {
       msgs.push({
-        uid,
+        uid: nextUid("a"),
         kind: "assistant",
         content: msg.content || "",
         reasoning: msg.reasoning_content || "",
@@ -469,15 +648,14 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
       set({ messages: msgs });
       return;
     }
-    const cur = msgs[lastIdx] as Extract<UiMessage, { kind: "assistant" }>;
     msgs[lastIdx] = {
-      ...cur,
+      ...trailing,
       // Prefer the streamed text — `finalize.message.content` is the
       // server's full version and matches what we accumulated; the
       // OR keeps us safe for tool-call-only turns where content is
       // empty but reasoning may be present.
-      content: cur.content || msg.content || "",
-      reasoning: msg.reasoning_content || cur.reasoning,
+      content: trailing.content || msg.content || "",
+      reasoning: msg.reasoning_content || trailing.reasoning,
       finalised: true,
     };
     set({ messages: msgs });
@@ -486,10 +664,16 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   loadHistory: (messages) => {
     const out: UiMessage[] = [];
     const tools: Record<string, ToolBlockEntry> = {};
+    /// Insertion-ordered list of tool ids as we walk the history.
+    /// Used at the end to synthesize the `tasks` rail entries so the
+    /// right-rail Tasks / Change Report cards survive a page refresh
+    /// or conversation switch — without this, those cards stayed
+    /// empty until the *next* live tool call landed.
+    const toolOrder: string[] = [];
     let userOrdinal = 0;
     for (const m of messages) {
       if (m.role === "system") {
-        out.push({ uid: nextUid("s"), kind: "system", content: m.content });
+        continue;
       } else if (m.role === "user") {
         out.push({ uid: nextUid("u"), kind: "user", content: m.content, userOrdinal });
         userOrdinal++;
@@ -497,6 +681,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
         const ids: string[] = [];
         if (m.tool_calls) {
           for (const tc of m.tool_calls) {
+            if (isAskToolName(tc.name)) continue;
             ids.push(tc.id);
             tools[tc.id] = {
               id: tc.id,
@@ -505,17 +690,27 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
               status: "ok",
               output: null,
               progress: "",
+              decisionSource: null,
+              // Synthetic timestamps for historical entries — the
+              // store doesn't persist real durations, so we fill in
+              // 0 deltas. The header just hides the duration chip
+              // when start === finish.
+              startedAt: 0,
+              finishedAt: 0,
             };
+            toolOrder.push(tc.id);
           }
         }
-        out.push({
-          uid: nextUid("a"),
-          kind: "assistant",
-          content: m.content || "",
-          reasoning: m.reasoning_content || "",
-          toolCallIds: ids,
-          finalised: true,
-        });
+        if (m.content || m.reasoning_content || ids.length) {
+          out.push({
+            uid: nextUid("a"),
+            kind: "assistant",
+            content: m.content || "",
+            reasoning: m.reasoning_content || "",
+            toolCallIds: ids,
+            finalised: true,
+          });
+        }
       } else if (m.role === "tool") {
         // Splice the tool result into the matching block we just built.
         const block = tools[m.tool_call_id];
@@ -526,7 +721,39 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
         }
       }
     }
-    set({ messages: out, toolBlocks: tools, emptyHintIdShort: null });
+    // Rebuild the tasks rail from the now-populated tool blocks.
+    // Synthesise monotonically-increasing timestamps so a future
+    // live tool call landing on top sorts correctly. The
+    // history doesn't carry actual tool start/end timestamps —
+    // the conversation store persists message JSON, not event
+    // metadata — so wall-clock ordering is approximate but
+    // good enough for the rail's "what happened in this turn"
+    // affordance.
+    const baseTs = Date.now() - toolOrder.length;
+    const rebuiltTasks: TaskRailEntry[] = toolOrder.map((id, i) => {
+      const block = tools[id];
+      return {
+        id,
+        name: block.name,
+        args: block.args,
+        status: block.status,
+        startedAt: baseTs + i,
+        updatedAt: baseTs + i,
+      };
+    });
+    set({
+      messages: out,
+      toolBlocks: tools,
+      hitls: [],
+      tasks: rebuiltTasks,
+      // The plan is per-turn ephemeral — it lives only in agent-loop
+      // events (`AgentEvent::PlanUpdate`), never persisted into the
+      // conversation store. Restoring a thread starts the plan card
+      // empty, same as a fresh `new` would.
+      plan: [],
+      proposedPlan: null,
+      emptyHintIdShort: null,
+    });
   },
 
   pushToolStart: (id, name, args) => {
@@ -554,7 +781,20 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
           msgs[lastIdx] = { ...cur, toolCallIds: [...cur.toolCallIds, id] };
         }
       }
-      const tools = { ...s.toolBlocks, [id]: { id, name, args, status: "running" as const, output: null, progress: "" } };
+      const tools = {
+        ...s.toolBlocks,
+        [id]: {
+          id,
+          name,
+          args,
+          status: "running" as const,
+          output: null,
+          progress: "",
+          decisionSource: null,
+          startedAt: Date.now(),
+          finishedAt: null,
+        },
+      };
       return { messages: msgs, toolBlocks: tools, emptyHintIdShort: null };
     });
   },
@@ -583,7 +823,12 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
       const denied = content.startsWith("tool denied:");
       const failed = content.startsWith("tool error:");
       const status: ToolBlockEntry["status"] = denied ? "denied" : failed ? "error" : "ok";
-      return { toolBlocks: { ...s.toolBlocks, [id]: { ...block, status, output: content } } };
+      return {
+        toolBlocks: {
+          ...s.toolBlocks,
+          [id]: { ...block, status, output: content, finishedAt: Date.now() },
+        },
+      };
     });
   },
 
@@ -623,18 +868,33 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
       };
     });
   },
-  setApprovalDecision: (id, decision, reason) => {
-    set((s) => ({
-      approvals: s.approvals.map((c) =>
+  setApprovalDecision: (id, decision, reason, source) => {
+    set((s) => {
+      // Update the approval card (right rail / review dock).
+      const approvals = s.approvals.map((c) =>
         c.id === id
           ? {
               ...c,
-              status: decision === "approve" ? "approved" : "denied",
+              status: decision === "approve" ? ("approved" as const) : ("denied" as const),
               reason: reason || null,
             }
           : c,
-      ),
-    }));
+      );
+      // Stamp the source onto the matching tool block so the chat
+      // history can render an "auto-approved by user-rule" chip.
+      // Only attach when the server actually told us where the
+      // decision came from — older builds omit `source`.
+      if (source && s.toolBlocks[id]) {
+        return {
+          approvals,
+          toolBlocks: {
+            ...s.toolBlocks,
+            [id]: { ...s.toolBlocks[id], decisionSource: source },
+          },
+        };
+      }
+      return { approvals };
+    });
   },
   /// Mark any still-pending approval cards as denied. Called when the
   /// agent emits `done` / `error` / `interrupted` — the server has
@@ -651,6 +911,41 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
     }));
   },
   clearApprovals: () => set({ approvals: [] }),
+
+  // ---- Native HITL ----
+  pushHitlRequest: (request) => {
+    set((s) => {
+      if (s.hitls.some((c) => c.request.id === request.id)) return s;
+      return {
+        hitls: [...s.hitls, { request, status: "pending", reason: null }],
+        emptyHintIdShort: null,
+      };
+    });
+  },
+  setHitlResponse: (response) => {
+    set((s) => ({
+      hitls: s.hitls.map((c) =>
+        c.request.id === response.request_id
+          ? {
+              ...c,
+              status: response.status,
+              payload: response.payload,
+              reason: response.reason || null,
+            }
+          : c,
+      ),
+    }));
+  },
+  finalizePendingHitls: () => {
+    set((s) => ({
+      hitls: s.hitls.map((c) =>
+        c.status === "pending"
+          ? { ...c, status: "cancelled", reason: c.reason ?? "(turn ended)" }
+          : c,
+      ),
+    }));
+  },
+  clearHitls: () => set({ hitls: [] }),
 
   // ---- Composer ----
   setComposerValue: (v) => set({ composerValue: v }),
@@ -697,6 +992,29 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
     document.body.classList.toggle("plan-card-closed", !open);
     safeSet("jarvis.planCardOpen", open ? "true" : "false");
     set({ planCardOpen: open });
+  },
+  setWorkspacePanelVisible: (key, open) => {
+    safeSet(`jarvis.panel.${key}`, open ? "true" : "false");
+    set((s) => {
+      const next = { ...s.workspacePanelVisible, [key]: open };
+      // Auto-open the rail when enabling a panel and the rail is
+      // currently closed — without this the user would toggle a
+      // panel and see nothing change. Auto-close it when the user
+      // turns OFF the last visible panel so we don't render an
+      // empty rail.
+      const anyVisible = Object.values(next).some(Boolean);
+      let railOpen = s.workspaceRailOpen;
+      if (open && !s.workspaceRailOpen) {
+        document.body.classList.toggle("workspace-rail-closed", false);
+        safeSet("jarvis.workspaceRailOpen", "true");
+        railOpen = true;
+      } else if (!open && !anyVisible && s.workspaceRailOpen) {
+        document.body.classList.toggle("workspace-rail-closed", true);
+        safeSet("jarvis.workspaceRailOpen", "false");
+        railOpen = false;
+      }
+      return { workspacePanelVisible: next, workspaceRailOpen: railOpen };
+    });
   },
   setWorkspacePanelMenuOpen: (open) => set({ workspacePanelMenuOpen: open }),
   setAccountMenuOpen: (open) => set({ accountMenuOpen: open }),
@@ -759,6 +1077,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
     });
   },
   clearTasks: () => set({ tasks: [] }),
+  setPlan: (items) => set({ plan: items }),
   // ---- Sidebar ----
   togglePin: (id) => {
     set((s) => {
@@ -788,9 +1107,42 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
       return { convoRouting: next };
     });
   },
-  setConvoSearch: (q) => set({ convoSearch: q }),
   setConvoStatus: (kind) => set({ convoStatus: kind }),
   setPersistEnabled: (v) => set({ persistEnabled: v }),
+
+  setProjectsAvailable: (v) => set({ projectsAvailable: v }),
+  setProjects: (rows) =>
+    set({
+      projects: rows,
+      projectsById: Object.fromEntries(rows.map((p) => [p.id, p])),
+    }),
+  upsertProject: (p) => {
+    set((s) => {
+      const idx = s.projects.findIndex((row) => row.id === p.id);
+      const projects =
+        idx >= 0
+          ? s.projects.map((row, i) => (i === idx ? p : row))
+          : [p, ...s.projects];
+      return {
+        projects,
+        projectsById: { ...s.projectsById, [p.id]: p },
+      };
+    });
+  },
+  setActiveProjectFilter: (id) => set({ activeProjectFilter: id }),
+
+  setPermissionMode: (mode) => set({ permissionMode: mode }),
+  bumpPermissionRulesVersion: () =>
+    set((s) => ({ permissionRulesVersion: s.permissionRulesVersion + 1 })),
+  setProposedPlan: (plan) => set({ proposedPlan: plan }),
+  setWorkspaceDiff: (workspaceDiff) =>
+    set({ workspaceDiff, workspaceDiffFileCache: {} }),
+  setWorkspaceDiffLoading: (workspaceDiffLoading) => set({ workspaceDiffLoading }),
+  setWorkspaceDiffFileEntry: (key, diff) =>
+    set((s) => ({
+      workspaceDiffFileCache: { ...s.workspaceDiffFileCache, [key]: diff },
+    })),
+  clearWorkspaceDiffFileCache: () => set({ workspaceDiffFileCache: {} }),
 }));
 
 /// Non-React imperative call sites can grab the store handle and

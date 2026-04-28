@@ -1,21 +1,12 @@
-// Right-rail approvals panel. Empty state is a small shield card;
-// once any approval lands, the list takes over and pinged-open the
-// rail (`document.body.classList.add("approvals-open")`) the same
-// way the imperative version did.
+// Right-rail approvals panel. The active approval prompt is shown
+// above the composer; this rail remains a manual review/history view.
 
-import { useEffect } from "react";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { ApprovalCard } from "./ApprovalCard";
 
 export function ApprovalsPanel() {
   const approvals = useAppStore((s) => s.approvals);
-
-  // Toggle the body-level `approvals-open` class so the rail's CSS
-  // animates in/out. Mirrors the legacy behaviour 1:1.
-  useEffect(() => {
-    document.body.classList.toggle("approvals-open", approvals.length > 0);
-  }, [approvals.length]);
 
   return (
     <div id="approval-list" className="panel-body">

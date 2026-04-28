@@ -16,16 +16,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use harness_core::{
-    AgentConfig, AlwaysApprove, AlwaysDeny, Approver, Memory, ToolRegistry,
-};
+use harness_core::{AgentConfig, AlwaysApprove, AlwaysDeny, Approver, Memory, ToolRegistry};
 use harness_llm::{
     AnthropicConfig, AnthropicProvider, CodexAuth, GoogleConfig, GoogleProvider, OpenAiConfig,
     OpenAiProvider, ResponsesConfig, ResponsesProvider,
 };
 use harness_mcp::{connect_all_mcp, serve_registry_stdio, McpClientConfig};
 use harness_memory::{SlidingWindowMemory, SummarizingMemory};
-use harness_server::{serve, AppState, ProviderRegistry};
+use harness_server::{serve, AppState, PermissionMode, ProviderRegistry, ServerInfo};
 use harness_tools::{register_builtins, BuiltinsConfig, Sandbox, ShellLimits};
 use tracing::info;
 
@@ -34,11 +32,18 @@ use crate::config::Config;
 use crate::ServeArgs;
 
 /// `jarvis serve` (default subcommand).
-pub async fn run(cfg: Option<Config>, args: ServeArgs) -> Result<()> {
+pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathBuf>) -> Result<()> {
     let cfg = cfg.unwrap_or_default();
 
     let mut tools = ToolRegistry::new();
-    register_builtins(&mut tools, builtins_config(&cfg));
+    let bcfg = builtins_config_with_workspace(&cfg, args.workspace.as_deref());
+    let workspace_root = bcfg.fs_root.clone();
+    let coding_mode = bcfg.enable_fs_write
+        || bcfg.enable_fs_edit
+        || bcfg.enable_fs_patch
+        || bcfg.enable_shell_exec;
+    register_builtins(&mut tools, bcfg);
+    info!(workspace = %workspace_root.display(), "workspace root resolved");
 
     let provider_name = pick_string(
         args.provider.as_deref(),
@@ -68,7 +73,12 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs) -> Result<()> {
     // the operator.
     let mut seen = std::collections::HashSet::new();
     seen.insert(provider_name.clone());
-    type Extra = (String, Arc<dyn harness_core::LlmProvider>, String, Vec<String>);
+    type Extra = (
+        String,
+        Arc<dyn harness_core::LlmProvider>,
+        String,
+        Vec<String>,
+    );
     let mut extras: Vec<Extra> = Vec::new();
     let from_cfg = cfg
         .providers
@@ -106,20 +116,43 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs) -> Result<()> {
     );
 
     // Optional persistence — opened up-front so `SummarizingMemory`
-    // can also use it for cross-restart summary persistence.
-    let store = match pick_string_opt("JARVIS_DB_URL", cfg.persistence.url.as_deref()) {
+    // can also use it for cross-restart summary persistence. The same
+    // URL drives both the conversation and the project store; `connect_all`
+    // shares the underlying pool / directory between the two.
+    let persistence_url = pick_string_opt("JARVIS_DB_URL", cfg.persistence.url.as_deref());
+    let persistence_scheme = persistence_url
+        .as_deref()
+        .and_then(|s| s.split(':').next().map(str::to_string));
+    let (store, project_store) = match persistence_url.as_deref() {
         Some(url) => {
-            let s = harness_store::connect(&url)
+            let bundle = harness_store::connect_all(url)
                 .await
                 .with_context(|| format!("opening db url `{url}`"))?;
-            info!(url = %url, "conversation store connected");
-            Some(s)
+            info!(url = %url, "conversation + project store connected");
+            (Some(bundle.conversations), Some(bundle.projects))
         }
-        None => None,
+        None => (None, None),
     };
 
+    let mut system_prompt = pick_system_prompt(&cfg, coding_mode);
+    let project_ctx_cap = project_context_max_bytes(&cfg);
+    let mut project_context_loaded = false;
+    if include_project_context(&cfg) {
+        if let Some(extra) = harness_tools::workspace::load_instructions(
+            &workspace_root,
+            project_ctx_cap,
+        ) {
+            info!(
+                bytes = extra.len(),
+                "loaded project instructions (AGENTS.md / CLAUDE.md / AGENT.md)"
+            );
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&extra);
+            project_context_loaded = true;
+        }
+    }
     let mut agent_cfg = AgentConfig::new(model.clone())
-        .with_system_prompt("You are Jarvis, a concise and capable assistant.")
+        .with_system_prompt(system_prompt)
         .with_tools(tools)
         .with_max_iterations(30);
     if let Some(mem) = build_memory(&cfg, &llm, &model, store.as_ref())? {
@@ -160,10 +193,51 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs) -> Result<()> {
         "providers registered",
     );
 
-    let mut state = AppState::from_registry(registry, agent_cfg);
+    // Open the permission store (user-scope + project-scope JSON
+    // files). Always created — the rule engine is the new contract;
+    // even deployments with no rules get an empty `Ask` table that
+    // the WS handler wraps `ChannelApprover` in. Failures fall back
+    // to a session-only store so a misconfigured filesystem doesn't
+    // crash startup.
+    let user_perm_path = dirs_user_config()
+        .ok()
+        .map(|d| d.join("permissions.json"));
+    let project_perm_path = Some(workspace_root.join(".jarvis").join("permissions.json"));
+    let permission_store: std::sync::Arc<dyn harness_server::PermissionStore> = match harness_store::JsonFilePermissionStore::open(
+        user_perm_path.clone(),
+        project_perm_path.clone(),
+    )
+    .await
+    {
+        Ok(s) => std::sync::Arc::new(s),
+        Err(e) => {
+            tracing::warn!(error = %e, "permission store open failed; falling back to session-only");
+            std::sync::Arc::new(
+                harness_store::JsonFilePermissionStore::open(None, None)
+                    .await
+                    .expect("session-only store can't fail"),
+            )
+        }
+    };
+    let permission_mode = pick_permission_mode(&cfg, &args)?;
+    info!(
+        mode = %permission_mode.as_str(),
+        user_path = ?user_perm_path,
+        project_path = ?project_perm_path,
+        "permission store ready",
+    );
+
+    let mut state =
+        AppState::from_registry(registry, agent_cfg).with_workspace_root(workspace_root);
     if let Some(s) = store {
         state = state.with_store(s);
     }
+    if let Some(ps) = project_store {
+        state = state.with_project_store(ps);
+    }
+    state = state
+        .with_permission_store(permission_store)
+        .with_default_permission_mode(permission_mode);
 
     let addr_str = pick_string(
         args.addr.as_deref(),
@@ -174,6 +248,42 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs) -> Result<()> {
     let addr: SocketAddr = addr_str
         .parse()
         .with_context(|| format!("invalid bind address `{addr_str}`"))?;
+
+    // Populate the server-info snapshot the Settings page reads via
+    // `GET /v1/server/info`. Fields are derived from the same env-var
+    // / config plumbing used above, but stay strictly informational —
+    // never include the persistence URL credentials, API keys, or
+    // OAuth tokens.
+    let memory_mode = if cfg.memory.tokens.is_some() || std::env::var("JARVIS_MEMORY_TOKENS").is_ok()
+    {
+        Some(
+            pick_string_opt("JARVIS_MEMORY_MODE", cfg.memory.mode.as_deref())
+                .unwrap_or_else(|| "window".to_string()),
+        )
+    } else {
+        None
+    };
+    let memory_budget = std::env::var("JARVIS_MEMORY_TOKENS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .or(cfg.memory.tokens);
+    let approval_mode = pick_string_opt("JARVIS_APPROVAL_MODE", cfg.approval.mode.as_deref());
+    let mcp_prefixes: Vec<String> = mcp_servers_spec(&cfg).into_keys().collect();
+
+    let server_info = ServerInfo {
+        listen_addr: Some(addr_str.clone()),
+        config_path,
+        persistence_scheme,
+        memory_mode,
+        memory_budget_tokens: memory_budget,
+        approval_mode,
+        coding_mode,
+        project_context_loaded,
+        project_context_bytes_cap: Some(project_ctx_cap),
+        mcp_prefixes,
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+    };
+    state = state.with_server_info(server_info);
     info!(%addr, "jarvis listening");
     serve(addr, state).await?;
 
@@ -191,27 +301,122 @@ pub async fn run_mcp(cfg: Option<Config>) -> Result<()> {
     Ok(())
 }
 
+/// `jarvis workspace` — print the resolved workspace root + git
+/// state. Mirrors `GET /v1/workspace` so scripts and humans see the
+/// same answer. Resolution mirrors `serve` exactly:
+/// `--workspace > JARVIS_FS_ROOT > [tools].fs_root > .`.
+pub async fn run_workspace(
+    cfg: Option<Config>,
+    workspace_override: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let cfg = cfg.unwrap_or_default();
+    let bcfg = builtins_config_with_workspace(&cfg, workspace_override.as_deref());
+    let root = bcfg.fs_root.clone();
+    let canonical = tokio::fs::canonicalize(&root).await.unwrap_or(root);
+    let snapshot = workspace_snapshot(&canonical).await;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    } else {
+        let root_str = snapshot["root"].as_str().unwrap_or("(unknown)");
+        let vcs = snapshot["vcs"].as_str().unwrap_or("none");
+        println!("workspace: {root_str}");
+        println!("vcs:       {vcs}");
+        if vcs == "git" {
+            let branch = snapshot["branch"].as_str().unwrap_or("(detached)");
+            let head = snapshot["head"].as_str().unwrap_or("(unknown)");
+            let dirty = snapshot["dirty"].as_bool().unwrap_or(false);
+            let dirty_marker = if dirty { "● dirty" } else { "✓ clean" };
+            println!("branch:    {branch} ({head}) {dirty_marker}");
+        }
+    }
+    Ok(())
+}
+
+/// Same shape as `harness_server::routes::workspace_snapshot`. We
+/// re-derive it here so the CLI doesn't have to spin up an HTTP
+/// server just to ask its own binary a local question.
+async fn workspace_snapshot(root: &std::path::Path) -> serde_json::Value {
+    use std::process::Stdio;
+    use tokio::process::Command;
+    let display = root.display().to_string();
+    let run_git = |args: Vec<&'static str>| {
+        let root = root.to_path_buf();
+        async move {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .output()
+                .await
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+    };
+    let inside = run_git(vec!["rev-parse", "--is-inside-work-tree"]).await;
+    if !matches!(inside.as_deref(), Some("true")) {
+        return serde_json::json!({ "root": display, "vcs": "none" });
+    }
+    let branch = run_git(vec!["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .filter(|s| !s.is_empty() && s != "HEAD");
+    let head = run_git(vec!["rev-parse", "--short", "HEAD"])
+        .await
+        .filter(|s| !s.is_empty());
+    let dirty = !run_git(vec!["status", "--porcelain"])
+        .await
+        .unwrap_or_default()
+        .is_empty();
+    serde_json::json!({
+        "root": display,
+        "vcs": "git",
+        "branch": branch,
+        "head": head,
+        "dirty": dirty,
+    })
+}
+
 // ---------- builders ----------
 
 fn builtins_config(cfg: &Config) -> BuiltinsConfig {
+    builtins_config_with_workspace(cfg, None)
+}
+
+/// Same as [`builtins_config`] but lets the caller force a specific
+/// workspace (the `--workspace` / `--fs-root` CLI flag). Resolution
+/// order: CLI flag > `JARVIS_FS_ROOT` > `[tools].fs_root` > `.`.
+fn builtins_config_with_workspace(
+    cfg: &Config,
+    workspace_override: Option<&std::path::Path>,
+) -> BuiltinsConfig {
     let defaults = BuiltinsConfig::default();
-    BuiltinsConfig {
-        fs_root: pick_path("JARVIS_FS_ROOT", cfg.tools.fs_root.as_deref(), || {
+    let fs_root = match workspace_override {
+        Some(p) => p.to_path_buf(),
+        None => pick_path("JARVIS_FS_ROOT", cfg.tools.fs_root.as_deref(), || {
             PathBuf::from(".")
         }),
-        enable_fs_write: pick_bool_flag(
-            "JARVIS_ENABLE_FS_WRITE",
-            cfg.tools.enable_fs_write,
-            false,
-        ),
-        enable_fs_edit: pick_bool_flag(
-            "JARVIS_ENABLE_FS_EDIT",
-            cfg.tools.enable_fs_edit,
-            false,
-        ),
+    };
+    BuiltinsConfig {
+        fs_root,
+        enable_fs_write: pick_bool_flag("JARVIS_ENABLE_FS_WRITE", cfg.tools.enable_fs_write, false),
+        enable_fs_edit: pick_bool_flag("JARVIS_ENABLE_FS_EDIT", cfg.tools.enable_fs_edit, false),
+        enable_fs_patch: pick_bool_flag("JARVIS_ENABLE_FS_PATCH", cfg.tools.enable_fs_patch, false),
         enable_shell_exec: pick_bool_flag(
             "JARVIS_ENABLE_SHELL_EXEC",
             cfg.tools.enable_shell_exec,
+            false,
+        ),
+        enable_git_read: pick_git_read_flag(cfg),
+        enable_git_write: pick_bool_flag(
+            "JARVIS_ENABLE_GIT_WRITE",
+            cfg.tools.enable_git_write,
             false,
         ),
         shell_default_timeout_ms: std::env::var("JARVIS_SHELL_TIMEOUT_MS")
@@ -260,11 +465,8 @@ fn read_env_u64(name: &str) -> Option<u64> {
 /// host network. Unknown sandbox values fall through to `None` with a
 /// `warn!`.
 fn pick_shell_sandbox(cfg: &Config) -> Sandbox {
-    let mode = pick_string_opt(
-        "JARVIS_SHELL_SANDBOX",
-        cfg.tools.shell_sandbox.as_deref(),
-    )
-    .unwrap_or_else(|| "none".to_string());
+    let mode = pick_string_opt("JARVIS_SHELL_SANDBOX", cfg.tools.shell_sandbox.as_deref())
+        .unwrap_or_else(|| "none".to_string());
     let allow_network = std::env::var("JARVIS_SHELL_NETWORK")
         .ok()
         .map(|v| !v.is_empty() && v != "0")
@@ -293,8 +495,7 @@ async fn build_provider(
     match name {
         "openai" => {
             let api_key = resolve_api_key("openai", "OPENAI_API_KEY")?;
-            let model =
-                model_override.unwrap_or_else(|| "gpt-4o-mini".to_string());
+            let model = model_override.unwrap_or_else(|| "gpt-4o-mini".to_string());
             let mut oacfg = OpenAiConfig::new(api_key).with_default_model(&model);
             if let Some(base) = pick_string_opt("OPENAI_BASE_URL", section.base_url.as_deref()) {
                 oacfg = oacfg.with_base_url(base);
@@ -303,16 +504,12 @@ async fn build_provider(
         }
         "anthropic" => {
             let api_key = resolve_api_key("anthropic", "ANTHROPIC_API_KEY")?;
-            let model =
-                model_override.unwrap_or_else(|| "claude-3-5-sonnet-latest".to_string());
+            let model = model_override.unwrap_or_else(|| "claude-3-5-sonnet-latest".to_string());
             let mut acfg = AnthropicConfig::new(api_key);
-            if let Some(base) =
-                pick_string_opt("ANTHROPIC_BASE_URL", section.base_url.as_deref())
-            {
+            if let Some(base) = pick_string_opt("ANTHROPIC_BASE_URL", section.base_url.as_deref()) {
                 acfg = acfg.with_base_url(base);
             }
-            if let Some(version) =
-                pick_string_opt("ANTHROPIC_VERSION", section.version.as_deref())
+            if let Some(version) = pick_string_opt("ANTHROPIC_VERSION", section.version.as_deref())
             {
                 acfg = acfg.with_anthropic_version(version);
             }
@@ -332,12 +529,9 @@ async fn build_provider(
                          for provider=google. Run `jarvis init` or set the env var."
                     )
                 })?;
-            let model =
-                model_override.unwrap_or_else(|| "gemini-1.5-flash".to_string());
+            let model = model_override.unwrap_or_else(|| "gemini-1.5-flash".to_string());
             let mut gcfg = GoogleConfig::new(api_key);
-            if let Some(base) =
-                pick_string_opt("GOOGLE_BASE_URL", section.base_url.as_deref())
-            {
+            if let Some(base) = pick_string_opt("GOOGLE_BASE_URL", section.base_url.as_deref()) {
                 gcfg = gcfg.with_base_url(base);
             }
             Ok((Arc::new(GoogleProvider::new(gcfg)), model))
@@ -367,14 +561,10 @@ async fn build_provider(
             };
             let model = model_override.unwrap_or_else(|| "gpt-5.4-mini".to_string());
             let mut rcfg = ResponsesConfig::codex(auth).with_default_model(&model);
-            if let Some(base) =
-                pick_string_opt("CODEX_BASE_URL", section.base_url.as_deref())
-            {
+            if let Some(base) = pick_string_opt("CODEX_BASE_URL", section.base_url.as_deref()) {
                 rcfg = rcfg.with_base_url(base);
             }
-            if let Some(path) =
-                pick_string_opt("CODEX_RESPONSES_PATH", section.path.as_deref())
-            {
+            if let Some(path) = pick_string_opt("CODEX_RESPONSES_PATH", section.path.as_deref()) {
                 rcfg = rcfg.with_path(path);
             }
             if let Some(originator) =
@@ -401,10 +591,9 @@ async fn build_provider(
             ) {
                 rcfg = rcfg.with_encrypted_reasoning(true);
             }
-            if let Some(tier) = pick_string_opt(
-                "CODEX_SERVICE_TIER",
-                section.service_tier.as_deref(),
-            ) {
+            if let Some(tier) =
+                pick_string_opt("CODEX_SERVICE_TIER", section.service_tier.as_deref())
+            {
                 rcfg = rcfg.with_service_tier(tier);
             }
             let provider = ResponsesProvider::new(rcfg);
@@ -420,9 +609,7 @@ async fn build_provider(
             let api_key = resolve_api_key("openai", "OPENAI_API_KEY")?;
             let model = model_override.unwrap_or_else(|| "gpt-4o-mini".to_string());
             let mut rcfg = ResponsesConfig::openai_responses(api_key).with_default_model(&model);
-            if let Some(base) =
-                pick_string_opt("OPENAI_BASE_URL", section.base_url.as_deref())
-            {
+            if let Some(base) = pick_string_opt("OPENAI_BASE_URL", section.base_url.as_deref()) {
                 rcfg = rcfg.with_base_url(base);
             }
             if let Some(summary) = pick_string_opt(
@@ -444,15 +631,37 @@ async fn build_provider(
             ) {
                 rcfg = rcfg.with_encrypted_reasoning(true);
             }
-            if let Some(tier) = pick_string_opt(
-                "OPENAI_SERVICE_TIER",
-                section.service_tier.as_deref(),
-            ) {
+            if let Some(tier) =
+                pick_string_opt("OPENAI_SERVICE_TIER", section.service_tier.as_deref())
+            {
                 rcfg = rcfg.with_service_tier(tier);
             }
             let provider = ResponsesProvider::new(rcfg);
             info!(endpoint = %provider.endpoint(), "openai responses provider enabled");
             Ok((Arc::new(provider), model))
+        }
+        "ollama" => {
+            // Ollama exposes an OpenAI-compatible chat-completions
+            // endpoint at `<base>/chat/completions` (default base
+            // `http://localhost:11434/v1`). It ignores the
+            // `Authorization` header entirely, so we send a dummy
+            // bearer to satisfy reqwest's `bearer_auth` builder.
+            //
+            // No auth file or env var is *required*, but we still
+            // honour `OLLAMA_API_KEY` (some hosted Ollama proxies
+            // such as OpenWebUI sit behind a real API key) and the
+            // jarvis auth-store entry, in that order.
+            let api_key = std::env::var("OLLAMA_API_KEY")
+                .ok()
+                .or_else(|| auth_store::load_api_key("ollama").ok().flatten())
+                .unwrap_or_else(|| "ollama".to_string());
+            let model = model_override.unwrap_or_else(|| "llama3.2".to_string());
+            let base = pick_string_opt("OLLAMA_BASE_URL", section.base_url.as_deref())
+                .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
+            let oacfg = OpenAiConfig::new(api_key)
+                .with_base_url(base)
+                .with_default_model(&model);
+            Ok((Arc::new(OpenAiProvider::new(oacfg)), model))
         }
         "kimi" | "moonshot" => {
             // Moonshot's Kimi platform (`api.moonshot.cn` /
@@ -506,9 +715,8 @@ async fn build_provider(
                     )
                 })?;
             let model = model_override.unwrap_or_else(|| "kimi-for-coding".to_string());
-            let base =
-                pick_string_opt("KIMI_CODE_BASE_URL", section.base_url.as_deref())
-                    .unwrap_or_else(|| "https://api.kimi.com/coding/v1".to_string());
+            let base = pick_string_opt("KIMI_CODE_BASE_URL", section.base_url.as_deref())
+                .unwrap_or_else(|| "https://api.kimi.com/coding/v1".to_string());
             let user_agent = std::env::var("KIMI_CODE_USER_AGENT")
                 .unwrap_or_else(|_| "claude-code/0.1.0".to_string());
             let http = reqwest::Client::builder()
@@ -519,14 +727,11 @@ async fn build_provider(
                 .with_base_url(base)
                 .with_empty_reasoning_content_for_tool_calls(true)
                 .with_default_model(&model);
-            Ok((
-                Arc::new(OpenAiProvider::with_client(oacfg, http)),
-                model,
-            ))
+            Ok((Arc::new(OpenAiProvider::with_client(oacfg, http)), model))
         }
         other => anyhow::bail!(
             "provider=`{other}` is not recognised; \
-             use openai, openai-responses, anthropic, google, codex, kimi, or kimi-code"
+             use openai, openai-responses, anthropic, google, codex, kimi, kimi-code, or ollama"
         ),
     }
 }
@@ -573,9 +778,7 @@ fn build_memory(
             Arc::new(SlidingWindowMemory::new(budget).with_estimator(estimator))
         }
         other => {
-            anyhow::bail!(
-                "memory.mode=`{other}` is not recognised; use `window` or `summary`"
-            );
+            anyhow::bail!("memory.mode=`{other}` is not recognised; use `window` or `summary`");
         }
     };
     Ok(Some(mem))
@@ -589,12 +792,87 @@ fn build_approver(cfg: &Config) -> Result<Option<Arc<dyn Approver>>> {
     let approver: Arc<dyn Approver> = match mode.as_str() {
         "auto" => Arc::new(AlwaysApprove),
         "deny" => Arc::new(AlwaysDeny),
-        other => anyhow::bail!(
-            "approval.mode=`{other}` is not recognised; use `auto` or `deny`"
-        ),
+        other => anyhow::bail!("approval.mode=`{other}` is not recognised; use `auto` or `deny`"),
     };
     info!(approval_mode = %mode, "approval gate enabled");
     Ok(Some(approver))
+}
+
+/// Resolve the user-config dir (`~/.config/jarvis`) — used for the
+/// per-user permission rules file. Falls back to `None` if HOME is
+/// unset (tests, weird containers); the binary then runs with a
+/// session-only store.
+fn dirs_user_config() -> Result<PathBuf> {
+    if let Some(custom) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(custom).join("jarvis"));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .ok_or_else(|| anyhow::anyhow!("HOME / USERPROFILE not set"))?;
+    Ok(home.join(".config").join("jarvis"))
+}
+
+/// Resolve the boot-time permission mode. Order:
+/// 1. `--permission-mode` CLI flag
+/// 2. `JARVIS_PERMISSION_MODE` env
+/// 3. legacy `JARVIS_APPROVAL_MODE` env (deprecated; mapped + warned)
+/// 4. `[approval].mode` from config
+/// 5. `Ask` (default)
+///
+/// Bypass mode requires `--dangerously-skip-permissions`. Bypass +
+/// network-listening requires `--bypass-on-network` too — the binary
+/// refuses to start otherwise.
+fn pick_permission_mode(cfg: &Config, args: &crate::ServeArgs) -> Result<PermissionMode> {
+    let raw = args
+        .permission_mode
+        .clone()
+        .or_else(|| std::env::var("JARVIS_PERMISSION_MODE").ok())
+        .or_else(|| {
+            std::env::var("JARVIS_APPROVAL_MODE").ok().map(|m| {
+                tracing::warn!(
+                    legacy_value = %m,
+                    "JARVIS_APPROVAL_MODE is deprecated; use --permission-mode / JARVIS_PERMISSION_MODE",
+                );
+                m
+            })
+        })
+        .or_else(|| cfg.approval.mode.clone());
+
+    let mode = match raw.as_deref() {
+        None => PermissionMode::Ask,
+        Some(s) => PermissionMode::parse(s)
+            .ok_or_else(|| anyhow::anyhow!("permission_mode=`{s}` is not recognised; use ask / accept-edits / plan / auto / bypass"))?,
+    };
+
+    if matches!(mode, PermissionMode::Bypass) {
+        if !args.dangerously_skip_permissions {
+            anyhow::bail!(
+                "permission_mode=bypass requires --dangerously-skip-permissions \
+                 (this mode disables the approval prompt and the rule engine; \
+                 only use inside isolated sandboxes)"
+            );
+        }
+        // Refuse bypass if listening on a non-loopback addr without
+        // the explicit `--bypass-on-network`. Loopback (127.0.0.1, ::1)
+        // is fine because only the local user can reach the socket.
+        let addr_str = pick_string(
+            args.addr.as_deref(),
+            "JARVIS_ADDR",
+            cfg.server.addr.as_deref(),
+            "0.0.0.0:7001",
+        );
+        let on_network = !addr_str.starts_with("127.")
+            && !addr_str.starts_with("[::1]")
+            && !addr_str.starts_with("localhost:");
+        if on_network && !args.bypass_on_network {
+            anyhow::bail!(
+                "permission_mode=bypass + --addr {addr_str} requires --bypass-on-network \
+                 (refuses to expose a no-prompt agent on a non-loopback address by default)"
+            );
+        }
+    }
+    Ok(mode)
 }
 
 /// Merge the env-var `JARVIS_MCP_SERVERS` (comma-separated
@@ -629,12 +907,75 @@ fn parse_mcp_entry(prefix: &str, cmdline: &str) -> Result<McpClientConfig> {
 // clap) plus the env var name and the file value, and pick the
 // first that's set.
 
-fn pick_string(
-    flag: Option<&str>,
-    env_var: &str,
-    file: Option<&str>,
-    default: &str,
-) -> String {
+/// Default chat-mode prompt — short, persona-only, no operational
+/// guidance. Used when no mutation tool is enabled and the user
+/// hasn't set their own prompt.
+const GENERAL_SYSTEM_PROMPT: &str = "You are Jarvis, a concise and capable assistant. \
+When you need a human decision, missing information, or a choice among acceptable options, \
+use ask.text instead of guessing.";
+
+/// Coding-agent system prompt — used automatically when any of
+/// `fs.edit`, `fs.write`, or `shell.exec` is enabled (signal: the
+/// operator deliberately handed Jarvis the keys to mutate the
+/// workspace). Mirrors the contract spelled out in
+/// `docs/proposals/aicoding-agent.md` so the model knows to inspect
+/// before editing, prefer small reviewable patches, run focused
+/// checks, and end with a change report.
+const CODING_SYSTEM_PROMPT: &str =
+    "You are Jarvis, a coding agent working in the user's repository. \
+Before editing, call workspace.context to orient yourself, then inspect git status. \
+Do not overwrite user changes you did not make. \
+Prefer code.grep, fs.read, fs.list, git.status, and git.diff before reaching for shell.exec. \
+When you need a human decision, missing information, or a choice among acceptable options, \
+use ask.text instead of guessing. \
+Use fs.edit (uniqueness-checked single replace) or fs.patch (unified-diff multi-hunk) for small \
+reviewable edits; reach for fs.write only to create new files. \
+When you run checks (tests, lints, builds), keep them focused on the change rather than the \
+whole repo. \
+End every coding turn with a short report: which files changed, which checks ran, which checks \
+were skipped and why, and any residual risk you couldn't verify.";
+
+/// Should we auto-load `AGENTS.md` / `CLAUDE.md` / `AGENT.md`
+/// from the workspace and append to the system prompt? Defaults to
+/// `true` because that's what every coding-agent the user has
+/// likely tried (Claude Code, Cursor, Codex, …) does. Opt out via
+/// `JARVIS_NO_PROJECT_CONTEXT=1` or
+/// `[agent].include_project_context = false`.
+fn include_project_context(cfg: &Config) -> bool {
+    if std::env::var_os("JARVIS_NO_PROJECT_CONTEXT").is_some() {
+        return false;
+    }
+    cfg.agent.include_project_context.unwrap_or(true)
+}
+
+/// Cap on the total bytes of project context appended to the system
+/// prompt. Defaults to 32 KiB — enough for any realistic AGENTS.md
+/// / CLAUDE.md, far short of blowing a small-context model.
+fn project_context_max_bytes(cfg: &Config) -> usize {
+    std::env::var("JARVIS_PROJECT_CONTEXT_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .or(cfg.agent.project_context_max_bytes)
+        .unwrap_or(32 * 1024)
+}
+
+/// Pick the agent's system prompt. Order: explicit
+/// `[agent].system_prompt` from config (verbatim) > coding prompt
+/// when `coding_mode && coding_prompt_auto != Some(false)` >
+/// general prompt.
+fn pick_system_prompt(cfg: &Config, coding_mode: bool) -> String {
+    if let Some(custom) = cfg.agent.system_prompt.as_deref() {
+        return custom.to_string();
+    }
+    let auto = cfg.agent.coding_prompt_auto.unwrap_or(true);
+    if coding_mode && auto {
+        CODING_SYSTEM_PROMPT.to_string()
+    } else {
+        GENERAL_SYSTEM_PROMPT.to_string()
+    }
+}
+
+fn pick_string(flag: Option<&str>, env_var: &str, file: Option<&str>, default: &str) -> String {
     flag.map(str::to_string)
         .or_else(|| std::env::var(env_var).ok())
         .or_else(|| file.map(str::to_string))
@@ -647,7 +988,11 @@ fn pick_string_opt(env_var: &str, file: Option<&str>) -> Option<String> {
         .or_else(|| file.map(str::to_string))
 }
 
-fn pick_path(env_var: &str, file: Option<&std::path::Path>, default: impl FnOnce() -> PathBuf) -> PathBuf {
+fn pick_path(
+    env_var: &str,
+    file: Option<&std::path::Path>,
+    default: impl FnOnce() -> PathBuf,
+) -> PathBuf {
     if let Ok(s) = std::env::var(env_var) {
         return PathBuf::from(s);
     }
@@ -665,6 +1010,16 @@ fn pick_bool_flag(env_var: &str, file: Option<bool>, default: bool) -> bool {
         return true;
     }
     file.unwrap_or(default)
+}
+
+/// `git.*` is the only "default-on" toolset; the env knob and config field
+/// both *disable* rather than *enable* it. Env wins over config; config
+/// wins over the built-in default of `true`.
+fn pick_git_read_flag(cfg: &Config) -> bool {
+    if std::env::var_os("JARVIS_DISABLE_GIT_READ").is_some() {
+        return false;
+    }
+    cfg.tools.enable_git_read.unwrap_or(true)
 }
 
 /// Resolve `<jarvis-config>/auth/codex.json` if we can derive a

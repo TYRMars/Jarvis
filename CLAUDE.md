@@ -17,9 +17,22 @@ crates plug in.
 
 ```
 apps/
-  jarvis/          # Composition root binary (HTTP server / MCP serve mode)
-  jarvis-web/      # Static HTML/CSS/JS bundled into harness-server via `include_dir!`,
-                   # served at `/ui/` — minimal demo / WS protocol smoke test client.
+  jarvis/          # HTTP server binary (composition root) — `serve` /
+                   # `mcp-serve` / `init` / `login` / `status` / `workspace`
+                   # subcommands.
+  jarvis-cli/      # Terminal coding-agent. Drives `harness-core::Agent`
+                   # in-process; no HTTP server. Reuses harness-llm /
+                   # harness-tools verbatim; provider construction is
+                   # env-only (no auth-store / config file). Mirrors the
+                   # WS handler's three-channel select pattern (stdin /
+                   # pending approvals / agent events) over stdout. Both
+                   # an interactive REPL and a `--no-interactive` pipe
+                   # mode that runs one turn under `AlwaysDeny`.
+  jarvis-web/      # React 19 + react-router SPA, built by Vite into `dist/`
+                   # which `harness-server` folds into the binary via
+                   # `include_dir!`. Served at server root `/`; routes
+                   # today are `/` (chat) and `/settings` (full
+                   # settings page).
 
 crates/
   harness-core/    # Agent, Conversation, Message, Tool, LlmProvider, Memory, Approver traits + run loop
@@ -51,7 +64,7 @@ cargo build --release -p jarvis
 ```
 
 Env vars consumed by the `jarvis` binary:
-`JARVIS_PROVIDER` (`openai` (default), `openai-responses`, `anthropic`, `google`, `codex`, or `kimi`),
+`JARVIS_PROVIDER` (`openai` (default), `openai-responses`, `anthropic`, `google`, `codex`, `kimi`, or `ollama`),
 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` /
 `KIMI_API_KEY` (required for the matching provider unless
 `--mcp-serve` is passed; `GEMINI_API_KEY` is also accepted as an
@@ -67,6 +80,10 @@ optional `CODEX_ACCOUNT_ID` for the `ChatGPT-Account-ID` header),
 `CODEX_BASE_URL` / `KIMI_BASE_URL` (Kimi defaults to
 `https://api.moonshot.cn/v1` — set to `https://api.moonshot.ai/v1`
 for the international tenant),
+`OLLAMA_BASE_URL` (Ollama defaults to `http://localhost:11434/v1`,
+the local-server endpoint; only point this somewhere else for a
+hosted Ollama proxy), `OLLAMA_API_KEY` (optional — the local
+server ignores it; only some hosted proxies need one),
 `ANTHROPIC_VERSION` (defaults to `2023-06-01`),
 `CODEX_ORIGINATOR` (defaults to `jarvis`),
 `CODEX_RESPONSES_PATH` (defaults to `/codex/responses`),
@@ -80,11 +97,21 @@ reasoning block; required for reasoning models),
 `CODEX_REFRESH_TOKEN_URL_OVERRIDE` (test-only — points
 `auth.openai.com/oauth/token` somewhere else),
 `JARVIS_ADDR` (default `0.0.0.0:7001`),
-`JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*` tools and the
-`shell.exec` cwd),
+`JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*`, `git.*`,
+`code.grep`, `workspace.context` tools and the `shell.exec` cwd; the
+`--workspace <path>` CLI flag overrides this and is the recommended
+form for one-shot invocations),
 `JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
 `JARVIS_ENABLE_FS_EDIT` (any value opts into `fs.edit`),
+`JARVIS_ENABLE_FS_PATCH` (any value opts into `fs.patch` —
+multi-hunk unified-diff apply, atomic per call, approval-gated),
 `JARVIS_ENABLE_SHELL_EXEC` (any value opts into `shell.exec`),
+`JARVIS_DISABLE_GIT_READ` (any value drops the read-only `git.*`
+toolset, which is otherwise on by default),
+`JARVIS_NO_PROJECT_CONTEXT` (any value disables auto-loading
+`AGENTS.md` / `CLAUDE.md` / `AGENT.md` from the workspace into the
+system prompt; defaults to loading them, capped at 32 KiB),
+`JARVIS_PROJECT_CONTEXT_BYTES` (override the default 32 KiB cap),
 `JARVIS_SHELL_TIMEOUT_MS` (default `30000`, per-call default for `shell.exec`),
 `JARVIS_MCP_SERVERS` (comma-separated `prefix=command args...` list of
 external MCP servers to spawn and adapt into Tools),
@@ -165,6 +192,60 @@ binary uses. The individual tools are also pub so callers can register selective
   narrow the scan. Returns `path:line: snippet` triples capped by
   `max_results` and a 64 KiB byte budget; lines longer than 240 chars
   are truncated. Always on (read-only).
+- `plan.update` — push the agent's working plan into the event
+  stream. Input is `{items: [{id, title, status, note?}]}`; status ∈
+  `{pending, in_progress, completed, cancelled}`. Each call **replaces
+  the whole snapshot** (no diffing on the wire). Emits via the
+  `harness_core::plan` task-local channel; the agent loop relays each
+  snapshot as `AgentEvent::PlanUpdate { items }`. Always-on, no
+  approval — the side effect is purely a typed event, not a
+  filesystem / process write. Outside an agent loop the emit is a
+  no-op (so the tool's tests can run without standing up the harness).
+- `project.checks` — read-only manifest scanner. Returns
+  `{suggestions: [{manifest, kind, command, why}]}` with conservative
+  recommendations per ecosystem (`Cargo.toml` →
+  `cargo check / clippy / test`; `package.json` →
+  `npm test / lint / build`; `pyproject.toml` → `pytest / ruff check`;
+  `go.mod` → `go test / vet / build ./...`). **Suggests, does not
+  execute** — the model still has to call `shell.exec` (which is
+  approval-gated) to actually run a command. Always-on.
+- `workspace.context` — compact JSON snapshot of the workspace:
+  absolute root, VCS state (`branch` / `head` / `dirty` when git is
+  present, `vcs: "none"` otherwise), instruction files
+  (`AGENTS.md` / `CLAUDE.md` / `README.md` / `CONTRIBUTING.md`),
+  package manifests (root + one level deep into `apps/` / `crates/`
+  / `packages/` / `services/` / `modules/` / `libs/`), and a
+  shallow top-level directory listing. Read-only, always on. The
+  intended "first call" before the model picks where to grep or
+  edit. No source-file contents — use `fs.read` for those.
+- `fs.patch` — apply a unified diff across one or more files.
+  Accepts standard `--- a/<path>` / `+++ b/<path>` headers, with or
+  without a `diff --git` preamble. Splits multi-file diffs on the
+  preamble (preferred) or on `--- ` / `+++ ` header pairs, parses
+  each block via `diffy::Patch::from_str`, applies hunks against
+  the sandboxed file with **no fuzz / no whitespace tolerance**,
+  and writes only after every block parses + applies cleanly
+  (atomic per call). Supports file creation (`--- /dev/null`) and
+  deletion (`+++ /dev/null`); refuses binary patches, renames, and
+  any path outside the sandbox root. Off by default — flip
+  `BuiltinsConfig::enable_fs_patch` (or set
+  `JARVIS_ENABLE_FS_PATCH`). Approval-gated.
+- `git.status` / `git.diff` / `git.log` / `git.show` — read-only git
+  inspection over the host's `git` binary, scoped via `git -C <root>`
+  to the tool root. Each subcommand has its own typed schema (no
+  free-form `args` array). Arg validators reject anything starting
+  with `-` and any null/newline bytes, so the model can't smuggle a
+  `--upload-pack=…`-style option through a `revision` or `path`
+  field. `git.diff` understands `staged`, `from`/`to` ranges,
+  `path`, and `stat_only`; `git.log` takes `limit` (default 20,
+  cap 200), `revision`, `path`, and `format=short|full`;
+  `git.show` takes `revision` (required), `metadata_only`, and
+  `path`. Stdout is truncated at 64 KiB; running `git.status` in a
+  non-git directory returns the soft sentinel `(not a git
+  repository)` instead of erroring. On by default — flip
+  `BuiltinsConfig::enable_git_read = false` (or set
+  `JARVIS_DISABLE_GIT_READ`) to skip the whole group, e.g. when
+  `git` isn't on `PATH`.
 - `fs.read` / `fs.list` / `fs.write` / `fs.edit` — every `fs.*` tool is
   scoped to a `root` supplied at construction. The shared
   `sandbox::resolve_under` helper rejects absolute paths and any component
@@ -368,8 +449,34 @@ this crate only wire stdio.
 `router(AppState)` returns an `axum::Router`; `serve(addr, state)` is the `tokio::net`
 + `axum::serve` one-liner. Handlers split across three modules:
 `routes.rs` (chat + WS), `conversations.rs` (CRUD + persisted run),
-and `ui.rs` (the bundled web client at `/ui/`, files in
-`apps/jarvis-web/` baked in via `include_dir!`).
+and `ui.rs` (the bundled web client at the server root `/`, files in
+`apps/jarvis-web/dist/` baked in via `include_dir!`).
+
+**SPA routing.** `ui::router()` mounts `GET /` → `index.html`. The
+main router uses `ui::spa_fallback` as its `.fallback(...)` handler
+so any extension-less path that doesn't match an explicit API route
+serves `index.html` — that's what lets `react-router-dom` own
+client-side routes like `/settings` without per-page server entries.
+Paths with file extensions still 404 cleanly when the asset is
+missing (silent HTML fallback for missing JS would mask deploy
+bugs); paths under `/v1/` and `/health` always 404 from the
+fallback as defence in depth so SDK clients never accidentally
+parse SPA HTML as JSON.
+
+**Workspace inspection** — `GET /v1/workspace`:
+
+Returns `{root, vcs, branch?, head?, dirty?}` for the resolved
+workspace root. Same shape as a trimmed `workspace.context` (no
+manifest scan). The git probe (`rev-parse --is-inside-work-tree`,
+`abbrev-ref HEAD`, `rev-parse --short HEAD`, `status --porcelain`)
+runs each call so the answer reflects the current branch / dirty
+state. `503 Service Unavailable` when the binary didn't pin a
+workspace root via `AppState::with_workspace_root` — the field is
+optional on `AppState` so test harnesses don't have to fake one,
+but every realistic deployment sets it. Used by the web UI's
+chat-header `WorkspaceBadge` and by ops scripts; the `jarvis
+workspace [--json]` CLI subcommand prints the same shape locally
+without booting a server.
 
 **Ephemeral chat** — no store needed:
 
@@ -438,6 +545,22 @@ on that same path rather than reimplementing the loop.
 (populated when `JARVIS_DB_URL` is set). When per-request agent
 selection or multiple registered models are needed, extend `AppState`
 rather than threading a registry through every handler.
+
+### Plan channel (`harness-core::plan`)
+
+Sibling to `harness-core::progress`. Per-tool-invocation
+`tokio::task_local` `mpsc::UnboundedSender<Vec<PlanItem>>`, scoped
+via `with_plan(...)` from inside the agent loop's tool-dispatch
+section. Tools call `plan::emit(items)`; the loop drains the
+receiver in step with `progress` (same `tokio::select!` arm
+pattern) and yields `AgentEvent::PlanUpdate { items }`. Each emit
+carries the **full latest snapshot** — replace, not patch — so a
+late-joining transport renders the current plan without replaying
+history. Outside an agent invocation the channel is absent and
+emits become no-ops, which keeps unit tests on `plan.update` etc.
+trivial. The web UI subscribes via `case "plan_update"` in
+`apps/jarvis-web/src/services/frames.ts` and renders into the
+`PlanList` component in the right rail.
 
 ### Short-term memory (`harness-memory`)
 
@@ -519,9 +642,9 @@ that's the historical behaviour and stays the default so existing
 deployments don't break.
 
 `Tool::requires_approval` overrides today (all in `harness-tools`):
-`fs.write`, `fs.edit`, `shell.exec`. Read-only tools (`fs.read`,
-`fs.list`, `code.grep`, `http.fetch`, `time.now`, `echo`) stay
-ungated.
+`fs.write`, `fs.edit`, `fs.patch`, `shell.exec`. Read-only tools
+(`fs.read`, `fs.list`, `code.grep`, `git.{status,diff,log,show}`,
+`workspace.context`, `http.fetch`, `time.now`, `echo`) stay ungated.
 
 Built-in approver implementations:
 
@@ -592,6 +715,39 @@ add a match arm to `connect()` in `lib.rs`.
 `apps/jarvis/src/main.rs` is the only place that knows about env vars, default models,
 or which tools are wired in. Treat it as the composition root — the library crates must
 not read `std::env`. New tools, providers, or middlewares get registered here.
+
+**Workspace selection.** `jarvis serve --workspace <path>` (alias
+`--fs-root`) is the highest-priority way to set the sandbox root.
+Resolution order: CLI flag > `JARVIS_FS_ROOT` env > `[tools].fs_root`
+in config > `.`. The resolved path is logged once at startup
+(`workspace root resolved`).
+
+**System-prompt switch.** `serve.rs` picks the agent's system prompt
+in this order: `[agent].system_prompt` from config (verbatim
+override) > `CODING_SYSTEM_PROMPT` when *coding mode* is active and
+`[agent].coding_prompt_auto` is not `false` > `GENERAL_SYSTEM_PROMPT`.
+Coding mode is "any of `fs.edit` / `fs.write` / `fs.patch` /
+`shell.exec` is enabled" — i.e. the operator deliberately handed
+Jarvis the keys to mutate the workspace. The coding prompt mirrors
+the contract from `docs/proposals/aicoding-agent.md` (inspect before
+editing, prefer small reviewable patches, end with a change report).
+Both prompt strings live as `const`s at the top of `serve.rs` so
+they're discoverable in one place.
+
+**Project context auto-load.** After the system prompt resolves, the
+binary appends the workspace's `AGENTS.md` / `CLAUDE.md` /
+`AGENT.md` (in that priority order) via
+`harness_tools::workspace::load_instructions(root, max_bytes)`.
+Each file is wrapped in a `=== project context: <name> ===` header
+so the model can tell injected guidance from its own template.
+Combined output is capped at 32 KiB (override:
+`JARVIS_PROJECT_CONTEXT_BYTES`); overflow is truncated with a
+`[... project context truncated at N bytes ...]` marker. Disable
+entirely via `JARVIS_NO_PROJECT_CONTEXT=1` or
+`[agent].include_project_context = false`. `jarvis-cli` honours the
+same env vars plus a `--no-project-context` CLI flag. Deliberately
+**not** in the load list: `README.md`, `CONTRIBUTING.md` — those
+are usually marketing / human-PR docs, not agent guidance.
 
 ## Conventions
 

@@ -6,11 +6,22 @@
 // The inline editor replaced the legacy `window.prompt()` flow —
 // far better UX, and Cmd/Ctrl+Enter inside the textarea is a
 // shortcut equivalent to clicking Confirm deny.
+//
+// "Always allow this tool" inline checkbox + scope dropdown saves
+// a permission rule via the REST API *before* sending the approve
+// frame. We do it in this order so the rule is persisted by the
+// time the next call lands; if the rule write fails (network /
+// store unavailable) the approve still goes through — a one-shot
+// approve is strictly safer than refusing the user's explicit
+// click. We surface the failure via the shared error banner so
+// it's not silent.
 
 import { useState } from "react";
 import type { ApprovalCardState } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { sendFrame, isOpen } from "../../services/socket";
+import { appendRule, type Scope } from "../../services/permissions";
+import { ShellExecDetail } from "./ShellExecDetail";
 
 function send(frame: any): boolean {
   if (!isOpen()) return false;
@@ -21,6 +32,12 @@ function pretty(value: any): string {
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
+const SCOPE_OPTIONS: Array<{ scope: Scope; labelKey: string }> = [
+  { scope: "session", labelKey: "scopeSession" },
+  { scope: "project", labelKey: "scopeProject" },
+  { scope: "user", labelKey: "scopeUser" },
+];
+
 export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
   const [denyArmed, setDenyArmed] = useState(false);
   const [reason, setReason] = useState("");
@@ -29,6 +46,8 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
   /// same `tool_call_id` — the server pops responders on first match,
   /// so the second frame would error with "no pending approval".
   const [sent, setSent] = useState(false);
+  const [remember, setRemember] = useState(false);
+  const [rememberScope, setRememberScope] = useState<Scope>("session");
   const decided = entry.status !== "pending";
   const locked = decided || sent;
 
@@ -38,6 +57,20 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
       : entry.status === "denied"
       ? t("denied", entry.reason || "")
       : t("approving");
+
+  /// Persist a "always allow this tool" rule, then return — caller
+  /// follows up with the approve/deny frame. We deliberately don't
+  /// block the approve on rule-write success; the rule write is
+  /// fire-and-forget from the user's perspective and any failure is
+  /// surfaced via `services/permissions::appendRule` ➜ `showError`.
+  async function maybeRemember(bucket: "allow" | "deny"): Promise<void> {
+    if (!remember) return;
+    await appendRule({
+      scope: rememberScope,
+      bucket,
+      rule: { tool: entry.name },
+    });
+  }
 
   return (
     <div
@@ -51,7 +84,11 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
         </svg>
         {entry.name}
       </div>
-      <pre className="args">{pretty(entry.arguments)}</pre>
+      {entry.name === "shell.exec" ? (
+        <ShellExecDetail args={entry.arguments} />
+      ) : (
+        <pre className="args">{pretty(entry.arguments)}</pre>
+      )}
       <div className="approval-actions">
         <button
           type="button"
@@ -64,6 +101,9 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
               setReason("");
               return;
             }
+            // Fire-and-forget the rule write; do NOT await it before
+            // approving — `appendRule` shows its own error banner.
+            void maybeRemember("allow");
             if (send({ type: "approve", tool_call_id: entry.id })) setSent(true);
           }}
         >
@@ -78,6 +118,7 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
               setDenyArmed(true);
               return;
             }
+            void maybeRemember("deny");
             const ok = send({
               type: "deny",
               tool_call_id: entry.id,
@@ -101,6 +142,7 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
               if (denyArmed) {
+                void maybeRemember("deny");
                 const ok = send({
                   type: "deny",
                   tool_call_id: entry.id,
@@ -113,6 +155,38 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
         />
         <div className="approval-reason-hint">{t("reasonHint")}</div>
       </div>
+      {!locked ? (
+        <div className="approval-remember">
+          <label className="approval-remember-toggle">
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+            />
+            <span>{t("rememberAlways")}</span>
+          </label>
+          {remember ? (
+            <label className="approval-remember-scope">
+              <span className="approval-remember-scope-label">
+                {t("rememberAlwaysScope")}
+              </span>
+              <select
+                value={rememberScope}
+                onChange={(e) => setRememberScope(e.target.value as Scope)}
+              >
+                {SCOPE_OPTIONS.map((o) => (
+                  <option key={o.scope} value={o.scope}>
+                    {t(o.labelKey)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {remember ? (
+            <div className="approval-remember-hint">{t("rememberAlwaysHint")}</div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="approval-verdict">{verdictText}</div>
     </div>
   );

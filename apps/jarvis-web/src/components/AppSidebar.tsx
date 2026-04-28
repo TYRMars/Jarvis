@@ -9,15 +9,24 @@
 import { useAppStore } from "../store/appStore";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { ConvoList } from "./Sidebar/ConvoList";
+import { NewConvoButton } from "./Sidebar/NewConvoButton";
 import { AccountMenu } from "./Settings/AccountMenu";
-import { newConversation } from "../services/conversations";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { t } from "../utils/i18n";
+import { chipColor } from "./Sidebar/ProjectsList";
 
 export function AppSidebar() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const setSidebarOpen = useAppStore((s) => s.setSidebarOpen);
-  const focusSearch = () => {
-    document.getElementById("convo-search")?.focus();
-  };
+  const setQuickOpen = useAppStore((s) => s.setQuickOpen);
+  const location = useLocation();
+  // The topbar magnifier button opens the QuickSwitcher modal —
+  // unified surface for "find a chat" (title match) plus deep
+  // full-text search across message bodies. The inline sidebar
+  // input keeps doing instant title-prefix filtering on the visible
+  // list; both exist so quick at-a-glance narrowing doesn't have to
+  // pop a modal.
+  const openQuickSwitcher = () => setQuickOpen(true);
 
   return (
     <aside id="sidebar" aria-label="Conversations">
@@ -43,7 +52,7 @@ export function AppSidebar() {
           className="ghost-icon"
           title="Search"
           aria-label="Search"
-          onClick={focusSearch}
+          onClick={openQuickSwitcher}
         >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <circle cx="11" cy="11" r="7" />
@@ -52,42 +61,34 @@ export function AppSidebar() {
         </button>
       </div>
 
-      <div className="mode-row">
-        <button type="button" className="ghost-icon" title="Chat" aria-label="Chat">
+      <div className="mode-row" role="tablist" aria-label="Mode">
+        <NavLink to="/" end className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h7" />
             <path d="M17 8h.01" />
             <path d="M21 8h.01" />
           </svg>
-        </button>
-        <button type="button" className="mode-pill">
+          <span>Chat</span>
+        </NavLink>
+        <NavLink to="/projects" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m16 18 6-6-6-6" />
             <path d="m8 6-6 6 6 6" />
           </svg>
-          <span>Code</span>
-        </button>
+          <span>Work</span>
+        </NavLink>
+        <NavLink to="/docs" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M6 3h9l3 3v15H6z" />
+            <path d="M14 3v4h4" />
+            <path d="M9 12h6" />
+            <path d="M9 16h6" />
+          </svg>
+          <span>Doc</span>
+        </NavLink>
       </div>
 
-      <nav className="nav-list" aria-label="Primary">
-        <NewConvoButton />
-        <button type="button" className="nav-item">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m13 2-9 13h7l-1 7 9-13h-7l1-7Z" />
-          </svg>
-          <span data-i18n="routines">Routines</span>
-        </button>
-        <button type="button" className="nav-item">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z" />
-            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.43 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 3.6 15a1.7 1.7 0 0 0-.6-1A1.7 1.7 0 0 0 1.9 13H2a2 2 0 1 1 0-4h-.1A1.7 1.7 0 0 0 3.6 7a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8 3.6a1.7 1.7 0 0 0 1-.6A1.7 1.7 0 0 0 9.43 1.9V2a2 2 0 1 1 4 0v-.1A1.7 1.7 0 0 0 15 3.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 7c.15.36.36.7.6 1 .3.25.7.39 1.1.39H21a2 2 0 1 1 0 4h.1c-.4 0-.8.14-1.1.39-.24.3-.45.64-.6 1Z" />
-          </svg>
-          <span data-i18n="customize">Customize</span>
-        </button>
-      </nav>
-
-      <SidebarSearch />
-      <ConvoList />
+      <ModeSidebarBody mode={modeForPath(location.pathname)} />
 
       <div className="sidebar-footer">
         <AccountMenu />
@@ -97,64 +98,121 @@ export function AppSidebar() {
   );
 }
 
-function SidebarSearch() {
-  const search = useAppStore((s) => s.convoSearch);
-  const setSearch = useAppStore((s) => s.setConvoSearch);
+function modeForPath(pathname: string): "chat" | "work" | "doc" {
+  if (pathname.startsWith("/docs")) return "doc";
+  if (pathname.startsWith("/projects")) return "work";
+  return "chat";
+}
+
+function ModeSidebarBody({ mode }: { mode: "chat" | "work" | "doc" }) {
+  if (mode === "work") return <WorkSidebarBody />;
+  if (mode === "doc") return <DocSidebarBody />;
+  return <ChatSidebarBody />;
+}
+
+function ChatSidebarBody() {
   return (
-    <div className="sidebar-search">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <circle cx="11" cy="11" r="7" />
-        <path d="m20 20-3.5-3.5" />
-      </svg>
-      <input
-        id="convo-search"
-        type="search"
-        value={search}
-        autoComplete="off"
-        spellCheck={false}
-        placeholder="Search conversations..."
-        data-i18n-placeholder="searchPlaceholder"
-        aria-label="Search conversations"
-        onChange={(e) => setSearch(e.target.value)}
-      />
-      {search && (
-        <button
-          type="button"
-          className="sidebar-search-clear"
-          title="Clear search"
-          aria-label="Clear search"
-          onClick={() => setSearch("")}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M18 6 6 18" />
-            <path d="m6 6 12 12" />
-          </svg>
-        </button>
-      )}
-    </div>
+    <>
+      <nav className="nav-list" aria-label="Chat">
+        <NewConvoButton />
+      </nav>
+      <ConvoList />
+    </>
   );
 }
 
-/// Sidebar "New session" button. Disabled while persistence is off
-/// (server returned 503 from `/v1/conversations`); the empty-state
-/// banner in the recents column already explains why.
-function NewConvoButton() {
-  const persistEnabled = useAppStore((s) => s.persistEnabled);
+function WorkSidebarBody() {
+  const projects = useAppStore((s) => s.projects).filter((p) => !p.archived);
+  const navigate = useNavigate();
+
+  const openNewProject = () => {
+    navigate("/projects");
+    window.setTimeout(() => {
+      window.dispatchEvent(new Event("jarvis:new-project"));
+    }, 0);
+  };
+
+  const openProject = (id: string) => {
+    navigate("/projects");
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("jarvis:open-project", { detail: id }));
+    }, 0);
+  };
+
   return (
-    <button
-      id="new-convo"
-      type="button"
-      className="nav-item"
-      title="New session"
-      data-i18n-title="newConversation"
-      disabled={!persistEnabled}
-      onClick={() => newConversation()}
-    >
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 5v14" />
-        <path d="M5 12h14" />
-      </svg>
-      <span data-i18n="newSession">New session</span>
-    </button>
+    <>
+      <nav className="nav-list" aria-label="Work">
+        <button type="button" className="nav-item" onClick={openNewProject}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+          <span>New project</span>
+        </button>
+        <NavLink to="/projects" className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
+            <path d="M3 10h18" />
+          </svg>
+          <span>{t("settingsNavProjects")}</span>
+        </NavLink>
+      </nav>
+
+      <div className="sidebar-section mode-sidebar-section">
+        <div className="section-label">Projects</div>
+        {projects.length === 0 ? (
+          <p className="mode-sidebar-empty">No projects yet.</p>
+        ) : (
+          <ul className="mode-sidebar-list">
+            {projects.map((p) => (
+              <li key={p.id}>
+                <button type="button" className="mode-sidebar-row" onClick={() => openProject(p.id)}>
+                  <span className="project-dot" style={{ background: chipColor(p.slug) }} aria-hidden="true" />
+                  <span>{p.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+}
+
+function DocSidebarBody() {
+  const navigate = useNavigate();
+  const openNewPage = () => {
+    navigate("/docs");
+    window.setTimeout(() => {
+      window.dispatchEvent(new Event("jarvis:new-doc-page"));
+    }, 0);
+  };
+
+  return (
+    <>
+      <nav className="nav-list" aria-label="Doc">
+        <button type="button" className="nav-item" onClick={openNewPage}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+          <span>New page</span>
+        </button>
+        <NavLink to="/docs" className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M6 3h9l3 3v15H6z" />
+            <path d="M14 3v4h4" />
+            <path d="M9 12h6" />
+            <path d="M9 16h6" />
+          </svg>
+          <span>LLM Wiki</span>
+        </NavLink>
+      </nav>
+
+      <div className="sidebar-section mode-sidebar-section">
+        <div className="section-label">Pages</div>
+        <p className="mode-sidebar-empty">No wiki pages yet.</p>
+      </div>
+    </>
   );
 }

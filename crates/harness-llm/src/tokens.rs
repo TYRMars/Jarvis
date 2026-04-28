@@ -58,12 +58,18 @@ pub struct TiktokenEstimator {
 impl TiktokenEstimator {
     /// `cl100k_base` encoder, exact (no safety margin).
     pub fn cl100k() -> Self {
-        Self { bpe: cl100k(), safety_margin: 1.0 }
+        Self {
+            bpe: cl100k(),
+            safety_margin: 1.0,
+        }
     }
 
     /// `o200k_base` encoder, exact (no safety margin).
     pub fn o200k() -> Self {
-        Self { bpe: o200k(), safety_margin: 1.0 }
+        Self {
+            bpe: o200k(),
+            safety_margin: 1.0,
+        }
     }
 
     /// Multiply every count by `1.0 + margin` (e.g. `0.20` for +20 %).
@@ -81,12 +87,13 @@ impl TiktokenEstimator {
     /// land on the safer fallback.
     pub fn for_openai_model(model: &str) -> Self {
         let m = model.to_ascii_lowercase();
-        let o200k_marker =
-            m.contains("gpt-4o") || m.contains("gpt-5") || m.contains("omni");
+        let o200k_marker = m.contains("gpt-4o") || m.contains("gpt-5") || m.contains("omni");
         let o_reasoning = m.starts_with("o1")
             || m.starts_with("o3")
             || m.starts_with("o4")
-            || m.contains("/o1") || m.contains("/o3") || m.contains("/o4");
+            || m.contains("/o1")
+            || m.contains("/o3")
+            || m.contains("/o4");
         if o200k_marker || o_reasoning {
             Self::o200k()
         } else {
@@ -168,8 +175,9 @@ mod tests {
     #[test]
     fn safety_margin_overcount() {
         let exact = TiktokenEstimator::cl100k().estimate_text("hello world");
-        let padded =
-            TiktokenEstimator::cl100k().with_safety_margin(0.20).estimate_text("hello world");
+        let padded = TiktokenEstimator::cl100k()
+            .with_safety_margin(0.20)
+            .estimate_text("hello world");
         // Padded must be at least exact, and strictly greater for any
         // non-trivial count.
         assert!(padded >= exact);

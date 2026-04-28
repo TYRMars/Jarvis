@@ -25,6 +25,7 @@ export function handleFrame(ev: any): void {
       if (ev.message) store.finalizeAssistant(ev.message);
       break;
     case "tool_start":
+      if (typeof ev.name === "string" && ev.name.startsWith("ask.")) break;
       store.upsertTask({ id: ev.id, name: ev.name, args: ev.arguments, status: "running" });
       store.pushToolStart(ev.id, ev.name, ev.arguments);
       break;
@@ -34,11 +35,29 @@ export function handleFrame(ev: any): void {
     case "tool_end":
       onToolEnd(ev);
       break;
+    case "plan_update":
+      // Replace, not patch — the agent always sends the full snapshot.
+      store.setPlan(Array.isArray(ev.items) ? ev.items : []);
+      break;
     case "approval_request":
       store.pushApprovalRequest(ev.id, ev.name, ev.arguments);
       break;
     case "approval_decision":
-      store.setApprovalDecision(ev.id, ev.decision.decision, ev.decision.reason ?? null);
+      store.setApprovalDecision(
+        ev.id,
+        ev.decision.decision,
+        ev.decision.reason ?? null,
+        // Older servers (or builds without the permission store
+        // wired up) omit `source`. Pass it through verbatim — the
+        // store ignores `null` / `undefined` values cleanly.
+        (ev as any).source ?? null,
+      );
+      break;
+    case "hitl_request":
+      if (ev.request) store.pushHitlRequest(ev.request);
+      break;
+    case "hitl_response":
+      if (ev.response) store.setHitlResponse(ev.response);
       break;
     case "usage":
       recordUsage(ev);
@@ -47,6 +66,7 @@ export function handleFrame(ev: any): void {
       store.setLoadingConvoId(null);
       setInFlight(false);
       store.finalizePendingApprovals();
+      store.finalizePendingHitls();
       showTransientStatus("interrupted", "warn");
       break;
     case "forked":
@@ -56,6 +76,7 @@ export function handleFrame(ev: any): void {
       store.setLoadingConvoId(null);
       setInFlight(false);
       store.finalizePendingApprovals();
+      store.finalizePendingHitls();
       break;
     case "error":
       // Two flavours of `error` come down this channel:
@@ -73,6 +94,7 @@ export function handleFrame(ev: any): void {
         store.setLoadingConvoId(null);
         setInFlight(false);
         store.finalizePendingApprovals();
+        store.finalizePendingHitls();
       }
       break;
     case "started":
@@ -85,6 +107,21 @@ export function handleFrame(ev: any): void {
       showTransientStatus("configured", "connected");
       break;
     case "reset":
+      store.setPlan([]);
+      break;
+    // ---- Permission-mode frames (server-side, see harness-server::routes) ----
+    // The mode badge / plan card / audit timeline live in components
+    // we'll wire next; for now we just stash the mode + remember the
+    // proposed plan so the chrome doesn't log "unknown frame" noise.
+    case "permission_mode":
+      store.setPermissionMode((ev as any).mode ?? "ask");
+      break;
+    case "permission_rules_changed":
+      // Trigger any subscribed surface (Settings/Permissions) to refetch.
+      store.bumpPermissionRulesVersion?.();
+      break;
+    case "plan_proposed":
+      store.setProposedPlan((ev as any).plan ?? "");
       break;
     default:
       console.warn("unknown frame", ev);

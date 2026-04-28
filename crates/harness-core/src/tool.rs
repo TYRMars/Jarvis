@@ -7,6 +7,31 @@ use serde_json::Value;
 
 use crate::error::{BoxError, Result};
 
+/// What "shape" of side effect a tool has. Used by Plan Mode to filter
+/// the LLM-visible tool catalogue: in `plan` mode only `Read` tools
+/// (plus `ExitPlanTool`) reach the model, which makes "agent can only
+/// look, not touch" structural rather than approver-policed.
+///
+/// **Not** a substitute for [`Tool::requires_approval`] — those two
+/// concerns will diverge over time. `http.fetch` is `Network`
+/// (Plan Mode hides it) but doesn't need an approval prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCategory {
+    /// Pure observation. `fs.read`, `fs.list`, `code.grep`,
+    /// `git.{status,diff,log,show}`, `workspace.context`, etc.
+    Read,
+    /// Mutates the local filesystem. `fs.write`, `fs.edit`,
+    /// `fs.patch`, `git.{add,commit,merge}`.
+    Write,
+    /// Spawns a subprocess. `shell.exec`.
+    Exec,
+    /// Talks to the network. `http.fetch`. MCP remote tools default
+    /// here too (we can't introspect their semantics, so the safe
+    /// default is "treat as outside-touching").
+    Network,
+}
+
 /// A tool the agent can call. Implementors describe themselves with a JSON
 /// schema and execute against parsed arguments.
 #[async_trait]
@@ -35,6 +60,42 @@ pub trait Tool: Send + Sync {
     fn cacheable(&self) -> bool {
         false
     }
+
+    /// Side-effect category. Drives [Plan Mode][crate::permission]
+    /// filtering — the LLM only sees `ToolCategory::Read` tools while
+    /// in `plan` mode. Defaults to `Write` (conservative — anything
+    /// that doesn't explicitly identify itself as read-only stays out
+    /// of plan-mode tool catalogues).
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Write
+    }
+
+    /// One-line "what would this tool do" string for the audit /
+    /// approval-card UI. Also consumed by the permission rule engine
+    /// as a fallback target string when a rule's `matchers` JSON
+    /// pointer doesn't resolve. Returns `None` if the tool has nothing
+    /// useful to say beyond its name (typical: read-only tools).
+    ///
+    /// Examples:
+    /// - `shell.exec` → `Some("npm test")`
+    /// - `fs.edit`    → `Some("src/foo.rs")`
+    /// - `git.commit` → `Some("feat: add foo")` (first line of message)
+    fn summary_for_audit(&self, _args: &Value) -> Option<String> {
+        None
+    }
+
+    /// Marker for tools whose call ends the agent's current turn even
+    /// if the model emitted more tool calls in the same response.
+    /// Today only [`crate::permission::ExitPlanTool`] uses this — the
+    /// orchestrator emits a typed event when it sees a terminal-tool
+    /// call and stops processing the batch.
+    ///
+    /// Default `false`. Tools that override to `true` should still
+    /// produce a meaningful `invoke` return value because the
+    /// transport may surface it before the terminal event.
+    fn is_terminal(&self) -> bool {
+        false
+    }
 }
 
 /// Provider-agnostic description of a tool, suitable for serialising into a
@@ -58,7 +119,9 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self {
+            tools: HashMap::new(),
+        }
     }
 
     pub fn register<T: Tool + 'static>(&mut self, tool: T) -> &mut Self {
@@ -83,9 +146,21 @@ impl ToolRegistry {
     /// identical turn-to-turn, which is what every provider's prompt
     /// cache keys on. Free win.
     pub fn specs(&self) -> Vec<ToolSpec> {
+        self.specs_filtered(|_| true)
+    }
+
+    /// Like [`Self::specs`] but only includes tools for which `pred`
+    /// returns `true`. Used by the agent's Plan-Mode `tool_filter`
+    /// to hide write/exec/network tools from the LLM catalogue while
+    /// keeping them resolvable for in-flight calls.
+    pub fn specs_filtered<F>(&self, pred: F) -> Vec<ToolSpec>
+    where
+        F: Fn(&dyn Tool) -> bool,
+    {
         let mut specs: Vec<ToolSpec> = self
             .tools
             .values()
+            .filter(|t| pred(t.as_ref()))
             .map(|t| ToolSpec {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
@@ -106,17 +181,16 @@ impl ToolRegistry {
     }
 }
 
-pub async fn invoke_tool(
-    registry: &ToolRegistry,
-    name: &str,
-    args: Value,
-) -> Result<String> {
+pub async fn invoke_tool(registry: &ToolRegistry, name: &str, args: Value) -> Result<String> {
     let tool = registry
         .resolve(name)
         .ok_or_else(|| crate::Error::ToolNotFound(name.to_string()))?;
     tool.invoke(args)
         .await
-        .map_err(|source| crate::Error::ToolFailed { name: name.to_string(), source })
+        .map_err(|source| crate::Error::ToolFailed {
+            name: name.to_string(),
+            source,
+        })
 }
 
 #[cfg(test)]
@@ -195,8 +269,10 @@ mod tests {
         registry.register(NamedTool("plain"));
         registry.register(CacheableTool);
         let specs = registry.specs();
-        let by_name: std::collections::HashMap<&str, bool> =
-            specs.iter().map(|s| (s.name.as_str(), s.cacheable)).collect();
+        let by_name: std::collections::HashMap<&str, bool> = specs
+            .iter()
+            .map(|s| (s.name.as_str(), s.cacheable))
+            .collect();
         assert!(!by_name["plain"]);
         assert!(by_name["cached"]);
     }
@@ -210,7 +286,10 @@ mod tests {
             cacheable: false,
         };
         let v = serde_json::to_value(&s).unwrap();
-        assert!(v.get("cacheable").is_none(), "cacheable=false must be omitted");
+        assert!(
+            v.get("cacheable").is_none(),
+            "cacheable=false must be omitted"
+        );
     }
 
     #[test]

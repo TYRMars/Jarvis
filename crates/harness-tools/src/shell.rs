@@ -20,11 +20,13 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use harness_core::{emit_progress_to, progress_sender, BoxError, Tool, ToolProgress};
-use tokio::sync::mpsc;
+use harness_core::{
+    emit_progress_to, progress_sender, BoxError, Tool, ToolCategory, ToolProgress,
+};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::sandbox::resolve_under;
@@ -68,7 +70,9 @@ impl Sandbox {
                     if which("bwrap").is_some() {
                         return Sandbox::Bubblewrap { allow_network };
                     }
-                    warn!("JARVIS_SHELL_SANDBOX=auto but `bwrap` not in PATH; falling back to none");
+                    warn!(
+                        "JARVIS_SHELL_SANDBOX=auto but `bwrap` not in PATH; falling back to none"
+                    );
                     Sandbox::None
                 }
                 #[cfg(target_os = "macos")]
@@ -207,6 +211,16 @@ impl Tool for ShellExecTool {
         true
     }
 
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Exec
+    }
+
+    fn summary_for_audit(&self, args: &serde_json::Value) -> Option<String> {
+        args.get("command")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    }
+
     fn description(&self) -> &str {
         "Run a shell command (`sh -c` on unix, `cmd /C` on windows). \
          `cwd` is relative to the tool root; absolute paths and `..` are \
@@ -272,8 +286,14 @@ impl Tool for ShellExecTool {
         // happens — but on the *accumulated* buffer, not on the
         // stream, so the user sees every byte live before we trim
         // for the model.
-        let stdout = child.stdout.take().ok_or_else(|| -> BoxError { "no stdout pipe".into() })?;
-        let stderr = child.stderr.take().ok_or_else(|| -> BoxError { "no stderr pipe".into() })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| -> BoxError { "no stdout pipe".into() })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| -> BoxError { "no stderr pipe".into() })?;
         let max_bytes = self.max_bytes;
         // Grab the sender from the task_local **here**, on the
         // agent's task. The reader sub-tasks (`tokio::spawn` below)
@@ -284,27 +304,25 @@ impl Tool for ShellExecTool {
         let stdout_task = tokio::spawn(stream_pipe(stdout, "stdout", max_bytes, prog.clone()));
         let stderr_task = tokio::spawn(stream_pipe(stderr, "stderr", max_bytes, prog));
 
-        let exit_status = match tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            child.wait(),
-        )
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(format!("process error: {e}").into()),
-            Err(_) => {
-                // Timeout: drop the child to fire `kill_on_drop`,
-                // then bubble the error. The streaming tasks abort
-                // cleanly when the pipes close.
-                drop(child);
-                return Err(format!("timed out after {timeout_ms} ms").into());
-            }
-        };
+        let exit_status =
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait()).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => return Err(format!("process error: {e}").into()),
+                Err(_) => {
+                    // Timeout: drop the child to fire `kill_on_drop`,
+                    // then bubble the error. The streaming tasks abort
+                    // cleanly when the pipes close.
+                    drop(child);
+                    return Err(format!("timed out after {timeout_ms} ms").into());
+                }
+            };
 
-        let (stdout_buf, sout_truncated, stdout_total) =
-            stdout_task.await.map_err(|e| -> BoxError { format!("stdout join: {e}").into() })?;
-        let (stderr_buf, serr_truncated, stderr_total) =
-            stderr_task.await.map_err(|e| -> BoxError { format!("stderr join: {e}").into() })?;
+        let (stdout_buf, sout_truncated, stdout_total) = stdout_task
+            .await
+            .map_err(|e| -> BoxError { format!("stdout join: {e}").into() })?;
+        let (stderr_buf, serr_truncated, stderr_total) = stderr_task
+            .await
+            .map_err(|e| -> BoxError { format!("stderr join: {e}").into() })?;
 
         let exit = exit_status
             .code()
@@ -352,9 +370,9 @@ where
     let mut truncated = false;
     while let Ok(Some(line)) = reader.next_line().await {
         total += line.len() + 1; // +1 for the stripped newline
-        // Live emit happens regardless of truncation — the user
-        // gets to watch the whole thing scroll, even when the
-        // agent's view is going to be clipped.
+                                 // Live emit happens regardless of truncation — the user
+                                 // gets to watch the whole thing scroll, even when the
+                                 // agent's view is going to be clipped.
         if let Some(tx) = &prog {
             emit_progress_to(tx, label, format!("{line}\n"));
         }
@@ -464,7 +482,9 @@ fn build_command(
             // running unsandboxed.
             Err("Sandbox::Auto must be resolved before use; call `Sandbox::resolve()`".into())
         }
-        Sandbox::Bubblewrap { allow_network } => Ok(build_bubblewrap(inner, root, cwd, *allow_network)),
+        Sandbox::Bubblewrap { allow_network } => {
+            Ok(build_bubblewrap(inner, root, cwd, *allow_network))
+        }
         Sandbox::SandboxExec { allow_network } => {
             Ok(build_sandbox_exec(inner, root, *allow_network))
         }
@@ -581,10 +601,7 @@ mod tests {
     async fn captures_nonzero_exit() {
         let dir = tempdir().unwrap();
         let tool = ShellExecTool::new(dir.path());
-        let out = tool
-            .invoke(json!({ "command": "exit 7" }))
-            .await
-            .unwrap();
+        let out = tool.invoke(json!({ "command": "exit 7" })).await.unwrap();
         assert!(out.contains("exit=7"), "got: {out}");
     }
 
@@ -672,7 +689,11 @@ mod tests {
             .filter(|p| p.stream == "stdout")
             .map(|p| p.chunk.as_str())
             .collect();
-        assert_eq!(stdout_lines, vec!["a\n", "b\n", "c\n"], "chunks: {chunks:?}");
+        assert_eq!(
+            stdout_lines,
+            vec!["a\n", "b\n", "c\n"],
+            "chunks: {chunks:?}"
+        );
     }
 
     // ---------- Sandbox plumbing ----------
@@ -698,19 +719,21 @@ mod tests {
             "echo hi",
             dir.path(),
             dir.path(),
-            &Sandbox::Auto { allow_network: false },
+            &Sandbox::Auto {
+                allow_network: false,
+            },
         )
         .unwrap_err();
-        assert!(
-            err.to_string().contains("must be resolved"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("must be resolved"), "got: {err}");
     }
 
     #[test]
     fn sandbox_resolve_picks_concrete_backend_or_falls_back() {
         // Resolve always returns a concrete variant — never `Auto`.
-        let resolved = Sandbox::Auto { allow_network: false }.resolve();
+        let resolved = Sandbox::Auto {
+            allow_network: false,
+        }
+        .resolve();
         assert!(!matches!(resolved, Sandbox::Auto { .. }));
     }
 
@@ -816,7 +839,10 @@ mod tests {
             .invoke(json!({ "command": "ulimit -n" }))
             .await
             .unwrap();
-        assert!(out_default.contains("exit=0"), "baseline failed: {out_default}");
+        assert!(
+            out_default.contains("exit=0"),
+            "baseline failed: {out_default}"
+        );
         assert!(
             !contains_ulimit_value(&out_default, 64),
             "baseline already at NOFILE=64; can't distinguish from a cap. got: {out_default}"
@@ -859,8 +885,9 @@ mod tests {
             return;
         }
         let dir = tempdir().unwrap();
-        let tool = ShellExecTool::new(dir.path())
-            .with_sandbox(Sandbox::SandboxExec { allow_network: false });
+        let tool = ShellExecTool::new(dir.path()).with_sandbox(Sandbox::SandboxExec {
+            allow_network: false,
+        });
         // Try to write somewhere we don't allow. Should fail / produce
         // a non-zero exit. We're not testing the exact error string
         // (sandbox-exec wording varies between macOS versions) — just
@@ -873,7 +900,10 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(!out.contains("exit=0"), "expected non-zero exit, got: {out}");
+        assert!(
+            !out.contains("exit=0"),
+            "expected non-zero exit, got: {out}"
+        );
         assert!(
             !std::path::Path::new(target).exists(),
             "sandbox let a write outside root succeed: {target}"

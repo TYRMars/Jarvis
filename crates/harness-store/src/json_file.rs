@@ -1,18 +1,26 @@
-//! On-disk JSON-file [`ConversationStore`](harness_core::ConversationStore).
+//! On-disk JSON-file [`ConversationStore`](harness_core::ConversationStore)
+//! and [`ProjectStore`](harness_core::ProjectStore).
 //!
-//! One JSON file per conversation, all in one directory. The simplest
-//! possible "real" backend — no external dependency, no migrations,
-//! no daemon. Suited to single-user / dev / "I just want it to work"
-//! deployments. For multi-process or large-scale use, prefer the
+//! One JSON file per record, all in a directory. The simplest possible
+//! "real" backend — no external dependency, no migrations, no daemon.
+//! Suited to single-user / dev / "I just want it to work" deployments.
+//! For multi-process or large-scale use, prefer the
 //! sqlite / postgres / mysql backends.
 //!
 //! ## Layout
 //!
 //! ```text
 //! <dir>/
-//!   <id>.json                # one per conversation
-//!   <id>.json.tmp            # transient, only during writes
+//!   <id>.json                 # one per conversation
+//!   <id>.json.tmp             # transient, only during writes
+//!   projects/
+//!     <project_id>.json       # one per project
+//!     <project_id>.json.tmp
 //! ```
+//!
+//! Conversations and projects live in sibling stores
+//! ([`JsonFileConversationStore`] / [`JsonFileProjectStore`]) which
+//! share a base directory but otherwise hold no shared state.
 //!
 //! ## ID → filename
 //!
@@ -29,11 +37,14 @@
 //! Concurrent writers to the same id race; last-write-wins is the
 //! contract (the trait offers no read-modify-write semantics).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use harness_core::{BoxError, Conversation, ConversationRecord, ConversationStore, Message};
+use harness_core::{
+    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Message,
+    Project, ProjectStore,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
@@ -47,15 +58,7 @@ impl JsonFileConversationStore {
     /// (recursively) if missing; existing files are not touched.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            StoreError::Other(format!("create {}: {e}", dir.display()).into())
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perm = std::fs::Permissions::from_mode(0o700);
-            let _ = std::fs::set_permissions(&dir, perm);
-        }
+        ensure_dir(&dir)?;
         Ok(Self { dir })
     }
 
@@ -65,24 +68,35 @@ impl JsonFileConversationStore {
 }
 
 /// On-disk shape: id + timestamps + the existing `Conversation`
-/// payload. We keep timestamps inside the file (not from filesystem
-/// `mtime`) because the filesystem's clock isn't ours.
+/// payload + per-conversation metadata. We keep timestamps inside the
+/// file (not from filesystem `mtime`) because the filesystem's clock
+/// isn't ours.
+///
+/// `project_id` uses `#[serde(default)]` so old files (written before
+/// the Project feature) deserialise cleanly with `None`.
 #[derive(Debug, Serialize, Deserialize)]
-struct StoredConversation {
+struct OnDiskConversation {
     id: String,
     created_at: String,
     updated_at: String,
     messages: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
 }
 
 #[async_trait]
 impl ConversationStore for JsonFileConversationStore {
-    async fn save(&self, id: &str, conversation: &Conversation) -> Result<(), BoxError> {
+    async fn save_envelope(
+        &self,
+        id: &str,
+        conversation: &Conversation,
+        metadata: &ConversationMetadata,
+    ) -> Result<(), BoxError> {
         let path = self.path_for(id);
         let now = Utc::now().to_rfc3339();
         // Preserve created_at across overwrites.
         let created_at = match tokio::fs::read(&path).await {
-            Ok(bytes) => match serde_json::from_slice::<StoredConversation>(&bytes) {
+            Ok(bytes) => match serde_json::from_slice::<OnDiskConversation>(&bytes) {
                 Ok(s) => s.created_at,
                 Err(_) => now.clone(),
             },
@@ -90,38 +104,36 @@ impl ConversationStore for JsonFileConversationStore {
             Err(e) => return Err(Box::new(e)),
         };
 
-        let stored = StoredConversation {
+        let stored = OnDiskConversation {
             id: id.to_string(),
             created_at,
             updated_at: now,
             messages: conversation.messages.clone(),
+            project_id: metadata.project_id.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&stored).map_err(StoreError::from)?;
-
-        let tmp = path.with_extension("json.tmp");
-        tokio::fs::write(&tmp, &bytes).await?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perm = std::fs::Permissions::from_mode(0o600);
-            let _ = tokio::fs::set_permissions(&tmp, perm).await;
-        }
-        tokio::fs::rename(&tmp, &path).await?;
-        Ok(())
+        atomic_write(&path, &bytes).await
     }
 
-    async fn load(&self, id: &str) -> Result<Option<Conversation>, BoxError> {
+    async fn load_envelope(
+        &self,
+        id: &str,
+    ) -> Result<Option<(Conversation, ConversationMetadata)>, BoxError> {
         let path = self.path_for(id);
         let bytes = match tokio::fs::read(&path).await {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(Box::new(e)),
         };
-        let stored: StoredConversation = serde_json::from_slice(&bytes)
-            .map_err(StoreError::from)?;
-        Ok(Some(Conversation {
+        let stored: OnDiskConversation =
+            serde_json::from_slice(&bytes).map_err(StoreError::from)?;
+        let conv = Conversation {
             messages: stored.messages,
-        }))
+        };
+        let meta = ConversationMetadata {
+            project_id: stored.project_id,
+        };
+        Ok(Some((conv, meta)))
     }
 
     async fn list(&self, limit: u32) -> Result<Vec<ConversationRecord>, BoxError> {
@@ -133,7 +145,10 @@ impl ConversationStore for JsonFileConversationStore {
         };
         while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
-            // skip directories, .tmp files, anything not ending in .json
+            // skip directories (e.g. projects/), .tmp files, anything not ending in .json
+            if path.is_dir() {
+                continue;
+            }
             if !path.extension().is_some_and(|e| e == "json") {
                 continue;
             }
@@ -148,7 +163,7 @@ impl ConversationStore for JsonFileConversationStore {
                 Ok(b) => b,
                 Err(_) => continue,
             };
-            let stored: StoredConversation = match serde_json::from_slice(&bytes) {
+            let stored: OnDiskConversation = match serde_json::from_slice(&bytes) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -157,6 +172,7 @@ impl ConversationStore for JsonFileConversationStore {
                 created_at: stored.created_at,
                 updated_at: stored.updated_at,
                 message_count: stored.messages.len(),
+                project_id: stored.project_id,
             });
         }
         // Newest first by updated_at — RFC 3339 strings are
@@ -174,6 +190,150 @@ impl ConversationStore for JsonFileConversationStore {
             Err(e) => Err(Box::new(e)),
         }
     }
+}
+
+// ---------- ProjectStore ----------------------------------------------------
+
+pub struct JsonFileProjectStore {
+    dir: PathBuf,
+}
+
+impl JsonFileProjectStore {
+    /// Open or create a project store. `base_dir` is the root the
+    /// sibling [`JsonFileConversationStore`] uses; projects live in
+    /// `<base_dir>/projects/`.
+    pub fn open(base_dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let dir = base_dir.into().join("projects");
+        ensure_dir(&dir)?;
+        Ok(Self { dir })
+    }
+
+    fn path_for(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl ProjectStore for JsonFileProjectStore {
+    async fn save(&self, project: &Project) -> Result<(), BoxError> {
+        // Slug uniqueness check — scan everything in the directory
+        // and reject if a *different* id already owns this slug.
+        let existing = scan_projects(&self.dir).await?;
+        for p in &existing {
+            if p.id != project.id && p.slug == project.slug {
+                return Err(format!(
+                    "project slug '{}' already in use by id={}",
+                    project.slug, p.id
+                )
+                .into());
+            }
+        }
+        let path = self.path_for(&project.id);
+        let bytes = serde_json::to_vec_pretty(project).map_err(StoreError::from)?;
+        atomic_write(&path, &bytes).await
+    }
+
+    async fn load(&self, id: &str) -> Result<Option<Project>, BoxError> {
+        let path = self.path_for(id);
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let p: Project = serde_json::from_slice(&bytes).map_err(StoreError::from)?;
+        Ok(Some(p))
+    }
+
+    async fn find_by_slug(&self, slug: &str) -> Result<Option<Project>, BoxError> {
+        let projects = scan_projects(&self.dir).await?;
+        Ok(projects.into_iter().find(|p| p.slug == slug))
+    }
+
+    async fn list(&self, include_archived: bool, limit: u32) -> Result<Vec<Project>, BoxError> {
+        let mut projects = scan_projects(&self.dir).await?;
+        if !include_archived {
+            projects.retain(|p| !p.archived);
+        }
+        projects.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        projects.truncate(limit as usize);
+        Ok(projects)
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    async fn archive(&self, id: &str) -> Result<bool, BoxError> {
+        let mut p = match self.load(id).await? {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+        p.archive();
+        self.save(&p).await?;
+        Ok(true)
+    }
+}
+
+async fn scan_projects(dir: &Path) -> Result<Vec<Project>, BoxError> {
+    let mut out = Vec::new();
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Box::new(e)),
+    };
+    while let Some(entry) = rd.next_entry().await? {
+        let path = entry.path();
+        if path.is_dir() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.ends_with(".json") || name.ends_with(".json.tmp") {
+            continue;
+        }
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if let Ok(p) = serde_json::from_slice::<Project>(&bytes) {
+            out.push(p);
+        }
+    }
+    Ok(out)
+}
+
+// ---------- shared helpers -------------------------------------------------
+
+fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| StoreError::Other(format!("create {}: {e}", dir.display()).into()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perm = std::fs::Permissions::from_mode(0o700);
+        let _ = std::fs::set_permissions(dir, perm);
+    }
+    Ok(())
+}
+
+async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), BoxError> {
+    let tmp = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp, bytes).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perm = std::fs::Permissions::from_mode(0o600);
+        let _ = tokio::fs::set_permissions(&tmp, perm).await;
+    }
+    tokio::fs::rename(&tmp, path).await?;
+    Ok(())
 }
 
 // ---------- id <-> filename ----------
@@ -242,6 +402,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn envelope_persists_project_id() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileConversationStore::open(dir.path()).unwrap();
+
+        let meta = ConversationMetadata::with_project("p-1");
+        store
+            .save_envelope("c1", &convo("hi"), &meta)
+            .await
+            .unwrap();
+        let (_, loaded_meta) = store.load_envelope("c1").await.unwrap().unwrap();
+        assert_eq!(loaded_meta.project_id.as_deref(), Some("p-1"));
+
+        let rows = store.list(10).await.unwrap();
+        assert_eq!(rows[0].project_id.as_deref(), Some("p-1"));
+    }
+
+    #[tokio::test]
+    async fn loading_legacy_file_without_project_id_works() {
+        // Files written before the Project feature have no
+        // `project_id` field — they must still deserialise.
+        let dir = tempdir().unwrap();
+        let store = JsonFileConversationStore::open(dir.path()).unwrap();
+
+        // Hand-craft an old-shape file.
+        let legacy = r#"{
+            "id": "legacy",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "messages": []
+        }"#;
+        tokio::fs::write(dir.path().join("legacy.json"), legacy)
+            .await
+            .unwrap();
+
+        let (_, meta) = store.load_envelope("legacy").await.unwrap().unwrap();
+        assert_eq!(meta.project_id, None);
+    }
+
+    #[tokio::test]
     async fn save_overwrites_and_preserves_created_at() {
         let dir = tempdir().unwrap();
         let store = JsonFileConversationStore::open(dir.path()).unwrap();
@@ -283,6 +482,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_skips_projects_subdir() {
+        // `JsonFileProjectStore` puts files under `<dir>/projects/` —
+        // the conversation `list()` must skip subdirectories so it
+        // doesn't trip over them.
+        let dir = tempdir().unwrap();
+        let conv_store = JsonFileConversationStore::open(dir.path()).unwrap();
+        let proj_store = JsonFileProjectStore::open(dir.path()).unwrap();
+
+        conv_store.save("c1", &convo("x")).await.unwrap();
+        proj_store
+            .save(&Project::new("P", "i").with_slug("p"))
+            .await
+            .unwrap();
+
+        let rows = conv_store.list(10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "c1");
+    }
+
+    #[tokio::test]
     async fn delete_idempotent_and_reports_existence() {
         let dir = tempdir().unwrap();
         let store = JsonFileConversationStore::open(dir.path()).unwrap();
@@ -295,9 +514,6 @@ mod tests {
 
     #[tokio::test]
     async fn handles_internal_namespace_ids_with_colons() {
-        // `__memory__.summary:<hash>` is the SummarizingMemory key
-        // shape. ":" is illegal on Windows filenames; percent-
-        // encoding has to round-trip.
         let dir = tempdir().unwrap();
         let store = JsonFileConversationStore::open(dir.path()).unwrap();
 
@@ -310,6 +526,9 @@ mod tests {
         let mut found_filename = None;
         for entry in std::fs::read_dir(dir.path()).unwrap() {
             let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                continue;
+            }
             let name = entry.file_name().into_string().unwrap();
             if name.ends_with(".json") {
                 found_filename = Some(name);
@@ -320,7 +539,6 @@ mod tests {
         assert!(!name.contains(':'), "filename leaked a colon: {name}");
         assert!(name.contains("%3A"), "expected %3A escape, got {name}");
 
-        // Round trip via list() returns the original id.
         let rows = store.list(10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, id);
@@ -358,5 +576,56 @@ mod tests {
     async fn first_record(store: &JsonFileConversationStore) -> ConversationRecord {
         let rows = store.list(1).await.unwrap();
         rows.into_iter().next().expect("no records")
+    }
+
+    // ---- ProjectStore --------------------------------------------------
+
+    #[tokio::test]
+    async fn project_save_load_and_slug_lookup() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileProjectStore::open(dir.path()).unwrap();
+        let p = Project::new("Writing", "be poetic").with_slug("writing");
+        store.save(&p).await.unwrap();
+
+        assert_eq!(store.load(&p.id).await.unwrap().unwrap(), p);
+        assert_eq!(store.find_by_slug("writing").await.unwrap().unwrap(), p);
+    }
+
+    #[tokio::test]
+    async fn project_rejects_duplicate_slug() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileProjectStore::open(dir.path()).unwrap();
+        store
+            .save(&Project::new("A", "x").with_slug("dup"))
+            .await
+            .unwrap();
+        let err = store
+            .save(&Project::new("B", "y").with_slug("dup"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("dup"));
+    }
+
+    #[tokio::test]
+    async fn project_archive_then_list_default_excludes() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileProjectStore::open(dir.path()).unwrap();
+        let p = Project::new("Z", "x").with_slug("z");
+        store.save(&p).await.unwrap();
+        store.archive(&p.id).await.unwrap();
+
+        assert!(store.list(false, 10).await.unwrap().is_empty());
+        assert_eq!(store.list(true, 10).await.unwrap().len(), 1);
+        assert!(store.load(&p.id).await.unwrap().unwrap().archived);
+    }
+
+    #[tokio::test]
+    async fn project_delete_returns_existence() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileProjectStore::open(dir.path()).unwrap();
+        let p = Project::new("D", "x").with_slug("d");
+        store.save(&p).await.unwrap();
+        assert!(store.delete(&p.id).await.unwrap());
+        assert!(!store.delete(&p.id).await.unwrap());
     }
 }

@@ -1,41 +1,32 @@
 // Sidebar conversation list. Splits the live `convoRows` into a
 // pinned section (always on top) + a chronologically-grouped recents
-// section. Search filtering is purely client-side: matches against
-// the displayed title and the id prefix.
+// section.
+//
+// The inline title-prefix filter that used to live above this list
+// has moved into the QuickSwitcher modal (Cmd+P / topbar 🔍) — it's
+// the same filter logic plus deep full-text search across message
+// bodies, all in one place. The list itself is now plain "show
+// everything we know about", grouped and pinned.
 
 import { useAppStore } from "../../store/appStore";
-import { resolveTitle } from "../../store/persistence";
 import { t } from "../../utils/i18n";
 import { convoGroupLabel } from "../../utils/time";
 import type { ConvoListRow } from "../../types/frames";
 import { ConvoRow } from "./ConvoRow";
 
-function visibleRows(rows: ConvoListRow[], q: string): ConvoListRow[] {
-  const trimmed = q.trim().toLowerCase();
-  if (!trimmed) return rows;
-  return rows.filter((r) => {
-    const title = resolveTitle(r).toLowerCase();
-    return title.includes(trimmed) || r.id.toLowerCase().startsWith(trimmed);
-  });
-}
-
 export function ConvoList() {
   const rows = useAppStore((s) => s.convoRows);
   const pinned = useAppStore((s) => s.pinned);
-  const search = useAppStore((s) => s.convoSearch);
   const persistEnabled = useAppStore((s) => s.persistEnabled);
 
-  const visible = visibleRows(rows, search);
-  const pinnedRows = visible.filter((r) => pinned.has(r.id));
-  const recentRows = visible.filter((r) => !pinned.has(r.id));
+  const pinnedRows = rows.filter((r) => pinned.has(r.id));
+  const recentRows = rows.filter((r) => !pinned.has(r.id));
 
   const recentsHaveContent = recentRows.length > 0;
-  const status: "" | "disabled" | "empty" | "noMatches" = !persistEnabled
+  const status: "" | "disabled" | "empty" = !persistEnabled
     ? "disabled"
-    : visible.length === 0
-    ? rows.length === 0
-      ? "empty"
-      : "noMatches"
+    : rows.length === 0
+    ? "empty"
     : "";
 
   return (
@@ -79,7 +70,7 @@ export function ConvoList() {
   );
 }
 
-function ConvoStatus({ kind }: { kind: "" | "disabled" | "empty" | "noMatches" }) {
+function ConvoStatus({ kind }: { kind: "" | "disabled" | "empty" }) {
   if (!kind) return <p id="convos-status" className="empty-state" />;
   return (
     <p id="convos-status" className="empty-state" data-kind={kind}>
@@ -101,7 +92,6 @@ function ConvoStatus({ kind }: { kind: "" | "disabled" | "empty" | "noMatches" }
           <span>{t("noConversations")}</span>
         </>
       )}
-      {kind === "noMatches" && <span>{t("noMatches")}</span>}
     </p>
   );
 }

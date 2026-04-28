@@ -13,8 +13,12 @@ struct EchoTool;
 
 #[async_trait]
 impl Tool for EchoTool {
-    fn name(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "Echo back the `text` argument." }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "Echo back the `text` argument."
+    }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -23,7 +27,11 @@ impl Tool for EchoTool {
         })
     }
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
-        Ok(args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        Ok(args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 }
 

@@ -67,8 +67,7 @@ pub fn auth_path(provider: &str) -> Result<PathBuf> {
 /// it doesn't leak which providers a user has authed against. On
 /// other platforms we rely on standard user-profile permissions.
 fn ensure_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("create {}", path.display()))?;
+    std::fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -90,7 +89,12 @@ pub fn save_api_key(provider: &str, key: &str) -> Result<PathBuf> {
     let dir = auth_dir()?;
     ensure_dir(&dir)?;
     let path = dir.join(format!("{provider}.json"));
-    write_json_secret(&path, &ApiKeyAuth { api_key: key.to_string() })?;
+    write_json_secret(
+        &path,
+        &ApiKeyAuth {
+            api_key: key.to_string(),
+        },
+    )?;
     Ok(path)
 }
 
@@ -105,10 +109,9 @@ pub fn load_api_key(provider: &str) -> Result<Option<String>> {
     if !path.is_file() {
         return Ok(None);
     }
-    let bytes = std::fs::read(&path)
-        .with_context(|| format!("read {}", path.display()))?;
-    let parsed: ApiKeyAuth = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse {}", path.display()))?;
+    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let parsed: ApiKeyAuth =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
     Ok(Some(parsed.api_key))
 }
 
@@ -138,16 +141,14 @@ fn write_json_secret<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let pretty = serde_json::to_vec_pretty(value)
         .with_context(|| format!("serialize {}", path.display()))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &pretty)
-        .with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::write(&tmp, &pretty).with_context(|| format!("write {}", tmp.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let perm = std::fs::Permissions::from_mode(0o600);
         let _ = std::fs::set_permissions(&tmp, perm);
     }
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("rename onto {}", path.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("rename onto {}", path.display()))?;
     Ok(())
 }
 
@@ -166,12 +167,7 @@ mod tests {
     impl EnvGuard {
         fn isolate(home: &Path) -> Self {
             let lock = crate::test_env::lock();
-            let keys = [
-                "JARVIS_CONFIG_HOME",
-                "XDG_CONFIG_HOME",
-                "HOME",
-                "APPDATA",
-            ];
+            let keys = ["JARVIS_CONFIG_HOME", "XDG_CONFIG_HOME", "HOME", "APPDATA"];
             let mut saved = Vec::new();
             for k in keys {
                 saved.push((k, std::env::var(k).ok()));
@@ -184,7 +180,10 @@ mod tests {
                 std::env::remove_var("HOME");
                 std::env::remove_var("APPDATA");
             }
-            EnvGuard { keys: saved, _lock: lock }
+            EnvGuard {
+                keys: saved,
+                _lock: lock,
+            }
         }
     }
     impl Drop for EnvGuard {
@@ -261,13 +260,7 @@ mod tests {
         let _g = EnvGuard::isolate(dir.path());
 
         save_api_key("openai", "sk-x").unwrap();
-        let mode = auth_dir()
-            .unwrap()
-            .metadata()
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode = auth_dir().unwrap().metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
     }
 }

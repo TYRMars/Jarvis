@@ -79,9 +79,10 @@ impl CodexAuth {
     pub fn load_from_file(path: &Path) -> Result<Self, BoxError> {
         let bytes = std::fs::read(path)
             .map_err(|e| -> BoxError { format!("read {}: {e}", path.display()).into() })?;
-        let value: Value = serde_json::from_str(std::str::from_utf8(&bytes).map_err(
-            |e| -> BoxError { format!("auth.json is not utf-8: {e}").into() },
-        )?)
+        let value: Value = serde_json::from_str(
+            std::str::from_utf8(&bytes)
+                .map_err(|e| -> BoxError { format!("auth.json is not utf-8: {e}").into() })?,
+        )
         .map_err(|e| -> BoxError { format!("parse auth.json: {e}").into() })?;
 
         let tokens = value.get("tokens").ok_or_else(|| -> BoxError {
@@ -113,12 +114,9 @@ impl CodexAuth {
     /// on-disk `auth.json` are both updated. Failures bubble up with
     /// the upstream status / body text.
     pub async fn refresh(&mut self, http: &reqwest::Client) -> Result<(), BoxError> {
-        let refresh_token = self
-            .refresh_token
-            .as_deref()
-            .ok_or_else(|| -> BoxError {
-                "no refresh_token available; static-token mode cannot refresh".into()
-            })?;
+        let refresh_token = self.refresh_token.as_deref().ok_or_else(|| -> BoxError {
+            "no refresh_token available; static-token mode cannot refresh".into()
+        })?;
         let url = std::env::var(REFRESH_TOKEN_URL_OVERRIDE_ENV)
             .unwrap_or_else(|_| REFRESH_TOKEN_URL.to_string());
 
@@ -143,8 +141,9 @@ impl CodexAuth {
             return Err(format!("refresh failed: status {status}: {body}").into());
         }
 
-        let parsed: RefreshResponse = serde_json::from_str(&body)
-            .map_err(|e| -> BoxError { format!("decode refresh response: {e}; body={body}").into() })?;
+        let parsed: RefreshResponse = serde_json::from_str(&body).map_err(|e| -> BoxError {
+            format!("decode refresh response: {e}; body={body}").into()
+        })?;
 
         self.access_token = parsed.access_token;
         if let Some(new_rt) = parsed.refresh_token {
@@ -171,9 +170,7 @@ impl CodexAuth {
         let obj = value
             .as_object_mut()
             .ok_or_else(|| -> BoxError { "auth.json is not a JSON object".into() })?;
-        let tokens = obj
-            .entry("tokens".to_string())
-            .or_insert_with(|| json!({}));
+        let tokens = obj.entry("tokens".to_string()).or_insert_with(|| json!({}));
         let tokens = tokens
             .as_object_mut()
             .ok_or_else(|| -> BoxError { "auth.json `tokens` is not an object".into() })?;
@@ -292,8 +289,7 @@ mod tests {
         let path = auth.persist_path.clone().unwrap();
         auth.write_back(&path).unwrap();
 
-        let after: Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(after["auth_mode"], "chatgpt");
         assert_eq!(after["OPENAI_API_KEY"], "sk-keep-me");
         assert_eq!(after["tokens"]["access_token"], "new-at");

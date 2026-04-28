@@ -2,13 +2,25 @@
 // pane, workspace rail, approvals rail, quick switcher) is its own
 // component so this file stays focused on the boot/effects/wiring,
 // not 200 lines of sidebar SVG.
+//
+// Routing: react-router-dom (`BrowserRouter`) wraps the tree so the
+// app can host multiple pages at the server root (`/`, `/settings`,
+// future `/conversations/:id`) without the URL gaining a `/ui/`
+// prefix. The Rust side serves `index.html` for any extension-less
+// path (see `crates/harness-server/src/ui.rs::spa_fallback`), so
+// reloading on `/settings` works like a real route, not just a
+// hash-based shim.
 
 import { useEffect } from "react";
+import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
 import { AppSidebar } from "./components/AppSidebar";
 import { AppChatPane } from "./components/AppChatPane";
 import { AppWorkspaceRail } from "./components/AppWorkspaceRail";
 import { AppApprovalsRail } from "./components/AppApprovalsRail";
 import { QuickSwitcher } from "./components/QuickSwitcher/QuickSwitcher";
+import { SettingsPage } from "./components/Settings/SettingsPage";
+import { ProjectsPage } from "./components/Projects/ProjectsPage";
+import { DocsPage } from "./components/Docs/DocsPage";
 import { useAppStore, appStore } from "./store/appStore";
 import { boot, applyI18n } from "./services/boot";
 import { useShortcuts } from "./hooks/useShortcuts";
@@ -20,7 +32,11 @@ import "./styles.css";
 export function App() {
   // One-shot boot: persisted prefs into store, copy/resize affordances,
   // providers + convo list fetch, WebSocket open. Idempotent so React
-  // Strict Mode's double-mount in dev is safe.
+  // Strict Mode's double-mount in dev is safe. Boot fires regardless
+  // of which route the user lands on — Settings still needs the
+  // provider catalog and persisted prefs, and bouncing the WS open
+  // when the user navigates from `/settings` back to `/` would be
+  // jarring (it'd look like a reconnect).
   useEffect(() => {
     boot();
   }, []);
@@ -39,9 +55,32 @@ export function App() {
   }, [lang]);
 
   // Global keyboard shortcuts (Cmd+K / Cmd+P / Cmd+/, Esc cascade,
-  // bare `?`, 1-9 model picker).
+  // bare `?`, 1-9 model picker). Mounted at the App root so the
+  // shortcuts fire on every page — Cmd+K on the Settings page still
+  // jumps you to a conversation.
   useShortcuts({ showHelp: showHelpOverlay });
 
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<ChatLayout />} />
+        <Route path="/projects" element={<ProjectsLayout />} />
+        <Route path="/docs" element={<DocsLayout />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        {/* Catch-all: send unknown SPA paths home rather than rendering
+            a blank page. Server-side `spa_fallback` already serves
+            index.html for these, so this is the client-side mirror. */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+/// The chat workspace — sidebar, chat pane, two rails, resize
+/// handles, and the Cmd+P quick switcher. Lives at `/`. Extracted
+/// from `App` so other routes (Settings, future Conversations
+/// archive) don't carry the chat-specific chrome.
+function ChatLayout() {
   return (
     <div id="app">
       <AppSidebar />
@@ -51,6 +90,32 @@ export function App() {
 
       <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
       <div id="resize-rail" className="resize-handle resize-rail" role="separator" aria-orientation="vertical" aria-label="Resize approvals panel" tabIndex={-1} />
+
+      <QuickSwitcher />
+    </div>
+  );
+}
+
+function ProjectsLayout() {
+  return (
+    <div id="app" className="page-app projects-app">
+      <AppSidebar />
+      <ProjectsPage />
+
+      <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+
+      <QuickSwitcher />
+    </div>
+  );
+}
+
+function DocsLayout() {
+  return (
+    <div id="app" className="page-app docs-app">
+      <AppSidebar />
+      <DocsPage />
+
+      <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
 
       <QuickSwitcher />
     </div>

@@ -6,20 +6,24 @@
 //!
 //! Routes mounted by [`router`]:
 //!
-//! - `GET /ui`    — permanent redirect to `/ui/` (so trailing-slash
-//!   relative paths in the HTML resolve correctly).
-//! - `GET /ui/`   — `index.html`.
-//! - `GET /ui/<path>` — file under the bundled directory; 404 if
-//!   missing.
+//! - `GET /` — `index.html`.
+//! - `GET /assets/*` (and any other extensioned path) — looked up
+//!   against the bundled directory; 404 if missing.
+//!
+//! [`spa_fallback`] is exported so the main router can wire it as
+//! the catch-all `.fallback(...)` handler. It serves `index.html`
+//! for unknown extension-less paths (the SPA's client-side routes
+//! like `/settings`) while still 404'ing missing assets and
+//! anything under `/v1/` or `/health` (defence in depth — those
+//! are exact-match in the parent router).
 //!
 //! `Content-Type` is picked by file extension via a tiny static map
 //! to avoid pulling a `mime_guess` crate just for a handful of
 //! types — extend the match arm when adding new asset types.
 
 use axum::{
-    extract::Path,
-    http::{header, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    http::{header, StatusCode, Uri},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -31,18 +35,56 @@ use crate::state::AppState;
 static ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../apps/jarvis-web/dist");
 
 pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
-        .route("/ui/", get(serve_index))
-        .route("/ui/*path", get(serve_path))
+    Router::new().route("/", get(serve_index))
 }
 
 async fn serve_index() -> Response {
     serve("index.html")
 }
 
-async fn serve_path(Path(path): Path<String>) -> Response {
-    serve(&path)
+/// Catch-all fallback the parent router wires up. Three behaviours,
+/// chosen by the request path:
+///
+/// 1. Looks like an API surface (`/v1/...`, `/health`) → 404 JSON.
+///    The parent router already routes those exactly; this branch
+///    is defence-in-depth so a typo doesn't accidentally serve HTML.
+/// 2. Has a file extension (e.g. `.js`, `.css`, `.png`) → look up
+///    in the bundled asset tree, serve or 404. Asset typos must
+///    fail loudly — silently serving HTML for a missing JS file
+///    would mask deploy mistakes.
+/// 3. Anything else → serve `index.html`. This is the SPA fallback
+///    that lets React Router own `/settings`, `/conversations/:id`,
+///    etc. without a server-side route entry per page.
+pub(crate) async fn spa_fallback(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+
+    // Defence in depth — these paths should never reach the fallback
+    // because the parent router has exact handlers, but if a future
+    // refactor drops one, returning HTML would be the worst outcome.
+    if path == "health" || path.starts_with("v1/") || path == "v1" {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if path_looks_like_asset(path) {
+        return match ASSETS.get_file(path) {
+            Some(file) => (
+                [(header::CONTENT_TYPE, content_type(path))],
+                file.contents(),
+            )
+                .into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+
+    serve("index.html")
+}
+
+/// "Asset-like" = has a file extension on the last path segment.
+/// React Router paths (`/settings`, `/conversations/abc-123`) are
+/// extension-less, so this cleanly partitions the namespace.
+fn path_looks_like_asset(path: &str) -> bool {
+    let last = path.rsplit_once('/').map(|(_, t)| t).unwrap_or(path);
+    last.contains('.')
 }
 
 fn serve(path: &str) -> Response {
@@ -110,24 +152,18 @@ mod tests {
     }
 
     fn get(path: &str) -> Request<Body> {
-        Request::builder()
-            .uri(path)
-            .body(Body::empty())
-            .unwrap()
+        Request::builder().uri(path).body(Body::empty()).unwrap()
     }
 
     fn first_asset_with_ext(ext: &str) -> String {
         // Walk the bundled tree depth-first. Vite emits hashed JS/CSS
         // under `assets/` while `index.html` sits at the root, so a
         // shallow `files()` scan misses the most interesting cases.
-        fn walk<'a>(
-            dir: &'a include_dir::Dir<'a>,
-            ext: &str,
-        ) -> Option<String> {
+        fn walk<'a>(dir: &'a include_dir::Dir<'a>, ext: &str) -> Option<String> {
             for f in dir.files() {
                 let path = f.path().to_string_lossy();
                 if path.ends_with(ext) {
-                    return Some(format!("/ui/{path}"));
+                    return Some(format!("/{path}"));
                 }
             }
             for d in dir.dirs() {
@@ -141,19 +177,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn redirect_from_ui_root() {
-        let resp = app().oneshot(get("/ui")).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::PERMANENT_REDIRECT);
-        let location = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert_eq!(location, "/ui/");
-    }
-
-    #[tokio::test]
-    async fn serves_index_html() {
-        let resp = app().oneshot(get("/ui/")).await.unwrap();
+    async fn root_serves_index_html() {
+        let resp = app().oneshot(get("/")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("content-type").unwrap().to_str().unwrap(),
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "text/html; charset=utf-8"
         );
         let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
@@ -163,12 +195,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spa_route_serves_index_html() {
+        // `/settings` has no server-side handler — the SPA fallback
+        // must serve `index.html` so React Router can render the
+        // matching page client-side.
+        let resp = app().oneshot(get("/settings")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "text/html; charset=utf-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_spa_route_serves_index_html() {
+        let resp = app().oneshot(get("/conversations/abc-123")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn serves_css_with_correct_mime() {
         let path = first_asset_with_ext(".css");
         let resp = app().oneshot(get(&path)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("content-type").unwrap().to_str().unwrap(),
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "text/css; charset=utf-8"
         );
     }
@@ -179,14 +238,35 @@ mod tests {
         let resp = app().oneshot(get(&path)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("content-type").unwrap().to_str().unwrap(),
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "text/javascript; charset=utf-8"
         );
     }
 
     #[tokio::test]
-    async fn missing_asset_returns_404() {
-        let resp = app().oneshot(get("/ui/does-not-exist.txt")).await.unwrap();
+    async fn missing_asset_path_returns_404() {
+        // Has an extension → fallback treats as asset and 404s
+        // (vs. SPA route which has no extension and serves index.html).
+        let resp = app().oneshot(get("/does-not-exist.txt")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn missing_v1_endpoint_returns_404_not_html() {
+        let resp = app().oneshot(get("/v1/missing-endpoint")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // Critical: must NOT serve HTML, otherwise SDK clients
+        // would parse the SPA's `<!doctype html>` as JSON and explode
+        // with confusing errors instead of a clean 404.
+        let ctype = resp
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or(""))
+            .unwrap_or("");
+        assert!(!ctype.contains("text/html"), "got content-type: {ctype}");
     }
 }

@@ -93,11 +93,7 @@ struct CachedSummary {
 }
 
 impl SummarizingMemory {
-    pub fn new(
-        llm: Arc<dyn LlmProvider>,
-        model: impl Into<String>,
-        max_tokens: usize,
-    ) -> Self {
+    pub fn new(llm: Arc<dyn LlmProvider>, model: impl Into<String>, max_tokens: usize) -> Self {
         Self {
             llm,
             model: model.into(),
@@ -155,7 +151,9 @@ impl Memory for SummarizingMemory {
             .saturating_sub(SUMMARY_RESERVE_TOKENS);
 
         let kept = select_recent_turns(&turns, budget, |turn| {
-            turn.iter().map(|&i| estimator.estimate_message(&messages[i])).sum()
+            turn.iter()
+                .map(|&i| estimator.estimate_message(&messages[i]))
+                .sum()
         });
 
         let dropped_count = turns.len() - kept.len();
@@ -194,9 +192,8 @@ impl Memory for SummarizingMemory {
             }
         };
 
-        let mut out: Vec<Message> = Vec::with_capacity(
-            system_idxs.len() + kept.iter().map(|t| t.len()).sum::<usize>() + 1,
-        );
+        let mut out: Vec<Message> =
+            Vec::with_capacity(system_idxs.len() + kept.iter().map(|t| t.len()).sum::<usize>() + 1);
         for &i in &system_idxs {
             out.push(messages[i].clone());
         }
@@ -378,7 +375,9 @@ fn render_for_summary(messages: &[Message]) -> String {
             }
             Message::Assistant {
                 content,
-                tool_calls, reasoning_content: _ } => {
+                tool_calls,
+                reasoning_content: _,
+            } => {
                 s.push_str("[assistant] ");
                 if let Some(c) = content {
                     s.push_str(c);
@@ -507,6 +506,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_block_survives_summarisation() {
+        // Regression for the Project feature: the binder injects a
+        // `=== project: NAME ===` block as the *second* leading
+        // System (after the agent's base system). Compaction must
+        // keep both leading systems intact and insert any synthetic
+        // summary after them — otherwise the LLM would lose the
+        // project context mid-conversation.
+        let llm = FakeLlm::new("OLD STUFF SUMMARISED");
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 256);
+
+        let msgs = vec![
+            system("base agent prompt"),
+            system("=== project: Writing ===\nbe lyrical"),
+            user("turn 1"),
+            assistant("reply 1"),
+            user("turn 2"),
+            assistant("reply 2"),
+            user("turn 3 most recent"),
+            assistant("reply 3"),
+        ];
+        let out = mem.compact(&msgs).await.unwrap();
+
+        // First two messages must still be the leading systems, in
+        // the original order.
+        assert!(matches!(&out[0], Message::System { content, .. } if content == "base agent prompt"));
+        assert!(matches!(&out[1], Message::System { content, .. }
+            if content.contains("=== project: Writing ===") && content.contains("be lyrical")));
+        // The summary lands somewhere AFTER the project block.
+        let summary_idx = out
+            .iter()
+            .position(|m| matches!(m,
+                Message::System { content, .. } if content.contains("OLD STUFF SUMMARISED")
+            ))
+            .expect("summary system not found in output");
+        assert!(summary_idx >= 2, "summary must come after the leading systems");
+    }
+
+    #[tokio::test]
     async fn cache_dedupes_identical_dropped_prefix() {
         let llm = FakeLlm::new("SUMMARY");
         let mem = SummarizingMemory::new(llm.clone(), "test-model", 256);
@@ -567,9 +604,12 @@ mod tests {
         ];
         let out = mem.compact(&msgs).await.unwrap();
         // System prompt + placeholder note + recent turn.
-        assert!(out.iter().any(|m| matches!(m,
-            Message::System { content, .. } if content.contains("summary unavailable")
-        )), "missing placeholder note in: {out:?}");
+        assert!(
+            out.iter().any(|m| matches!(m,
+                Message::System { content, .. } if content.contains("summary unavailable")
+            )),
+            "missing placeholder note in: {out:?}"
+        );
         // Recent turn must still be there — that's the whole point
         // of falling back instead of erroring.
         assert!(out.iter().any(|m| matches!(m,
@@ -615,9 +655,12 @@ mod tests {
         ];
         let out = mem.compact(&msgs).await.unwrap();
         assert_eq!(llm.calls.load(Ordering::SeqCst), 2, "expected 1 retry");
-        assert!(out.iter().any(|m| matches!(m,
-            Message::System { content, .. } if content.contains("EVENTUAL SUMMARY")
-        )), "expected real summary after retry, got: {out:?}");
+        assert!(
+            out.iter().any(|m| matches!(m,
+                Message::System { content, .. } if content.contains("EVENTUAL SUMMARY")
+            )),
+            "expected real summary after retry, got: {out:?}"
+        );
     }
 
     struct AlwaysTransportErrLlm {
@@ -636,7 +679,9 @@ mod tests {
 
     #[tokio::test]
     async fn persistent_transport_error_retries_once_then_falls_back() {
-        let llm = Arc::new(AlwaysTransportErrLlm { calls: AtomicUsize::new(0) });
+        let llm = Arc::new(AlwaysTransportErrLlm {
+            calls: AtomicUsize::new(0),
+        });
         let mem = SummarizingMemory::new(llm.clone(), "test-model", 64);
         let msgs = vec![
             system("sys"),
@@ -646,7 +691,11 @@ mod tests {
             assistant("recent reply"),
         ];
         let out = mem.compact(&msgs).await.unwrap();
-        assert_eq!(llm.calls.load(Ordering::SeqCst), 2, "expected exactly 1 retry");
+        assert_eq!(
+            llm.calls.load(Ordering::SeqCst),
+            2,
+            "expected exactly 1 retry"
+        );
         assert!(out.iter().any(|m| matches!(m,
             Message::System { content, .. } if content.contains("summary unavailable")
         )));
@@ -712,8 +761,8 @@ mod tests {
         let llm = FakeLlm::new("REMEMBERED");
         let store: Arc<dyn ConversationStore> =
             Arc::new(harness_store::MemoryConversationStore::new());
-        let mem = SummarizingMemory::new(llm.clone(), "test-model", 256)
-            .with_persistence(store.clone());
+        let mem =
+            SummarizingMemory::new(llm.clone(), "test-model", 256).with_persistence(store.clone());
 
         let msgs = vec![
             system("sys"),
@@ -741,8 +790,8 @@ mod tests {
 
         // First "process": run once, summary goes into the store.
         let llm1 = FakeLlm::new("FIRST RUN SUMMARY");
-        let mem1 = SummarizingMemory::new(llm1.clone(), "test-model", 256)
-            .with_persistence(store.clone());
+        let mem1 =
+            SummarizingMemory::new(llm1.clone(), "test-model", 256).with_persistence(store.clone());
 
         let msgs = vec![
             system("sys"),
@@ -762,8 +811,8 @@ mod tests {
         // different LLM that would say something else *if asked*. The
         // store hit means it never gets asked.
         let llm2 = FakeLlm::new("DIFFERENT TEXT");
-        let mem2 = SummarizingMemory::new(llm2.clone(), "test-model", 256)
-            .with_persistence(store.clone());
+        let mem2 =
+            SummarizingMemory::new(llm2.clone(), "test-model", 256).with_persistence(store.clone());
         let out2 = mem2.compact(&msgs).await.unwrap();
         assert_eq!(
             llm2.calls.load(Ordering::SeqCst),
@@ -783,8 +832,7 @@ mod tests {
         let llm = FakeLlm::new("SUMMARY");
         let store: Arc<dyn ConversationStore> =
             Arc::new(harness_store::MemoryConversationStore::new());
-        let mem = SummarizingMemory::new(llm.clone(), "test-model", 256)
-            .with_persistence(store);
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 256).with_persistence(store);
 
         let msgs = vec![
             system("sys"),
@@ -794,8 +842,8 @@ mod tests {
             assistant("d"),
         ];
         let out = mem.compact(&msgs).await.unwrap();
-        assert!(out.iter().any(
-            |m| matches!(m, Message::System { content, .. } if content.contains("SUMMARY"))
-        ));
+        assert!(out
+            .iter()
+            .any(|m| matches!(m, Message::System { content, .. } if content.contains("SUMMARY"))));
     }
 }

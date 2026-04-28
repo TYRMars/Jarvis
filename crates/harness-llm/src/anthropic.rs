@@ -261,8 +261,14 @@ struct CacheControl {
 impl From<CacheHint> for CacheControl {
     fn from(h: CacheHint) -> Self {
         match h {
-            CacheHint::Ephemeral => Self { kind: "ephemeral", ttl: None },
-            CacheHint::Persistent => Self { kind: "ephemeral", ttl: Some("1h") },
+            CacheHint::Ephemeral => Self {
+                kind: "ephemeral",
+                ttl: None,
+            },
+            CacheHint::Persistent => Self {
+                kind: "ephemeral",
+                ttl: Some("1h"),
+            },
         }
     }
 }
@@ -328,7 +334,10 @@ fn convert_tools(specs: Vec<ToolSpec>) -> Vec<AnTool> {
     let mut tools: Vec<AnTool> = specs.into_iter().map(AnTool::from).collect();
     if any_cacheable {
         if let Some(last) = tools.last_mut() {
-            last.cache_control = Some(CacheControl { kind: "ephemeral", ttl: None });
+            last.cache_control = Some(CacheControl {
+                kind: "ephemeral",
+                ttl: None,
+            });
         }
     }
     tools
@@ -361,7 +370,9 @@ fn convert_messages(messages: Vec<Message>) -> (Option<AnSystem>, Vec<AnMessage>
             }
             Message::Assistant {
                 content,
-                tool_calls, reasoning_content: _ } => {
+                tool_calls,
+                reasoning_content: _,
+            } => {
                 let mut blocks: Vec<AnContentBlock> = Vec::new();
                 if let Some(text) = content {
                     if !text.is_empty() {
@@ -380,7 +391,9 @@ fn convert_messages(messages: Vec<Message>) -> (Option<AnSystem>, Vec<AnMessage>
                     // but emitting "" lets us round-trip and the model
                     // never sees it because we'd skip turns like this
                     // upstream anyway.
-                    blocks.push(AnContentBlock::Text { text: String::new() });
+                    blocks.push(AnContentBlock::Text {
+                        text: String::new(),
+                    });
                 }
                 out.push(AnMessage {
                     role: "assistant",
@@ -507,7 +520,9 @@ impl AnthropicResponse {
         Ok(ChatResponse {
             message: Message::Assistant {
                 content,
-                tool_calls, reasoning_content: None },
+                tool_calls,
+                reasoning_content: None,
+            },
             finish_reason,
         })
     }
@@ -720,7 +735,9 @@ impl StreamAccumulator {
                 self.blocks[index] = match content_block {
                     BlockStart::Text { text } => BlockBuilder::Text { text },
                     BlockStart::ToolUse { id, name, input } => {
-                        let partial_input = if input.is_null() || input.is_object() && input.as_object().is_some_and(|o| o.is_empty()) {
+                        let partial_input = if input.is_null()
+                            || input.is_object() && input.as_object().is_some_and(|o| o.is_empty())
+                        {
                             String::new()
                         } else {
                             input.to_string()
@@ -834,7 +851,9 @@ impl StreamAccumulator {
         LlmChunk::Finish {
             message: Message::Assistant {
                 content,
-                tool_calls, reasoning_content: None },
+                tool_calls,
+                reasoning_content: None,
+            },
             finish_reason,
         }
     }
@@ -858,10 +877,7 @@ mod tests {
 
     #[test]
     fn convert_pulls_system_to_top_level() {
-        let messages = vec![
-            Message::system("you are jarvis"),
-            Message::user("hi"),
-        ];
+        let messages = vec![Message::system("you are jarvis"), Message::user("hi")];
         let (system, msgs) = convert_messages(messages);
         assert_eq!(system_text(&system), "you are jarvis");
         assert_eq!(msgs.len(), 1);
@@ -915,8 +931,16 @@ mod tests {
             Message::Assistant {
                 content: None,
                 tool_calls: vec![
-                    ToolCall { id: "a".into(), name: "x".into(), arguments: json!({}) },
-                    ToolCall { id: "b".into(), name: "y".into(), arguments: json!({}) },
+                    ToolCall {
+                        id: "a".into(),
+                        name: "x".into(),
+                        arguments: json!({}),
+                    },
+                    ToolCall {
+                        id: "b".into(),
+                        name: "y".into(),
+                        arguments: json!({}),
+                    },
                 ],
                 reasoning_content: None,
             },
@@ -958,7 +982,9 @@ mod tests {
         match resp.message {
             Message::Assistant {
                 content,
-                tool_calls, reasoning_content: _ } => {
+                tool_calls,
+                reasoning_content: _,
+            } => {
                 assert_eq!(content.as_deref(), Some("before after"));
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].arguments, json!({"text": "hi"}));
@@ -971,7 +997,9 @@ mod tests {
     #[test]
     fn stream_accumulates_text_blocks() {
         let mut acc = StreamAccumulator::default();
-        let _ = acc.ingest(parse(json!({"type":"message_start","message":{}}))).unwrap();
+        let _ = acc
+            .ingest(parse(json!({"type":"message_start","message":{}})))
+            .unwrap();
         let _ = acc
             .ingest(parse(json!({
                 "type": "content_block_start",
@@ -993,7 +1021,9 @@ mod tests {
                 "delta": { "type": "text_delta", "text": "lo" }
             })))
             .unwrap();
-        let _ = acc.ingest(parse(json!({"type":"content_block_stop","index":0}))).unwrap();
+        let _ = acc
+            .ingest(parse(json!({"type":"content_block_stop","index":0})))
+            .unwrap();
         let _ = acc
             .ingest(parse(json!({
                 "type": "message_delta",
@@ -1006,10 +1036,17 @@ mod tests {
         assert!(matches!(r1.as_slice(), [LlmChunk::ContentDelta(s)] if s == "Hel"));
         assert!(matches!(r2.as_slice(), [LlmChunk::ContentDelta(s)] if s == "lo"));
         match &r3[..] {
-            [LlmChunk::Finish { message, finish_reason }] => {
+            [LlmChunk::Finish {
+                message,
+                finish_reason,
+            }] => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {
-                    Message::Assistant { content, tool_calls, reasoning_content: _ } => {
+                    Message::Assistant {
+                        content,
+                        tool_calls,
+                        reasoning_content: _,
+                    } => {
                         assert_eq!(content.as_deref(), Some("Hello"));
                         assert!(tool_calls.is_empty());
                     }
@@ -1039,7 +1076,9 @@ mod tests {
                 })))
                 .unwrap();
         }
-        let _ = acc.ingest(parse(json!({"type":"content_block_stop","index":0}))).unwrap();
+        let _ = acc
+            .ingest(parse(json!({"type":"content_block_stop","index":0})))
+            .unwrap();
         let _ = acc
             .ingest(parse(json!({
                 "type": "message_delta",
@@ -1050,7 +1089,10 @@ mod tests {
         let r = acc.ingest(parse(json!({"type":"message_stop"}))).unwrap();
 
         match &r[..] {
-            [LlmChunk::Finish { message, finish_reason }] => {
+            [LlmChunk::Finish {
+                message,
+                finish_reason,
+            }] => {
                 assert!(matches!(finish_reason, FinishReason::ToolCalls));
                 match message {
                     Message::Assistant { tool_calls, .. } => {
@@ -1130,7 +1172,10 @@ mod tests {
         );
         let v = serde_json::to_value(&req).unwrap();
         let arr = v["system"].as_array().expect("blocks");
-        assert_eq!(arr[0]["cache_control"], json!({ "type": "ephemeral", "ttl": "1h" }));
+        assert_eq!(
+            arr[0]["cache_control"],
+            json!({ "type": "ephemeral", "ttl": "1h" })
+        );
     }
 
     #[test]

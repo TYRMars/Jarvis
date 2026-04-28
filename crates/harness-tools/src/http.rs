@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use harness_core::{BoxError, Tool};
+use harness_core::{BoxError, Tool, ToolCategory};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -14,7 +14,10 @@ pub struct HttpFetchTool {
 
 impl HttpFetchTool {
     pub fn new(max_bytes: usize) -> Self {
-        Self { client: reqwest::Client::new(), max_bytes }
+        Self {
+            client: reqwest::Client::new(),
+            max_bytes,
+        }
     }
 
     pub fn with_client(client: reqwest::Client, max_bytes: usize) -> Self {
@@ -31,6 +34,20 @@ impl Tool for HttpFetchTool {
     fn description(&self) -> &str {
         "Fetch an HTTP(S) URL. Returns status, response headers, and body. \
          Supports GET and POST. Body is truncated if very large."
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Network
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        let method = args
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("GET");
+        args.get("url")
+            .and_then(Value::as_str)
+            .map(|u| format!("{method} {u}"))
     }
 
     fn parameters(&self) -> Value {
@@ -84,11 +101,9 @@ impl Tool for HttpFetchTool {
                 let name: HeaderName = k
                     .parse()
                     .map_err(|e| -> BoxError { format!("bad header name `{k}`: {e}").into() })?;
-                let val = v
-                    .as_str()
-                    .ok_or_else(|| -> BoxError {
-                        format!("header `{k}` must be a string").into()
-                    })?;
+                let val = v.as_str().ok_or_else(|| -> BoxError {
+                    format!("header `{k}` must be a string").into()
+                })?;
                 let val = HeaderValue::from_str(val)
                     .map_err(|e| -> BoxError { format!("bad header value: {e}").into() })?;
                 map.insert(name, val);

@@ -300,13 +300,13 @@ impl GoogleRequest {
                 }),
                 Message::Assistant {
                     content,
-                    tool_calls, reasoning_content: _ } => {
+                    tool_calls,
+                    reasoning_content: _,
+                } => {
                     let mut parts: Vec<GePart> = Vec::new();
                     if let Some(text) = content {
                         if !text.is_empty() {
-                            parts.push(GePart::Text {
-                                text: text.clone(),
-                            });
+                            parts.push(GePart::Text { text: text.clone() });
                         }
                     }
                     for tc in tool_calls {
@@ -369,9 +369,7 @@ impl GoogleRequest {
 
         let system_instruction = (!system_text.is_empty()).then(|| GeContent {
             role: None,
-            parts: vec![GePart::Text {
-                text: system_text,
-            }],
+            parts: vec![GePart::Text { text: system_text }],
         });
 
         let tools = if r.tools.is_empty() {
@@ -527,7 +525,9 @@ impl GoogleResponse {
         Ok(ChatResponse {
             message: Message::Assistant {
                 content,
-                tool_calls, reasoning_content: None },
+                tool_calls,
+                reasoning_content: None,
+            },
             finish_reason,
         })
     }
@@ -631,7 +631,9 @@ impl StreamAccumulator {
         out.push(LlmChunk::Finish {
             message: Message::Assistant {
                 content,
-                tool_calls, reasoning_content: None },
+                tool_calls,
+                reasoning_content: None,
+            },
             finish_reason,
         });
         out
@@ -659,26 +661,17 @@ mod tests {
 
     #[test]
     fn convert_pulls_system_to_system_instruction() {
-        let r = req_with(vec![
-            Message::system("you are jarvis"),
-            Message::user("hi"),
-        ]);
+        let r = req_with(vec![Message::system("you are jarvis"), Message::user("hi")]);
         let body = GoogleRequest::from_request(&r);
         let v = body_value(&body);
-        assert_eq!(
-            v["systemInstruction"]["parts"][0]["text"],
-            "you are jarvis"
-        );
+        assert_eq!(v["systemInstruction"]["parts"][0]["text"], "you are jarvis");
         assert_eq!(v["contents"].as_array().unwrap().len(), 1);
         assert_eq!(v["contents"][0]["role"], "user");
     }
 
     #[test]
     fn convert_uses_model_role_for_assistant() {
-        let r = req_with(vec![
-            Message::user("hi"),
-            Message::assistant_text("hello"),
-        ]);
+        let r = req_with(vec![Message::user("hi"), Message::assistant_text("hello")]);
         let body = GoogleRequest::from_request(&r);
         let v = body_value(&body);
         assert_eq!(v["contents"][1]["role"], "model");
@@ -784,7 +777,9 @@ mod tests {
         match resp.message {
             Message::Assistant {
                 content,
-                tool_calls, reasoning_content: _ } => {
+                tool_calls,
+                reasoning_content: _,
+            } => {
                 assert_eq!(content.as_deref(), Some("thinking..."));
                 assert_eq!(tool_calls.len(), 1);
                 // Synthesised id format.
@@ -881,7 +876,9 @@ mod tests {
                 match message {
                     Message::Assistant {
                         content,
-                        tool_calls, reasoning_content: _ } => {
+                        tool_calls,
+                        reasoning_content: _,
+                    } => {
                         assert_eq!(content.as_deref(), Some("Hello world"));
                         assert!(tool_calls.is_empty());
                     }
@@ -975,7 +972,9 @@ mod tests {
                 match message {
                     Message::Assistant {
                         content,
-                        tool_calls, reasoning_content: _ } => {
+                        tool_calls,
+                        reasoning_content: _,
+                    } => {
                         assert_eq!(content.as_deref(), Some("thinking..."));
                         assert_eq!(tool_calls.len(), 1);
                     }
@@ -999,7 +998,9 @@ mod tests {
                 match message {
                     Message::Assistant {
                         content,
-                        tool_calls, reasoning_content: _ } => {
+                        tool_calls,
+                        reasoning_content: _,
+                    } => {
                         assert!(content.is_none());
                         assert!(tool_calls.is_empty());
                     }
