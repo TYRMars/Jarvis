@@ -50,6 +50,7 @@ pub fn router(state: AppState) -> Router {
         .merge(permissions::router())
         .merge(workspace_diff::router())
         .merge(crate::mcp_routes::router())
+        .merge(crate::skill_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .with_state(state)
@@ -465,6 +466,15 @@ enum WsClientMessage {
     /// sending a `User` frame with the same content; kept as a
     /// distinct frame so the client can label the bubble.
     RefinePlan { feedback: String },
+    /// Activate a skill on this socket. Subsequent agent turns
+    /// prepend the skill's body to the system prompt. Idempotent —
+    /// activating an already-active skill is a no-op. Server replies
+    /// with `skill_activated { name, active: [..] }` (or an `error`
+    /// frame if the catalogue / name is missing).
+    ActivateSkill { name: String },
+    /// Deactivate a skill on this socket. No-op if the skill wasn't
+    /// active. Server replies with `skill_deactivated`.
+    DeactivateSkill { name: String },
 }
 
 /// Static label for a `WsClientMessage` variant — used by the
@@ -485,6 +495,8 @@ fn client_msg_kind(msg: &WsClientMessage) -> &'static str {
         WsClientMessage::SetMode { .. } => "set_mode",
         WsClientMessage::AcceptPlan { .. } => "accept_plan",
         WsClientMessage::RefinePlan { .. } => "refine_plan",
+        WsClientMessage::ActivateSkill { .. } => "activate_skill",
+        WsClientMessage::DeactivateSkill { .. } => "deactivate_skill",
     }
 }
 
@@ -536,6 +548,48 @@ fn leading_system_count(messages: &[Message]) -> usize {
 
 async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_ws(socket, state))
+}
+
+/// Compose a per-turn system prompt by prepending the bodies of
+/// the currently-active skills to the template. Each skill is wrapped
+/// in a fenced header so the model can tell injected guidance from
+/// its own template:
+///
+/// ```text
+/// === skill: code-review ===
+/// <skill body>
+/// === /skill ===
+/// ```
+///
+/// Returns `None` when the catalogue is absent or no active skill
+/// resolved to a known entry — leaves `cfg.system_prompt` alone.
+fn compose_with_skills(
+    template: Option<&str>,
+    catalog: Option<&Arc<harness_skill::SkillCatalog>>,
+    active_names: &[String],
+) -> Option<String> {
+    let cat = catalog?;
+    let mut bodies: Vec<String> = Vec::new();
+    for name in active_names {
+        if let Some(entry) = cat.get(name) {
+            if entry.body.trim().is_empty() {
+                continue;
+            }
+            bodies.push(format!(
+                "=== skill: {name} ===\n{}\n=== /skill ===",
+                entry.body.trim_end()
+            ));
+        }
+    }
+    if bodies.is_empty() {
+        return None;
+    }
+    let prefix = bodies.join("\n\n");
+    let composed = match template {
+        Some(t) if !t.is_empty() => format!("{prefix}\n\n{t}"),
+        _ => prefix,
+    };
+    Some(composed)
 }
 
 async fn handle_ws(socket: WebSocket, state: AppState) {
@@ -596,6 +650,12 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // turn by `User { model, provider }`.
     let mut sticky_provider: Option<String> = None;
     let mut sticky_model: Option<String> = None;
+    // Per-socket skill activation. Each entry is a skill `name` from
+    // the catalogue; the agent's per-turn `build_agent_with`
+    // closure looks each one up and prepends its body to the
+    // system prompt. Order is insertion order so the model sees
+    // them in the same order the user activated them.
+    let mut active_skills: Vec<String> = Vec::new();
 
     // Tell the client the initial mode so it can render the badge
     // before any user interaction. Always sent; even when no
@@ -650,6 +710,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     &mut current_task,
                     &mut sticky_provider,
                     &mut sticky_model,
+                    &mut active_skills,
                     &hitl_tx,
                 )
                 .await
@@ -781,6 +842,7 @@ async fn handle_client_frame(
     current_task: &mut Option<tokio::task::JoinHandle<()>>,
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
+    active_skills: &mut Vec<String>,
     hitl_tx: &mpsc::Sender<PendingHitl>,
 ) -> bool {
     let text = match msg {
@@ -874,11 +936,20 @@ async fn handle_client_frame(
             // so. Done per-turn (not once at socket open) so a mid-
             // session `set_mode` flip takes effect on the next message.
             let active_mode = *mode_handle.read().await;
+            let skills_snapshot = active_skills.clone();
+            let skills_catalog = state.skills.as_ref().cloned();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) = compose_with_skills(
+                    cfg.system_prompt.as_deref(),
+                    skills_catalog.as_ref(),
+                    &skills_snapshot,
+                ) {
+                    cfg.system_prompt = Some(prompt);
                 }
             }) {
                 Ok(a) => a,
@@ -1169,11 +1240,20 @@ async fn handle_client_frame(
             let approver = socket_approver.clone();
             let hitl = hitl_tx.clone();
             let active_mode = *mode_handle.read().await;
+            let skills_snapshot = active_skills.clone();
+            let skills_catalog = state.skills.as_ref().cloned();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) = compose_with_skills(
+                    cfg.system_prompt.as_deref(),
+                    skills_catalog.as_ref(),
+                    &skills_snapshot,
+                ) {
+                    cfg.system_prompt = Some(prompt);
                 }
             }) {
                 Ok(a) => a,
@@ -1294,11 +1374,20 @@ async fn handle_client_frame(
             // arm. We rebuild on each turn so per-socket mode is
             // honoured even if the user just toggled it.
             let active_mode = *mode_handle.read().await;
+            let skills_snapshot = active_skills.clone();
+            let skills_catalog = state.skills.as_ref().cloned();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) = compose_with_skills(
+                    cfg.system_prompt.as_deref(),
+                    skills_catalog.as_ref(),
+                    &skills_snapshot,
+                ) {
+                    cfg.system_prompt = Some(prompt);
                 }
             }) {
                 Ok(a) => a,
@@ -1338,6 +1427,45 @@ async fn handle_client_frame(
                 }
             });
             *current_task = Some(handle);
+        }
+        WsClientMessage::ActivateSkill { name } => {
+            let Some(catalog) = state.skills.as_ref() else {
+                send_error(ws_tx, "skill catalogue not configured").await;
+                return true;
+            };
+            if catalog.get(&name).is_none() {
+                send_error(ws_tx, &format!("no such skill `{name}`")).await;
+                return true;
+            }
+            if !active_skills.iter().any(|n| n == &name) {
+                active_skills.push(name.clone());
+            }
+            let _ = ws_tx
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "skill_activated",
+                        "name": name,
+                        "active": &*active_skills,
+                    })
+                    .to_string(),
+                ))
+                .await;
+        }
+        WsClientMessage::DeactivateSkill { name } => {
+            let before = active_skills.len();
+            active_skills.retain(|n| n != &name);
+            let removed = active_skills.len() != before;
+            let _ = ws_tx
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "skill_deactivated",
+                        "name": name,
+                        "removed": removed,
+                        "active": &*active_skills,
+                    })
+                    .to_string(),
+                ))
+                .await;
         }
     }
     true

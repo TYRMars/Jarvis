@@ -30,6 +30,7 @@ mod login;
 mod mcp_cli;
 mod project_cmd;
 mod serve;
+mod skill_cli;
 mod status;
 
 #[cfg(test)]
@@ -133,6 +134,11 @@ enum Cmd {
         #[command(subcommand)]
         action: mcp_cli::McpAction,
     },
+    /// Inspect the running server's skill catalogue.
+    Skill {
+        #[command(subcommand)]
+        action: skill_cli::SkillAction,
+    },
 }
 
 #[derive(Args, Debug, Default)]
@@ -222,6 +228,7 @@ async fn main() -> Result<()> {
         Cmd::Workspace { workspace, json } => serve::run_workspace(cfg, workspace, json).await,
         Cmd::Project { cmd } => project_cmd::run(cfg, cmd).await,
         Cmd::Mcp { action } => mcp_cli::run(action, cfg.as_ref()).await,
+        Cmd::Skill { action } => skill_cli::run(action, cfg.as_ref()).await,
     }
 }
 

@@ -123,6 +123,12 @@ export function handleFrame(ev: any): void {
     case "plan_proposed":
       store.setProposedPlan((ev as any).plan ?? "");
       break;
+    case "skill_activated":
+    case "skill_deactivated": {
+      const active = ((ev as any).active ?? []) as string[];
+      store.setActiveSkills?.(active);
+      break;
+    }
     default:
       console.warn("unknown frame", ev);
   }

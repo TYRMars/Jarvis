@@ -24,7 +24,10 @@ use harness_mcp::{
     serve_registry_stdio, McpClientConfig, McpManager, McpTransport,
 };
 use harness_memory::{SlidingWindowMemory, SummarizingMemory};
-use harness_server::{serve, AppState, PermissionMode, ProviderRegistry, ServerInfo};
+use harness_server::{
+    default_skill_roots, serve, AppState, PermissionMode, ProviderRegistry, ServerInfo,
+};
+use harness_skill::SkillCatalog;
 use harness_tools::{register_builtins, BuiltinsConfig, Sandbox, ShellLimits};
 use tracing::info;
 
@@ -246,10 +249,23 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         "permission store ready",
     );
 
+    // Build the skill catalogue. Roots: user-scope ($XDG_CONFIG_HOME/
+    // jarvis/skills, override via $JARVIS_SKILLS_DIR), workspace-scope
+    // (<root>/.jarvis/skills). Loading is silent on missing dirs;
+    // malformed SKILL.md files warn and skip.
+    let user_skills_dir = std::env::var_os("JARVIS_SKILLS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs_user_config().ok().map(|d| d.join("skills")));
+    let workspace_skills_dir = Some(workspace_root.join(".jarvis").join("skills"));
+    let skill_roots = default_skill_roots(user_skills_dir, workspace_skills_dir);
+    let skill_catalog = Arc::new(SkillCatalog::load(skill_roots));
+    info!(skills = skill_catalog.len(), "skill catalog loaded");
+
     let mut state = AppState::from_registry(registry, agent_cfg)
         .with_workspace_root(workspace_root)
         .with_tools(Arc::clone(&canonical_tools))
-        .with_mcp(Arc::clone(&mcp_manager));
+        .with_mcp(Arc::clone(&mcp_manager))
+        .with_skills(Arc::clone(&skill_catalog));
     if let Some(s) = store {
         state = state.with_store(s);
     }

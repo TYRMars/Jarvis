@@ -436,9 +436,15 @@ interface AppStoreActions {
   /// Plan proposed by the agent (Plan Mode) waiting for user accept.
   /// Cleared when the user accepts or refines.
   proposedPlan: string | null;
+  /// Skill names currently active on this WS session. Mirrored from
+  /// the server's `skill_activated` / `skill_deactivated` frames so
+  /// every component (Settings tab, future header chip) sees the
+  /// same source of truth. Empty until the user toggles one.
+  activeSkills: string[];
   setPermissionMode: (mode: "ask" | "accept-edits" | "plan" | "auto" | "bypass") => void;
   bumpPermissionRulesVersion?: () => void;
   setProposedPlan: (plan: string | null) => void;
+  setActiveSkills?: (names: string[]) => void;
 
   // ---- Workspace diff (right-rail review card) ----
   /// `null` = not fetched yet; `"unavailable"` = server returned 503
@@ -493,7 +499,10 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   workspaceRailOpen: initialWorkspaceRailOpen(),
   planCardOpen: initialPlanCardOpen(),
   workspacePanelVisible: {
+    preview: initialWorkspacePanel("preview"),
     diff: initialWorkspacePanel("diff"),
+    terminal: initialWorkspacePanel("terminal"),
+    files: initialWorkspacePanel("files"),
     tasks: initialWorkspacePanel("tasks"),
     plan: initialWorkspacePanel("plan"),
     changeReport: initialWorkspacePanel("changeReport"),
@@ -522,6 +531,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   permissionMode: "ask",
   permissionRulesVersion: 0,
   proposedPlan: null,
+  activeSkills: [],
   workspaceDiff: null,
   workspaceDiffLoading: false,
   workspaceDiffFileCache: {},
@@ -1135,6 +1145,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   bumpPermissionRulesVersion: () =>
     set((s) => ({ permissionRulesVersion: s.permissionRulesVersion + 1 })),
   setProposedPlan: (plan) => set({ proposedPlan: plan }),
+  setActiveSkills: (names) => set({ activeSkills: names }),
   setWorkspaceDiff: (workspaceDiff) =>
     set({ workspaceDiff, workspaceDiffFileCache: {} }),
   setWorkspaceDiffLoading: (workspaceDiffLoading) => set({ workspaceDiffLoading }),

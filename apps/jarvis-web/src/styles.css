@@ -75,7 +75,7 @@
   --fs-22: 20px;
   --fs-menu: 14px;
   --sidebar-width: 328px;
-  --rail-width: 360px;
+  --rail-width: 540px;
   --content-width: 860px;
   --composer-width: 860px;
   --surface-hover: var(--panel-hover);
@@ -3423,113 +3423,33 @@ body.workspace-rail-closed #workspace-rail {
 .workspace-rail-shell {
   display: flex;
   flex-direction: column;
-  gap: 10px;
   width: 100%;
   min-width: 0;
   min-height: 0;
   height: 100%;
+  container-type: inline-size;
 }
-
-.workspace-rail-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 48px;
-  padding: 10px 10px 9px 12px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.workspace-rail-heading {
-  min-width: 0;
-}
-
-.workspace-rail-kicker {
-  display: block;
-  overflow: hidden;
-  color: var(--text-soft);
-  font-size: var(--fs-11);
-  font-weight: 650;
-  line-height: 1.1;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.workspace-rail-heading h2 {
-  margin: 2px 0 0;
-  overflow: hidden;
-  color: var(--text);
-  font-size: var(--fs-15);
-  font-weight: 700;
-  line-height: 1.15;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-rail-tabs {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-  overflow-x: auto;
-  padding: 0 1px 1px;
-  scrollbar-width: none;
-}
-
-.workspace-rail-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.workspace-rail-tab {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  height: 24px;
-  max-width: 138px;
-  padding: 0 9px;
-  overflow: hidden;
-  color: var(--text-muted);
-  background: var(--panel-raised);
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  font-size: var(--fs-12);
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-rail-tab.rail-ws-diff { color: var(--accent-blue); }
-.workspace-rail-tab.rail-change-report { color: var(--purple); }
-.workspace-rail-tab.rail-tasks { color: var(--accent); }
-.workspace-rail-tab.rail-plan { color: var(--accent-green); }
 
 .workspace-rail-stack {
   flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 1px;
 }
 
+.workspace-rail-stack.count-1 {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .rail-card {
-  /* Size to content. `flex: 0 0 auto` so the card neither stretches
-   * (would create awkward empty space at the bottom) nor shrinks
-   * (would cut content). The internal scroll on .rail-card-body
-   * caps any one card from running off the screen. */
-  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  /* Cap: a single card can't take more than ~70 % of the viewport
-   * height. When content exceeds this, the body scrolls. Plenty of
-   * room for normal use; bounded enough that 4 open panels don't
-   * stack into a multi-screen wall. */
-  max-height: 70vh;
+  min-width: 0;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
   background: var(--panel);
@@ -3538,14 +3458,16 @@ body.workspace-rail-closed #workspace-rail {
   box-shadow: 0 1px 0 rgba(27, 26, 24, 0.03);
 }
 
-/* When the rail has only one panel open, let it grow to fill the
- * full available height instead of capping at 70vh — there's no
- * sibling to share with, so the cap leaves dead space at the
- * bottom. The internal `.rail-card-body` overflow keeps content
- * scrollable when it exceeds the viewport. */
-.workspace-rail-stack > .rail-card:only-child {
-  flex: 1 1 auto;
-  max-height: 100%;
+@container (min-width: 520px) {
+  .workspace-rail-stack.count-2,
+  .workspace-rail-stack.count-3,
+  .workspace-rail-stack.count-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace-rail-stack.count-3 > .rail-card:first-child {
+    grid-row: span 2;
+  }
 }
 
 .rail-card-body {
@@ -3566,9 +3488,9 @@ body.workspace-rail-closed #workspace-rail {
   justify-content: space-between;
   gap: 10px;
   flex: 0 0 auto;
-  min-height: 50px;
-  padding: 10px 10px 9px 14px;
-  background: color-mix(in srgb, var(--panel-raised) 54%, var(--panel));
+  min-height: 45px;
+  padding: 9px 9px 8px 13px;
+  background: color-mix(in srgb, var(--panel-raised) 28%, var(--panel));
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -3628,6 +3550,173 @@ body.workspace-rail-closed #workspace-rail {
 .rail-card.rail-change-report { --rail-accent: var(--purple); }
 .rail-card.rail-tasks { --rail-accent: var(--accent); }
 .rail-card.rail-plan { --rail-accent: var(--accent-green); }
+.rail-card.rail-preview { --rail-accent: var(--accent); }
+.rail-card.rail-terminal { --rail-accent: var(--text-soft); }
+.rail-card.rail-files { --rail-accent: var(--accent-blue); }
+
+.preview-surface {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  height: 100%;
+  min-height: 260px;
+  color: var(--text-muted);
+  background: var(--panel);
+}
+
+.preview-pixel-mascot {
+  position: relative;
+  width: 60px;
+  height: 42px;
+}
+
+.preview-pixel-mascot::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 7px;
+  width: 36px;
+  height: 26px;
+  background: #d87948;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+
+.preview-pixel-mascot span {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  background: #22150f;
+  z-index: 1;
+}
+
+.preview-pixel-mascot span:nth-child(1) { left: 22px; top: 13px; }
+.preview-pixel-mascot span:nth-child(2) { left: 38px; top: 13px; }
+.preview-pixel-mascot span:nth-child(3) { left: 5px; top: 17px; width: 12px; background: #d87948; }
+.preview-pixel-mascot span:nth-child(4) { right: 5px; top: 17px; width: 12px; background: #d87948; }
+.preview-pixel-mascot span:nth-child(5) { left: 19px; top: 33px; width: 22px; background: #d87948; box-shadow: 13px 0 0 #d87948; }
+
+.preview-loading-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--fs-14);
+}
+
+.preview-spinner {
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--border);
+  border-top-color: var(--text-soft);
+  border-radius: 999px;
+  animation: spin 0.9s linear infinite;
+}
+
+.terminal-surface {
+  height: 100%;
+  min-height: 180px;
+  padding: 15px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+}
+
+.terminal-muted {
+  color: var(--text-soft);
+}
+
+.terminal-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  border: 1px solid var(--accent-blue);
+  border-radius: 2px;
+}
+
+.files-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 10px;
+}
+
+.files-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  color: var(--text-soft);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.files-search input {
+  min-width: 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-size: var(--fs-14);
+}
+
+.files-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.files-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  color: var(--text-muted);
+  border-radius: 6px;
+  font-size: var(--fs-14);
+}
+
+.files-row:hover {
+  color: var(--text);
+  background: var(--panel-hover);
+}
+
+.files-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-row em {
+  color: var(--text-soft);
+  font-style: normal;
+  font-size: var(--fs-12);
+}
+
+.files-chevron,
+.files-folder {
+  color: var(--text-soft);
+}
+
+.files-empty {
+  padding: 10px 2px;
+  color: var(--text-soft);
+  font-size: var(--fs-13);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .workspace-panel-menu-wrap {
   position: relative;
@@ -7447,4 +7536,96 @@ select.settings-input {
 .settings-form-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* ---- Skills section ---- */
+.settings-skill-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-skill-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-skill-item.active {
+  border-color: color-mix(in srgb, #2563eb 50%, transparent);
+  background: color-mix(in srgb, #2563eb 6%, var(--panel));
+}
+
+.settings-skill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-skill-summary {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.settings-skill-toggle {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-soft);
+  flex-shrink: 0;
+}
+
+.settings-skill-toggle[aria-pressed="true"] {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}
+
+.settings-skill-name {
+  font-size: 13px;
+}
+
+.settings-skill-desc {
+  font-size: 12px;
+  color: var(--text-soft);
+  margin-top: 2px;
+}
+
+.settings-skill-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px 12px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.settings-skill-body {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--panel-hover);
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.settings-skill-body.error {
+  color: #b91c1c;
 }

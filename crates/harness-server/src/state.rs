@@ -6,6 +6,7 @@ use harness_core::{
     ProjectStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
+use harness_skill::SkillCatalog;
 
 use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
 
@@ -111,6 +112,11 @@ pub struct AppState {
     /// shares this struct's [`tools`](Self::tools) handle so
     /// modifications are visible to the next per-request snapshot.
     pub mcp: Option<Arc<McpManager>>,
+    /// Optional skill catalogue. Loaded once at startup from
+    /// per-user + per-workspace SKILL.md trees. Read by the
+    /// `/v1/skills*` routes and by per-socket activation logic that
+    /// prepends a skill's body to the system prompt.
+    pub skills: Option<Arc<SkillCatalog>>,
 }
 
 impl AppState {
@@ -130,6 +136,7 @@ impl AppState {
             default_permission_mode: PermissionMode::default(),
             tools: Arc::new(RwLock::new(seed)),
             mcp: None,
+            skills: None,
         }
     }
 
@@ -154,6 +161,7 @@ impl AppState {
             default_permission_mode: PermissionMode::default(),
             tools: Arc::new(RwLock::new(seed)),
             mcp: None,
+            skills: None,
         }
     }
 
@@ -217,6 +225,14 @@ impl AppState {
     /// per-request snapshots.
     pub fn with_mcp(mut self, mcp: Arc<McpManager>) -> Self {
         self.mcp = Some(mcp);
+        self
+    }
+
+    /// Attach the loaded skill catalogue. The binary calls this
+    /// once at startup with `Arc::new(SkillCatalog::load(...))`;
+    /// the `/v1/skills*` routes return 503 until it's set.
+    pub fn with_skills(mut self, catalog: Arc<SkillCatalog>) -> Self {
+        self.skills = Some(catalog);
         self
     }
 

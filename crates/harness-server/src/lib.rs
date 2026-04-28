@@ -29,9 +29,12 @@ mod project_binder;
 mod projects;
 mod provider_registry;
 mod routes;
+mod skill_routes;
 mod state;
 mod ui;
 mod workspace_diff;
+
+pub use skill_routes::default_roots as default_skill_roots;
 
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
 pub use routes::router;

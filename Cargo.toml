@@ -6,6 +6,7 @@ members = [
     "crates/harness-mcp",
     "crates/harness-memory",
     "crates/harness-server",
+    "crates/harness-skill",
     "crates/harness-store",
     "crates/harness-tools",
     "apps/jarvis",
@@ -24,6 +25,7 @@ harness-llm = { path = "crates/harness-llm" }
 harness-mcp = { path = "crates/harness-mcp" }
 harness-memory = { path = "crates/harness-memory" }
 harness-server = { path = "crates/harness-server" }
+harness-skill = { path = "crates/harness-skill" }
 harness-store = { path = "crates/harness-store" }
 harness-tools = { path = "crates/harness-tools" }
 
@@ -44,6 +46,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 tempfile = "3"
+serde_yaml = "0.9"
 rmcp = { version = "1.5", default-features = false, features = ["server", "client", "transport-io", "transport-child-process", "macros"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros"] }
 regex = "1"
