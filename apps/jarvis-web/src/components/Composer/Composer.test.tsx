@@ -55,6 +55,10 @@ describe("Composer paste folding", () => {
   });
 
   it("submit expands placeholder back to full content in the WS frame", () => {
+    // An activeId is set so the submit path skips the
+    // auto-`new` frame the Composer fires for fresh persisted
+    // sessions — that path is exercised by its own test below.
+    act(() => useAppStore.getState().setActiveId("test-active"));
     mount();
     const ta = screen.getByPlaceholderText(/Type/i);
     const big = "y".repeat(3000);
@@ -96,7 +100,10 @@ describe("Composer paste folding", () => {
     // Regression for the stale-closure bug: `inFlight` from a
     // selector capture stays `false` until React re-renders, so a
     // double-fire (Enter autorepeat / fast double-click) used to
-    // push two user messages and two `user` frames.
+    // push two user messages and two `user` frames. Active id is
+    // set so the auto-`new` frame doesn't run; this test is about
+    // the inFlight gate, not new-conversation creation.
+    act(() => useAppStore.getState().setActiveId("test-active"));
     mount();
     act(() => useAppStore.getState().setComposerValue("hello"));
     const form = screen.getByPlaceholderText(/Type/i).closest("form")!;
@@ -106,5 +113,24 @@ describe("Composer paste folding", () => {
     expect(sendMock).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().messages.filter((m) => m.kind === "user")).toHaveLength(1);
     expect(useAppStore.getState().inFlight).toBe(true);
+  });
+
+  it("first submit on a fresh persisted session emits new + user frames", () => {
+    // Production behaviour: when `persistEnabled && !activeId`,
+    // the Composer fires a `new` frame to spin up the persisted
+    // row before the user message lands. Verifies the auto-create
+    // path the failing CI surfaced when this case wasn't covered.
+    act(() => useAppStore.getState().setActiveId(null));
+    mount();
+    act(() => useAppStore.getState().setComposerValue("hello"));
+    fireEvent.submit(
+      screen.getByPlaceholderText(/Type/i).closest("form")!,
+    );
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(sendMock.mock.calls[0][0]).toMatchObject({ type: "new" });
+    expect(sendMock.mock.calls[1][0]).toMatchObject({
+      type: "user",
+      content: "hello",
+    });
   });
 });
