@@ -3,17 +3,17 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
-    Router,
     extract::{
-        State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+        Query, State,
     },
     http::StatusCode,
     response::{
-        IntoResponse, Json, Response,
         sse::{Event, KeepAlive, Sse},
+        IntoResponse, Json, Response,
     },
     routing::{get, post},
+    Router,
 };
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
@@ -22,7 +22,7 @@ use harness_core::{
     HitlResponse, HitlStatus, Message, PendingHitl, RunOutcome,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/providers", get(list_providers))
         .route("/v1/workspace", get(get_workspace))
+        .route("/v1/workspace/probe", get(probe_workspace))
         .route("/v1/server/info", get(get_server_info))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/chat/completions/stream", post(chat_completions_stream))
@@ -90,6 +91,37 @@ async fn get_workspace(State(state): State<AppState>) -> Response {
     };
     let snapshot = workspace_snapshot(root).await;
     Json(snapshot).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceProbeQuery {
+    path: String,
+}
+
+/// `GET /v1/workspace/probe?path=/repo` — inspect a candidate
+/// workspace without changing the server-wide startup root. This is
+/// intentionally read-only; the WS `set_workspace` / `new` frames
+/// are still the only places that pin a session workspace.
+async fn probe_workspace(Query(q): Query<WorkspaceProbeQuery>) -> Response {
+    let candidate = std::path::PathBuf::from(&q.path);
+    let resolved = match tokio::fs::canonicalize(&candidate).await {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("workspace `{}` is not reachable: {e}", q.path) })),
+            )
+                .into_response();
+        }
+    };
+    if !resolved.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("workspace `{}` is not a directory", resolved.display()) })),
+        )
+            .into_response();
+    }
+    Json(workspace_snapshot(&resolved).await).into_response()
 }
 
 /// `GET /v1/server/info` — runtime snapshot of the jarvis serve
@@ -1140,19 +1172,18 @@ async fn handle_client_frame(
                     // store has one. We canonicalize on the way in
                     // so a moved-since-last-time folder surfaces an
                     // error rather than silently falling back.
-                    let bound_workspace = state
-                        .workspaces
-                        .as_ref()
-                        .and_then(|s| s.lookup(&id));
+                    let bound_workspace = state.workspaces.as_ref().and_then(|s| s.lookup(&id));
                     if let Some(path_str) = bound_workspace.as_deref() {
                         match std::fs::canonicalize(path_str) {
                             Ok(p) if p.is_dir() => {
                                 *socket_workspace = Some(p.clone());
+                                let workspace_info = workspace_snapshot(&p).await;
                                 let _ = ws_tx
                                     .send(WsMessage::Text(
                                         json!({
                                             "type": "workspace_changed",
                                             "path": p.display().to_string(),
+                                            "workspace": workspace_info,
                                         })
                                         .to_string(),
                                     ))
@@ -1168,10 +1199,21 @@ async fn handle_client_frame(
                                     s.unbind(&id);
                                 }
                                 *socket_workspace = None;
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({ "type": "workspace_changed", "path": null })
+                                            .to_string(),
+                                    ))
+                                    .await;
                             }
                         }
                     } else {
                         *socket_workspace = None;
+                        let _ = ws_tx
+                            .send(WsMessage::Text(
+                                json!({ "type": "workspace_changed", "path": null }).to_string(),
+                            ))
+                            .await;
                     }
                     let _ = ws_tx
                         .send(WsMessage::Text(
@@ -1279,6 +1321,7 @@ async fn handle_client_frame(
             // error and aborts — we already saved the conversation
             // row, but the user's next attempt can use a different
             // path (the `started` echo isn't sent on this path).
+            let mut bound_workspace_info: Option<Value> = None;
             let bound_workspace = if let Some(raw) = workspace_path.as_deref() {
                 match std::fs::canonicalize(raw) {
                     Ok(p) if p.is_dir() => {
@@ -1288,6 +1331,7 @@ async fn handle_client_frame(
                             let _ = ws.touch(&path_str);
                             ws.bind(&new_id, &path_str);
                         }
+                        bound_workspace_info = Some(workspace_snapshot(&p).await);
                         Some(p.display().to_string())
                     }
                     Ok(p) => {
@@ -1315,6 +1359,7 @@ async fn handle_client_frame(
                         "id": new_id,
                         "project_id": resolved_project_id,
                         "workspace_path": bound_workspace,
+                        "workspace": bound_workspace_info,
                     })
                     .to_string(),
                 ))
@@ -1585,7 +1630,10 @@ async fn handle_client_frame(
                 send_error(ws_tx, "skill catalogue not configured").await;
                 return true;
             };
-            let known = catalog.read().map(|g| g.get(&name).is_some()).unwrap_or(false);
+            let known = catalog
+                .read()
+                .map(|g| g.get(&name).is_some())
+                .unwrap_or(false);
             if !known {
                 send_error(ws_tx, &format!("no such skill `{name}`")).await;
                 return true;
@@ -1635,11 +1683,8 @@ async fn handle_client_frame(
                     let resolved = match std::fs::canonicalize(&candidate) {
                         Ok(p) => p,
                         Err(e) => {
-                            send_error(
-                                ws_tx,
-                                &format!("workspace `{raw}` is not reachable: {e}"),
-                            )
-                            .await;
+                            send_error(ws_tx, &format!("workspace `{raw}` is not reachable: {e}"))
+                                .await;
                             return true;
                         }
                     };
@@ -1668,6 +1713,7 @@ async fn handle_client_frame(
                             json!({
                                 "type": "workspace_changed",
                                 "path": resolved.display().to_string(),
+                                "workspace": workspace_snapshot(&resolved).await,
                             })
                             .to_string(),
                         ))

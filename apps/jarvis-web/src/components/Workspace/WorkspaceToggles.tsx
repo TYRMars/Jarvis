@@ -142,14 +142,8 @@ export function CloseApprovalsButton() {
   );
 }
 
-/// Workspace "Panels" selector — Claude Code-style dropdown that
-/// lists every panel the user can show in the right rail. Live
-/// items (Diff / Tasks / Plan / Change report) toggle independent
-/// per-panel visibility flags via `setWorkspacePanelVisible`. Stub
-/// items (Preview / Terminal / Files) are rendered greyed-out so
-/// users can see what's planned without being able to click —
-/// keeps parity with the Claude Code menu reference and gives us
-/// a natural place to flip them on as features land.
+/// Workspace "Views" selector — Claude Code-style dropdown that
+/// lists every panel the user can show in the right rail.
 ///
 /// Click-outside closes via a document-level mousedown listener.
 export function WorkspacePanelMenu() {
@@ -169,26 +163,20 @@ export function WorkspacePanelMenu() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open, setOpen]);
 
-  // Order matches the Claude Code reference. Stubs are kept above
-  // working items intentionally — that's the order in their menu
-  // and also signals "these slots exist, they'll light up later".
-  const items: Array<
-    | { kind: "stub"; key: string; labelKey: string; fallback: string; icon: ReactNode }
-    | {
-        kind: "live";
-        key: import("../../store/persistence").WorkspacePanelKey;
-        labelKey: string;
-        fallback: string;
-        icon: ReactNode;
-      }
-  > = [
-    { kind: "stub", key: "preview",     labelKey: "panelPreview",   fallback: "Preview",   icon: <PlayIcon /> },
-    { kind: "live", key: "diff",        labelKey: "panelDiff",      fallback: "Diff",      icon: <DiffIcon /> },
-    { kind: "stub", key: "terminal",    labelKey: "panelTerminal",  fallback: "Terminal",  icon: <TerminalIcon /> },
-    { kind: "stub", key: "files",       labelKey: "panelFiles",     fallback: "Files",     icon: <FilesIcon /> },
-    { kind: "live", key: "tasks",       labelKey: "tasks",          fallback: "Tasks",     icon: <TasksIcon /> },
-    { kind: "live", key: "plan",        labelKey: "plan",           fallback: "Plan",      icon: <PlanIcon /> },
-    { kind: "live", key: "changeReport",labelKey: "changeReportTitle", fallback: "Change report", icon: <ChangeReportIcon /> },
+  const items: Array<{
+    key: import("../../store/persistence").WorkspacePanelKey;
+    labelKey: string;
+    fallback: string;
+    icon: ReactNode;
+    shortcut?: string;
+  }> = [
+    { key: "preview",      labelKey: "panelPreview",   fallback: "Preview",   icon: <PlayIcon />, shortcut: "⇧⌘P" },
+    { key: "diff",         labelKey: "panelDiff",      fallback: "Diff",      icon: <DiffIcon />, shortcut: "⇧⌘D" },
+    { key: "terminal",     labelKey: "panelTerminal",  fallback: "Terminal",  icon: <TerminalIcon />, shortcut: "^`" },
+    { key: "files",        labelKey: "panelFiles",     fallback: "Files",     icon: <FilesIcon />, shortcut: "⇧⌘F" },
+    { key: "tasks",        labelKey: "tasks",          fallback: "Tasks",     icon: <TasksIcon /> },
+    { key: "plan",         labelKey: "plan",           fallback: "Plan",      icon: <PlanIcon /> },
+    { key: "changeReport", labelKey: "changeReportTitle", fallback: "Change report", icon: <ChangeReportIcon /> },
   ];
 
   return (
@@ -197,8 +185,8 @@ export function WorkspacePanelMenu() {
         id="workspace-panel-menu-button"
         type="button"
         className="ghost-icon rail-icon"
-        title={t("panels") || "Panels"}
-        aria-label="Panels"
+        title={tx("views", "Views")}
+        aria-label={tx("views", "Views")}
         aria-haspopup="true"
         aria-expanded={open}
         onClick={(e) => {
@@ -217,22 +205,6 @@ export function WorkspacePanelMenu() {
         role="menu"
       >
         {items.map((item) => {
-          if (item.kind === "stub") {
-            return (
-              <button
-                key={item.key}
-                type="button"
-                className="workspace-panel-item is-disabled"
-                role="menuitem"
-                disabled
-                title={t("panelComingSoon") || "Coming soon"}
-              >
-                <span className="panel-menu-icon">{item.icon}</span>
-                <span className="panel-menu-label">{tx(item.labelKey, item.fallback)}</span>
-                <span className="panel-menu-shortcut" aria-hidden="true">·</span>
-              </button>
-            );
-          }
           const checked = visible[item.key];
           return (
             <button
@@ -245,7 +217,7 @@ export function WorkspacePanelMenu() {
             >
               <span className="panel-menu-icon">{item.icon}</span>
               <span className="panel-menu-label">{tx(item.labelKey, item.fallback)}</span>
-              <span className="panel-menu-check" aria-hidden="true">{checked ? "✓" : ""}</span>
+              <span className="panel-menu-shortcut" aria-hidden="true">{checked ? "✓" : item.shortcut || ""}</span>
             </button>
           );
         })}

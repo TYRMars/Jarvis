@@ -53,7 +53,7 @@ export function boot(): void {
 
   // 4. Sidebar / approval-rail width drag handles.
   installResize("resize-sidebar", "--sidebar-width", "jarvis.layout.sidebar", 200, 520);
-  installResize("resize-rail", "--rail-width", "jarvis.layout.rail", 240, 600, /*invert=*/ true);
+  installResize("resize-rail", "--rail-width", "jarvis.layout.rail", 320, 760, /*invert=*/ true);
 
   // 5. Network + WS — fire-and-forget; failures surface through the
   //    store's banner.

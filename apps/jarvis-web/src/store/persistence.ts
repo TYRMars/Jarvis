@@ -231,7 +231,7 @@ export function clearAllJarvisPrefs(): number {
 }
 
 export function initialWorkspaceRailOpen(): boolean {
-  return safeGet("jarvis.workspaceRailOpen") !== "false";
+  return safeGet("jarvis.workspaceRailOpen") === "true";
 }
 
 export function initialPlanCardOpen(): boolean {
@@ -239,7 +239,8 @@ export function initialPlanCardOpen(): boolean {
 }
 
 /// Per-panel visibility within the workspace rail. Each panel
-/// (`diff` / `tasks` / `plan` / `changeReport`) is independently
+/// (`preview` / `diff` / `terminal` / `files` / `tasks` / `plan` /
+/// `changeReport`) is independently
 /// togglable from the panel-selector dropdown, mirroring Claude
 /// Code's view menu.
 ///
@@ -249,10 +250,20 @@ export function initialPlanCardOpen(): boolean {
 /// the panel menu. Once enabled, each panel's visibility is
 /// remembered per-key in localStorage; users only have to enable
 /// what they care about once.
-export type WorkspacePanelKey = "diff" | "tasks" | "plan" | "changeReport";
+export type WorkspacePanelKey =
+  | "preview"
+  | "diff"
+  | "terminal"
+  | "files"
+  | "tasks"
+  | "plan"
+  | "changeReport";
 
 const PANEL_DEFAULTS: Record<WorkspacePanelKey, boolean> = {
+  preview: false,
   diff: false,
+  terminal: false,
+  files: false,
   tasks: false,
   plan: false,
   changeReport: false,
