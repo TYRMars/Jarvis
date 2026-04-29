@@ -49,10 +49,10 @@ describe("ModeBadge", () => {
 
   it("bypass click confirms before sending; accept ships set_mode", () => {
     useAppStore.getState().setPermissionMode("ask");
-    window.confirm = vi.fn(() => true) as any;
+    window.confirm = vi.fn(() => true);
     render(<ModeBadge />);
     fireEvent.click(screen.getByRole("button", { name: /Ask/ }));
-    const bypass = screen.getByRole("menuitemradio", { name: /Bypass/ }) as HTMLButtonElement;
+    const bypass = screen.getByRole("menuitemradio", { name: /Bypass/ });
     expect(bypass.disabled).toBe(false);
     fireEvent.click(bypass);
     expect(window.confirm).toHaveBeenCalledTimes(1);
@@ -61,7 +61,7 @@ describe("ModeBadge", () => {
 
   it("bypass click confirms before sending; decline does not ship", () => {
     useAppStore.getState().setPermissionMode("ask");
-    window.confirm = vi.fn(() => false) as any;
+    window.confirm = vi.fn(() => false);
     render(<ModeBadge />);
     fireEvent.click(screen.getByRole("button", { name: /Ask/ }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Bypass/ }));

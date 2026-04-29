@@ -101,7 +101,7 @@ export function PluginsSection() {
             className="settings-form"
             onSubmit={(e) => {
               e.preventDefault();
-              if (pathValue.trim()) doInstall(pathValue.trim());
+              if (pathValue.trim()) void doInstall(pathValue.trim());
             }}
           >
             <input

@@ -153,7 +153,7 @@ function SkillBody({ name }: { name: string }) {
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    import("../../../services/skills").then(({ fetchSkill }) =>
+    void import("../../../services/skills").then(({ fetchSkill }) =>
       fetchSkill(name)
         .then((d) => !cancelled && setBody(d.body))
         .catch((e) => !cancelled && setErr(String(e))),

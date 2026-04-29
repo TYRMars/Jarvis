@@ -85,7 +85,7 @@ export function ComposerShoulder() {
   // After the two narrowings above (`!== "unavailable"` and
   // `hasGit` checks), `diff` is necessarily a populated WorkspaceDiff
   // object. Pull what the shoulder actually renders.
-  const data = diff!;
+  const data = diff;
   const { base, branch, stat, ahead } = data;
   const totalChanges = stat.added + stat.removed;
   const canOpenPr = data.base_exists && ahead > 0;

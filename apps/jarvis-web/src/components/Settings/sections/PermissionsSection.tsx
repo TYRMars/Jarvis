@@ -59,7 +59,7 @@ export function PermissionsSection() {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    fetchPermissionTable()
+    void fetchPermissionTable()
       .then((t) => {
         if (!alive) return;
         if (t == null) {

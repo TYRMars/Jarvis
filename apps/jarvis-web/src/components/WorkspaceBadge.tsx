@@ -42,7 +42,7 @@ export function WorkspaceBadge() {
 
   const refreshBaseline = () => {
     setState({ kind: "loading" });
-    fetchWorkspace().then(setState);
+    void fetchWorkspace().then(setState);
   };
   const refreshRecent = () => {
     setRecentLoading(true);
@@ -233,7 +233,7 @@ export function WorkspaceBadge() {
                       className="workspace-recent-drop"
                       onClick={(e) => {
                         e.stopPropagation();
-                        drop(r.path);
+                        void drop(r.path);
                       }}
                       aria-label={tx("workspaceForget", "Forget")}
                       title={tx("workspaceForget", "Forget")}
@@ -255,7 +255,7 @@ export function WorkspaceBadge() {
             className="workspace-popover-form"
             onSubmit={(e) => {
               e.preventDefault();
-              if (draft.trim()) pin(draft.trim());
+              if (draft.trim()) void pin(draft.trim());
             }}
           >
             <input
@@ -271,7 +271,7 @@ export function WorkspaceBadge() {
                 <button
                   type="button"
                   className="workspace-popover-btn"
-                  onClick={() => pin(null)}
+                  onClick={() => void pin(null)}
                 >
                   {tx("workspaceClearPin", "Clear pin")}
                 </button>

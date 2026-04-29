@@ -18,7 +18,7 @@ export function WorkspaceSection() {
   const [state, setState] = useState<WorkspaceState>({ kind: "loading" });
   const refresh = () => {
     setState({ kind: "loading" });
-    fetchWorkspace().then(setState);
+    void fetchWorkspace().then(setState);
   };
   useEffect(() => {
     refresh();
@@ -71,5 +71,14 @@ function Body({ state, field }: { state: WorkspaceState; field: string }) {
       ? <span className="settings-value warn">{tx("settingsWorkspaceDirtyYes", "dirty (uncommitted changes)")}</span>
       : <span className="settings-value">{tx("settingsWorkspaceDirtyNo", "clean")}</span>;
   }
-  return <span className="settings-value mono">{String(value)}</span>;
+  // Defensive stringify: workspace fields the server ships today
+  // are primitives (string / number / boolean), but the typed
+  // indirection up top widens to `unknown`. Route anything
+  // non-primitive through `JSON.stringify` so we don't surface
+  // `[object Object]` if the server later returns a richer payload.
+  let text: string;
+  if (typeof value === "string") text = value;
+  else if (typeof value === "number" || typeof value === "boolean") text = String(value);
+  else text = JSON.stringify(value);
+  return <span className="settings-value mono">{text}</span>;
 }

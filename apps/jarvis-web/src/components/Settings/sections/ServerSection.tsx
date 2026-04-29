@@ -19,7 +19,7 @@ export function ServerSection() {
   const [state, setState] = useState<ServerInfoState>({ kind: "loading" });
   const refresh = () => {
     setState({ kind: "loading" });
-    fetchServerInfo().then(setState);
+    void fetchServerInfo().then(setState);
   };
   useEffect(() => {
     refresh();

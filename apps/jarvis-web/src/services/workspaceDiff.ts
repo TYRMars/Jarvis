@@ -22,7 +22,7 @@ export interface DiffFileEntry {
   path: string;
   /// `M` modified, `A` added, `D` deleted, `R` renamed, `C` copied,
   /// `T` type-changed, `?` untracked.
-  status: "M" | "A" | "D" | "R" | "C" | "T" | "?" | string;
+  status: string;
   added: number;
   removed: number;
   /// For renames only — the original path.

@@ -126,14 +126,14 @@ function WorkSidebarBody() {
   const navigate = useNavigate();
 
   const openNewProject = () => {
-    navigate("/projects");
+    void navigate("/projects");
     window.setTimeout(() => {
       window.dispatchEvent(new Event("jarvis:new-project"));
     }, 0);
   };
 
   const openProject = (id: string) => {
-    navigate("/projects");
+    void navigate("/projects");
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent("jarvis:open-project", { detail: id }));
     }, 0);
@@ -182,7 +182,7 @@ function WorkSidebarBody() {
 function DocSidebarBody() {
   const navigate = useNavigate();
   const openNewPage = () => {
-    navigate("/docs");
+    void navigate("/docs");
     window.setTimeout(() => {
       window.dispatchEvent(new Event("jarvis:new-doc-page"));
     }, 0);
