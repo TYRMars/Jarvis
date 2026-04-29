@@ -260,9 +260,10 @@ impl Tool for ShellExecTool {
             .and_then(Value::as_str)
             .ok_or_else(|| -> BoxError { "missing `command` argument".into() })?;
 
+        let root = harness_core::active_workspace_or(&self.root);
         let cwd = match args.get("cwd").and_then(Value::as_str) {
-            Some(rel) => resolve_under(&self.root, rel)?,
-            None => self.root.clone(),
+            Some(rel) => resolve_under(&root, rel)?,
+            None => root.clone(),
         };
 
         let timeout_ms = args
@@ -270,7 +271,7 @@ impl Tool for ShellExecTool {
             .and_then(Value::as_u64)
             .unwrap_or(self.default_timeout_ms);
 
-        let mut cmd = build_command(command, &self.root, &cwd, &self.sandbox)?;
+        let mut cmd = build_command(command, &root, &cwd, &self.sandbox)?;
         cmd.current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

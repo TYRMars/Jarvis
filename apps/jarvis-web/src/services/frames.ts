@@ -50,7 +50,7 @@ export function handleFrame(ev: any): void {
         // Older servers (or builds without the permission store
         // wired up) omit `source`. Pass it through verbatim — the
         // store ignores `null` / `undefined` values cleanly.
-        (ev as any).source ?? null,
+        ev.source ?? null,
       );
       break;
     case "hitl_request":
@@ -98,7 +98,7 @@ export function handleFrame(ev: any): void {
       }
       break;
     case "started":
-      onStarted(ev.id);
+      onStarted(ev);
       break;
     case "resumed":
       onResumed(ev.id, ev.message_count);
@@ -114,15 +114,26 @@ export function handleFrame(ev: any): void {
     // we'll wire next; for now we just stash the mode + remember the
     // proposed plan so the chrome doesn't log "unknown frame" noise.
     case "permission_mode":
-      store.setPermissionMode((ev as any).mode ?? "ask");
+      store.setPermissionMode(ev.mode ?? "ask");
       break;
     case "permission_rules_changed":
       // Trigger any subscribed surface (Settings/Permissions) to refetch.
       store.bumpPermissionRulesVersion?.();
       break;
     case "plan_proposed":
-      store.setProposedPlan((ev as any).plan ?? "");
+      store.setProposedPlan(ev.plan ?? "");
       break;
+    case "skill_activated":
+    case "skill_deactivated": {
+      const active = ev.active ?? [];
+      store.setActiveSkills?.(active);
+      break;
+    }
+    case "workspace_changed": {
+      const path = ev.path ?? null;
+      store.setSocketWorkspace?.(path, ev.workspace ?? null);
+      break;
+    }
     default:
       console.warn("unknown frame", ev);
   }
@@ -155,10 +166,17 @@ function onToolEnd(ev: any): void {
   store.upsertTask({ id: ev.id, name: block.name, args: block.args, status });
 }
 
-function onStarted(id: string): void {
+function onStarted(ev: any): void {
+  const id = ev.id as string;
   const store = appStore.getState();
   store.setLoadingConvoId(null);
   store.setActiveId(id);
+  if (typeof ev.workspace_path === "string") {
+    store.setSocketWorkspace?.(ev.workspace_path, ev.workspace ?? null);
+  }
+  if (typeof ev.project_id === "string") {
+    store.setDraftProjectId?.(ev.project_id);
+  }
   // Brand-new conversation — pin the current routing so a future
   // resume restores the same model+provider it started under.
   if (store.routing && store.convoRouting[id] !== store.routing) {
@@ -172,11 +190,20 @@ function onStarted(id: string): void {
   if (!rows.some((r: any) => r.id === id)) {
     const now = new Date().toISOString();
     store.setConvoRows([
-      { id, title: null, message_count: 0, created_at: now, updated_at: now },
+      {
+        id,
+        title: null,
+        message_count: 0,
+        created_at: now,
+        updated_at: now,
+        project_id: ev.project_id ?? null,
+      },
       ...rows,
     ]);
   }
-  store.showEmptyHint(id.slice(0, 8));
+  if (store.messages.length === 0) {
+    store.showEmptyHint(id.slice(0, 8));
+  }
   document.getElementById("input")?.focus();
   void refreshConvoList();
 }

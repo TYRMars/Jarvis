@@ -125,7 +125,7 @@ impl Tool for WorkspaceContextTool {
     }
 
     async fn invoke(&self, _args: Value) -> Result<String, BoxError> {
-        let root = self.root.clone();
+        let root = harness_core::active_workspace_or(&self.root);
         // Keep the synchronous filesystem walk on a blocking thread.
         // Git work happens after, async via `tokio::process`.
         let local = tokio::task::spawn_blocking({

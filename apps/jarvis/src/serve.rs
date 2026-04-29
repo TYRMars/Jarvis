@@ -10,10 +10,9 @@
 //! surface — every `pick_*` helper falls through to the same default
 //! the old code used.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 use harness_core::{AgentConfig, AlwaysApprove, AlwaysDeny, Approver, Memory, ToolRegistry};
@@ -21,9 +20,16 @@ use harness_llm::{
     AnthropicConfig, AnthropicProvider, CodexAuth, GoogleConfig, GoogleProvider, OpenAiConfig,
     OpenAiProvider, ResponsesConfig, ResponsesProvider,
 };
-use harness_mcp::{connect_all_mcp, serve_registry_stdio, McpClientConfig};
+use harness_mcp::{
+    serve_registry_stdio, McpClientConfig, McpManager, McpTransport,
+};
 use harness_memory::{SlidingWindowMemory, SummarizingMemory};
-use harness_server::{serve, AppState, PermissionMode, ProviderRegistry, ServerInfo};
+use harness_server::{
+    default_skill_roots, serve, AppState, PermissionMode, ProviderRegistry, ServerInfo,
+};
+use harness_plugin::PluginManager;
+use harness_skill::SkillCatalog;
+use harness_store::{default_workspaces_path, WorkspaceStore};
 use harness_tools::{register_builtins, BuiltinsConfig, Sandbox, ShellLimits};
 use tracing::info;
 
@@ -96,22 +102,32 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         extras.push((name, extra_llm, extra_model, extra_section.models.clone()));
     }
 
-    // Optional: connect to external MCP servers.
-    let mcp_specs = mcp_servers_spec(&cfg);
-    let mcp_clients = if mcp_specs.is_empty() {
-        Vec::new()
-    } else {
-        let configs = mcp_specs
-            .into_iter()
-            .map(|(prefix, cmdline)| parse_mcp_entry(&prefix, &cmdline))
-            .collect::<Result<Vec<_>>>()?;
-        connect_all_mcp(&configs, &mut tools).await?
-    };
+    // Hand the built-ins to the canonical, mutable registry. The
+    // MCP manager (and, later, the plugin manager) share this Arc so
+    // their runtime mutations show up in every per-request agent
+    // snapshot taken by `AppState::build_agent`.
+    let canonical_tools: Arc<RwLock<ToolRegistry>> = Arc::new(RwLock::new(tools));
+
+    // Optional: bring up external MCP servers from config + env.
+    let mcp_configs = mcp_client_configs(&cfg)?;
+    let mcp_manager = Arc::new(McpManager::new(Arc::clone(&canonical_tools)));
+    if !mcp_configs.is_empty() {
+        mcp_manager
+            .bootstrap(mcp_configs)
+            .await
+            .context("bootstrap mcp servers")?;
+    }
+    let mcp_running = mcp_manager.list().await;
+    let mcp_prefixes: Vec<String> = mcp_running.iter().map(|s| s.prefix.clone()).collect();
+    let registered = canonical_tools
+        .read()
+        .map(|r| r.len())
+        .unwrap_or_default();
     info!(
         provider = %provider_name,
         model = %model,
-        registered = tools.len(),
-        mcp_servers = mcp_clients.len(),
+        registered,
+        mcp_servers = mcp_running.len(),
         "tools registered",
     );
 
@@ -151,9 +167,17 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
             project_context_loaded = true;
         }
     }
+    // Snapshot the canonical registry as the agent template's tool
+    // catalogue. `AppState::build_agent` always re-snapshots from
+    // `canonical_tools` per request, so this seed is only for the
+    // template's `Default::default`-style use.
+    let template_tools = canonical_tools
+        .read()
+        .map(|r| (*r).clone())
+        .unwrap_or_default();
     let mut agent_cfg = AgentConfig::new(model.clone())
         .with_system_prompt(system_prompt)
-        .with_tools(tools)
+        .with_tools(template_tools)
         .with_max_iterations(30);
     if let Some(mem) = build_memory(&cfg, &llm, &model, store.as_ref())? {
         agent_cfg = agent_cfg.with_memory(mem);
@@ -227,8 +251,69 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         "permission store ready",
     );
 
-    let mut state =
-        AppState::from_registry(registry, agent_cfg).with_workspace_root(workspace_root);
+    // Build the skill catalogue. Roots: user-scope ($XDG_CONFIG_HOME/
+    // jarvis/skills, override via $JARVIS_SKILLS_DIR), workspace-scope
+    // (<root>/.jarvis/skills). Loading is silent on missing dirs;
+    // malformed SKILL.md files warn and skip.
+    let user_skills_dir = std::env::var_os("JARVIS_SKILLS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs_user_config().ok().map(|d| d.join("skills")));
+    let workspace_skills_dir = Some(workspace_root.join(".jarvis").join("skills"));
+    let skill_roots = default_skill_roots(user_skills_dir, workspace_skills_dir);
+    let skill_catalog = Arc::new(RwLock::new(SkillCatalog::load(skill_roots)));
+    let initial_skill_count = skill_catalog.read().map(|g| g.len()).unwrap_or(0);
+    info!(skills = initial_skill_count, "skill catalog loaded");
+
+    // Plugin manager — installs land at $XDG_CONFIG_HOME/jarvis/
+    // plugins/ (override `JARVIS_PLUGINS_DIR`). On startup we
+    // re-attach every entry the ledger remembers so plugin
+    // skills + MCP servers come back without manual reinstall.
+    let plugins_dir = std::env::var_os("JARVIS_PLUGINS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs_user_config().ok().map(|d| d.join("plugins")))
+        .unwrap_or_else(|| PathBuf::from(".jarvis/plugins"));
+    let plugin_manager = match PluginManager::new(
+        plugins_dir.clone(),
+        Arc::clone(&skill_catalog),
+        Arc::clone(&mcp_manager),
+    ) {
+        Ok(m) => Arc::new(m),
+        Err(e) => {
+            tracing::warn!(error = %e, dir = %plugins_dir.display(), "plugin manager init failed");
+            // Fall back to a temp-dir manager so the rest of the
+            // server still comes up; install / uninstall will
+            // surface the real error when they try to write.
+            let tmp = std::env::temp_dir().join("jarvis-plugins-fallback");
+            Arc::new(PluginManager::new(tmp, Arc::clone(&skill_catalog), Arc::clone(&mcp_manager))
+                .expect("fallback temp-dir plugin manager"))
+        }
+    };
+    if let Err(e) = plugin_manager.reattach_installed().await {
+        tracing::warn!(error = %e, "plugin reattach failed");
+    }
+    let plugin_count = plugin_manager.list().await.len();
+    info!(plugins = plugin_count, dir = %plugins_dir.display(), "plugin manager ready");
+
+    // Workspaces registry (recent dropdown + per-conversation
+    // bindings). File-backed at `<config-dir>/workspaces.json`;
+    // when no config dir is reachable the store falls back to
+    // session-only mode so the rest of the server still works.
+    let workspaces_path = dirs_user_config()
+        .ok()
+        .and_then(|d| default_workspaces_path(Some(&d)));
+    let workspaces = Arc::new(WorkspaceStore::open(workspaces_path));
+    info!(
+        recent = workspaces.list_recent().len(),
+        "workspaces store ready",
+    );
+
+    let mut state = AppState::from_registry(registry, agent_cfg)
+        .with_workspace_root(workspace_root)
+        .with_tools(Arc::clone(&canonical_tools))
+        .with_mcp(Arc::clone(&mcp_manager))
+        .with_skills(Arc::clone(&skill_catalog))
+        .with_plugins(Arc::clone(&plugin_manager))
+        .with_workspaces(Arc::clone(&workspaces));
     if let Some(s) = store {
         state = state.with_store(s);
     }
@@ -268,7 +353,6 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         .and_then(|s| s.parse::<usize>().ok())
         .or(cfg.memory.tokens);
     let approval_mode = pick_string_opt("JARVIS_APPROVAL_MODE", cfg.approval.mode.as_deref());
-    let mcp_prefixes: Vec<String> = mcp_servers_spec(&cfg).into_keys().collect();
 
     let server_info = ServerInfo {
         listen_addr: Some(addr_str.clone()),
@@ -287,7 +371,7 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     info!(%addr, "jarvis listening");
     serve(addr, state).await?;
 
-    drop(mcp_clients);
+    drop(mcp_manager);
     Ok(())
 }
 
@@ -875,29 +959,75 @@ fn pick_permission_mode(cfg: &Config, args: &crate::ServeArgs) -> Result<Permiss
     Ok(mode)
 }
 
-/// Merge the env-var `JARVIS_MCP_SERVERS` (comma-separated
-/// `prefix=command` entries) with the config-file `[mcp_servers]`
-/// table. Env entries win on key conflicts.
-fn mcp_servers_spec(cfg: &Config) -> BTreeMap<String, String> {
-    let mut merged: BTreeMap<String, String> = cfg.mcp_servers.clone();
-    if let Ok(spec) = std::env::var("JARVIS_MCP_SERVERS") {
-        for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            if let Some((prefix, cmd)) = entry.split_once('=') {
-                merged.insert(prefix.trim().to_string(), cmd.trim().to_string());
-            }
+/// Build the full set of MCP client configs from `[mcp_servers]`
+/// in the config file, merged with the `JARVIS_MCP_SERVERS` env var
+/// (comma-separated `prefix=command [args...]` entries — legacy
+/// stdio-only). Env entries override file entries with the same
+/// prefix.
+fn mcp_client_configs(cfg: &Config) -> Result<Vec<McpClientConfig>> {
+    use crate::config::McpServerEntry;
+    use std::collections::BTreeMap as Map;
+
+    let mut configs: Map<String, McpClientConfig> = Map::new();
+
+    for (prefix, entry) in &cfg.mcp_servers {
+        let cfg_entry = match entry {
+            McpServerEntry::Legacy(cmdline) => parse_legacy_cmdline(prefix, cmdline)?,
+            McpServerEntry::Full(spec) => spec_to_client_config(prefix, spec)?,
+        };
+        configs.insert(prefix.clone(), cfg_entry);
+    }
+
+    if let Ok(env_spec) = std::env::var("JARVIS_MCP_SERVERS") {
+        for entry in env_spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let Some((prefix, cmd)) = entry.split_once('=') else {
+                continue;
+            };
+            let prefix = prefix.trim().to_string();
+            let parsed = parse_legacy_cmdline(&prefix, cmd.trim())?;
+            configs.insert(prefix, parsed);
         }
     }
-    merged
+
+    Ok(configs.into_values().collect())
 }
 
-fn parse_mcp_entry(prefix: &str, cmdline: &str) -> Result<McpClientConfig> {
+fn parse_legacy_cmdline(prefix: &str, cmdline: &str) -> Result<McpClientConfig> {
     let mut parts = cmdline.split_whitespace();
     let command = parts
         .next()
         .with_context(|| format!("mcp server `{prefix}` has no command"))?
         .to_string();
-    let args = parts.map(str::to_string).collect();
+    let args: Vec<String> = parts.map(str::to_string).collect();
     Ok(McpClientConfig::new(prefix, command, args))
+}
+
+fn spec_to_client_config(
+    prefix: &str,
+    spec: &crate::config::McpServerSpec,
+) -> Result<McpClientConfig> {
+    let transport = match &spec.transport {
+        Some(t) => t.clone(),
+        None => {
+            let command = spec
+                .command
+                .clone()
+                .with_context(|| format!("mcp server `{prefix}` needs `transport` or `command`"))?;
+            McpTransport::Stdio {
+                command,
+                args: spec.args.clone(),
+                env: spec.env.clone(),
+            }
+        }
+    };
+    Ok(McpClientConfig {
+        prefix: prefix.to_string(),
+        transport,
+        allow_tools: spec.allow_tools.clone(),
+        deny_tools: spec.deny_tools.clone(),
+        alias: spec.alias.clone(),
+        enabled: spec.enabled.unwrap_or(true),
+    })
 }
 
 // ---------- pick helpers ----------

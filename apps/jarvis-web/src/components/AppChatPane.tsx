@@ -13,7 +13,7 @@ import { ModeBadge } from "./Approvals/ModeBadge";
 import { PlanProposedCard } from "./Approvals/PlanProposedCard";
 import { ModelMenu } from "./ModelMenu/ModelMenu";
 import { UsageBadge } from "./UsageBadge";
-import { ComposerShoulder } from "./ComposerShoulder";
+import { ComposerSessionContext } from "./ComposerSessionContext";
 import { OpenSidebarButton, WorkspacePanelMenu } from "./Workspace/WorkspaceToggles";
 import { pickedRouting } from "../services/socket";
 import { slashCommands } from "../services/slash_commands";
@@ -63,11 +63,7 @@ export function AppChatPane() {
             {!pendingApproval && pendingAsk ? <AskTextCard requestId={pendingAsk} /> : null}
           </div>
         ) : null}
-        {/* Claude Code-style shoulder above the composer — branch
-         * comparison crumb, aggregate diff stat, Create draft PR
-         * button. Self-hides when the server has no workspace
-         * pinned. */}
-        <ComposerShoulder />
+        <ComposerSessionContext />
         <Composer
           slashCommands={slashCommands}
           pickedRouting={pickedRouting}

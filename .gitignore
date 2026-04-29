@@ -12,3 +12,4 @@ apps/jarvis-web/node_modules/
 apps/jarvis-web/tsconfig.tsbuildinfo
 apps/jarvis-web/dist/
 .claude/
+/.playwright-mcp

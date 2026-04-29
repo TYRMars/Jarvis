@@ -122,7 +122,7 @@ export function ProjectsPage() {
           onChanged={refreshRequirements}
           onOpenConversation={(id) => {
             void resumeConversation(id);
-            navigate("/");
+            void navigate("/");
           }}
         />
       ) : !available ? (

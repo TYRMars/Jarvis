@@ -32,6 +32,7 @@ import type {
   Project,
   ToolCall,
 } from "../types/frames";
+import type { WorkspaceInfo } from "../services/workspace";
 
 /// Status of the conversation list panel. Drives an empty-state
 /// banner the sidebar renders in place of the recent rows.
@@ -436,9 +437,31 @@ interface AppStoreActions {
   /// Plan proposed by the agent (Plan Mode) waiting for user accept.
   /// Cleared when the user accepts or refines.
   proposedPlan: string | null;
+  /// Skill names currently active on this WS session. Mirrored from
+  /// the server's `skill_activated` / `skill_deactivated` frames so
+  /// every component (Settings tab, future header chip) sees the
+  /// same source of truth. Empty until the user toggles one.
+  activeSkills: string[];
+  /// Per-socket workspace override, mirrored from
+  /// `workspace_changed`. `null` means "use the binary's startup
+  /// root" (whatever `GET /v1/workspace` returns). The chat-header
+  /// `WorkspaceBadge` shows this in preference to the server-wide
+  /// path so the UI never lies about which folder the agent is
+  /// actually targeting.
+  socketWorkspace: string | null;
+  socketWorkspaceInfo: WorkspaceInfo | null;
+  /// New-session context picked from the composer chips. These are
+  /// applied when the next message creates a conversation lazily.
+  draftWorkspacePath: string | null;
+  draftWorkspaceInfo: WorkspaceInfo | null;
+  draftProjectId: string | null;
   setPermissionMode: (mode: "ask" | "accept-edits" | "plan" | "auto" | "bypass") => void;
   bumpPermissionRulesVersion?: () => void;
   setProposedPlan: (plan: string | null) => void;
+  setActiveSkills?: (names: string[]) => void;
+  setSocketWorkspace?: (path: string | null, info?: WorkspaceInfo | null) => void;
+  setDraftWorkspace?: (path: string | null, info?: WorkspaceInfo | null) => void;
+  setDraftProjectId?: (id: string | null) => void;
 
   // ---- Workspace diff (right-rail review card) ----
   /// `null` = not fetched yet; `"unavailable"` = server returned 503
@@ -493,7 +516,10 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   workspaceRailOpen: initialWorkspaceRailOpen(),
   planCardOpen: initialPlanCardOpen(),
   workspacePanelVisible: {
+    preview: initialWorkspacePanel("preview"),
     diff: initialWorkspacePanel("diff"),
+    terminal: initialWorkspacePanel("terminal"),
+    files: initialWorkspacePanel("files"),
     tasks: initialWorkspacePanel("tasks"),
     plan: initialWorkspacePanel("plan"),
     changeReport: initialWorkspacePanel("changeReport"),
@@ -522,6 +548,12 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   permissionMode: "ask",
   permissionRulesVersion: 0,
   proposedPlan: null,
+  activeSkills: [],
+  socketWorkspace: null,
+  socketWorkspaceInfo: null,
+  draftWorkspacePath: null,
+  draftWorkspaceInfo: null,
+  draftProjectId: null,
   workspaceDiff: null,
   workspaceDiffLoading: false,
   workspaceDiffFileCache: {},
@@ -1135,6 +1167,19 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   bumpPermissionRulesVersion: () =>
     set((s) => ({ permissionRulesVersion: s.permissionRulesVersion + 1 })),
   setProposedPlan: (plan) => set({ proposedPlan: plan }),
+  setActiveSkills: (names) => set({ activeSkills: names }),
+  setSocketWorkspace: (path, info = null) =>
+    set({
+      socketWorkspace: path,
+      socketWorkspaceInfo: path ? info : null,
+      draftWorkspacePath: path,
+      draftWorkspaceInfo: path ? info : null,
+      workspaceDiff: null,
+      workspaceDiffFileCache: {},
+    }),
+  setDraftWorkspace: (path, info = null) =>
+    set({ draftWorkspacePath: path, draftWorkspaceInfo: path ? info : null }),
+  setDraftProjectId: (id) => set({ draftProjectId: id }),
   setWorkspaceDiff: (workspaceDiff) =>
     set({ workspaceDiff, workspaceDiffFileCache: {} }),
   setWorkspaceDiffLoading: (workspaceDiffLoading) => set({ workspaceDiffLoading }),

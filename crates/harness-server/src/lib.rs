@@ -23,14 +23,20 @@
 //! - `POST   /v1/conversations/:id/messages/stream` — append + run (SSE)
 
 mod conversations;
+mod mcp_routes;
 mod permissions;
+mod plugin_routes;
 mod project_binder;
 mod projects;
 mod provider_registry;
 mod routes;
+mod skill_routes;
 mod state;
 mod ui;
 mod workspace_diff;
+mod workspaces_routes;
+
+pub use skill_routes::default_roots as default_skill_roots;
 
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
 pub use routes::router;

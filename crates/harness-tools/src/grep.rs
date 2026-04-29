@@ -126,9 +126,10 @@ impl Tool for CodeGrepTool {
             .map(|n| n as usize)
             .unwrap_or(self.max_results);
 
+        let root = harness_core::active_workspace_or(&self.root);
         let scope_root = match args.get("path").and_then(Value::as_str) {
-            Some(rel) => resolve_under(&self.root, rel)?,
-            None => self.root.clone(),
+            Some(rel) => resolve_under(&root, rel)?,
+            None => root.clone(),
         };
 
         let regex = RegexBuilder::new(pattern)
@@ -138,7 +139,7 @@ impl Tool for CodeGrepTool {
 
         let glob = args.get("glob").and_then(Value::as_str).map(str::to_owned);
 
-        let display_root = self.root.clone();
+        let display_root = root.clone();
         let max_bytes = self.max_bytes;
 
         let result = tokio::task::spawn_blocking(move || -> Result<String, BoxError> {

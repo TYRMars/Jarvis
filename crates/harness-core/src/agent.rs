@@ -51,6 +51,14 @@ pub struct AgentConfig {
     /// `ToolRegistry::resolve` (so any in-flight tool calls from a
     /// previous turn can finish), but new calls become impossible.
     pub tool_filter: Option<Arc<ToolFilter>>,
+    /// Optional per-session workspace root. When set, every tool
+    /// invocation in this agent's loop runs inside a
+    /// [`crate::workspace::with_session_workspace`] scope, so any
+    /// tool that calls [`crate::active_workspace_or`] uses this
+    /// path instead of its constructor-time root. `None` means
+    /// "no override — fall back to the tool's default", which is
+    /// the historical behaviour.
+    pub session_workspace: Option<std::path::PathBuf>,
 }
 
 impl AgentConfig {
@@ -65,6 +73,7 @@ impl AgentConfig {
             approver: None,
             hitl_tx: None,
             tool_filter: None,
+            session_workspace: None,
         }
     }
 
@@ -109,6 +118,15 @@ impl AgentConfig {
 
     pub fn with_hitl_sender(mut self, tx: tokio::sync::mpsc::Sender<PendingHitl>) -> Self {
         self.hitl_tx = Some(tx);
+        self
+    }
+
+    /// Pin a per-agent workspace override. Tools that consult
+    /// [`crate::active_workspace_or`] inside their `invoke` will see
+    /// this path; the agent loop installs the task-local scope
+    /// around every tool dispatch.
+    pub fn with_session_workspace(mut self, path: std::path::PathBuf) -> Self {
+        self.session_workspace = Some(path);
         self
     }
 }
@@ -273,10 +291,13 @@ impl Agent {
                             call,
                         )
                         .await;
-                        let output = Self::run_one(
-                            &self.config.tools,
-                            call,
-                            approval.as_ref().map(|(_, d)| d),
+                        let output = crate::workspace::with_session_workspace(
+                            self.config.session_workspace.clone(),
+                            Self::run_one(
+                                &self.config.tools,
+                                call,
+                                approval.as_ref().map(|(_, d)| d),
+                            ),
                         )
                         .await;
                         conversation
@@ -449,16 +470,19 @@ impl Agent {
                                 tokio::sync::mpsc::unbounded_channel::<crate::progress::ToolProgress>();
                             let (plan_tx, mut plan_rx) =
                                 tokio::sync::mpsc::unbounded_channel::<Vec<crate::plan::PlanItem>>();
-                            let invoke = crate::progress::with_progress(
-                                prog_tx,
-                                crate::plan::with_plan(
-                                    plan_tx,
-                                    run_one_with_optional_hitl(
-                                        agent.config.hitl_tx.clone(),
-                                        Self::run_one(
-                                            &agent.config.tools,
-                                            call,
-                                            decision.as_ref(),
+                            let invoke = crate::workspace::with_session_workspace(
+                                agent.config.session_workspace.clone(),
+                                crate::progress::with_progress(
+                                    prog_tx,
+                                    crate::plan::with_plan(
+                                        plan_tx,
+                                        run_one_with_optional_hitl(
+                                            agent.config.hitl_tx.clone(),
+                                            Self::run_one(
+                                                &agent.config.tools,
+                                                call,
+                                                decision.as_ref(),
+                                            ),
                                         ),
                                     ),
                                 ),

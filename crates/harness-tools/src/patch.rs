@@ -89,6 +89,7 @@ impl Tool for FsPatchTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let diff = args
             .get("diff")
             .and_then(Value::as_str)
@@ -119,7 +120,7 @@ impl Tool for FsPatchTool {
             let action = classify(original_path, modified_path)?;
             match action {
                 PatchAction::Create { path } => {
-                    let abs = resolve_target(&self.root, path)?;
+                    let abs = resolve_target(&root, path)?;
                     if abs.exists() {
                         return Err(format!("create patch targets existing file `{path}`").into());
                     }
@@ -137,7 +138,7 @@ impl Tool for FsPatchTool {
                     });
                 }
                 PatchAction::Delete { path } => {
-                    let abs = resolve_target(&self.root, path)?;
+                    let abs = resolve_target(&root, path)?;
                     if !abs.is_file() {
                         return Err(format!("delete patch targets missing file `{path}`").into());
                     }
@@ -164,7 +165,7 @@ impl Tool for FsPatchTool {
                     });
                 }
                 PatchAction::Modify { path } => {
-                    let abs = resolve_target(&self.root, path)?;
+                    let abs = resolve_target(&root, path)?;
                     if !abs.is_file() {
                         return Err(format!("modify patch targets missing file `{path}`").into());
                     }

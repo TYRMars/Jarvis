@@ -184,6 +184,8 @@ export interface NewClientFrame {
   id?: string;
   model?: string;
   provider?: string;
+  project_id?: string;
+  workspace_path?: string;
 }
 
 export interface ConfigureClientFrame {

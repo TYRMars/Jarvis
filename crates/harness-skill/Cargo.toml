@@ -1,0 +1,18 @@
+[package]
+name = "harness-skill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Anthropic-style Skills (markdown + YAML frontmatter) for the agent harness — discovery, parsing, and per-session activation."
+
+[dependencies]
+harness-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

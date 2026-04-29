@@ -65,13 +65,63 @@ pub struct Config {
     pub persistence: PersistenceSection,
     #[serde(skip_serializing_if = "is_default")]
     pub approval: ApprovalSection,
-    /// Map prefix → command line for spawned MCP servers.
+    /// External MCP servers. Two shapes are accepted per entry:
+    ///
+    /// - **Legacy string** — e.g. `"uvx mcp-server-filesystem /tmp"`.
+    ///   Spawned over stdio with no filtering / aliasing. Same shape
+    ///   the old config used; existing configs keep working.
+    /// - **Structured spec** — `McpServerSpec` with explicit
+    ///   `transport`, optional `allow_tools`, `deny_tools`, `alias`,
+    ///   `enabled`. Lets configs target HTTP transports (when the
+    ///   rmcp HTTP feature is enabled) and per-server filtering.
     #[serde(
         rename = "mcp_servers",
         alias = "mcp-servers",
         skip_serializing_if = "BTreeMap::is_empty"
     )]
-    pub mcp_servers: BTreeMap<String, String>,
+    pub mcp_servers: BTreeMap<String, McpServerEntry>,
+}
+
+/// One MCP server entry as parsed from config. The map key is the
+/// server's prefix; this enum captures the value shape.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum McpServerEntry {
+    /// `"uvx mcp-server-x foo bar"` — first whitespace-separated
+    /// token is the command, the rest are positional args. Stdio
+    /// transport, no filtering, no aliasing.
+    Legacy(String),
+    /// Structured form with explicit transport + optional filters.
+    Full(McpServerSpec),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct McpServerSpec {
+    /// Transport details. `None` is treated as "stdio with the
+    /// `command` / `args` flat fields below" so a tagged
+    /// `transport` block is optional.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<harness_mcp::McpTransport>,
+    /// Stdio shorthand (used when `transport` is omitted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Allowlist of remote tool names; absent = accept all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_tools: Option<Vec<String>>,
+    /// Tool names to skip even if otherwise allowed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deny_tools: Vec<String>,
+    /// Per-tool rename: `remote_name -> local_short_name`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub alias: BTreeMap<String, String>,
+    /// Defaults to `true` when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 fn is_default<T: Default + PartialEq>(t: &T) -> bool {
@@ -511,9 +561,10 @@ mod tests {
         original.memory.mode = Some("summary".into());
         original.persistence.url = Some("json:///tmp/convos".into());
         original.approval.mode = Some("deny".into());
-        original
-            .mcp_servers
-            .insert("fs".into(), "uvx mcp-server-filesystem /tmp".into());
+        original.mcp_servers.insert(
+            "fs".into(),
+            McpServerEntry::Legacy("uvx mcp-server-filesystem /tmp".into()),
+        );
 
         let text = original.to_json_string().unwrap();
         let parsed: Config = serde_json::from_str(&text).unwrap();

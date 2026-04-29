@@ -134,6 +134,35 @@ impl ToolRegistry {
         self
     }
 
+    /// Remove a single tool by name. Returns `true` if it was present.
+    /// Used by the MCP / plugin manager when a server or plugin is
+    /// dropped at runtime.
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
+    /// Remove every tool whose name starts with `<prefix>.` (the
+    /// namespace separator used by the MCP bridge). Returns the
+    /// removed tool names so callers can log / report.
+    pub fn unregister_prefix(&mut self, prefix: &str) -> Vec<String> {
+        let needle = format!("{prefix}.");
+        let drop: Vec<String> = self
+            .tools
+            .keys()
+            .filter(|k| k.starts_with(&needle))
+            .cloned()
+            .collect();
+        for name in &drop {
+            self.tools.remove(name);
+        }
+        drop
+    }
+
+    /// True iff a tool with this name is currently registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
     pub fn resolve(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
@@ -215,6 +244,31 @@ mod tests {
         async fn invoke(&self, _args: Value) -> std::result::Result<String, BoxError> {
             Ok(self.0.to_string())
         }
+    }
+
+    #[test]
+    fn unregister_removes_named_tool() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool("alpha"));
+        registry.register(NamedTool("beta"));
+        assert!(registry.contains("alpha"));
+        assert!(registry.unregister("alpha"));
+        assert!(!registry.contains("alpha"));
+        assert!(registry.contains("beta"));
+        assert!(!registry.unregister("alpha"));
+    }
+
+    #[test]
+    fn unregister_prefix_removes_namespaced_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool("git.status"));
+        registry.register(NamedTool("git.diff"));
+        registry.register(NamedTool("fs.read"));
+        let mut removed = registry.unregister_prefix("git");
+        removed.sort();
+        assert_eq!(removed, vec!["git.diff".to_string(), "git.status".to_string()]);
+        assert!(!registry.contains("git.status"));
+        assert!(registry.contains("fs.read"));
     }
 
     #[test]

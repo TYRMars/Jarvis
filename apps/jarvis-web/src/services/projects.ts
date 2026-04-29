@@ -266,7 +266,7 @@ function deriveSlug(name: string): string {
 }
 
 function uniqueSlug(seed: string, rows: Project[]): string {
-  let candidate = deriveSlug(seed);
+  const candidate = deriveSlug(seed);
   const taken = new Set(rows.map((p) => p.slug));
   if (!taken.has(candidate)) return candidate;
   for (let n = 2; n < 100; n++) {

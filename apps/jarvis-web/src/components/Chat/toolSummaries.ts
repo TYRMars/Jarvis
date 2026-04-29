@@ -120,7 +120,7 @@ function isBlank(s: string | null): boolean {
   return s == null || s.trim() === "";
 }
 
-function tryParseJson(s: string): unknown | null {
+function tryParseJson(s: string): unknown {
   try {
     return JSON.parse(s);
   } catch {
@@ -301,7 +301,7 @@ export function summarisePlan(args: unknown, _output: string | null): string | n
   if (!Array.isArray(items)) return t("toolSummaryPlanFallback");
   let done = 0;
   for (const it of items) {
-    if (it && typeof it === "object" && (it as any).status === "completed") done += 1;
+    if (it && typeof it === "object" && (it as { status?: unknown }).status === "completed") done += 1;
   }
   return t("toolSummaryPlan", items.length, done);
 }

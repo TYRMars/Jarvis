@@ -11,6 +11,7 @@ import { SendButton, StopButton } from "../ComposerButtons";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { sendFrame, isOpen } from "../../services/socket";
 import { currentJarvisSoulPrompt } from "../../store/persistence";
+import { isLocalProjectId } from "../../services/projects";
 
 const PASTE_THRESHOLD_BYTES = 2048;
 
@@ -97,6 +98,22 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
     store.setInFlight(true);
     const content = expandPaste(raw);
     const { provider, model } = pickedRouting();
+    if (store.persistEnabled && !store.activeId) {
+      const newFrame: any = { type: "new" };
+      if (provider) newFrame.provider = provider;
+      if (model) newFrame.model = model;
+      const projectId = store.draftProjectId;
+      if (projectId && !isLocalProjectId(projectId)) {
+        newFrame.project_id = projectId;
+      }
+      if (store.draftWorkspacePath) {
+        newFrame.workspace_path = store.draftWorkspacePath;
+      }
+      if (!sendFrame(newFrame)) {
+        store.setInFlight(false);
+        return;
+      }
+    }
     const frame: any = { type: "user", content };
     if (provider) frame.provider = provider;
     if (model) frame.model = model;

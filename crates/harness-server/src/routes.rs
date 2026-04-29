@@ -3,17 +3,17 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
-    Router,
     extract::{
-        State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+        Query, State,
     },
     http::StatusCode,
     response::{
-        IntoResponse, Json, Response,
         sse::{Event, KeepAlive, Sse},
+        IntoResponse, Json, Response,
     },
     routing::{get, post},
+    Router,
 };
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
@@ -22,7 +22,7 @@ use harness_core::{
     HitlResponse, HitlStatus, Message, PendingHitl, RunOutcome,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/providers", get(list_providers))
         .route("/v1/workspace", get(get_workspace))
+        .route("/v1/workspace/probe", get(probe_workspace))
         .route("/v1/server/info", get(get_server_info))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/chat/completions/stream", post(chat_completions_stream))
@@ -49,6 +50,10 @@ pub fn router(state: AppState) -> Router {
         .merge(projects::router())
         .merge(permissions::router())
         .merge(workspace_diff::router())
+        .merge(crate::mcp_routes::router())
+        .merge(crate::skill_routes::router())
+        .merge(crate::plugin_routes::router())
+        .merge(crate::workspaces_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .with_state(state)
@@ -86,6 +91,37 @@ async fn get_workspace(State(state): State<AppState>) -> Response {
     };
     let snapshot = workspace_snapshot(root).await;
     Json(snapshot).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceProbeQuery {
+    path: String,
+}
+
+/// `GET /v1/workspace/probe?path=/repo` — inspect a candidate
+/// workspace without changing the server-wide startup root. This is
+/// intentionally read-only; the WS `set_workspace` / `new` frames
+/// are still the only places that pin a session workspace.
+async fn probe_workspace(Query(q): Query<WorkspaceProbeQuery>) -> Response {
+    let candidate = std::path::PathBuf::from(&q.path);
+    let resolved = match tokio::fs::canonicalize(&candidate).await {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("workspace `{}` is not reachable: {e}", q.path) })),
+            )
+                .into_response();
+        }
+    };
+    if !resolved.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("workspace `{}` is not a directory", resolved.display()) })),
+        )
+            .into_response();
+    }
+    Json(workspace_snapshot(&resolved).await).into_response()
 }
 
 /// `GET /v1/server/info` — runtime snapshot of the jarvis serve
@@ -387,7 +423,10 @@ enum WsClientMessage {
     /// server allocates a UUID and reports it back. Optional
     /// `project_id` (UUID or slug) binds the new conversation to a
     /// project — its instructions are then re-injected as a system
-    /// message at every turn (see `crate::project_binder`).
+    /// message at every turn (see `crate::project_binder`). Optional
+    /// `workspace_path` pins this socket's filesystem root and
+    /// records the binding in the workspaces registry so a future
+    /// `Resume` restores it.
     New {
         #[serde(default)]
         id: Option<String>,
@@ -397,6 +436,8 @@ enum WsClientMessage {
         provider: Option<String>,
         #[serde(default)]
         project_id: Option<String>,
+        #[serde(default)]
+        workspace_path: Option<String>,
     },
     /// Update the socket's default provider/model selection without
     /// running a turn. Subsequent `User` frames without their own
@@ -464,6 +505,24 @@ enum WsClientMessage {
     /// sending a `User` frame with the same content; kept as a
     /// distinct frame so the client can label the bubble.
     RefinePlan { feedback: String },
+    /// Activate a skill on this socket. Subsequent agent turns
+    /// prepend the skill's body to the system prompt. Idempotent —
+    /// activating an already-active skill is a no-op. Server replies
+    /// with `skill_activated { name, active: [..] }` (or an `error`
+    /// frame if the catalogue / name is missing).
+    ActivateSkill { name: String },
+    /// Deactivate a skill on this socket. No-op if the skill wasn't
+    /// active. Server replies with `skill_deactivated`.
+    DeactivateSkill { name: String },
+    /// Pin a per-socket workspace root. Subsequent turns run their
+    /// fs / git / shell / grep tools against this path instead of
+    /// the binary's startup workspace. `path: null` clears the
+    /// override and falls back to the startup root.
+    ///
+    /// Server replies with `workspace_changed { path }` on
+    /// success, or an `error` frame if the path doesn't exist or
+    /// isn't a directory.
+    SetWorkspace { path: Option<String> },
 }
 
 /// Static label for a `WsClientMessage` variant — used by the
@@ -484,6 +543,9 @@ fn client_msg_kind(msg: &WsClientMessage) -> &'static str {
         WsClientMessage::SetMode { .. } => "set_mode",
         WsClientMessage::AcceptPlan { .. } => "accept_plan",
         WsClientMessage::RefinePlan { .. } => "refine_plan",
+        WsClientMessage::ActivateSkill { .. } => "activate_skill",
+        WsClientMessage::DeactivateSkill { .. } => "deactivate_skill",
+        WsClientMessage::SetWorkspace { .. } => "set_workspace",
     }
 }
 
@@ -535,6 +597,82 @@ fn leading_system_count(messages: &[Message]) -> usize {
 
 async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_ws(socket, state))
+}
+
+/// Compose a per-turn system prompt by prepending the bodies of
+/// the currently-active skills to the template. Each skill is wrapped
+/// in a fenced header so the model can tell injected guidance from
+/// its own template:
+///
+/// ```text
+/// === skill: code-review ===
+/// <skill body>
+/// === /skill ===
+/// ```
+///
+/// Returns `None` when the catalogue is absent or no active skill
+/// resolved to a known entry — leaves `cfg.system_prompt` alone.
+/// Default cap on how many auto-activated skills to inject per turn.
+/// Two keeps the system-prompt overhead small while still letting two
+/// orthogonal skills (e.g. "code-review" + "pdf-helper") fire on a
+/// mixed query. Reachable via [`merged_skills_for_turn`].
+const AUTO_SKILL_TOP_K: usize = 2;
+
+/// Build the per-turn skill list: manual activations first, then up
+/// to `AUTO_SKILL_TOP_K` auto-picks scored against the user's
+/// most recent message. Manual entries always survive; auto entries
+/// are deduped against the manual set so the same body never gets
+/// injected twice.
+fn merged_skills_for_turn(
+    catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
+    manual_active: &[String],
+    user_content: &str,
+) -> Vec<String> {
+    let mut merged: Vec<String> = manual_active.to_vec();
+    let Some(cat_arc) = catalog else {
+        return merged;
+    };
+    let Ok(guard) = cat_arc.read() else {
+        return merged;
+    };
+    let picks =
+        harness_skill::pick_auto_skills(&guard, user_content, AUTO_SKILL_TOP_K, manual_active);
+    for n in picks {
+        if !merged.iter().any(|m| m == &n) {
+            merged.push(n);
+        }
+    }
+    merged
+}
+
+fn compose_with_skills(
+    template: Option<&str>,
+    catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
+    active_names: &[String],
+) -> Option<String> {
+    let cat = catalog?;
+    let guard = cat.read().ok()?;
+    let mut bodies: Vec<String> = Vec::new();
+    for name in active_names {
+        if let Some(entry) = guard.get(name) {
+            if entry.body.trim().is_empty() {
+                continue;
+            }
+            bodies.push(format!(
+                "=== skill: {name} ===\n{}\n=== /skill ===",
+                entry.body.trim_end()
+            ));
+        }
+    }
+    if bodies.is_empty() {
+        return None;
+    }
+    let prefix = bodies.join("\n\n");
+    let composed = match template {
+        Some(t) if !t.is_empty() => format!("{prefix}\n\n{t}"),
+        _ => prefix,
+    };
+    Some(composed)
 }
 
 async fn handle_ws(socket: WebSocket, state: AppState) {
@@ -595,6 +733,18 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // turn by `User { model, provider }`.
     let mut sticky_provider: Option<String> = None;
     let mut sticky_model: Option<String> = None;
+    // Per-socket skill activation. Each entry is a skill `name` from
+    // the catalogue; the agent's per-turn `build_agent_with`
+    // closure looks each one up and prepends its body to the
+    // system prompt. Order is insertion order so the model sees
+    // them in the same order the user activated them.
+    let mut active_skills: Vec<String> = Vec::new();
+    // Per-socket workspace override. `None` means "use the binary's
+    // startup workspace" (the historical behaviour). When `Some`,
+    // the path is installed as a `crate::workspace::with_session_workspace`
+    // scope around every tool invocation in this socket's turns,
+    // so fs / git / shell / grep tools target it.
+    let mut socket_workspace: Option<std::path::PathBuf> = None;
 
     // Tell the client the initial mode so it can render the badge
     // before any user interaction. Always sent; even when no
@@ -649,6 +799,8 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     &mut current_task,
                     &mut sticky_provider,
                     &mut sticky_model,
+                    &mut active_skills,
+                    &mut socket_workspace,
                     &hitl_tx,
                 )
                 .await
@@ -780,6 +932,8 @@ async fn handle_client_frame(
     current_task: &mut Option<tokio::task::JoinHandle<()>>,
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
+    active_skills: &mut Vec<String>,
+    socket_workspace: &mut Option<std::path::PathBuf>,
     hitl_tx: &mpsc::Sender<PendingHitl>,
 ) -> bool {
     let text = match msg {
@@ -873,11 +1027,25 @@ async fn handle_client_frame(
             // so. Done per-turn (not once at socket open) so a mid-
             // session `set_mode` flip takes effect on the next message.
             let active_mode = *mode_handle.read().await;
+            let skills_catalog = state.skills.as_ref().cloned();
+            let skills_snapshot =
+                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
+            let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) = compose_with_skills(
+                    cfg.system_prompt.as_deref(),
+                    skills_catalog.as_ref(),
+                    &skills_snapshot,
+                ) {
+                    cfg.system_prompt = Some(prompt);
+                }
+                if workspace_for_turn.is_some() {
+                    cfg.session_workspace = workspace_for_turn;
                 }
             }) {
                 Ok(a) => a,
@@ -1000,6 +1168,53 @@ async fn handle_client_frame(
                     *conv = loaded;
                     *persisted_id = Some(id.clone());
                     *persisted_project_id = bound_project.clone();
+                    // Restore per-conversation workspace pin if the
+                    // store has one. We canonicalize on the way in
+                    // so a moved-since-last-time folder surfaces an
+                    // error rather than silently falling back.
+                    let bound_workspace = state.workspaces.as_ref().and_then(|s| s.lookup(&id));
+                    if let Some(path_str) = bound_workspace.as_deref() {
+                        match std::fs::canonicalize(path_str) {
+                            Ok(p) if p.is_dir() => {
+                                *socket_workspace = Some(p.clone());
+                                let workspace_info = workspace_snapshot(&p).await;
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({
+                                            "type": "workspace_changed",
+                                            "path": p.display().to_string(),
+                                            "workspace": workspace_info,
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {
+                                warn!(
+                                    convo = %id,
+                                    path = %path_str,
+                                    "bound workspace no longer exists; clearing pin",
+                                );
+                                if let Some(s) = state.workspaces.as_ref() {
+                                    s.unbind(&id);
+                                }
+                                *socket_workspace = None;
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({ "type": "workspace_changed", "path": null })
+                                            .to_string(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    } else {
+                        *socket_workspace = None;
+                        let _ = ws_tx
+                            .send(WsMessage::Text(
+                                json!({ "type": "workspace_changed", "path": null }).to_string(),
+                            ))
+                            .await;
+                    }
                     let _ = ws_tx
                         .send(WsMessage::Text(
                             json!({
@@ -1007,6 +1222,7 @@ async fn handle_client_frame(
                                 "id": id,
                                 "message_count": count,
                                 "project_id": bound_project,
+                                "workspace_path": bound_workspace,
                             })
                             .to_string(),
                         ))
@@ -1026,6 +1242,7 @@ async fn handle_client_frame(
             model,
             provider,
             project_id,
+            workspace_path,
         } => {
             if event_rx.is_some() {
                 send_error(ws_tx, "turn in progress; cannot start new").await;
@@ -1085,22 +1302,64 @@ async fn handle_client_frame(
 
             let new_id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
             *conv = Conversation::new();
-            let metadata = ConversationMetadata {
-                project_id: resolved_project_id.clone(),
-            };
-            if let Err(e) = store.save_envelope(&new_id, conv, &metadata).await {
-                error!(error = %e, "ws new save failed");
-                send_error(ws_tx, &format!("save failed: {e}")).await;
-                return true;
-            }
+            // Deferred persistence: we DON'T write the empty
+            // conversation row to the store now. The first User
+            // turn's post-run save flushes everything atomically
+            // with whatever metadata is on this socket at the time
+            // (including any in-the-meantime `set_mode` /
+            // `set_workspace` flips). The earlier `state.store`
+            // require above stays so we still refuse `New` when
+            // persistence isn't configured — the difference is
+            // only whether we call `save_envelope` here.
+            let _ = store; // intentionally unused — see comment above
             *persisted_id = Some(new_id.clone());
             *persisted_project_id = resolved_project_id.clone();
+
+            // Optional workspace pin. Validate the same way
+            // SetWorkspace does, then bind it in the registry so
+            // Resume restores it. Failure here surfaces as an
+            // error and aborts — we already saved the conversation
+            // row, but the user's next attempt can use a different
+            // path (the `started` echo isn't sent on this path).
+            let mut bound_workspace_info: Option<Value> = None;
+            let bound_workspace = if let Some(raw) = workspace_path.as_deref() {
+                match std::fs::canonicalize(raw) {
+                    Ok(p) if p.is_dir() => {
+                        *socket_workspace = Some(p.clone());
+                        if let Some(ws) = state.workspaces.as_ref() {
+                            let path_str = p.display().to_string();
+                            let _ = ws.touch(&path_str);
+                            ws.bind(&new_id, &path_str);
+                        }
+                        bound_workspace_info = Some(workspace_snapshot(&p).await);
+                        Some(p.display().to_string())
+                    }
+                    Ok(p) => {
+                        send_error(
+                            ws_tx,
+                            &format!("workspace `{}` is not a directory", p.display()),
+                        )
+                        .await;
+                        return true;
+                    }
+                    Err(e) => {
+                        send_error(ws_tx, &format!("workspace `{raw}` is not reachable: {e}"))
+                            .await;
+                        return true;
+                    }
+                }
+            } else {
+                None
+            };
+
             let _ = ws_tx
                 .send(WsMessage::Text(
                     json!({
                         "type": "started",
                         "id": new_id,
                         "project_id": resolved_project_id,
+                        "workspace_path": bound_workspace,
+                        "workspace": bound_workspace_info,
                     })
                     .to_string(),
                 ))
@@ -1168,11 +1427,25 @@ async fn handle_client_frame(
             let approver = socket_approver.clone();
             let hitl = hitl_tx.clone();
             let active_mode = *mode_handle.read().await;
+            let skills_catalog = state.skills.as_ref().cloned();
+            let skills_snapshot =
+                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
+            let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) = compose_with_skills(
+                    cfg.system_prompt.as_deref(),
+                    skills_catalog.as_ref(),
+                    &skills_snapshot,
+                ) {
+                    cfg.system_prompt = Some(prompt);
+                }
+                if workspace_for_turn.is_some() {
+                    cfg.session_workspace = workspace_for_turn;
                 }
             }) {
                 Ok(a) => a,
@@ -1293,11 +1566,25 @@ async fn handle_client_frame(
             // arm. We rebuild on each turn so per-socket mode is
             // honoured even if the user just toggled it.
             let active_mode = *mode_handle.read().await;
+            let skills_catalog = state.skills.as_ref().cloned();
+            let skills_snapshot =
+                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &feedback);
+            let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) = compose_with_skills(
+                    cfg.system_prompt.as_deref(),
+                    skills_catalog.as_ref(),
+                    &skills_snapshot,
+                ) {
+                    cfg.system_prompt = Some(prompt);
+                }
+                if workspace_for_turn.is_some() {
+                    cfg.session_workspace = workspace_for_turn;
                 }
             }) {
                 Ok(a) => a,
@@ -1337,6 +1624,102 @@ async fn handle_client_frame(
                 }
             });
             *current_task = Some(handle);
+        }
+        WsClientMessage::ActivateSkill { name } => {
+            let Some(catalog) = state.skills.as_ref() else {
+                send_error(ws_tx, "skill catalogue not configured").await;
+                return true;
+            };
+            let known = catalog
+                .read()
+                .map(|g| g.get(&name).is_some())
+                .unwrap_or(false);
+            if !known {
+                send_error(ws_tx, &format!("no such skill `{name}`")).await;
+                return true;
+            }
+            if !active_skills.iter().any(|n| n == &name) {
+                active_skills.push(name.clone());
+            }
+            let _ = ws_tx
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "skill_activated",
+                        "name": name,
+                        "active": &*active_skills,
+                    })
+                    .to_string(),
+                ))
+                .await;
+        }
+        WsClientMessage::DeactivateSkill { name } => {
+            let before = active_skills.len();
+            active_skills.retain(|n| n != &name);
+            let removed = active_skills.len() != before;
+            let _ = ws_tx
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "skill_deactivated",
+                        "name": name,
+                        "removed": removed,
+                        "active": &*active_skills,
+                    })
+                    .to_string(),
+                ))
+                .await;
+        }
+        WsClientMessage::SetWorkspace { path } => {
+            match path {
+                None => {
+                    *socket_workspace = None;
+                    let _ = ws_tx
+                        .send(WsMessage::Text(
+                            json!({ "type": "workspace_changed", "path": null }).to_string(),
+                        ))
+                        .await;
+                }
+                Some(raw) => {
+                    let candidate = std::path::PathBuf::from(&raw);
+                    let resolved = match std::fs::canonicalize(&candidate) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            send_error(ws_tx, &format!("workspace `{raw}` is not reachable: {e}"))
+                                .await;
+                            return true;
+                        }
+                    };
+                    if !resolved.is_dir() {
+                        send_error(
+                            ws_tx,
+                            &format!("workspace `{}` is not a directory", resolved.display()),
+                        )
+                        .await;
+                        return true;
+                    }
+                    *socket_workspace = Some(resolved.clone());
+                    info!(workspace = %resolved.display(), "ws socket workspace pinned");
+                    // Touch the registry so the dropdown sees this
+                    // path next time, and bind the active persisted
+                    // conversation (if any) so Resume restores it.
+                    if let Some(store) = state.workspaces.as_ref() {
+                        let path_str = resolved.display().to_string();
+                        let _ = store.touch(&path_str);
+                        if let Some(id) = persisted_id.as_deref() {
+                            store.bind(id, &path_str);
+                        }
+                    }
+                    let _ = ws_tx
+                        .send(WsMessage::Text(
+                            json!({
+                                "type": "workspace_changed",
+                                "path": resolved.display().to_string(),
+                                "workspace": workspace_snapshot(&resolved).await,
+                            })
+                            .to_string(),
+                        ))
+                        .await;
+                }
+            }
         }
     }
     true

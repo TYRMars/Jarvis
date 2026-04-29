@@ -33,6 +33,25 @@ export async function fetchWorkspace(): Promise<WorkspaceState> {
   }
 }
 
+/// Probe an arbitrary folder and return the same `{root, vcs, branch}`
+/// shape as `/v1/workspace`. Used by the composer workspace picker
+/// before that folder becomes the active session root.
+export async function probeWorkspace(path: string): Promise<WorkspaceInfo> {
+  const res = await fetch(apiUrl(`/v1/workspace/probe?path=${encodeURIComponent(path)}`));
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(text) as { error?: string };
+      if (parsed?.error) msg = parsed.error;
+    } catch {
+      if (text) msg = text;
+    }
+    throw new Error(msg);
+  }
+  return JSON.parse(text) as WorkspaceInfo;
+}
+
 /// Squash an absolute path to something readable in a small badge:
 ///   /Users/x/code/myrepo  →  ~/code/myrepo
 ///   /home/y/projects/foo   →  ~/projects/foo

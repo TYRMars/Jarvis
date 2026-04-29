@@ -1,10 +1,14 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use harness_core::{
     Agent, AgentConfig, ConversationStore, LlmProvider, PermissionMode, PermissionStore,
-    ProjectStore,
+    ProjectStore, ToolRegistry,
 };
+use harness_mcp::McpManager;
+use harness_plugin::PluginManager;
+use harness_skill::SkillCatalog;
+use harness_store::WorkspaceStore;
 
 use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
 
@@ -99,6 +103,34 @@ pub struct AppState {
     /// can flip its own mode via the `set_mode` frame; this is just
     /// the per-process baseline (e.g. `--permission-mode plan`).
     pub default_permission_mode: PermissionMode,
+    /// Canonical, mutable tool registry. The MCP / plugin managers
+    /// add and remove tools here at runtime; per-request snapshots
+    /// are taken in `build_agent[_with]` under a brief read lock so
+    /// the agent loop never sees a lock guard. Seeded from
+    /// `agent_template.tools` in [`from_registry`](Self::from_registry).
+    pub tools: Arc<RwLock<ToolRegistry>>,
+    /// Optional MCP manager. When present, `/v1/mcp/servers*` routes
+    /// expose runtime add / remove / health probes; the manager
+    /// shares this struct's [`tools`](Self::tools) handle so
+    /// modifications are visible to the next per-request snapshot.
+    pub mcp: Option<Arc<McpManager>>,
+    /// Optional skill catalogue. Loaded at startup from per-user +
+    /// per-workspace SKILL.md trees and mutated at runtime by the
+    /// plugin manager (install adds, uninstall removes). Reads
+    /// borrow under [`std::sync::RwLock::read`]; writes go through
+    /// [`std::sync::RwLock::write`] — both critical sections are
+    /// HashMap-sized so contention is negligible.
+    pub skills: Option<Arc<RwLock<SkillCatalog>>>,
+    /// Optional plugin manager. When present, `/v1/plugins*`
+    /// endpoints expose install / uninstall / list and the
+    /// manager mutates the shared `skills` catalog + `mcp` manager
+    /// as plugins come and go.
+    pub plugins: Option<Arc<PluginManager>>,
+    /// Optional persisted workspaces registry. Backs the chat
+    /// header's "Recent" dropdown and the per-conversation
+    /// workspace binding (so `Resume` can restore which folder a
+    /// session was started in).
+    pub workspaces: Option<Arc<WorkspaceStore>>,
 }
 
 impl AppState {
@@ -106,6 +138,7 @@ impl AppState {
     /// `AgentConfig`. The template's `model` field is ignored —
     /// per-request routing always overrides it.
     pub fn from_registry(providers: ProviderRegistry, template: AgentConfig) -> Self {
+        let seed: ToolRegistry = (*template.tools).clone();
         Self {
             providers: Arc::new(providers),
             agent_template: template,
@@ -115,6 +148,11 @@ impl AppState {
             server_info: ServerInfo::default(),
             permission_store: None,
             default_permission_mode: PermissionMode::default(),
+            tools: Arc::new(RwLock::new(seed)),
+            mcp: None,
+            skills: None,
+            plugins: None,
+            workspaces: None,
         }
     }
 
@@ -127,6 +165,7 @@ impl AppState {
         let llm: Arc<dyn LlmProvider> = agent.llm.clone();
         let mut registry = ProviderRegistry::new("default");
         registry.insert("default", llm, agent.config.model.clone());
+        let seed: ToolRegistry = (*agent.config.tools).clone();
         Self {
             providers: Arc::new(registry),
             agent_template: agent.config.clone(),
@@ -136,6 +175,11 @@ impl AppState {
             server_info: ServerInfo::default(),
             permission_store: None,
             default_permission_mode: PermissionMode::default(),
+            tools: Arc::new(RwLock::new(seed)),
+            mcp: None,
+            skills: None,
+            plugins: None,
+            workspaces: None,
         }
     }
 
@@ -184,6 +228,51 @@ impl AppState {
         self
     }
 
+    /// Replace the canonical tool registry handle. The binary calls
+    /// this when it wants the same `Arc<RwLock<ToolRegistry>>` shared
+    /// with an [`McpManager`] (and, later, a plugin manager) so all
+    /// three see the same mutations.
+    pub fn with_tools(mut self, tools: Arc<RwLock<ToolRegistry>>) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Inject a runtime MCP manager. The manager must already be
+    /// constructed against `self.tools` (or an equivalent
+    /// [`Arc::clone`]) so add / remove operations propagate to the
+    /// per-request snapshots.
+    pub fn with_mcp(mut self, mcp: Arc<McpManager>) -> Self {
+        self.mcp = Some(mcp);
+        self
+    }
+
+    /// Attach the loaded skill catalogue. The binary calls this
+    /// once at startup with the freshly-loaded catalog; routes
+    /// return 503 until it's set. The handle is shared with the
+    /// plugin manager (and any future plugin source) so install /
+    /// uninstall propagate to live `/v1/skills*` reads.
+    pub fn with_skills(mut self, catalog: Arc<RwLock<SkillCatalog>>) -> Self {
+        self.skills = Some(catalog);
+        self
+    }
+
+    /// Inject the plugin manager. Without one, `/v1/plugins*`
+    /// returns 503. The manager must be backed by the same
+    /// `skills` and `mcp` handles attached above so install /
+    /// uninstall propagate to the live catalogue.
+    pub fn with_plugins(mut self, plugins: Arc<PluginManager>) -> Self {
+        self.plugins = Some(plugins);
+        self
+    }
+
+    /// Inject the workspaces registry. Without one, `/v1/workspaces*`
+    /// returns 503 and the WS handler can still pin a path per
+    /// session — it just won't remember the choice across restarts.
+    pub fn with_workspaces(mut self, store: Arc<WorkspaceStore>) -> Self {
+        self.workspaces = Some(store);
+        self
+    }
+
     /// Build a fresh `Agent` for one request, routed via the
     /// registry. The returned agent shares the template's tools /
     /// memory / approver / system_prompt / max_iterations.
@@ -211,6 +300,7 @@ impl AppState {
         let routed = self.providers.pick(explicit_provider, model)?;
         let mut cfg = self.agent_template.clone();
         cfg.model = routed.model.clone();
+        cfg.tools = self.snapshot_tools();
         customise(&mut cfg);
         Ok(Arc::new(Agent::new(routed.entry.provider.clone(), cfg)))
     }
@@ -218,6 +308,20 @@ impl AppState {
     fn agent_from_routed(&self, routed: Routed<'_>) -> Agent {
         let mut cfg = self.agent_template.clone();
         cfg.model = routed.model;
+        cfg.tools = self.snapshot_tools();
         Agent::new(routed.entry.provider.clone(), cfg)
+    }
+
+    /// Take a per-request snapshot of the canonical registry. The
+    /// read lock is held only for the duration of `(*guard).clone()`
+    /// — a HashMap clone over `Arc<dyn Tool>` values, no deep copy of
+    /// tool implementations. On lock poisoning the template's frozen
+    /// catalogue is returned so the agent loop never panics because a
+    /// sibling thread crashed mid-write.
+    fn snapshot_tools(&self) -> Arc<ToolRegistry> {
+        match self.tools.read() {
+            Ok(guard) => Arc::new((*guard).clone()),
+            Err(_) => self.agent_template.tools.clone(),
+        }
     }
 }

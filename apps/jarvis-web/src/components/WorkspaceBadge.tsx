@@ -1,31 +1,113 @@
-// Chat-header workspace badge — shows the resolved workspace root
-// and git state at a glance, click to refresh, hover for the full
-// path.
+// Chat-header workspace badge — shows the active workspace root and
+// git state, click to open a Recent-folders dropdown that mirrors
+// `~/.config/jarvis/workspaces.json`. Selecting an entry pins it
+// for the current WebSocket session via `set_workspace`; the entry
+// also moves to the front of Recent so subsequent sessions find it
+// first. A free-text input handles "Open folder…" — the server
+// canonicalises and validates before it lands in Recent.
 //
-// Data comes from `GET /v1/workspace`. Refreshes on mount and on
-// click. Doesn't poll — the badge is a snapshot, not a live ticker;
-// branch / dirty changes show on next click. If we ever care about
-// "auto-refresh after a tool turn ends", subscribe to `done` in
-// `frames.ts` and re-fetch.
+// Source-of-truth precedence for what the badge displays:
+//   1. `appStore.socketWorkspace` — set by the `workspace_changed`
+//      WS frame after `set_workspace` lands.
+//   2. `GET /v1/workspace` — the binary's startup root (the badge's
+//      historical content; still useful as fallback).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAppStore } from "../store/appStore";
+import { sendFrame } from "../services/socket";
 import { fetchWorkspace, shortenPath } from "../services/workspace";
 import type { WorkspaceState } from "../services/workspace";
+import {
+  forgetWorkspace,
+  listRecentWorkspaces,
+  touchWorkspace,
+  type RecentWorkspace,
+} from "../services/workspaces";
+import { t } from "../utils/i18n";
+
+function tx(key: string, fallback: string): string {
+  const v = t(key);
+  return v === key ? fallback : v;
+}
 
 export function WorkspaceBadge() {
   const [state, setState] = useState<WorkspaceState>({ kind: "loading" });
-  const refresh = () => {
+  const [open, setOpen] = useState(false);
+  const [recent, setRecent] = useState<RecentWorkspace[]>([]);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const socketWorkspace = useAppStore((s) => s.socketWorkspace);
+
+  const refreshBaseline = () => {
     setState({ kind: "loading" });
-    fetchWorkspace().then(setState);
+    void fetchWorkspace().then(setState);
   };
+  const refreshRecent = () => {
+    setRecentLoading(true);
+    listRecentWorkspaces()
+      .then((rows) => setRecent(rows))
+      .catch(() => setRecent([]))
+      .finally(() => setRecentLoading(false));
+  };
+
   useEffect(() => {
-    refresh();
-    // No deps — fetch once on mount. The user can click the badge
-    // to re-fetch; we deliberately don't poll because every click
-    // boots a `git status --porcelain` and that's not free on
-    // larger trees.
+    refreshBaseline();
+    refreshRecent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-fetch the recent list whenever the dropdown opens — covers the
+  // case where another window pinned a folder mid-session.
+  useEffect(() => {
+    if (open) refreshRecent();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const fallbackPath = state.kind === "ready" ? state.info.root : null;
+  const activePath = socketWorkspace ?? fallbackPath;
+  const overridden = socketWorkspace != null;
+
+  const pin = async (path: string | null) => {
+    setActionError(null);
+    if (path) {
+      // Touch first so the registry sees the canonical path even if
+      // the WS frame fails (e.g. server restart): worst case the
+      // user sees the entry in Recent without it being live-pinned.
+      try {
+        const canonical = await touchWorkspace(path);
+        sendFrame({ type: "set_workspace", path: canonical });
+      } catch (e: unknown) {
+        setActionError(t("workspacePinFailed", String(e)));
+        return;
+      }
+    } else {
+      sendFrame({ type: "set_workspace", path: null });
+    }
+    setDraft("");
+    setOpen(false);
+    refreshRecent();
+  };
+
+  const drop = async (path: string) => {
+    setActionError(null);
+    try {
+      await forgetWorkspace(path);
+      refreshRecent();
+    } catch (e: unknown) {
+      setActionError(String(e));
+    }
+  };
 
   if (state.kind === "loading") {
     return (
@@ -40,61 +122,175 @@ export function WorkspaceBadge() {
       </button>
     );
   }
-  if (state.kind === "unconfigured") {
+
+  const renderTrigger = () => {
+    if (state.kind === "unconfigured") {
+      return (
+        <button
+          type="button"
+          className="workspace-badge workspace-badge-error"
+          title="server didn't pin a workspace root — pick one from Recent or paste a path"
+          onClick={() => setOpen((v) => !v)}
+        >
+          <BadgeIcon />
+          <span>{tx("workspaceBadgeNone", "no workspace")}</span>
+        </button>
+      );
+    }
+    if (state.kind === "error") {
+      return (
+        <button
+          type="button"
+          className="workspace-badge workspace-badge-error"
+          title={`workspace lookup failed: ${state.message}`}
+          onClick={refreshBaseline}
+        >
+          <BadgeIcon />
+          <span>retry</span>
+        </button>
+      );
+    }
+    const { info } = state;
+    const short = activePath ? shortenPath(activePath) : "?";
+    const branch = info.vcs === "git" ? info.branch ?? "(detached)" : null;
+    const dirty = info.vcs === "git" && info.dirty === true;
+    const tooltip = overridden
+      ? `${activePath} (session override)\nbase: ${info.root}`
+      : info.vcs === "git"
+        ? `${info.root}\n${info.branch ?? "(detached)"} (${info.head ?? "?"})${dirty ? " · dirty" : " · clean"}`
+        : info.root;
     return (
       <button
         type="button"
-        className="workspace-badge workspace-badge-error"
-        title="server didn't pin a workspace root — check JARVIS_FS_ROOT or --workspace"
-        onClick={refresh}
+        className={
+          "workspace-badge" +
+          (dirty ? " workspace-badge-dirty" : "") +
+          (overridden ? " workspace-badge-pinned" : "")
+        }
+        title={tooltip}
+        onClick={() => setOpen((v) => !v)}
+        onAuxClick={refreshBaseline}
       >
         <BadgeIcon />
-        <span>no workspace</span>
+        <span className="workspace-badge-path">{short}</span>
+        {!overridden && branch && (
+          <>
+            <span className="workspace-badge-sep">·</span>
+            <span className="workspace-badge-branch">
+              {branch}
+              {dirty && <span className="workspace-badge-dot" aria-label="dirty">●</span>}
+            </span>
+          </>
+        )}
+        <span className="workspace-badge-caret" aria-hidden>
+          ▾
+        </span>
       </button>
     );
-  }
-  if (state.kind === "error") {
-    return (
-      <button
-        type="button"
-        className="workspace-badge workspace-badge-error"
-        title={`workspace lookup failed: ${state.message}`}
-        onClick={refresh}
-      >
-        <BadgeIcon />
-        <span>retry</span>
-      </button>
-    );
-  }
-  const { info } = state;
-  const short = shortenPath(info.root);
-  // Build the inline label: "~/code/myrepo · main●" (dirty) or
-  // "~/code/myrepo · main" (clean). Non-git: just the path.
-  const branch = info.vcs === "git" ? info.branch ?? "(detached)" : null;
-  const dirty = info.vcs === "git" && info.dirty === true;
-  const tooltip =
-    info.vcs === "git"
-      ? `${info.root}\n${info.branch ?? "(detached)"} (${info.head ?? "?"})${dirty ? " · dirty" : " · clean"}`
-      : info.root;
+  };
+
   return (
-    <button
-      type="button"
-      className={`workspace-badge${dirty ? " workspace-badge-dirty" : ""}`}
-      title={tooltip}
-      onClick={refresh}
-    >
-      <BadgeIcon />
-      <span className="workspace-badge-path">{short}</span>
-      {branch && (
-        <>
-          <span className="workspace-badge-sep">·</span>
-          <span className="workspace-badge-branch">
-            {branch}
-            {dirty && <span className="workspace-badge-dot" aria-label="dirty">●</span>}
-          </span>
-        </>
+    <div className="workspace-badge-wrap" ref={wrapRef}>
+      {renderTrigger()}
+      {open && (
+        <div className="workspace-popover" role="dialog">
+          <div className="workspace-popover-header">
+            {tx("workspaceRecent", "Recent")}
+          </div>
+          {recentLoading ? (
+            <div className="workspace-popover-row workspace-popover-muted">…</div>
+          ) : recent.length === 0 ? (
+            <div className="workspace-popover-row workspace-popover-muted">
+              {tx("workspaceRecentEmpty", "No recent workspaces yet.")}
+            </div>
+          ) : (
+            <ul className="workspace-recent-list">
+              {recent.map((r) => {
+                const isCurrent = r.path === activePath;
+                return (
+                  <li key={r.path} className="workspace-recent-item">
+                    <button
+                      type="button"
+                      className={
+                        "workspace-recent-row" +
+                        (isCurrent ? " workspace-recent-row-current" : "")
+                      }
+                      onClick={() => pin(r.path)}
+                      title={r.path}
+                    >
+                      <span className="workspace-recent-name">{r.name}</span>
+                      <span className="workspace-recent-path">
+                        {shortenPath(r.path)}
+                      </span>
+                      {isCurrent && (
+                        <span className="workspace-recent-check" aria-label="current">
+                          ✓
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="workspace-recent-drop"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void drop(r.path);
+                      }}
+                      aria-label={tx("workspaceForget", "Forget")}
+                      title={tx("workspaceForget", "Forget")}
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          <div className="workspace-popover-divider" />
+
+          <div className="workspace-popover-header">
+            {tx("workspaceOpenFolder", "Open folder…")}
+          </div>
+          <form
+            className="workspace-popover-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (draft.trim()) void pin(draft.trim());
+            }}
+          >
+            <input
+              className="workspace-popover-input"
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={tx("workspacePinPlaceholder", "/path/to/project")}
+              autoFocus
+            />
+            <div className="workspace-popover-actions">
+              {overridden && (
+                <button
+                  type="button"
+                  className="workspace-popover-btn"
+                  onClick={() => void pin(null)}
+                >
+                  {tx("workspaceClearPin", "Clear pin")}
+                </button>
+              )}
+              <button
+                type="submit"
+                className="workspace-popover-btn workspace-popover-btn-primary"
+              >
+                {tx("workspacePinSet", "Set")}
+              </button>
+            </div>
+          </form>
+
+          {actionError && (
+            <div className="workspace-popover-error">{actionError}</div>
+          )}
+        </div>
       )}
-    </button>
+    </div>
   );
 }
 

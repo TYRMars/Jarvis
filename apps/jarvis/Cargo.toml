@@ -15,7 +15,9 @@ harness-core.workspace = true
 harness-llm.workspace = true
 harness-mcp.workspace = true
 harness-memory.workspace = true
+harness-plugin.workspace = true
 harness-server.workspace = true
+harness-skill.workspace = true
 harness-store.workspace = true
 harness-tools.workspace = true
 

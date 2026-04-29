@@ -17,7 +17,7 @@ import { ChangeReport, ChangeReportCount } from "./Workspace/ChangeReport";
 import { PlanCountSpan, PlanList } from "./Workspace/PlanList";
 import { TaskCountSpan, TasksList } from "./Workspace/TasksRail";
 import { WorkspaceDiff, WorkspaceDiffCount } from "./Workspace/WorkspaceDiff";
-import { ClearTasksButton, CloseWorkspaceRailButton } from "./Workspace/WorkspaceToggles";
+import { ClearTasksButton } from "./Workspace/WorkspaceToggles";
 import { useAppStore } from "../store/appStore";
 import type { WorkspacePanelKey } from "../store/persistence";
 import { t } from "../utils/i18n";
@@ -25,7 +25,6 @@ import { t } from "../utils/i18n";
 type PanelConfig = {
   key: WorkspacePanelKey;
   className: string;
-  label: string;
   title: string;
   subtitle: ReactNode;
   extraActions?: ReactNode;
@@ -35,20 +34,20 @@ type PanelConfig = {
 export function AppWorkspaceRail() {
   const visible = useAppStore((s) => s.workspacePanelVisible);
 
-  // Hide the entire <aside> when no panels are active. The
-  // master `workspaceRailOpen` flag still controls whether the
-  // body grid reserves the column at all, but we also short-
-  // circuit here so the empty rail doesn't paint a blank
-  // background while the column collapses on its own.
-  const anyVisible =
-    visible.diff || visible.tasks || visible.plan || visible.changeReport;
+  const anyVisible = Object.values(visible).some(Boolean);
   if (!anyVisible) return null;
 
   const panels: PanelConfig[] = [
     {
+      key: "preview",
+      className: "rail-preview",
+      title: tx("panelPreview", "Preview"),
+      subtitle: tx("previewSubtitle", "local app surface"),
+      content: <PreviewPanel />,
+    },
+    {
       key: "diff",
       className: "rail-ws-diff",
-      label: tx("panelDiff", "Diff"),
       title: t("wsDiffTitle"),
       subtitle: (
         <>
@@ -60,7 +59,6 @@ export function AppWorkspaceRail() {
     {
       key: "changeReport",
       className: "rail-change-report",
-      label: tx("changeReportTitle", "Change report"),
       title: t("changeReportTitle"),
       subtitle: (
         <>
@@ -70,9 +68,22 @@ export function AppWorkspaceRail() {
       content: <ChangeReport />,
     },
     {
+      key: "terminal",
+      className: "rail-terminal",
+      title: tx("panelTerminal", "Terminal"),
+      subtitle: tx("terminalSubtitle", "shell session"),
+      content: <TerminalPanel />,
+    },
+    {
+      key: "files",
+      className: "rail-files",
+      title: tx("panelFiles", "Files"),
+      subtitle: tx("filesSubtitle", "workspace tree"),
+      content: <FilesPanel />,
+    },
+    {
       key: "tasks",
       className: "rail-tasks",
-      label: tx("tasks", "Tasks"),
       title: t("tasks"),
       subtitle: (
         <>
@@ -85,7 +96,6 @@ export function AppWorkspaceRail() {
     {
       key: "plan",
       className: "rail-plan",
-      label: tx("plan", "Plan"),
       title: t("plan"),
       subtitle: (
         <>
@@ -104,21 +114,7 @@ export function AppWorkspaceRail() {
       aria-label="Workspace panels"
     >
       <div className="workspace-rail-shell">
-        <div className="workspace-rail-header">
-          <div className="workspace-rail-heading">
-            <span className="workspace-rail-kicker">{tx("workspace", "Workspace")}</span>
-            <h2>{tx("panels", "Panels")}</h2>
-          </div>
-          <CloseWorkspaceRailButton />
-        </div>
-        <div className="workspace-rail-tabs" aria-label="Open workspace panels">
-          {openPanels.map((panel) => (
-            <span key={panel.key} className={`workspace-rail-tab ${panel.className}`}>
-              {panel.label}
-            </span>
-          ))}
-        </div>
-        <div className="workspace-rail-stack">
+        <div className={`workspace-rail-stack count-${Math.min(openPanels.length, 4)}`}>
           {openPanels.map((panel) => (
             <PanelSection
               key={panel.key}
@@ -186,6 +182,88 @@ function PanelSection({
       <div className="rail-card-body">{children}</div>
     </section>
   );
+}
+
+function PreviewPanel() {
+  return (
+    <div className="preview-surface" aria-live="polite">
+      <div className="preview-pixel-mascot" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+        <span />
+        <span />
+      </div>
+      <div className="preview-loading-row">
+        <span className="preview-spinner" aria-hidden="true" />
+        <span>{tx("previewSettingUp", "Setting up preview")}</span>
+      </div>
+    </div>
+  );
+}
+
+function TerminalPanel() {
+  return (
+    <div className="terminal-surface">
+      <div className="terminal-line">
+        <span className="terminal-muted">(base)</span>
+        <span> jarvis % </span>
+        <span className="terminal-cursor" aria-hidden="true" />
+      </div>
+    </div>
+  );
+}
+
+function FilesPanel() {
+  const diff = useAppStore((s) => s.workspaceDiff);
+  const paths = diff && diff !== "unavailable" ? diff.files.map((f) => f.path) : [];
+  const roots = buildFileRoots(paths);
+  return (
+    <div className="files-panel">
+      <label className="files-search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <path d="m21 21-4.35-4.35" />
+        </svg>
+        <span className="sr-only">{tx("search", "Search")}</span>
+        <input type="search" placeholder={tx("filesFilterPlaceholder", "Filter files... (?text to search contents)")} />
+      </label>
+      <div className="files-tree" role="tree">
+        {roots.length === 0 ? (
+          <div className="files-empty">{tx("filesEmpty", "No changed files yet.")}</div>
+        ) : (
+          roots.map((root) => <FileTreeRow key={root.name} name={root.name} depth={0} count={root.count} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FileTreeRow({ name, depth, count }: { name: string; depth: number; count?: number }) {
+  return (
+    <div className="files-row" role="treeitem" style={{ paddingLeft: 8 + depth * 16 }}>
+      <svg className="files-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m9 18 6-6-6-6" />
+      </svg>
+      <svg className="files-folder" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+      </svg>
+      <span>{name}</span>
+      {count ? <em>{count}</em> : null}
+    </div>
+  );
+}
+
+function buildFileRoots(paths: string[]): Array<{ name: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const path of paths) {
+    const [root] = path.split("/");
+    if (!root) continue;
+    counts.set(root, (counts.get(root) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, count]) => ({ name, count }));
 }
 
 function tx(key: string, fallback: string): string {

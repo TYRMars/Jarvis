@@ -62,8 +62,9 @@ impl Tool for FsReadTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let rel = arg_str(&args, "path")?;
-        let abs = resolve_under(&self.root, rel)?;
+        let abs = resolve_under(&root, rel)?;
         let contents = fs::read_to_string(&abs).await?;
         Ok(contents)
     }
@@ -117,8 +118,9 @@ impl Tool for FsListTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let rel = args.get("path").and_then(Value::as_str).unwrap_or(".");
-        let abs = resolve_under(&self.root, rel)?;
+        let abs = resolve_under(&root, rel)?;
         let mut rd = fs::read_dir(&abs).await?;
 
         let mut entries = Vec::new();
@@ -187,9 +189,10 @@ impl Tool for FsWriteTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let rel = arg_str(&args, "path")?;
         let content = arg_str(&args, "content")?;
-        let abs = resolve_under(&self.root, rel)?;
+        let abs = resolve_under(&root, rel)?;
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -256,6 +259,7 @@ impl Tool for FsEditTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let rel = arg_str(&args, "path")?;
         let old = arg_str(&args, "old_string")?;
         let new = arg_str(&args, "new_string")?;
@@ -271,7 +275,7 @@ impl Tool for FsEditTool {
             return Err("`old_string` and `new_string` are identical".into());
         }
 
-        let abs = resolve_under(&self.root, rel)?;
+        let abs = resolve_under(&root, rel)?;
         let original = fs::read_to_string(&abs).await?;
         let count = original.matches(old).count();
 

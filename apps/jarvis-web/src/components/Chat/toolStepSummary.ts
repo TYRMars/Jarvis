@@ -140,7 +140,7 @@ function singleInlineStat(
       for (const line of output.split("\n")) {
         if (line.startsWith("##")) continue;
         if (line.startsWith("??")) untracked += 1;
-        else if (line.length >= 2 && /[MADR]/.test(line[0]! + line[1]!)) modified += 1;
+        else if (line.length >= 2 && /[MADR]/.test(line[0] + line[1])) modified += 1;
       }
       const parts: string[] = [];
       if (modified > 0) parts.push(`M:${modified}`);
