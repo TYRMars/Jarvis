@@ -7657,3 +7657,94 @@ select.settings-input {
   color: var(--text-soft);
   margin-top: 4px;
 }
+
+/* ---- Workspace badge popover ---- */
+.workspace-badge-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.workspace-badge-pinned {
+  border-color: color-mix(in srgb, #2563eb 50%, transparent);
+  background: color-mix(in srgb, #2563eb 10%, var(--panel));
+}
+
+.workspace-badge-pin-dot {
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--text-soft);
+}
+
+.workspace-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 280px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workspace-popover-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+}
+
+.workspace-popover-current {
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", monospace;
+  word-break: break-all;
+  padding: 4px 6px;
+  background: var(--panel-hover);
+  border-radius: 4px;
+}
+
+.workspace-popover-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workspace-popover-input {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.workspace-popover-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.workspace-popover-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.workspace-popover-btn-primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}
+
+.workspace-popover-btn-primary:hover {
+  background: #1d4ed8;
+}

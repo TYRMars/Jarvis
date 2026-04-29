@@ -129,6 +129,11 @@ export function handleFrame(ev: any): void {
       store.setActiveSkills?.(active);
       break;
     }
+    case "workspace_changed": {
+      const path = ((ev as any).path ?? null) as string | null;
+      store.setSocketWorkspace?.(path);
+      break;
+    }
     default:
       console.warn("unknown frame", ev);
   }

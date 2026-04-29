@@ -19,6 +19,7 @@ pub mod progress;
 pub mod project;
 pub mod store;
 pub mod tool;
+pub mod workspace;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, AgentStream, RunOutcome};
 pub use approval::{
@@ -49,3 +50,6 @@ pub use permission::{
 pub use project::{derive_slug, validate_slug, Project};
 pub use store::{ConversationMetadata, ConversationRecord, ConversationStore, ProjectStore};
 pub use tool::{Tool, ToolCategory, ToolRegistry, ToolSpec};
+pub use workspace::{
+    active_workspace, active_workspace_or, with_session_workspace,
+};

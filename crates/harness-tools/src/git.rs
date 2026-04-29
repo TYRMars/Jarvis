@@ -142,8 +142,9 @@ impl Tool for GitStatusTool {
     }
 
     async fn invoke(&self, _args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         run_git(
-            &self.root,
+            &root,
             &["status", "--porcelain=v1", "--branch"],
             self.max_bytes,
             self.timeout_ms,
@@ -244,6 +245,7 @@ impl Tool for GitDiffTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let staged = arg_bool(&args, "staged");
         let stat_only = arg_bool(&args, "stat_only");
         let from = arg_opt_str(&args, "from");
@@ -283,7 +285,7 @@ impl Tool for GitDiffTool {
         }
 
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let out = run_git(&self.root, &argv_refs, self.max_bytes, self.timeout_ms).await?;
+        let out = run_git(&root, &argv_refs, self.max_bytes, self.timeout_ms).await?;
         if out.is_empty() {
             return Ok("(no changes)".to_string());
         }
@@ -358,6 +360,7 @@ impl Tool for GitLogTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let limit = args
             .get("limit")
             .and_then(Value::as_u64)
@@ -393,7 +396,7 @@ impl Tool for GitLogTool {
         }
 
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        run_git(&self.root, &argv_refs, self.max_bytes, self.timeout_ms).await
+        run_git(&root, &argv_refs, self.max_bytes, self.timeout_ms).await
     }
 }
 
@@ -457,6 +460,7 @@ impl Tool for GitShowTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let revision = args
             .get("revision")
             .and_then(Value::as_str)
@@ -478,7 +482,7 @@ impl Tool for GitShowTool {
         }
 
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        run_git(&self.root, &argv_refs, self.max_bytes, self.timeout_ms).await
+        run_git(&root, &argv_refs, self.max_bytes, self.timeout_ms).await
     }
 }
 
@@ -540,6 +544,7 @@ impl Tool for GitAddTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let all = arg_bool(&args, "all");
         let paths: Vec<String> = args
             .get("paths")
@@ -573,10 +578,10 @@ impl Tool for GitAddTool {
         }
 
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let _ = run_git(&self.root, &argv_refs, DEFAULT_MAX_BYTES, self.timeout_ms).await?;
+        let _ = run_git(&root, &argv_refs, DEFAULT_MAX_BYTES, self.timeout_ms).await?;
         // `git add` is silent on success; surface a friendly status.
         let summary = run_git(
-            &self.root,
+            &root,
             &["status", "--porcelain=v1"],
             DEFAULT_MAX_BYTES,
             self.timeout_ms,
@@ -658,6 +663,7 @@ impl Tool for GitCommitTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let message = args
             .get("message")
             .and_then(Value::as_str)
@@ -679,10 +685,10 @@ impl Tool for GitCommitTool {
         argv.push(message.to_string());
 
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let _ = run_git(&self.root, &argv_refs, DEFAULT_MAX_BYTES, self.timeout_ms).await?;
+        let _ = run_git(&root, &argv_refs, DEFAULT_MAX_BYTES, self.timeout_ms).await?;
         // Surface the new HEAD so the model can tell the user.
         let head = run_git(
-            &self.root,
+            &root,
             &["log", "-n1", "--pretty=format:%h %s"],
             DEFAULT_MAX_BYTES,
             self.timeout_ms,
@@ -762,6 +768,7 @@ impl Tool for GitMergeTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        let root = harness_core::active_workspace_or(&self.root);
         let abort = arg_bool(&args, "abort");
         let branch = arg_opt_str(&args, "branch");
         let no_ff = arg_bool(&args, "no_ff");
@@ -774,7 +781,7 @@ impl Tool for GitMergeTool {
                 );
             }
             return run_git(
-                &self.root,
+                &root,
                 &["merge", "--abort"],
                 DEFAULT_MAX_BYTES,
                 self.timeout_ms,
@@ -802,7 +809,7 @@ impl Tool for GitMergeTool {
         argv.push(branch.to_string());
 
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let result = run_git(&self.root, &argv_refs, DEFAULT_MAX_BYTES, self.timeout_ms).await;
+        let result = run_git(&root, &argv_refs, DEFAULT_MAX_BYTES, self.timeout_ms).await;
         // `git merge` writes the "CONFLICT" lines to STDOUT, not
         // stderr — so a successful invocation that detected conflicts
         // surfaces here either as `Ok(stdout-with-CONFLICT-text)` or
@@ -810,7 +817,7 @@ impl Tool for GitMergeTool {
         // empty. Either way the truth is in the working tree, so
         // probe it directly for any unmerged paths.
         let conflicts = run_git(
-            &self.root,
+            &root,
             &["diff", "--name-only", "--diff-filter=U"],
             DEFAULT_MAX_BYTES,
             self.timeout_ms,

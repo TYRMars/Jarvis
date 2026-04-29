@@ -273,6 +273,13 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     pluginsListFailed: (msg: string) => `List failed: ${msg}`,
     pluginsInstallFailed: (msg: string) => `Install failed: ${msg}`,
     pluginsRemoveFailed: (msg: string) => `Remove failed: ${msg}`,
+    // Workspace badge / picker
+    workspaceBadgeNone: "no workspace",
+    workspaceCurrent: "Current",
+    workspacePinTitle: "Pin a folder for this session",
+    workspacePinPlaceholder: "/path/to/project",
+    workspacePinSet: "Set",
+    workspaceClearPin: "Clear pin",
     // Appearance
     settingsAppearanceTitle: "Appearance",
     settingsAppearanceDesc: "Theme and interface language. Saved to localStorage; takes effect immediately.",
@@ -818,6 +825,13 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     pluginsListFailed: (msg: string) => `加载失败：${msg}`,
     pluginsInstallFailed: (msg: string) => `安装失败：${msg}`,
     pluginsRemoveFailed: (msg: string) => `卸载失败：${msg}`,
+    // Workspace badge / picker
+    workspaceBadgeNone: "未指定工作区",
+    workspaceCurrent: "当前",
+    workspacePinTitle: "为本次会话指定项目目录",
+    workspacePinPlaceholder: "/项目/绝对路径",
+    workspacePinSet: "设定",
+    workspaceClearPin: "取消指定",
     // Appearance
     settingsAppearanceTitle: "外观",
     settingsAppearanceDesc: "主题和界面语言。保存在 localStorage，立即生效。",

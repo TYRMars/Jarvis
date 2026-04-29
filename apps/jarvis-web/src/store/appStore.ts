@@ -441,10 +441,18 @@ interface AppStoreActions {
   /// every component (Settings tab, future header chip) sees the
   /// same source of truth. Empty until the user toggles one.
   activeSkills: string[];
+  /// Per-socket workspace override, mirrored from
+  /// `workspace_changed`. `null` means "use the binary's startup
+  /// root" (whatever `GET /v1/workspace` returns). The chat-header
+  /// `WorkspaceBadge` shows this in preference to the server-wide
+  /// path so the UI never lies about which folder the agent is
+  /// actually targeting.
+  socketWorkspace: string | null;
   setPermissionMode: (mode: "ask" | "accept-edits" | "plan" | "auto" | "bypass") => void;
   bumpPermissionRulesVersion?: () => void;
   setProposedPlan: (plan: string | null) => void;
   setActiveSkills?: (names: string[]) => void;
+  setSocketWorkspace?: (path: string | null) => void;
 
   // ---- Workspace diff (right-rail review card) ----
   /// `null` = not fetched yet; `"unavailable"` = server returned 503
@@ -532,6 +540,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   permissionRulesVersion: 0,
   proposedPlan: null,
   activeSkills: [],
+  socketWorkspace: null,
   workspaceDiff: null,
   workspaceDiffLoading: false,
   workspaceDiffFileCache: {},
@@ -1146,6 +1155,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
     set((s) => ({ permissionRulesVersion: s.permissionRulesVersion + 1 })),
   setProposedPlan: (plan) => set({ proposedPlan: plan }),
   setActiveSkills: (names) => set({ activeSkills: names }),
+  setSocketWorkspace: (path) => set({ socketWorkspace: path }),
   setWorkspaceDiff: (workspaceDiff) =>
     set({ workspaceDiff, workspaceDiffFileCache: {} }),
   setWorkspaceDiffLoading: (workspaceDiffLoading) => set({ workspaceDiffLoading }),

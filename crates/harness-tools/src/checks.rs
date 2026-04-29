@@ -69,7 +69,7 @@ impl Tool for ProjectChecksTool {
     }
 
     async fn invoke(&self, _args: Value) -> Result<String, BoxError> {
-        let root = self.root.clone();
+        let root = harness_core::active_workspace_or(&self.root);
         let suggestions = tokio::task::spawn_blocking(move || gather(&root))
             .await
             .map_err(|e| -> BoxError { format!("checks task panicked: {e}").into() })?;

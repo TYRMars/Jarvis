@@ -476,6 +476,15 @@ enum WsClientMessage {
     /// Deactivate a skill on this socket. No-op if the skill wasn't
     /// active. Server replies with `skill_deactivated`.
     DeactivateSkill { name: String },
+    /// Pin a per-socket workspace root. Subsequent turns run their
+    /// fs / git / shell / grep tools against this path instead of
+    /// the binary's startup workspace. `path: null` clears the
+    /// override and falls back to the startup root.
+    ///
+    /// Server replies with `workspace_changed { path }` on
+    /// success, or an `error` frame if the path doesn't exist or
+    /// isn't a directory.
+    SetWorkspace { path: Option<String> },
 }
 
 /// Static label for a `WsClientMessage` variant — used by the
@@ -498,6 +507,7 @@ fn client_msg_kind(msg: &WsClientMessage) -> &'static str {
         WsClientMessage::RefinePlan { .. } => "refine_plan",
         WsClientMessage::ActivateSkill { .. } => "activate_skill",
         WsClientMessage::DeactivateSkill { .. } => "deactivate_skill",
+        WsClientMessage::SetWorkspace { .. } => "set_workspace",
     }
 }
 
@@ -691,6 +701,12 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // system prompt. Order is insertion order so the model sees
     // them in the same order the user activated them.
     let mut active_skills: Vec<String> = Vec::new();
+    // Per-socket workspace override. `None` means "use the binary's
+    // startup workspace" (the historical behaviour). When `Some`,
+    // the path is installed as a `crate::workspace::with_session_workspace`
+    // scope around every tool invocation in this socket's turns,
+    // so fs / git / shell / grep tools target it.
+    let mut socket_workspace: Option<std::path::PathBuf> = None;
 
     // Tell the client the initial mode so it can render the badge
     // before any user interaction. Always sent; even when no
@@ -746,6 +762,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     &mut sticky_provider,
                     &mut sticky_model,
                     &mut active_skills,
+                    &mut socket_workspace,
                     &hitl_tx,
                 )
                 .await
@@ -878,6 +895,7 @@ async fn handle_client_frame(
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
     active_skills: &mut Vec<String>,
+    socket_workspace: &mut Option<std::path::PathBuf>,
     hitl_tx: &mpsc::Sender<PendingHitl>,
 ) -> bool {
     let text = match msg {
@@ -974,6 +992,7 @@ async fn handle_client_frame(
             let skills_catalog = state.skills.as_ref().cloned();
             let skills_snapshot =
                 merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
+            let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
@@ -986,6 +1005,9 @@ async fn handle_client_frame(
                     &skills_snapshot,
                 ) {
                     cfg.system_prompt = Some(prompt);
+                }
+                if workspace_for_turn.is_some() {
+                    cfg.session_workspace = workspace_for_turn;
                 }
             }) {
                 Ok(a) => a,
@@ -1279,6 +1301,7 @@ async fn handle_client_frame(
             let skills_catalog = state.skills.as_ref().cloned();
             let skills_snapshot =
                 merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
+            let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
@@ -1291,6 +1314,9 @@ async fn handle_client_frame(
                     &skills_snapshot,
                 ) {
                     cfg.system_prompt = Some(prompt);
+                }
+                if workspace_for_turn.is_some() {
+                    cfg.session_workspace = workspace_for_turn;
                 }
             }) {
                 Ok(a) => a,
@@ -1414,6 +1440,7 @@ async fn handle_client_frame(
             let skills_catalog = state.skills.as_ref().cloned();
             let skills_snapshot =
                 merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &feedback);
+            let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
@@ -1426,6 +1453,9 @@ async fn handle_client_frame(
                     &skills_snapshot,
                 ) {
                     cfg.system_prompt = Some(prompt);
+                }
+                if workspace_for_turn.is_some() {
+                    cfg.session_workspace = workspace_for_turn;
                 }
             }) {
                 Ok(a) => a,
@@ -1505,6 +1535,51 @@ async fn handle_client_frame(
                     .to_string(),
                 ))
                 .await;
+        }
+        WsClientMessage::SetWorkspace { path } => {
+            match path {
+                None => {
+                    *socket_workspace = None;
+                    let _ = ws_tx
+                        .send(WsMessage::Text(
+                            json!({ "type": "workspace_changed", "path": null }).to_string(),
+                        ))
+                        .await;
+                }
+                Some(raw) => {
+                    let candidate = std::path::PathBuf::from(&raw);
+                    let resolved = match std::fs::canonicalize(&candidate) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            send_error(
+                                ws_tx,
+                                &format!("workspace `{raw}` is not reachable: {e}"),
+                            )
+                            .await;
+                            return true;
+                        }
+                    };
+                    if !resolved.is_dir() {
+                        send_error(
+                            ws_tx,
+                            &format!("workspace `{}` is not a directory", resolved.display()),
+                        )
+                        .await;
+                        return true;
+                    }
+                    *socket_workspace = Some(resolved.clone());
+                    info!(workspace = %resolved.display(), "ws socket workspace pinned");
+                    let _ = ws_tx
+                        .send(WsMessage::Text(
+                            json!({
+                                "type": "workspace_changed",
+                                "path": resolved.display().to_string(),
+                            })
+                            .to_string(),
+                        ))
+                        .await;
+                }
+            }
         }
     }
     true
