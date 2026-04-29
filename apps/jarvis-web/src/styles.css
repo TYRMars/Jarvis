@@ -3489,21 +3489,9 @@ body.workspace-rail-closed #workspace-rail {
   gap: 10px;
   flex: 0 0 auto;
   min-height: 45px;
-  padding: 9px 9px 8px 13px;
+  padding: 9px 9px 8px 10px;
   background: color-mix(in srgb, var(--panel-raised) 28%, var(--panel));
   border-bottom: 1px solid var(--border-soft);
-}
-
-.rail-card-header::before {
-  content: "";
-  position: absolute;
-  top: 11px;
-  bottom: 11px;
-  left: 7px;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--rail-accent, var(--accent));
-  opacity: 0.85;
 }
 
 .rail-card-header h2 {
@@ -7628,4 +7616,44 @@ select.settings-input {
 
 .settings-skill-body.error {
   color: #b91c1c;
+}
+
+/* ---- Plugins section ---- */
+.settings-plugin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-plugin-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+}
+
+.settings-plugin-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-plugin-name {
+  font-size: 13px;
+}
+
+.settings-plugin-desc {
+  font-size: 12px;
+  color: var(--text-soft);
+  margin-top: 2px;
+}
+
+.settings-plugin-meta {
+  font-size: 11px;
+  color: var(--text-soft);
+  margin-top: 4px;
 }

@@ -4,12 +4,12 @@
 //! `GET    /v1/skills/:name`        — fetch one skill (manifest + body)
 //! `POST   /v1/skills/reload`       — re-scan disk roots
 //!
-//! All endpoints require an [`Arc<SkillCatalog>`] on `AppState`.
-//! Without one, every route returns 503 so callers can distinguish
-//! "feature not enabled" from "really broken".
+//! All endpoints require an `Arc<RwLock<SkillCatalog>>` on
+//! `AppState`. Without one, every route returns 503 so callers can
+//! distinguish "feature not enabled" from "really broken".
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::{
     extract::{Path, State},
@@ -32,7 +32,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_catalog(state: &AppState) -> Result<Arc<SkillCatalog>, Response> {
+fn require_catalog(state: &AppState) -> Result<Arc<RwLock<SkillCatalog>>, Response> {
     state.skills.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -47,7 +47,17 @@ async fn list(State(state): State<AppState>) -> Response {
         Ok(c) => c,
         Err(r) => return r,
     };
-    let entries: Vec<_> = cat
+    let guard = match cat.read() {
+        Ok(g) => g,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "skill catalogue lock poisoned" })),
+            )
+                .into_response();
+        }
+    };
+    let entries: Vec<_> = guard
         .entries()
         .map(|e| {
             json!({
@@ -71,7 +81,17 @@ async fn get_one(State(state): State<AppState>, Path(name): Path<String>) -> Res
         Ok(c) => c,
         Err(r) => return r,
     };
-    match cat.get(&name) {
+    let guard = match cat.read() {
+        Ok(g) => g,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "skill catalogue lock poisoned" })),
+            )
+                .into_response();
+        }
+    };
+    match guard.get(&name) {
         Some(e) => (
             StatusCode::OK,
             Json(json!({
@@ -97,24 +117,18 @@ async fn get_one(State(state): State<AppState>, Path(name): Path<String>) -> Res
 }
 
 async fn reload(State(state): State<AppState>) -> Response {
-    let _existing = match require_catalog(&state) {
+    let cat = match require_catalog(&state) {
         Ok(c) => c,
         Err(r) => return r,
     };
-    // Catalog is immutable behind Arc — re-loading mutates nothing
-    // shared. The intended replacement path is for the binary to
-    // construct a fresh `Arc<SkillCatalog>` and swap it in via
-    // `with_skills`; we expose this no-op endpoint so the UI button
-    // returns success when nothing has changed on disk and so the
-    // wire shape is forward-compatible with a real reload once we
-    // park the catalogue behind an `RwLock` (deferred to Phase 4
-    // to avoid widening the AppState lock surface mid-Phase-2).
-    info!("skills/reload received (catalog is currently load-once at startup)");
-    let count = state
-        .skills
-        .as_ref()
-        .map(|c| c.len())
-        .unwrap_or_default();
+    // Catalog mutations (plugin install / uninstall) flow through
+    // the manager, so the on-disk roots aren't the only source of
+    // truth anymore — a naive re-scan would clobber plugin entries.
+    // We stay conservative here: surface the current count and let
+    // a future "rescan disk roots and merge" build on this once the
+    // semantics are pinned down.
+    info!("skills/reload received (no-op stub)");
+    let count = cat.read().map(|g| g.len()).unwrap_or(0);
     (StatusCode::OK, Json(json!({ "count": count, "reloaded": false }))).into_response()
 }
 

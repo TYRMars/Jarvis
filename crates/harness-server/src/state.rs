@@ -6,6 +6,7 @@ use harness_core::{
     ProjectStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
+use harness_plugin::PluginManager;
 use harness_skill::SkillCatalog;
 
 use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
@@ -112,11 +113,18 @@ pub struct AppState {
     /// shares this struct's [`tools`](Self::tools) handle so
     /// modifications are visible to the next per-request snapshot.
     pub mcp: Option<Arc<McpManager>>,
-    /// Optional skill catalogue. Loaded once at startup from
-    /// per-user + per-workspace SKILL.md trees. Read by the
-    /// `/v1/skills*` routes and by per-socket activation logic that
-    /// prepends a skill's body to the system prompt.
-    pub skills: Option<Arc<SkillCatalog>>,
+    /// Optional skill catalogue. Loaded at startup from per-user +
+    /// per-workspace SKILL.md trees and mutated at runtime by the
+    /// plugin manager (install adds, uninstall removes). Reads
+    /// borrow under [`std::sync::RwLock::read`]; writes go through
+    /// [`std::sync::RwLock::write`] — both critical sections are
+    /// HashMap-sized so contention is negligible.
+    pub skills: Option<Arc<RwLock<SkillCatalog>>>,
+    /// Optional plugin manager. When present, `/v1/plugins*`
+    /// endpoints expose install / uninstall / list and the
+    /// manager mutates the shared `skills` catalog + `mcp` manager
+    /// as plugins come and go.
+    pub plugins: Option<Arc<PluginManager>>,
 }
 
 impl AppState {
@@ -137,6 +145,7 @@ impl AppState {
             tools: Arc::new(RwLock::new(seed)),
             mcp: None,
             skills: None,
+            plugins: None,
         }
     }
 
@@ -162,6 +171,7 @@ impl AppState {
             tools: Arc::new(RwLock::new(seed)),
             mcp: None,
             skills: None,
+            plugins: None,
         }
     }
 
@@ -229,10 +239,21 @@ impl AppState {
     }
 
     /// Attach the loaded skill catalogue. The binary calls this
-    /// once at startup with `Arc::new(SkillCatalog::load(...))`;
-    /// the `/v1/skills*` routes return 503 until it's set.
-    pub fn with_skills(mut self, catalog: Arc<SkillCatalog>) -> Self {
+    /// once at startup with the freshly-loaded catalog; routes
+    /// return 503 until it's set. The handle is shared with the
+    /// plugin manager (and any future plugin source) so install /
+    /// uninstall propagate to live `/v1/skills*` reads.
+    pub fn with_skills(mut self, catalog: Arc<RwLock<SkillCatalog>>) -> Self {
         self.skills = Some(catalog);
+        self
+    }
+
+    /// Inject the plugin manager. Without one, `/v1/plugins*`
+    /// returns 503. The manager must be backed by the same
+    /// `skills` and `mcp` handles attached above so install /
+    /// uninstall propagate to the live catalogue.
+    pub fn with_plugins(mut self, plugins: Arc<PluginManager>) -> Self {
+        self.plugins = Some(plugins);
         self
     }
 

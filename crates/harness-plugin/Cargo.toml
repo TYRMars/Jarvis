@@ -1,0 +1,21 @@
+[package]
+name = "harness-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Claude Code-style plugin packaging for the agent harness — install / uninstall plugins that bundle skills + MCP servers."
+
+[dependencies]
+harness-core.workspace = true
+harness-mcp.workspace = true
+harness-skill.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

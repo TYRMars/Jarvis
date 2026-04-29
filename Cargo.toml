@@ -5,6 +5,7 @@ members = [
     "crates/harness-llm",
     "crates/harness-mcp",
     "crates/harness-memory",
+    "crates/harness-plugin",
     "crates/harness-server",
     "crates/harness-skill",
     "crates/harness-store",
@@ -24,6 +25,7 @@ harness-core = { path = "crates/harness-core" }
 harness-llm = { path = "crates/harness-llm" }
 harness-mcp = { path = "crates/harness-mcp" }
 harness-memory = { path = "crates/harness-memory" }
+harness-plugin = { path = "crates/harness-plugin" }
 harness-server = { path = "crates/harness-server" }
 harness-skill = { path = "crates/harness-skill" }
 harness-store = { path = "crates/harness-store" }

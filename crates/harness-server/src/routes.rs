@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .merge(workspace_diff::router())
         .merge(crate::mcp_routes::router())
         .merge(crate::skill_routes::router())
+        .merge(crate::plugin_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .with_state(state)
@@ -565,13 +566,14 @@ async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Respons
 /// resolved to a known entry — leaves `cfg.system_prompt` alone.
 fn compose_with_skills(
     template: Option<&str>,
-    catalog: Option<&Arc<harness_skill::SkillCatalog>>,
+    catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
     active_names: &[String],
 ) -> Option<String> {
     let cat = catalog?;
+    let guard = cat.read().ok()?;
     let mut bodies: Vec<String> = Vec::new();
     for name in active_names {
-        if let Some(entry) = cat.get(name) {
+        if let Some(entry) = guard.get(name) {
             if entry.body.trim().is_empty() {
                 continue;
             }
@@ -1433,7 +1435,8 @@ async fn handle_client_frame(
                 send_error(ws_tx, "skill catalogue not configured").await;
                 return true;
             };
-            if catalog.get(&name).is_none() {
+            let known = catalog.read().map(|g| g.get(&name).is_some()).unwrap_or(false);
+            if !known {
                 send_error(ws_tx, &format!("no such skill `{name}`")).await;
                 return true;
             }

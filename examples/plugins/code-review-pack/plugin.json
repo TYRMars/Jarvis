@@ -1,0 +1,8 @@
+{
+  "name": "code-review-pack",
+  "version": "0.1.0",
+  "description": "Demo plugin: bundles a single in-tree code-review skill so the marketplace round-trip is testable on a fresh clone.",
+  "author": "Jarvis Project",
+  "license": "MIT",
+  "skills": ["skills/code-review"]
+}

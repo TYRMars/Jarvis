@@ -27,6 +27,7 @@ use harness_memory::{SlidingWindowMemory, SummarizingMemory};
 use harness_server::{
     default_skill_roots, serve, AppState, PermissionMode, ProviderRegistry, ServerInfo,
 };
+use harness_plugin::PluginManager;
 use harness_skill::SkillCatalog;
 use harness_tools::{register_builtins, BuiltinsConfig, Sandbox, ShellLimits};
 use tracing::info;
@@ -258,14 +259,46 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         .or_else(|| dirs_user_config().ok().map(|d| d.join("skills")));
     let workspace_skills_dir = Some(workspace_root.join(".jarvis").join("skills"));
     let skill_roots = default_skill_roots(user_skills_dir, workspace_skills_dir);
-    let skill_catalog = Arc::new(SkillCatalog::load(skill_roots));
-    info!(skills = skill_catalog.len(), "skill catalog loaded");
+    let skill_catalog = Arc::new(RwLock::new(SkillCatalog::load(skill_roots)));
+    let initial_skill_count = skill_catalog.read().map(|g| g.len()).unwrap_or(0);
+    info!(skills = initial_skill_count, "skill catalog loaded");
+
+    // Plugin manager — installs land at $XDG_CONFIG_HOME/jarvis/
+    // plugins/ (override `JARVIS_PLUGINS_DIR`). On startup we
+    // re-attach every entry the ledger remembers so plugin
+    // skills + MCP servers come back without manual reinstall.
+    let plugins_dir = std::env::var_os("JARVIS_PLUGINS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs_user_config().ok().map(|d| d.join("plugins")))
+        .unwrap_or_else(|| PathBuf::from(".jarvis/plugins"));
+    let plugin_manager = match PluginManager::new(
+        plugins_dir.clone(),
+        Arc::clone(&skill_catalog),
+        Arc::clone(&mcp_manager),
+    ) {
+        Ok(m) => Arc::new(m),
+        Err(e) => {
+            tracing::warn!(error = %e, dir = %plugins_dir.display(), "plugin manager init failed");
+            // Fall back to a temp-dir manager so the rest of the
+            // server still comes up; install / uninstall will
+            // surface the real error when they try to write.
+            let tmp = std::env::temp_dir().join("jarvis-plugins-fallback");
+            Arc::new(PluginManager::new(tmp, Arc::clone(&skill_catalog), Arc::clone(&mcp_manager))
+                .expect("fallback temp-dir plugin manager"))
+        }
+    };
+    if let Err(e) = plugin_manager.reattach_installed().await {
+        tracing::warn!(error = %e, "plugin reattach failed");
+    }
+    let plugin_count = plugin_manager.list().await.len();
+    info!(plugins = plugin_count, dir = %plugins_dir.display(), "plugin manager ready");
 
     let mut state = AppState::from_registry(registry, agent_cfg)
         .with_workspace_root(workspace_root)
         .with_tools(Arc::clone(&canonical_tools))
         .with_mcp(Arc::clone(&mcp_manager))
-        .with_skills(Arc::clone(&skill_catalog));
+        .with_skills(Arc::clone(&skill_catalog))
+        .with_plugins(Arc::clone(&plugin_manager));
     if let Some(s) = store {
         state = state.with_store(s);
     }

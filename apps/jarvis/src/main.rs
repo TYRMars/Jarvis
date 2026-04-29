@@ -28,6 +28,7 @@ mod config;
 mod init;
 mod login;
 mod mcp_cli;
+mod plugin_cli;
 mod project_cmd;
 mod serve;
 mod skill_cli;
@@ -139,6 +140,11 @@ enum Cmd {
         #[command(subcommand)]
         action: skill_cli::SkillAction,
     },
+    /// Install / remove plugins on a running `jarvis serve`.
+    Plugin {
+        #[command(subcommand)]
+        action: plugin_cli::PluginAction,
+    },
 }
 
 #[derive(Args, Debug, Default)]
@@ -229,6 +235,7 @@ async fn main() -> Result<()> {
         Cmd::Project { cmd } => project_cmd::run(cfg, cmd).await,
         Cmd::Mcp { action } => mcp_cli::run(action, cfg.as_ref()).await,
         Cmd::Skill { action } => skill_cli::run(action, cfg.as_ref()).await,
+        Cmd::Plugin { action } => plugin_cli::run(action, cfg.as_ref()).await,
     }
 }
 

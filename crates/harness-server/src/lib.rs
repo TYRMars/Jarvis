@@ -25,6 +25,7 @@
 mod conversations;
 mod mcp_routes;
 mod permissions;
+mod plugin_routes;
 mod project_binder;
 mod projects;
 mod provider_registry;

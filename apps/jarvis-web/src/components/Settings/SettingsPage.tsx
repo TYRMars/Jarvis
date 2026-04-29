@@ -25,6 +25,7 @@ import { PreferencesSection } from "./sections/PreferencesSection";
 import { ProjectsSettingsSection } from "./sections/ProjectsSettingsSection";
 import { PermissionsSection } from "./sections/PermissionsSection";
 import { McpSection } from "./sections/McpSection";
+import { PluginsSection } from "./sections/PluginsSection";
 import { SkillsSection } from "./sections/SkillsSection";
 import { SoulSection } from "./sections/SoulSection";
 import { AboutSection } from "./sections/AboutSection";
@@ -47,6 +48,7 @@ const NAV: NavItem[] = [
   { id: "providers", labelKey: "settingsNavProviders", fallback: "Providers" },
   { id: "mcp", labelKey: "settingsNavMcp", fallback: "MCP" },
   { id: "skills", labelKey: "settingsNavSkills", fallback: "Skills" },
+  { id: "plugins", labelKey: "settingsNavPlugins", fallback: "Plugins" },
   { id: "server", labelKey: "settingsNavServer", fallback: "Server" },
   { id: "about", labelKey: "settingsNavAbout", fallback: "About" },
 ];
@@ -62,6 +64,7 @@ const SECTIONS: Record<string, ComponentType> = {
   providers: ProvidersSection,
   mcp: McpSection,
   skills: SkillsSection,
+  plugins: PluginsSection,
   server: ServerSection,
   about: AboutSection,
 };

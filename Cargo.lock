@@ -936,6 +936,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-plugin"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "harness-core",
+ "harness-mcp",
+ "harness-skill",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "harness-server"
 version = "0.1.0"
 dependencies = [
@@ -945,6 +961,7 @@ dependencies = [
  "futures",
  "harness-core",
  "harness-mcp",
+ "harness-plugin",
  "harness-skill",
  "harness-store",
  "include_dir",
@@ -1422,6 +1439,7 @@ dependencies = [
  "harness-llm",
  "harness-mcp",
  "harness-memory",
+ "harness-plugin",
  "harness-server",
  "harness-skill",
  "harness-store",
