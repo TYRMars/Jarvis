@@ -34,6 +34,7 @@ mod skill_routes;
 mod state;
 mod ui;
 mod workspace_diff;
+mod workspaces_routes;
 
 pub use skill_routes::default_roots as default_skill_roots;
 

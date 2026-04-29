@@ -67,6 +67,11 @@ export function newConversation(opts: { projectId?: string | null } = {}): void 
   if (provider) frame.provider = provider;
   if (model) frame.model = model;
   if (opts.projectId) frame.project_id = opts.projectId;
+  // Inherit the currently-pinned workspace so new conversations
+  // persist their binding from the start. The server canonicalises
+  // and validates; an invalid path errors the New handshake rather
+  // than silently falling through to the binary's startup root.
+  if (store.socketWorkspace) frame.workspace_path = store.socketWorkspace;
   if (!sendFrame(frame)) return;
   store.clearMessages();
 }

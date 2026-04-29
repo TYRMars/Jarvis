@@ -276,10 +276,15 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     // Workspace badge / picker
     workspaceBadgeNone: "no workspace",
     workspaceCurrent: "Current",
+    workspaceRecent: "Recent",
+    workspaceRecentEmpty: "No recent workspaces yet.",
+    workspaceOpenFolder: "Open folder…",
+    workspaceForget: "Forget",
     workspacePinTitle: "Pin a folder for this session",
     workspacePinPlaceholder: "/path/to/project",
     workspacePinSet: "Set",
     workspaceClearPin: "Clear pin",
+    workspacePinFailed: (msg: string) => `Pin failed: ${msg}`,
     // Appearance
     settingsAppearanceTitle: "Appearance",
     settingsAppearanceDesc: "Theme and interface language. Saved to localStorage; takes effect immediately.",
@@ -828,10 +833,15 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     // Workspace badge / picker
     workspaceBadgeNone: "未指定工作区",
     workspaceCurrent: "当前",
+    workspaceRecent: "最近",
+    workspaceRecentEmpty: "暂无最近工作区。",
+    workspaceOpenFolder: "打开文件夹…",
+    workspaceForget: "移除",
     workspacePinTitle: "为本次会话指定项目目录",
     workspacePinPlaceholder: "/项目/绝对路径",
     workspacePinSet: "设定",
     workspaceClearPin: "取消指定",
+    workspacePinFailed: (msg: string) => `指定失败：${msg}`,
     // Appearance
     settingsAppearanceTitle: "外观",
     settingsAppearanceDesc: "主题和界面语言。保存在 localStorage，立即生效。",

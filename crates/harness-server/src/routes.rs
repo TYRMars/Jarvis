@@ -52,6 +52,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::mcp_routes::router())
         .merge(crate::skill_routes::router())
         .merge(crate::plugin_routes::router())
+        .merge(crate::workspaces_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .with_state(state)
@@ -390,7 +391,10 @@ enum WsClientMessage {
     /// server allocates a UUID and reports it back. Optional
     /// `project_id` (UUID or slug) binds the new conversation to a
     /// project — its instructions are then re-injected as a system
-    /// message at every turn (see `crate::project_binder`).
+    /// message at every turn (see `crate::project_binder`). Optional
+    /// `workspace_path` pins this socket's filesystem root and
+    /// records the binding in the workspaces registry so a future
+    /// `Resume` restores it.
     New {
         #[serde(default)]
         id: Option<String>,
@@ -400,6 +404,8 @@ enum WsClientMessage {
         provider: Option<String>,
         #[serde(default)]
         project_id: Option<String>,
+        #[serde(default)]
+        workspace_path: Option<String>,
     },
     /// Update the socket's default provider/model selection without
     /// running a turn. Subsequent `User` frames without their own
@@ -1130,6 +1136,43 @@ async fn handle_client_frame(
                     *conv = loaded;
                     *persisted_id = Some(id.clone());
                     *persisted_project_id = bound_project.clone();
+                    // Restore per-conversation workspace pin if the
+                    // store has one. We canonicalize on the way in
+                    // so a moved-since-last-time folder surfaces an
+                    // error rather than silently falling back.
+                    let bound_workspace = state
+                        .workspaces
+                        .as_ref()
+                        .and_then(|s| s.lookup(&id));
+                    if let Some(path_str) = bound_workspace.as_deref() {
+                        match std::fs::canonicalize(path_str) {
+                            Ok(p) if p.is_dir() => {
+                                *socket_workspace = Some(p.clone());
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({
+                                            "type": "workspace_changed",
+                                            "path": p.display().to_string(),
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {
+                                warn!(
+                                    convo = %id,
+                                    path = %path_str,
+                                    "bound workspace no longer exists; clearing pin",
+                                );
+                                if let Some(s) = state.workspaces.as_ref() {
+                                    s.unbind(&id);
+                                }
+                                *socket_workspace = None;
+                            }
+                        }
+                    } else {
+                        *socket_workspace = None;
+                    }
                     let _ = ws_tx
                         .send(WsMessage::Text(
                             json!({
@@ -1137,6 +1180,7 @@ async fn handle_client_frame(
                                 "id": id,
                                 "message_count": count,
                                 "project_id": bound_project,
+                                "workspace_path": bound_workspace,
                             })
                             .to_string(),
                         ))
@@ -1156,6 +1200,7 @@ async fn handle_client_frame(
             model,
             provider,
             project_id,
+            workspace_path,
         } => {
             if event_rx.is_some() {
                 send_error(ws_tx, "turn in progress; cannot start new").await;
@@ -1225,12 +1270,49 @@ async fn handle_client_frame(
             }
             *persisted_id = Some(new_id.clone());
             *persisted_project_id = resolved_project_id.clone();
+
+            // Optional workspace pin. Validate the same way
+            // SetWorkspace does, then bind it in the registry so
+            // Resume restores it. Failure here surfaces as an
+            // error and aborts — we already saved the conversation
+            // row, but the user's next attempt can use a different
+            // path (the `started` echo isn't sent on this path).
+            let bound_workspace = if let Some(raw) = workspace_path.as_deref() {
+                match std::fs::canonicalize(raw) {
+                    Ok(p) if p.is_dir() => {
+                        *socket_workspace = Some(p.clone());
+                        if let Some(ws) = state.workspaces.as_ref() {
+                            let path_str = p.display().to_string();
+                            let _ = ws.touch(&path_str);
+                            ws.bind(&new_id, &path_str);
+                        }
+                        Some(p.display().to_string())
+                    }
+                    Ok(p) => {
+                        send_error(
+                            ws_tx,
+                            &format!("workspace `{}` is not a directory", p.display()),
+                        )
+                        .await;
+                        return true;
+                    }
+                    Err(e) => {
+                        send_error(ws_tx, &format!("workspace `{raw}` is not reachable: {e}"))
+                            .await;
+                        return true;
+                    }
+                }
+            } else {
+                None
+            };
+
             let _ = ws_tx
                 .send(WsMessage::Text(
                     json!({
                         "type": "started",
                         "id": new_id,
                         "project_id": resolved_project_id,
+                        "workspace_path": bound_workspace,
                     })
                     .to_string(),
                 ))
@@ -1569,6 +1651,16 @@ async fn handle_client_frame(
                     }
                     *socket_workspace = Some(resolved.clone());
                     info!(workspace = %resolved.display(), "ws socket workspace pinned");
+                    // Touch the registry so the dropdown sees this
+                    // path next time, and bind the active persisted
+                    // conversation (if any) so Resume restores it.
+                    if let Some(store) = state.workspaces.as_ref() {
+                        let path_str = resolved.display().to_string();
+                        let _ = store.touch(&path_str);
+                        if let Some(id) = persisted_id.as_deref() {
+                            store.bind(id, &path_str);
+                        }
+                    }
                     let _ = ws_tx
                         .send(WsMessage::Text(
                             json!({

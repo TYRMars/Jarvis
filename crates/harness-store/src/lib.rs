@@ -34,11 +34,13 @@ mod error;
 mod json_file;
 mod memory;
 mod permission;
+mod workspace;
 
 pub use error::StoreError;
 pub use json_file::{JsonFileConversationStore, JsonFileProjectStore};
 pub use memory::{MemoryConversationStore, MemoryProjectStore};
 pub use permission::JsonFilePermissionStore;
+pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, WorkspaceStore};
 
 #[cfg(feature = "sqlite")]
 mod sqlite;

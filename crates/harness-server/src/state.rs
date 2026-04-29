@@ -8,6 +8,7 @@ use harness_core::{
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
 use harness_skill::SkillCatalog;
+use harness_store::WorkspaceStore;
 
 use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
 
@@ -125,6 +126,11 @@ pub struct AppState {
     /// manager mutates the shared `skills` catalog + `mcp` manager
     /// as plugins come and go.
     pub plugins: Option<Arc<PluginManager>>,
+    /// Optional persisted workspaces registry. Backs the chat
+    /// header's "Recent" dropdown and the per-conversation
+    /// workspace binding (so `Resume` can restore which folder a
+    /// session was started in).
+    pub workspaces: Option<Arc<WorkspaceStore>>,
 }
 
 impl AppState {
@@ -146,6 +152,7 @@ impl AppState {
             mcp: None,
             skills: None,
             plugins: None,
+            workspaces: None,
         }
     }
 
@@ -172,6 +179,7 @@ impl AppState {
             mcp: None,
             skills: None,
             plugins: None,
+            workspaces: None,
         }
     }
 
@@ -254,6 +262,14 @@ impl AppState {
     /// uninstall propagate to the live catalogue.
     pub fn with_plugins(mut self, plugins: Arc<PluginManager>) -> Self {
         self.plugins = Some(plugins);
+        self
+    }
+
+    /// Inject the workspaces registry. Without one, `/v1/workspaces*`
+    /// returns 503 and the WS handler can still pin a path per
+    /// session — it just won't remember the choice across restarts.
+    pub fn with_workspaces(mut self, store: Arc<WorkspaceStore>) -> Self {
+        self.workspaces = Some(store);
         self
     }
 

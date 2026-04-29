@@ -29,6 +29,7 @@ use harness_server::{
 };
 use harness_plugin::PluginManager;
 use harness_skill::SkillCatalog;
+use harness_store::{default_workspaces_path, WorkspaceStore};
 use harness_tools::{register_builtins, BuiltinsConfig, Sandbox, ShellLimits};
 use tracing::info;
 
@@ -293,12 +294,26 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     let plugin_count = plugin_manager.list().await.len();
     info!(plugins = plugin_count, dir = %plugins_dir.display(), "plugin manager ready");
 
+    // Workspaces registry (recent dropdown + per-conversation
+    // bindings). File-backed at `<config-dir>/workspaces.json`;
+    // when no config dir is reachable the store falls back to
+    // session-only mode so the rest of the server still works.
+    let workspaces_path = dirs_user_config()
+        .ok()
+        .and_then(|d| default_workspaces_path(Some(&d)));
+    let workspaces = Arc::new(WorkspaceStore::open(workspaces_path));
+    info!(
+        recent = workspaces.list_recent().len(),
+        "workspaces store ready",
+    );
+
     let mut state = AppState::from_registry(registry, agent_cfg)
         .with_workspace_root(workspace_root)
         .with_tools(Arc::clone(&canonical_tools))
         .with_mcp(Arc::clone(&mcp_manager))
         .with_skills(Arc::clone(&skill_catalog))
-        .with_plugins(Arc::clone(&plugin_manager));
+        .with_plugins(Arc::clone(&plugin_manager))
+        .with_workspaces(Arc::clone(&workspaces));
     if let Some(s) = store {
         state = state.with_store(s);
     }
