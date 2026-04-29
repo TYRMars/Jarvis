@@ -300,9 +300,66 @@ diff 高亮**渲染（不是普通 `<pre>`）。
 
 ---
 
-## 7. 进一步阅读
+## 7. 持久化 TODO 看板
+
+`plan.update` 是 *本回合* 的工作清单，每次重发即覆盖；重置或重启就没了。
+长跑场景（多日重构、跨会话调试）需要一个 *跨 turn / 跨重启* 的 backlog
+—— 这就是持久化 TODO 看板。
+
+**开启**：
+
+默认就开着——开箱就用 JSON 文件持久化到
+`~/.local/share/jarvis/conversations/`，跨重启活下来。
+
+```bash
+cargo run -p jarvis -- serve --workspace ~/code/myproj
+```
+
+如果你想换路径或换后端：
+
+```bash
+# 自定义 JSON 路径
+JARVIS_DB_URL=json:///path/to/dir cargo run -p jarvis -- serve ...
+
+# 启用 SQLite（需要 cargo feature）
+JARVIS_DB_URL=sqlite:/path/to.db \
+  cargo run -p jarvis --features sqlite -- serve ...
+```
+
+要彻底关掉 TODO 看板（保留会话持久化）：`JARVIS_DISABLE_TODOS=1`。
+
+**Agent 工具**（`ToolCategory::Read`，无审批门）：
+
+| 工具 | 作用 |
+|---|---|
+| `todo.list` | 列出当前 workspace 的全部 TODO，最多 500 条。 |
+| `todo.add` | `{title, status?, notes?}` → 新增一条。 |
+| `todo.update` | `{id, title?, status?, notes?}` → 局部更新。 |
+| `todo.delete` | `{ids: [..]}` → 批量删除，每次最多 50 个 id（防误删）。 |
+
+`status ∈ {pending, in_progress, completed, cancelled, blocked}`。
+
+**REST**（同名约定，503 = 没配 store）：
+
+```
+GET    /v1/todos?workspace=<abs path>
+POST   /v1/todos                      # body: {title, status?, notes?, workspace?}
+PATCH  /v1/todos/:id                  # body: 任何子集 {title, status, notes}
+DELETE /v1/todos/:id
+```
+
+**Web UI**：右栏面板菜单里点开 "TODOs"。可直接添加 / 切换状态 / 删除；
+agent 通过 `todo.*` 工具的修改也会实时推到打开的面板，无需手动刷新。
+
+**和 `plan.update` 的区别**：plan 是一回合内的 working steps（顶部
+"Plan" 面板），todos 是跨会话的项目 backlog（"TODOs" 面板）。两者并存。
+
+---
+
+## 8. 进一步阅读
 
 - [`docs/proposals/aicoding-agent.zh-CN.md`](./proposals/aicoding-agent.zh-CN.md) — 设计思路与未来路线
+- [`docs/proposals/persistent-todos.md`](./proposals/persistent-todos.md) — 持久化 TODO 看板设计
 - [`docs/user-guide.md`](./user-guide.md) — 完整运维手册
 - [`docs/user-guide-git-ollama.md`](./user-guide-git-ollama.md) — `git.*` 与 Ollama provider 详细用法
 - [`CLAUDE.md`](../CLAUDE.md) — 全部 env vars / 内部约定 / 工具语义

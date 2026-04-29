@@ -23,6 +23,7 @@ pub mod plan;
 mod sandbox;
 pub mod shell;
 pub mod time;
+pub mod todo;
 pub mod workspace;
 
 pub use ask::AskTextTool;
@@ -39,10 +40,12 @@ pub use patch::FsPatchTool;
 pub use plan::PlanUpdateTool;
 pub use shell::{Sandbox, ShellExecTool, ShellLimits};
 pub use time::TimeNowTool;
+pub use todo::{TodoAddTool, TodoDeleteTool, TodoListTool, TodoUpdateTool};
 pub use workspace::WorkspaceContextTool;
 
-use harness_core::ToolRegistry;
+use harness_core::{ToolRegistry, TodoStore};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Configuration for the default set of built-in tools.
 pub struct BuiltinsConfig {
@@ -96,6 +99,12 @@ pub struct BuiltinsConfig {
     /// deliberately not exposed: those touch the network and a remote
     /// you may not have explicitly authorised the agent for.
     pub enable_git_write: bool,
+    /// Backing store for the persistent project TODO board. When
+    /// `Some(_)`, the four `todo.*` tools are registered. When
+    /// `None` (default), the tools are skipped — falling back to
+    /// in-memory storage would defeat the persistence promise, so
+    /// the model simply can't see them.
+    pub todo_store: Option<Arc<dyn TodoStore>>,
 }
 
 impl Default for BuiltinsConfig {
@@ -112,6 +121,7 @@ impl Default for BuiltinsConfig {
             shell_limits: ShellLimits::default(),
             enable_git_read: true,
             enable_git_write: false,
+            todo_store: None,
         }
     }
 }
@@ -158,10 +168,16 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     }
     if cfg.enable_shell_exec {
         registry.register(
-            ShellExecTool::new(root)
+            ShellExecTool::new(root.clone())
                 .with_default_timeout_ms(cfg.shell_default_timeout_ms)
                 .with_sandbox(cfg.shell_sandbox)
                 .with_limits(cfg.shell_limits),
         );
+    }
+    if let Some(store) = cfg.todo_store {
+        registry.register(TodoListTool::new(store.clone(), root.clone()));
+        registry.register(TodoAddTool::new(store.clone(), root.clone()));
+        registry.register(TodoUpdateTool::new(store.clone()));
+        registry.register(TodoDeleteTool::new(store));
     }
 }

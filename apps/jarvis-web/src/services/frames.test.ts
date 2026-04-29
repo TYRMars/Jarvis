@@ -256,6 +256,99 @@ describe("handleFrame: usage", () => {
   });
 });
 
+describe("handleFrame: persistent TODOs", () => {
+  beforeEach(() => {
+    useAppStore.setState({ todos: [] });
+  });
+
+  it("todo_upserted inserts a new item", () => {
+    handleFrame({
+      type: "todo_upserted",
+      todo: {
+        id: "t1",
+        workspace: "/r",
+        title: "fix parser",
+        status: "pending",
+        created_at: "2026-04-29T12:00:00Z",
+        updated_at: "2026-04-29T12:00:00Z",
+      },
+    });
+    expect(get().todos).toHaveLength(1);
+    expect(get().todos[0]).toMatchObject({ id: "t1", status: "pending" });
+  });
+
+  it("todo_upserted updates an existing item by id (no duplicate)", () => {
+    useAppStore.setState({
+      todos: [
+        {
+          id: "t1",
+          workspace: "/r",
+          title: "fix parser",
+          status: "pending",
+          created_at: "2026-04-29T12:00:00Z",
+          updated_at: "2026-04-29T12:00:00Z",
+        },
+      ],
+    });
+    handleFrame({
+      type: "todo_upserted",
+      todo: {
+        id: "t1",
+        workspace: "/r",
+        title: "fix parser",
+        status: "completed",
+        created_at: "2026-04-29T12:00:00Z",
+        updated_at: "2026-04-29T12:01:00Z",
+      },
+    });
+    expect(get().todos).toHaveLength(1);
+    expect(get().todos[0].status).toBe("completed");
+  });
+
+  it("todo_deleted removes the matching item", () => {
+    useAppStore.setState({
+      todos: [
+        {
+          id: "t1",
+          workspace: "/r",
+          title: "x",
+          status: "pending",
+          created_at: "2026-04-29T12:00:00Z",
+          updated_at: "2026-04-29T12:00:00Z",
+        },
+        {
+          id: "t2",
+          workspace: "/r",
+          title: "y",
+          status: "pending",
+          created_at: "2026-04-29T12:00:00Z",
+          updated_at: "2026-04-29T12:00:00Z",
+        },
+      ],
+    });
+    handleFrame({ type: "todo_deleted", id: "t1", workspace: "/r" });
+    expect(get().todos).toHaveLength(1);
+    expect(get().todos[0].id).toBe("t2");
+  });
+
+  it("todo_deleted for an unknown id is a no-op", () => {
+    useAppStore.setState({
+      todos: [
+        {
+          id: "t1",
+          workspace: "/r",
+          title: "x",
+          status: "pending",
+          created_at: "2026-04-29T12:00:00Z",
+          updated_at: "2026-04-29T12:00:00Z",
+        },
+      ],
+    });
+    handleFrame({ type: "todo_deleted", id: "ghost", workspace: "/r" });
+    expect(get().todos).toHaveLength(1);
+  });
+});
+
 describe("handleFrame: unknown frame", () => {
   it("logs a warning but doesn't throw", () => {
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});

@@ -6,10 +6,12 @@
 //! MySQL, JSON-file, or in-memory without paying for the others' deps.
 
 use async_trait::async_trait;
+use tokio::sync::broadcast;
 
 use crate::conversation::Conversation;
 use crate::error::BoxError;
 use crate::project::Project;
+use crate::todo::{TodoEvent, TodoItem};
 
 /// Summary record returned by [`ConversationStore::list`].
 #[derive(Debug, Clone)]
@@ -163,4 +165,48 @@ pub trait ProjectStore: Send + Sync {
     /// if a row was found and updated. Idempotent — archiving an
     /// already-archived project still returns `true`.
     async fn archive(&self, id: &str) -> Result<bool, BoxError>;
+}
+
+/// Persistence operations on persistent project [`TodoItem`]s.
+///
+/// Distinct from [`crate::plan`] (the per-turn working checklist) —
+/// see [`crate::todo`] for the full design. The store is the only
+/// fanout point: `subscribe()` returns a [`broadcast::Receiver`]
+/// that yields [`TodoEvent`]s for every successful mutation,
+/// regardless of whether the mutator was a `todo.*` tool call or a
+/// REST request. WS sessions filter by `TodoEvent::workspace()`
+/// against their pinned root.
+///
+/// All methods are workspace-scoped at the row level; there is no
+/// "global" listing. Callers that don't know the workspace yet
+/// should use the store via the REST query parameter or the
+/// session-pinned root.
+#[async_trait]
+pub trait TodoStore: Send + Sync {
+    /// Return up to ~500 TODOs for `workspace`, sorted by
+    /// `updated_at` descending. Implementations should
+    /// `tracing::warn!` when the cap is hit so operators notice
+    /// runaway backlogs.
+    async fn list(&self, workspace: &str) -> Result<Vec<TodoItem>, BoxError>;
+
+    /// Look up by id. Returns `None` if absent. Note that this is
+    /// NOT workspace-scoped — id is globally unique (UUID v4) and
+    /// the row carries its own workspace field.
+    async fn get(&self, id: &str) -> Result<Option<TodoItem>, BoxError>;
+
+    /// Insert or overwrite a TODO. Implementations must broadcast
+    /// `TodoEvent::Upserted(item.clone())` after a successful write.
+    async fn upsert(&self, item: &TodoItem) -> Result<(), BoxError>;
+
+    /// Delete by id. Returns `true` if a row was removed; `false`
+    /// if it was already absent (idempotent). Implementations must
+    /// broadcast `TodoEvent::Deleted { workspace, id }` after a
+    /// successful delete (skip the broadcast on the no-op `false`
+    /// path so listeners don't see ghost events).
+    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
+
+    /// Subscribe to mutation events. Each call returns a fresh
+    /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
+    /// and should refetch via `list`.
+    fn subscribe(&self) -> broadcast::Receiver<TodoEvent>;
 }

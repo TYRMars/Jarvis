@@ -1,0 +1,177 @@
+name: Release
+
+# Trigger on `v*` tags. The same workflow can be tested without
+# cutting a real release by pushing a tag on a feature branch:
+# the binaries upload as workflow artifacts unconditionally; the
+# `release` job only fires on tag refs.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag (or label) to use for artifact names. Real releases come from tag pushes."
+        required: false
+        default: "manual"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      # Run all platforms even if one fails so we can see the full
+      # picture on a release attempt instead of stopping at the
+      # first red square.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive_kind: tar
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            archive_kind: tar
+            use_cross: true
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_kind: tar
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_kind: tar
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_kind: zip
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Resolve the human-friendly tag once so artifact names match
+      # whether the workflow was triggered by a tag push or
+      # `workflow_dispatch`.
+      - name: Resolve release label
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "label=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=${{ inputs.tag || 'manual' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/jarvis-web/package-lock.json
+
+      # The web UI is bundled into harness-server at compile time
+      # via include_dir!. Build it before cargo so the macro has
+      # the real assets — without this the binary ships with a
+      # placeholder note instead of a usable UI.
+      - name: Build web UI
+        working-directory: apps/jarvis-web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross == true
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build (native)
+        if: matrix.use_cross != true
+        run: cargo build --release --bin jarvis --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.use_cross == true
+        run: cross build --release --bin jarvis --target ${{ matrix.target }}
+
+      # Package the binary alongside README + LICENSE so a release
+      # download is self-contained. tar.gz on Unix, zip on Windows
+      # to match what each ecosystem's tooling unpacks natively.
+      - name: Package (tar.gz)
+        if: matrix.archive_kind == 'tar'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="jarvis-${{ steps.meta.outputs.label }}-${{ matrix.target }}"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.target }}/release/jarvis" "$STAGE/"
+          cp README.md LICENSE "$STAGE/" 2>/dev/null || true
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+          shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+          echo "ARTIFACT_BASE=$STAGE" >> "$GITHUB_ENV"
+          echo "ARTIFACT_FILES=$STAGE.tar.gz $STAGE.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - name: Package (zip)
+        if: matrix.archive_kind == 'zip'
+        shell: pwsh
+        run: |
+          $stage = "jarvis-${{ steps.meta.outputs.label }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/jarvis.exe" $stage
+          if (Test-Path "README.md") { Copy-Item "README.md" $stage }
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" $stage }
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          $hash = (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $stage.zip" | Out-File -Encoding ascii -FilePath "$stage.zip.sha256"
+          "ARTIFACT_BASE=$stage" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ARTIFACT_FILES=$stage.zip $stage.zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_BASE }}
+          path: |
+            ${{ env.ARTIFACT_BASE }}.tar.gz
+            ${{ env.ARTIFACT_BASE }}.tar.gz.sha256
+            ${{ env.ARTIFACT_BASE }}.zip
+            ${{ env.ARTIFACT_BASE }}.zip.sha256
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: jarvis-*
+          merge-multiple: true
+
+      - name: List
+        run: ls -la dist
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true

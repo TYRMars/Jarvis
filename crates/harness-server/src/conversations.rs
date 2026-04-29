@@ -649,7 +649,25 @@ async fn post_message(
         Ok(p) => p,
         Err(e) => return internal_error(e),
     };
-    let mut run_conv = prepared.conversation.clone();
+    // Late-bind persistent TODOs after the project block. The REST
+    // path has no per-socket workspace override, so we use
+    // `state.workspace_root` directly.
+    let todos_workspace = state
+        .workspace_root
+        .as_deref()
+        .map(harness_core::canonicalize_workspace);
+    let (todos_conv, todos_prepared) = match crate::todo_binder::materialise_todos(
+        state.todos.as_ref(),
+        prepared.conversation.clone(),
+        todos_workspace.as_deref(),
+        state.todos_in_prompt,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return internal_error(e),
+    };
+    let mut run_conv = todos_conv;
     let outcome = match agent.run(&mut run_conv).await {
         Ok(o) => o,
         Err(e) => {
@@ -662,9 +680,11 @@ async fn post_message(
         }
     };
     // Re-derive the canonical conversation by stripping the injected
-    // project block. `conv` then becomes what we save *and* what we
+    // blocks (TODOs first — its index assumes the project block is
+    // still in place). `conv` then becomes what we save *and* what we
     // ship back to the client as `history`.
-    conv = strip_project_block(run_conv, &prepared);
+    let after_todos = crate::todo_binder::strip_todo_block(run_conv, &todos_prepared);
+    conv = strip_project_block(after_todos, &prepared);
     if let Err(e) = store.save_envelope(&id, &conv, &metadata).await {
         warn!(error = %e, id = %id, "post-run save failed");
     }
@@ -731,12 +751,28 @@ async fn stream_message(
         Ok(p) => p,
         Err(e) => return internal_error(e),
     };
+    let todos_workspace = state
+        .workspace_root
+        .as_deref()
+        .map(harness_core::canonicalize_workspace);
+    let (todos_conv, todos_prepared) = match crate::todo_binder::materialise_todos(
+        state.todos.as_ref(),
+        prepared.conversation.clone(),
+        todos_workspace.as_deref(),
+        state.todos_in_prompt,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return internal_error(e),
+    };
     let stream = stream_run(
-        agent.run_stream(prepared.conversation.clone()),
+        agent.run_stream(todos_conv),
         store,
         id,
         metadata,
         prepared,
+        todos_prepared,
     );
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -749,15 +785,21 @@ fn stream_run(
     id: String,
     metadata: ConversationMetadata,
     prepared: PreparedConversation,
+    todos_prepared: crate::todo_binder::PreparedTodos,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     async_stream::stream! {
         while let Some(event) = agent_stream.next().await {
             // Snapshot the canonical conversation off the terminal Done
             // event so we save exactly what the agent committed to —
-            // minus the synthetic project block, so editing the
-            // project propagates to future turns.
+            // minus both synthetic blocks (TODOs first — its index
+            // assumes the project block is still in place), so editing
+            // the project / todos propagates to future turns.
             if let AgentEvent::Done { conversation, .. } = &event {
-                let cleaned = strip_project_block(conversation.clone(), &prepared);
+                let after_todos = crate::todo_binder::strip_todo_block(
+                    conversation.clone(),
+                    &todos_prepared,
+                );
+                let cleaned = strip_project_block(after_todos, &prepared);
                 if let Err(e) = store.save_envelope(&id, &cleaned, &metadata).await {
                     warn!(error = %e, id = %id, "post-run save failed (sse)");
                 }

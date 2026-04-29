@@ -32,6 +32,8 @@ mod provider_registry;
 mod routes;
 mod skill_routes;
 mod state;
+mod todo_binder;
+mod todos_routes;
 mod ui;
 mod workspace_diff;
 mod workspaces_routes;

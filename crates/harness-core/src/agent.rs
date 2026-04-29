@@ -271,6 +271,16 @@ impl Agent {
     /// On entry, if `conversation` has no system message and the config
     /// supplies one, it is prepended.
     pub async fn run(&self, conversation: &mut Conversation) -> Result<RunOutcome> {
+        // Each blocking-mode turn gets a fresh per-turn mutation
+        // counter so `todo.{add,update,delete}` can't be hammered into
+        // the backlog by a runaway loop. The streaming entry
+        // (`run_stream`) leaves scoping to its transport callers
+        // because async-stream `yield` can't traverse a
+        // `LocalKey::scope` boundary.
+        crate::todo::with_turn_budget(self.run_inner(conversation)).await
+    }
+
+    async fn run_inner(&self, conversation: &mut Conversation) -> Result<RunOutcome> {
         Self::ensure_system_prompt(conversation, self.config.system_prompt.as_deref());
 
         for iter in 1..=self.config.max_iterations {

@@ -24,3 +24,12 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+
+# Mirror jarvis's persistence-backend opt-ins so the CLI surface
+# stays consistent. JSON-file backend is on by default; SQL
+# backends require explicit `--features sqlite` etc.
+[features]
+default = []
+sqlite = ["harness-store/sqlite"]
+postgres = ["harness-store/postgres"]
+mysql = ["harness-store/mysql"]

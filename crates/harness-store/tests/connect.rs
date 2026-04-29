@@ -7,6 +7,7 @@
 use harness_core::{Conversation, Message};
 use harness_store::{connect, StoreError};
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn connect_sqlite_memory() {
     let store = connect("sqlite::memory:").await.unwrap();
@@ -17,6 +18,7 @@ async fn connect_sqlite_memory() {
     assert_eq!(loaded.messages.len(), 1);
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn connect_sqlite_file() {
     let dir = tempfile::tempdir().unwrap();

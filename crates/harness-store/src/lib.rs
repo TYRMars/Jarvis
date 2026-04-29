@@ -37,36 +37,37 @@ mod permission;
 mod workspace;
 
 pub use error::StoreError;
-pub use json_file::{JsonFileConversationStore, JsonFileProjectStore};
-pub use memory::{MemoryConversationStore, MemoryProjectStore};
+pub use json_file::{JsonFileConversationStore, JsonFileProjectStore, JsonFileTodoStore};
+pub use memory::{MemoryConversationStore, MemoryProjectStore, MemoryTodoStore};
 pub use permission::JsonFilePermissionStore;
 pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, WorkspaceStore};
 
 #[cfg(feature = "sqlite")]
 mod sqlite;
 #[cfg(feature = "sqlite")]
-pub use sqlite::{SqliteConversationStore, SqliteProjectStore};
+pub use sqlite::{SqliteConversationStore, SqliteProjectStore, SqliteTodoStore};
 
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(feature = "postgres")]
-pub use postgres::{PostgresConversationStore, PostgresProjectStore};
+pub use postgres::{PostgresConversationStore, PostgresProjectStore, PostgresTodoStore};
 
 #[cfg(feature = "mysql")]
 mod mysql;
 #[cfg(feature = "mysql")]
-pub use mysql::{MysqlConversationStore, MysqlProjectStore};
+pub use mysql::{MysqlConversationStore, MysqlProjectStore, MysqlTodoStore};
 
 use std::sync::Arc;
 
-use harness_core::{ConversationStore, ProjectStore};
+use harness_core::{ConversationStore, ProjectStore, TodoStore};
 
-/// Pair of stores returned by [`connect_all`]. The two backends share
+/// Trio of stores returned by [`connect_all`]. The backends share
 /// their underlying resource (DB pool or base directory) so a single
-/// URL can drive both.
+/// URL can drive all three.
 pub struct StoreBundle {
     pub conversations: Arc<dyn ConversationStore>,
     pub projects: Arc<dyn ProjectStore>,
+    pub todos: Arc<dyn TodoStore>,
 }
 
 /// Open both stores for a given database URL. The scheme selects the
@@ -84,36 +85,44 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let conversations =
                 Arc::new(JsonFileConversationStore::open(&path)?) as Arc<dyn ConversationStore>;
             let projects = Arc::new(JsonFileProjectStore::open(&path)?) as Arc<dyn ProjectStore>;
+            let todos = Arc::new(JsonFileTodoStore::open(&path)?) as Arc<dyn TodoStore>;
             Ok(StoreBundle {
                 conversations,
                 projects,
+                todos,
             })
         }
         #[cfg(feature = "sqlite")]
         "sqlite" => {
             let conv = SqliteConversationStore::connect(url).await?;
             let proj = SqliteProjectStore::from_pool(conv.pool());
+            let todos = SqliteTodoStore::from_pool(conv.pool());
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
+                todos: Arc::new(todos),
             })
         }
         #[cfg(feature = "postgres")]
         "postgres" | "postgresql" => {
             let conv = PostgresConversationStore::connect(url).await?;
             let proj = PostgresProjectStore::from_pool(conv.pool());
+            let todos = PostgresTodoStore::from_pool(conv.pool());
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
+                todos: Arc::new(todos),
             })
         }
         #[cfg(feature = "mysql")]
         "mysql" | "mariadb" => {
             let conv = MysqlConversationStore::connect(url).await?;
             let proj = MysqlProjectStore::from_pool(conv.pool());
+            let todos = MysqlTodoStore::from_pool(conv.pool());
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
+                todos: Arc::new(todos),
             })
         }
         other => Err(StoreError::UnsupportedScheme(other.to_string())),
@@ -132,6 +141,12 @@ pub async fn connect(url: &str) -> Result<Arc<dyn ConversationStore>, StoreError
 /// `jarvis project ...` subcommands.
 pub async fn connect_projects(url: &str) -> Result<Arc<dyn ProjectStore>, StoreError> {
     Ok(connect_all(url).await?.projects)
+}
+
+/// Open just the todo store for a given URL. Equivalent to
+/// `connect_all(url).await?.todos`.
+pub async fn connect_todos(url: &str) -> Result<Arc<dyn TodoStore>, StoreError> {
+    Ok(connect_all(url).await?.todos)
 }
 
 fn json_path(url: &str) -> Result<String, StoreError> {

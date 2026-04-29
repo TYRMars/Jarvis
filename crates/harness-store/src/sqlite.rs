@@ -19,11 +19,12 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
-    ProjectStore,
+    ProjectStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
+use tokio::sync::broadcast;
 
 use crate::error::StoreError;
 
@@ -105,6 +106,38 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS todos (
+            id         TEXT PRIMARY KEY,
+            workspace  TEXT NOT NULL,
+            title      TEXT NOT NULL,
+            status     TEXT NOT NULL,
+            notes      TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_todos_workspace ON todos(workspace)")
+        .execute(pool)
+        .await?;
+    // Add `priority` column if it's missing (forward-compat with
+    // databases created before TodoItem.priority shipped).
+    let has_priority: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('todos') WHERE name = 'priority'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_priority {
+        sqlx::query("ALTER TABLE todos ADD COLUMN priority TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     Ok(())
 }
@@ -386,6 +419,149 @@ impl ProjectRow {
     }
 }
 
+// ---------- TodoStore -----------------------------------------------------
+
+pub struct SqliteTodoStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<TodoEvent>,
+}
+
+impl SqliteTodoStore {
+    /// Wrap a pool that's already had [`migrate`] run against it. In
+    /// practice the binary gets the pool from
+    /// [`SqliteConversationStore::pool`] so the three stores share one
+    /// connection (essential for `:memory:`, where each connection is
+    /// a separate database).
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct TodoRow {
+    id: String,
+    workspace: String,
+    title: String,
+    status: String,
+    priority: Option<String>,
+    notes: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl TodoRow {
+    fn into_item(self) -> Result<TodoItem, BoxError> {
+        let status = TodoStatus::from_wire(&self.status)
+            .ok_or_else(|| -> BoxError { format!("unknown status `{}`", self.status).into() })?;
+        // Unknown priority values silently downgrade to `None` —
+        // forward-compat with future enum widening.
+        let priority = self.priority.as_deref().and_then(TodoPriority::from_wire);
+        Ok(TodoItem {
+            id: self.id,
+            workspace: self.workspace,
+            title: self.title,
+            status,
+            priority,
+            notes: self.notes,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[async_trait]
+impl TodoStore for SqliteTodoStore {
+    async fn list(&self, workspace: &str) -> Result<Vec<TodoItem>, BoxError> {
+        let rows: Vec<TodoRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, status, priority, notes, created_at, updated_at
+                 FROM todos
+                 WHERE workspace = ?1
+                 ORDER BY updated_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(workspace)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(workspace, "todo list hit 500-item soft cap");
+        }
+        rows.into_iter().map(TodoRow::into_item).collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<TodoItem>, BoxError> {
+        let row: Option<TodoRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, status, priority, notes, created_at, updated_at
+                 FROM todos WHERE id = ?1"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        row.map(TodoRow::into_item).transpose()
+    }
+
+    async fn upsert(&self, item: &TodoItem) -> Result<(), BoxError> {
+        sqlx::query(
+            r#"INSERT INTO todos
+                (id, workspace, title, status, priority, notes, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    workspace  = excluded.workspace,
+                    title      = excluded.title,
+                    status     = excluded.status,
+                    priority   = excluded.priority,
+                    notes      = excluded.notes,
+                    updated_at = excluded.updated_at"#,
+        )
+        .bind(&item.id)
+        .bind(&item.workspace)
+        .bind(&item.title)
+        .bind(item.status.as_wire())
+        .bind(item.priority.map(|p| p.as_wire()))
+        .bind(&item.notes)
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(TodoEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        // Fetch the workspace before deleting so we can broadcast it.
+        let workspace: Option<String> =
+            sqlx::query_scalar("SELECT workspace FROM todos WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        let Some(workspace) = workspace else {
+            return Ok(false);
+        };
+        let res = sqlx::query("DELETE FROM todos WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(TodoEvent::Deleted {
+                workspace,
+                id: id.to_string(),
+            });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<TodoEvent> {
+        self.tx.subscribe()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,5 +745,69 @@ mod tests {
         store.save(&p).await.unwrap();
         assert!(store.delete(&p.id).await.unwrap());
         assert!(!store.delete(&p.id).await.unwrap());
+    }
+
+    // ---- TodoStore -----------------------------------------------------
+
+    async fn make_todo_store() -> (SqliteConversationStore, SqliteTodoStore) {
+        let conv = make().await;
+        let todos = SqliteTodoStore::from_pool(conv.pool());
+        (conv, todos)
+    }
+
+    #[tokio::test]
+    async fn todo_round_trip() {
+        let (_, store) = make_todo_store().await;
+        let mut t = TodoItem::new("/repo", "fix parser");
+        t.notes = Some("blocked by ticket #5".into());
+        t.status = TodoStatus::Blocked;
+        store.upsert(&t).await.unwrap();
+
+        let loaded = store.get(&t.id).await.unwrap().unwrap();
+        assert_eq!(loaded, t);
+
+        let listed = store.list("/repo").await.unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn todo_list_filters_by_workspace_newest_first() {
+        let (_, store) = make_todo_store().await;
+        let a = TodoItem::new("/r1", "first");
+        store.upsert(&a).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let b = TodoItem::new("/r1", "second");
+        store.upsert(&b).await.unwrap();
+        let c = TodoItem::new("/r2", "other repo");
+        store.upsert(&c).await.unwrap();
+
+        let r1 = store.list("/r1").await.unwrap();
+        assert_eq!(r1.len(), 2);
+        assert_eq!(r1[0].id, b.id, "newest first");
+        let r2 = store.list("/r2").await.unwrap();
+        assert_eq!(r2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn todo_delete_idempotent_and_emits_once() {
+        let (_, store) = make_todo_store().await;
+        let mut rx = store.subscribe();
+        let t = TodoItem::new("/r", "x");
+        store.upsert(&t).await.unwrap();
+        // Drain the upsert event.
+        let _ = rx.recv().await.unwrap();
+
+        assert!(store.delete(&t.id).await.unwrap());
+        match rx.recv().await.unwrap() {
+            TodoEvent::Deleted { workspace, id } => {
+                assert_eq!(workspace, "/r");
+                assert_eq!(id, t.id);
+            }
+            other => panic!("expected Deleted, got {other:?}"),
+        }
+
+        // Second delete is a no-op + no event.
+        assert!(!store.delete(&t.id).await.unwrap());
+        assert!(rx.try_recv().is_err());
     }
 }

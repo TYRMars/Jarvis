@@ -43,9 +43,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Message,
-    Project, ProjectStore,
+    Project, ProjectStore, TodoEvent, TodoItem, TodoStore,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 use crate::error::StoreError;
 
@@ -307,6 +308,134 @@ async fn scan_projects(dir: &Path) -> Result<Vec<Project>, BoxError> {
         }
     }
     Ok(out)
+}
+
+// ---------- TodoStore -----------------------------------------------------
+
+/// One JSON file per TODO, partitioned by workspace under a `todos/`
+/// subdirectory: `<base>/todos/<encode_id(workspace_path)>/<encode_id(id)>.json`.
+/// The workspace key in the path is the same percent-encoded form
+/// used for conversation ids — round-trips through `encode_id` /
+/// `decode_id`.
+pub struct JsonFileTodoStore {
+    base: PathBuf,
+    tx: broadcast::Sender<TodoEvent>,
+}
+
+impl JsonFileTodoStore {
+    /// Open or create a store at `<base>/todos/`. The `todos/`
+    /// subdirectory is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn workspace_dir(&self, workspace: &str) -> PathBuf {
+        self.base.join("todos").join(encode_id(workspace))
+    }
+
+    fn path_for(&self, workspace: &str, id: &str) -> PathBuf {
+        self.workspace_dir(workspace).join(format!("{}.json", encode_id(id)))
+    }
+
+    /// Walk every workspace dir to find a TODO by id. Used by
+    /// `get` and `delete`, which take only the id (the row carries
+    /// the workspace inside).
+    async fn find_by_id(&self, id: &str) -> Result<Option<(PathBuf, TodoItem)>, BoxError> {
+        let todos_root = self.base.join("todos");
+        let mut read_dir = match tokio::fs::read_dir(&todos_root).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let target_filename = format!("{}.json", encode_id(id));
+        while let Some(entry) = read_dir.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let candidate = entry.path().join(&target_filename);
+            match tokio::fs::read(&candidate).await {
+                Ok(bytes) => match serde_json::from_slice::<TodoItem>(&bytes) {
+                    Ok(item) => return Ok(Some((candidate, item))),
+                    Err(_) => continue,
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Box::new(e)),
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl TodoStore for JsonFileTodoStore {
+    async fn list(&self, workspace: &str) -> Result<Vec<TodoItem>, BoxError> {
+        let dir = self.workspace_dir(workspace);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<TodoItem> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(item) = serde_json::from_slice::<TodoItem>(&bytes) {
+                rows.push(item);
+            }
+        }
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        if rows.len() > 500 {
+            tracing::warn!(workspace, count = rows.len(), "todo list exceeded 500-item soft cap");
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<TodoItem>, BoxError> {
+        Ok(self.find_by_id(id).await?.map(|(_, item)| item))
+    }
+
+    async fn upsert(&self, item: &TodoItem) -> Result<(), BoxError> {
+        let dir = self.workspace_dir(&item.workspace);
+        ensure_dir(&dir).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&item.workspace, &item.id);
+        let bytes = serde_json::to_vec_pretty(item)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(TodoEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let Some((path, item)) = self.find_by_id(id).await? else {
+            return Ok(false);
+        };
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                let _ = self.tx.send(TodoEvent::Deleted {
+                    workspace: item.workspace,
+                    id: item.id,
+                });
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<TodoEvent> {
+        self.tx.subscribe()
+    }
 }
 
 // ---------- shared helpers -------------------------------------------------
@@ -627,5 +756,77 @@ mod tests {
         store.save(&p).await.unwrap();
         assert!(store.delete(&p.id).await.unwrap());
         assert!(!store.delete(&p.id).await.unwrap());
+    }
+
+    // ---- TodoStore -----------------------------------------------------
+
+    use harness_core::TodoStatus;
+
+    #[tokio::test]
+    async fn todo_round_trip_persists_to_disk() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileTodoStore::open(dir.path()).unwrap();
+        let mut t = TodoItem::new("/repo-a", "fix parser");
+        t.notes = Some("blocked by ticket #5".into());
+        store.upsert(&t).await.unwrap();
+
+        let listed = store.list("/repo-a").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], t);
+
+        // Reopen — must round-trip.
+        drop(store);
+        let store = JsonFileTodoStore::open(dir.path()).unwrap();
+        let loaded = store.get(&t.id).await.unwrap().unwrap();
+        assert_eq!(loaded, t);
+    }
+
+    #[tokio::test]
+    async fn todo_list_isolates_workspaces() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileTodoStore::open(dir.path()).unwrap();
+        let a = TodoItem::new("/r-a", "alpha");
+        let b = TodoItem::new("/r-b", "beta");
+        store.upsert(&a).await.unwrap();
+        store.upsert(&b).await.unwrap();
+        assert_eq!(store.list("/r-a").await.unwrap().len(), 1);
+        assert_eq!(store.list("/r-b").await.unwrap().len(), 1);
+        assert!(store.list("/never").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn todo_workspace_with_special_chars_round_trips() {
+        // `/path/with spaces:and/colons` must percent-encode safely
+        // for the directory name on disk.
+        let dir = tempdir().unwrap();
+        let store = JsonFileTodoStore::open(dir.path()).unwrap();
+        let weird = "/path with spaces:and/colons";
+        let mut t = TodoItem::new(weird, "x");
+        t.status = TodoStatus::InProgress;
+        store.upsert(&t).await.unwrap();
+        let listed = store.list(weird).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        // Disk filename should not leak ':'.
+        let mut found_dir = false;
+        for entry in std::fs::read_dir(dir.path().join("todos")).unwrap() {
+            let entry = entry.unwrap();
+            assert!(!entry.file_name().to_string_lossy().contains(':'));
+            found_dir = true;
+        }
+        assert!(found_dir);
+    }
+
+    #[tokio::test]
+    async fn todo_delete_idempotent_and_emits_once() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileTodoStore::open(dir.path()).unwrap();
+        let mut rx = store.subscribe();
+        let t = TodoItem::new("/r", "x");
+        store.upsert(&t).await.unwrap();
+        let _ = rx.recv().await.unwrap();
+        assert!(store.delete(&t.id).await.unwrap());
+        let _ = rx.recv().await.unwrap();
+        assert!(!store.delete(&t.id).await.unwrap());
+        assert!(rx.try_recv().is_err());
     }
 }

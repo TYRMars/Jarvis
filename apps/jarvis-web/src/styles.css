@@ -4221,6 +4221,244 @@ body.workspace-rail-closed #workspace-rail {
   to { transform: rotate(360deg); }
 }
 
+/* ============================================================
+   Persistent TODO board panel (`.rail-todos`)
+   ------------------------------------------------------------
+   Standard layout for any persistent rail panel that needs an
+   inline composer + scrollable item list. Mirrors `.plan-item`
+   visual language (grid icon | body | label | action) so the
+   two panels read side-by-side without context switch.
+
+   See docs/conventions/rail-panels.md for the full set of
+   conventions every new rail panel should follow.
+   ============================================================ */
+
+.rail-card.rail-todos { --rail-accent: var(--accent-blue); }
+
+.todos-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+/* Composer row: input fills the panel width, button hugs the
+   right edge. Standard form pattern for in-rail content
+   creation. */
+.todos-add-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.todos-add-form input {
+  min-width: 0;
+  padding: 6px 9px;
+  color: var(--text);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  font-size: var(--fs-13);
+  line-height: 1.35;
+}
+
+.todos-add-form input::placeholder {
+  color: var(--placeholder);
+}
+
+.todos-add-form input:focus {
+  outline: none;
+  border-color: var(--input-focus);
+}
+
+/* Quiet primary button used by inline composer + similar
+   "submit a small thing" affordances. Sibling to .ghost-icon
+   (square 28x28 transparent) — this one is a labeled pill. */
+.ghost-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  color: var(--text);
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.ghost-button:hover:not(:disabled) {
+  background: var(--panel-hover);
+  border-color: var(--input-focus);
+}
+
+.ghost-button:disabled {
+  color: var(--text-soft);
+  background: var(--disabled-bg);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.todos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Row layout matches .plan-item exactly so the two panels look
+   like siblings: status-icon | body | priority/label | delete. */
+.todo-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: start;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--panel-raised);
+  font-size: var(--fs-13);
+  line-height: 1.35;
+}
+
+.todo-status-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-top: -1px;
+  padding: 0;
+  color: var(--text-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.todo-status-button:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.todo-item-body {
+  min-width: 0;
+}
+
+.todo-item-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 550;
+  word-break: break-word;
+}
+
+.todo-item-note {
+  margin-top: 2px;
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  word-break: break-word;
+}
+
+.todo-status-label {
+  align-self: start;
+  padding: 2px 6px;
+  color: var(--text-soft);
+  background: var(--panel-hover);
+  border-radius: 6px;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  text-transform: lowercase;
+}
+
+.todo-delete {
+  align-self: start;
+  width: 22px;
+  height: 22px;
+}
+
+/* Priority badge — small pill the model can set via
+   todo.add/update. Three buckets keep the model's choice space
+   small and the colour mapping obvious. */
+.todo-priority {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
+.todo-priority-low {
+  color: var(--text-soft);
+  background: var(--panel-hover);
+}
+
+.todo-priority-medium {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.todo-priority-high {
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+}
+
+/* Status tints mirror .plan-item — same colour vocabulary so
+   users read both panels with one mental model. */
+.todo-item-pending .todo-status-button {
+  opacity: 0.7;
+}
+
+.todo-item-in_progress {
+  border-color: color-mix(in srgb, var(--accent-blue) 32%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 7%, var(--panel-raised));
+}
+.todo-item-in_progress .todo-status-button {
+  color: var(--accent-blue);
+}
+.todo-item-in_progress .todo-status-label {
+  color: var(--accent-blue);
+}
+
+.todo-item-completed .todo-status-button {
+  color: var(--accent-green);
+}
+.todo-item-completed .todo-item-title {
+  color: var(--text-soft);
+}
+
+.todo-item-blocked {
+  border-color: color-mix(in srgb, var(--accent-red) 28%, transparent);
+}
+.todo-item-blocked .todo-status-button {
+  color: var(--accent-red);
+}
+.todo-item-blocked .todo-status-label {
+  color: var(--accent-red);
+}
+
+.todo-item-cancelled .todo-status-button {
+  color: var(--text-soft);
+  opacity: 0.5;
+}
+.todo-item-cancelled .todo-item-title {
+  color: var(--text-soft);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
 #panel {
   position: fixed;
   right: calc(var(--rail-width) + 22px);

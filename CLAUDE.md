@@ -41,8 +41,9 @@ crates/
                    # McpServer exposes a local ToolRegistry over stdio
   harness-memory/  # Memory impls: SlidingWindowMemory + SummarizingMemory
   harness-server/  # Axum router + `serve(addr, AppState)` helper
-  harness-store/   # sqlx-backed ConversationStore; sqlite default,
-                   # postgres/mysql behind cargo features
+  harness-store/   # ConversationStore / ProjectStore / TodoStore;
+                   # JSON-file + in-memory by default, SQLite /
+                   # Postgres / MySQL behind opt-in cargo features
   harness-tools/   # Built-in `Tool` impls: echo, time.now, http.fetch,
                    # fs.{read,list,write,edit}, code.grep, shell.exec
 ```
@@ -115,8 +116,18 @@ system prompt; defaults to loading them, capped at 32 KiB),
 `JARVIS_SHELL_TIMEOUT_MS` (default `30000`, per-call default for `shell.exec`),
 `JARVIS_MCP_SERVERS` (comma-separated `prefix=command args...` list of
 external MCP servers to spawn and adapt into Tools),
-`JARVIS_DB_URL` (optional; opens a `ConversationStore` at startup — scheme
-picks backend: `sqlite:`, `postgres://`, `mysql://`),
+`JARVIS_DB_URL` (optional; opens a `ConversationStore` +
+`ProjectStore` + `TodoStore` at startup. Defaults to
+`json:///<XDG_DATA_HOME or ~/.local/share>/jarvis/conversations`
+when neither this env nor `[persistence].url` is set, so out-of-the-
+box deployments are persistent without any config. Scheme picks
+backend: `json:` (default, always available) /
+`sqlite:` / `postgres://` / `mysql://` (the SQL backends are
+opt-in cargo features — build with
+`cargo build -p jarvis --features sqlite`),
+`JARVIS_DISABLE_TODOS` (any value disables the persistent project
+TODO board even when `JARVIS_DB_URL` is set; `todo.*` tools stay
+unregistered and `/v1/todos*` returns 503),
 `JARVIS_MEMORY_TOKENS` (optional; when set, installs a memory backend
 with that estimated-token budget),
 `JARVIS_MEMORY_MODE` (optional, `window` (default) or `summary`),
@@ -676,16 +687,21 @@ the wire protocol.
 
 ### Persistence (`harness-store`)
 
-`harness-core::ConversationStore` is the trait (async `save` / `load` / `list` /
-`delete`); `harness-store` provides the concrete backends. Driver selection is
-both **compile-time** (cargo features) and **runtime** (URL scheme):
+`harness-core::ConversationStore` / `ProjectStore` / `TodoStore`
+are the traits; `harness-store` provides the concrete backends.
+**JSON-file is the default backend** — out-of-the-box deployments
+persist conversations / projects / TODOs to `~/.local/share/jarvis/conversations/`
+without any config. SQL backends (SQLite / Postgres / MySQL) are
+opt-in cargo features for ops that genuinely need a DB. Driver
+selection is both **compile-time** (cargo features) and **runtime**
+(URL scheme):
 
 | feature      | URL prefixes                    | backend                      |
 |--------------|---------------------------------|------------------------------|
-| (always on)  | `json:`, `json://`              | JSON files in a directory — `jarvis init` default |
-| `sqlite`     | `sqlite:`, `sqlite::memory:`    | SQLite                       |
-| `postgres`   | `postgres://`, `postgresql://`  | Postgres                     |
-| `mysql`      | `mysql://`, `mariadb://`        | MySQL / MariaDB              |
+| (always on)  | `json:`, `json://`              | **Default**: JSON files in a directory. Zero extra deps. |
+| `sqlite`     | `sqlite:`, `sqlite::memory:`    | SQLite (opt-in: `cargo build -p jarvis --features sqlite`) |
+| `postgres`   | `postgres://`, `postgresql://`  | Postgres (opt-in: `--features postgres`) |
+| `mysql`      | `mysql://`, `mariadb://`        | MySQL / MariaDB (opt-in: `--features mysql`) |
 
 `harness_store::connect(url)` returns `Arc<dyn ConversationStore>` — higher
 layers don't name the backend. The on-disk shape differs per backend:
