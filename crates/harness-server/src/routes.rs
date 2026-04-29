@@ -18,8 +18,8 @@ use axum::{
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use harness_core::{
-    AgentEvent, ApprovalDecision, Approver, ChannelApprover, Conversation, ConversationMetadata,
-    HitlResponse, HitlStatus, Message, PendingHitl, RunOutcome,
+    canonicalize_workspace, AgentEvent, ApprovalDecision, Approver, ChannelApprover, Conversation,
+    ConversationMetadata, HitlResponse, HitlStatus, Message, PendingHitl, RunOutcome, TodoEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -54,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::skill_routes::router())
         .merge(crate::plugin_routes::router())
         .merge(crate::workspaces_routes::router())
+        .merge(crate::todos_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .with_state(state)
@@ -551,6 +552,10 @@ fn client_msg_kind(msg: &WsClientMessage) -> &'static str {
 
 struct TurnInjection {
     project: crate::project_binder::PreparedConversation,
+    /// Prepared TODO injection state. The injection happens *after*
+    /// the project block (so the order is `[base systems, project,
+    /// todos, rest]`). Stripping reverses both.
+    todos: crate::todo_binder::PreparedTodos,
     soul_injected_at: Option<usize>,
 }
 
@@ -571,6 +576,10 @@ fn inject_soul_prompt(
 }
 
 fn strip_turn_injections(conv: Conversation, prepared: &TurnInjection) -> Conversation {
+    // Strip in reverse insertion order: TODOs went in *after* the
+    // project block (so on later indices), so removing them first
+    // keeps the project-block index stable.
+    let conv = crate::todo_binder::strip_todo_block(conv, &prepared.todos);
     let mut conv = strip_project_block(conv, &prepared.project);
     let Some(idx) = prepared.soul_injected_at else {
         return conv;
@@ -586,6 +595,20 @@ fn strip_turn_injections(conv: Conversation, prepared: &TurnInjection) -> Conver
         conv.messages.remove(idx);
     }
     conv
+}
+
+/// Resolve the active workspace path for the current socket: prefer
+/// the per-socket override, fall back to the binary's startup root.
+/// Returns the canonicalised string form ready to query the TODO
+/// store with.
+fn active_workspace_key(
+    state: &AppState,
+    socket_workspace: Option<&std::path::Path>,
+) -> Option<String> {
+    let path = socket_workspace
+        .map(|p| p.to_path_buf())
+        .or_else(|| state.workspace_root.clone())?;
+    Some(canonicalize_workspace(&path))
 }
 
 fn leading_system_count(messages: &[Message]) -> usize {
@@ -708,6 +731,12 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // `PermissionRulesChanged` event out to this socket whenever any
     // socket (or external file edit) changes the rule table.
     let mut rules_changed_rx = state.permission_store.as_ref().map(|s| s.subscribe());
+    // Subscribe to TODO-store mutations. Both REST and `todo.*` tool
+    // mutations broadcast through the same store sender, so a single
+    // emit reaches every connected client (including the one that
+    // triggered it). Per-event we filter by the socket's pinned
+    // workspace so multi-window UIs don't cross-contaminate.
+    let mut todos_changed_rx = state.todos.as_ref().map(|s| s.subscribe());
     let (hitl_tx, mut pending_hitl_rx) = mpsc::channel::<PendingHitl>(8);
 
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -832,6 +861,36 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         json!({ "type": "permission_rules_changed" }).to_string(),
                     ))
                     .await;
+            }
+            // ---- todo store mutated (REST or tool) ----
+            // Both REST handlers and the agent's `todo.*` tools call
+            // the store's mutators, which fan out a single
+            // `TodoEvent` per change. We filter by the socket's
+            // active workspace so multi-window UIs pinned to
+            // different roots don't see each other's updates. Lagged
+            // receivers fall through to a refetch via REST.
+            Ok(ev) = async {
+                match todos_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<TodoEvent, ()>>().await,
+                }
+            } => {
+                let active_ws_path = socket_workspace
+                    .as_deref()
+                    .map(|p| p.to_path_buf())
+                    .or_else(|| state.workspace_root.clone());
+                let active_ws = active_ws_path.as_deref().map(canonicalize_workspace);
+                if active_ws.as_deref() == Some(ev.workspace()) {
+                    let frame = match &ev {
+                        TodoEvent::Upserted(item) => {
+                            json!({ "type": "todo_upserted", "todo": item })
+                        }
+                        TodoEvent::Deleted { workspace, id } => {
+                            json!({ "type": "todo_deleted", "id": id, "workspace": workspace })
+                        }
+                    };
+                    let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+                }
             }
             // ---- native HITL tool → server ----
             Some(p) = pending_hitl_rx.recv() => {
@@ -1080,20 +1139,42 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            let snapshot = prepared.conversation.clone();
+            // Late-bind the persistent TODO list (no-op when no
+            // store / no workspace / opt-out).
+            let workspace_key =
+                active_workspace_key(state, socket_workspace.as_deref());
+            let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
+                state.todos.as_ref(),
+                prepared.conversation.clone(),
+                workspace_key.as_deref(),
+                state.todos_in_prompt,
+            )
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    send_error(ws_tx, &format!("todo binder: {e}")).await;
+                    conv.messages.pop();
+                    return true;
+                }
+            };
             *last_injection = Some(TurnInjection {
                 project: prepared,
+                todos: todos_prepared,
                 soul_injected_at,
             });
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
             let handle = tokio::spawn(async move {
-                let mut stream = agent.run_stream(snapshot);
-                while let Some(ev) = stream.next().await {
-                    if event_tx.send(ev).await.is_err() {
-                        return;
+                harness_core::todo::with_turn_budget(async move {
+                    let mut stream = agent.run_stream(snapshot);
+                    while let Some(ev) = stream.next().await {
+                        if event_tx.send(ev).await.is_err() {
+                            return;
+                        }
                     }
-                }
+                })
+                .await;
             });
             *current_task = Some(handle);
         }
@@ -1492,20 +1573,40 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            let snapshot = prepared.conversation.clone();
+            let workspace_key =
+                active_workspace_key(state, socket_workspace.as_deref());
+            let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
+                state.todos.as_ref(),
+                prepared.conversation.clone(),
+                workspace_key.as_deref(),
+                state.todos_in_prompt,
+            )
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    send_error(ws_tx, &format!("todo binder: {e}")).await;
+                    conv.messages.pop();
+                    return true;
+                }
+            };
             *last_injection = Some(TurnInjection {
                 project: prepared,
+                todos: todos_prepared,
                 soul_injected_at,
             });
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
             let handle = tokio::spawn(async move {
-                let mut stream = agent.run_stream(snapshot);
-                while let Some(ev) = stream.next().await {
-                    if event_tx.send(ev).await.is_err() {
-                        return;
+                harness_core::todo::with_turn_budget(async move {
+                    let mut stream = agent.run_stream(snapshot);
+                    while let Some(ev) = stream.next().await {
+                        if event_tx.send(ev).await.is_err() {
+                            return;
+                        }
                     }
-                }
+                })
+                .await;
             });
             *current_task = Some(handle);
         }
@@ -1608,20 +1709,40 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            let snapshot = prepared.conversation.clone();
+            let workspace_key =
+                active_workspace_key(state, socket_workspace.as_deref());
+            let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
+                state.todos.as_ref(),
+                prepared.conversation.clone(),
+                workspace_key.as_deref(),
+                state.todos_in_prompt,
+            )
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    send_error(ws_tx, &format!("todo binder: {e}")).await;
+                    conv.messages.pop();
+                    return true;
+                }
+            };
             *last_injection = Some(TurnInjection {
                 project: prepared,
+                todos: todos_prepared,
                 soul_injected_at: None,
             });
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
             let handle = tokio::spawn(async move {
-                let mut stream = agent.run_stream(snapshot);
-                while let Some(ev) = stream.next().await {
-                    if event_tx.send(ev).await.is_err() {
-                        return;
+                harness_core::todo::with_turn_budget(async move {
+                    let mut stream = agent.run_stream(snapshot);
+                    while let Some(ev) = stream.next().await {
+                        if event_tx.send(ev).await.is_err() {
+                            return;
+                        }
                     }
-                }
+                })
+                .await;
             });
             *current_task = Some(handle);
         }

@@ -62,6 +62,20 @@ export interface PlanItem {
   note?: string | null;
 }
 
+/// One persistent project TODO. Distinct from `PlanItem` (per-turn
+/// ephemeral checklist) — TODOs survive across turns and process
+/// restarts. Wire shape mirrors `harness_core::TodoItem`.
+export interface TodoItem {
+  id: string;
+  workspace: string;
+  title: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled" | "blocked";
+  priority?: "low" | "medium" | "high" | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /// Provider description served by `GET /v1/providers`. The model
 /// menu groups options under provider, surfaces the default model
 /// first, and marks one provider as `is_default` so we can
@@ -106,6 +120,13 @@ export type UiMessage =
 
 function isAskToolName(name: string | undefined): boolean {
   return typeof name === "string" && name.startsWith("ask.");
+}
+
+/// Sort TODOs newest-`updated_at` first to match the server's
+/// `ORDER BY updated_at DESC`. Stable comparator so equal stamps
+/// keep insertion order.
+function sortTodosByUpdatedDesc(items: TodoItem[]): TodoItem[] {
+  return items.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 }
 
 /// One imperative tool invocation. Lives in a flat map keyed by id;
@@ -274,6 +295,11 @@ interface AppStoreState {
   /// `plan_update` event; cleared on `reset`. Empty array means
   /// "no plan yet" — the rail's empty-state UI handles that.
   plan: PlanItem[];
+  /// Persistent project TODOs for the active workspace. Hydrated
+  /// from `GET /v1/todos` on mount of the TODOs panel; live updates
+  /// arrive via `todo_upserted` / `todo_deleted` WS frames. Sort
+  /// order matches the server: newest `updated_at` first.
+  todos: TodoItem[];
 
   // ---- Sidebar / conversation list ----
   /// Pinned conversation ids. Persisted to localStorage by
@@ -411,6 +437,17 @@ interface AppStoreActions {
   clearTasks: () => void;
   /// Replace the plan snapshot. Empty `items` clears the plan.
   setPlan: (items: PlanItem[]) => void;
+  /// Replace the persistent TODO list (called after a REST list).
+  setTodos: (items: TodoItem[]) => void;
+  /// Insert or update a single TODO (called from WS `todo_upserted`
+  /// frames or after a successful REST mutation). Skipped silently
+  /// when the item's `workspace` doesn't match the active socket
+  /// workspace — the WS handler already filters, but this guards
+  /// against stale REST callbacks.
+  upsertTodo: (item: TodoItem) => void;
+  /// Remove a TODO by id. Called from WS `todo_deleted` frames
+  /// and successful REST DELETE.
+  removeTodo: (id: string) => void;
   // ---- Sidebar ----
   togglePin: (id: string) => void;
   setTitleOverride: (id: string, title: string | null) => void;
@@ -523,6 +560,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
     tasks: initialWorkspacePanel("tasks"),
     plan: initialWorkspacePanel("plan"),
     changeReport: initialWorkspacePanel("changeReport"),
+    todos: initialWorkspacePanel("todos"),
   },
   workspacePanelMenuOpen: false,
   accountMenuOpen: false,
@@ -535,6 +573,7 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   quickOpen: false,
   tasks: [],
   plan: [],
+  todos: [],
 
   pinned: loadPinned(),
   titleOverrides: loadTitleOverrides(),
@@ -1110,6 +1149,17 @@ export const useAppStore = create<AppStoreState & AppStoreActions>((set, get) =>
   },
   clearTasks: () => set({ tasks: [] }),
   setPlan: (items) => set({ plan: items }),
+  setTodos: (items) =>
+    set({
+      // Server already returns newest-first; trust the order.
+      todos: items.slice(),
+    }),
+  upsertTodo: (item) =>
+    set((s) => {
+      const filtered = s.todos.filter((t) => t.id !== item.id);
+      return { todos: sortTodosByUpdatedDesc([item, ...filtered]) };
+    }),
+  removeTodo: (id) => set((s) => ({ todos: s.todos.filter((t) => t.id !== id) })),
   // ---- Sidebar ----
   togglePin: (id) => {
     set((s) => {

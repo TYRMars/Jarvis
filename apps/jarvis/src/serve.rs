@@ -42,12 +42,62 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     let cfg = cfg.unwrap_or_default();
 
     let mut tools = ToolRegistry::new();
-    let bcfg = builtins_config_with_workspace(&cfg, args.workspace.as_deref());
+    let mut bcfg = builtins_config_with_workspace(&cfg, args.workspace.as_deref());
     let workspace_root = bcfg.fs_root.clone();
     let coding_mode = bcfg.enable_fs_write
         || bcfg.enable_fs_edit
         || bcfg.enable_fs_patch
         || bcfg.enable_shell_exec;
+
+    // Open persistence early so the TODO store can flow into
+    // [`BuiltinsConfig`] before [`register_builtins`] runs. The same
+    // URL drives all three stores (conversations, projects, todos);
+    // [`harness_store::connect_all`] shares the underlying pool /
+    // directory so a single backend covers everything.
+    //
+    // Resolution order: `JARVIS_DB_URL` env > `[persistence].url` from
+    // config > **default JSON-file path under the user's data
+    // directory**. The default keeps "out of the box" deployments
+    // persistent without forcing operators to discover an env var or
+    // hand-edit config; SQL backends (`sqlite:` / `postgres:` /
+    // `mysql:`) are opt-in via cargo features when a DB makes sense.
+    let persistence_url = pick_string_opt("JARVIS_DB_URL", cfg.persistence.url.as_deref())
+        .or_else(default_json_persistence_url);
+    let persistence_scheme = persistence_url
+        .as_deref()
+        .and_then(|s| s.split(':').next().map(str::to_string));
+    let (store, project_store, todo_store) = match persistence_url.as_deref() {
+        Some(url) => {
+            let bundle = harness_store::connect_all(url)
+                .await
+                .with_context(|| format!("opening persistence url `{url}`"))?;
+            info!(url = %url, "conversation + project + todo store connected");
+            (
+                Some(bundle.conversations),
+                Some(bundle.projects),
+                Some(bundle.todos),
+            )
+        }
+        None => {
+            info!(
+                "no persistence URL resolved (HOME unset?); running in-memory \
+                 (conversations / TODOs will not survive restart)"
+            );
+            (None, None, None)
+        }
+    };
+    // `JARVIS_DISABLE_TODOS=1` opts out of the persistent TODO board
+    // even when a DB is configured. Useful for shared deployments
+    // that want todos managed elsewhere.
+    let todos_disabled = std::env::var_os("JARVIS_DISABLE_TODOS").is_some();
+    let active_todo_store = if todos_disabled { None } else { todo_store.clone() };
+    bcfg.todo_store = active_todo_store.clone();
+    if active_todo_store.is_some() {
+        info!("persistent TODO store active (todo.* tools registered)");
+    } else if todos_disabled {
+        info!("persistent TODOs disabled via JARVIS_DISABLE_TODOS");
+    }
+
     register_builtins(&mut tools, bcfg);
     info!(workspace = %workspace_root.display(), "workspace root resolved");
 
@@ -131,25 +181,10 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         "tools registered",
     );
 
-    // Optional persistence — opened up-front so `SummarizingMemory`
-    // can also use it for cross-restart summary persistence. The same
-    // URL drives both the conversation and the project store; `connect_all`
-    // shares the underlying pool / directory between the two.
-    let persistence_url = pick_string_opt("JARVIS_DB_URL", cfg.persistence.url.as_deref());
-    let persistence_scheme = persistence_url
-        .as_deref()
-        .and_then(|s| s.split(':').next().map(str::to_string));
-    let (store, project_store) = match persistence_url.as_deref() {
-        Some(url) => {
-            let bundle = harness_store::connect_all(url)
-                .await
-                .with_context(|| format!("opening db url `{url}`"))?;
-            info!(url = %url, "conversation + project store connected");
-            (Some(bundle.conversations), Some(bundle.projects))
-        }
-        None => (None, None),
-    };
-
+    // Persistence (`store` / `project_store` / `todo_store`) was
+    // opened earlier so the TODO store could flow into
+    // `BuiltinsConfig`. The same handles are reused below — no
+    // second connection.
     let mut system_prompt = pick_system_prompt(&cfg, coding_mode);
     let project_ctx_cap = project_context_max_bytes(&cfg);
     let mut project_context_loaded = false;
@@ -320,6 +355,15 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if let Some(ps) = project_store {
         state = state.with_project_store(ps);
     }
+    if let Some(ts) = active_todo_store {
+        state = state.with_todo_store(ts);
+    }
+    // `JARVIS_NO_TODOS_IN_PROMPT=1` opts out of injecting the
+    // current TODO list into the system prompt every turn. The
+    // `todo.*` tools stay registered (the model can still query
+    // explicitly) — only the automatic injection goes away.
+    let inject_todos = std::env::var_os("JARVIS_NO_TODOS_IN_PROMPT").is_none();
+    state = state.with_todos_in_prompt(inject_todos);
     state = state
         .with_permission_store(permission_store)
         .with_default_permission_mode(permission_mode);
@@ -897,6 +941,32 @@ fn dirs_user_config() -> Result<PathBuf> {
     Ok(home.join(".config").join("jarvis"))
 }
 
+/// Resolve the user-data dir (`~/.local/share/jarvis`) — backs the
+/// default JSON-file conversation/project/TODO store. Honours
+/// `XDG_DATA_HOME` first so XDG-compliant setups land in the right
+/// place. Returns an error if no home directory can be resolved
+/// (rare — tests, locked-down containers).
+fn dirs_user_data() -> Result<PathBuf> {
+    if let Some(custom) = std::env::var_os("XDG_DATA_HOME") {
+        return Ok(PathBuf::from(custom).join("jarvis"));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .ok_or_else(|| anyhow::anyhow!("HOME / USERPROFILE not set"))?;
+    Ok(home.join(".local").join("share").join("jarvis"))
+}
+
+/// Default persistence URL when neither `JARVIS_DB_URL` nor
+/// `[persistence].url` is set. Returns `json:///<data-dir>/conversations`
+/// — `harness-store` creates the directory on first write. `None`
+/// only when [`dirs_user_data`] can't resolve a home dir.
+fn default_json_persistence_url() -> Option<String> {
+    let dir = dirs_user_data().ok()?.join("conversations");
+    // Three slashes makes it a proper file URI (`json:///abs/path`).
+    Some(format!("json://{}", dir.display()))
+}
+
 /// Resolve the boot-time permission mode. Order:
 /// 1. `--permission-mode` CLI flag
 /// 2. `JARVIS_PERMISSION_MODE` env
@@ -1062,6 +1132,9 @@ Use fs.edit (uniqueness-checked single replace) or fs.patch (unified-diff multi-
 reviewable edits; reach for fs.write only to create new files. \
 When you run checks (tests, lints, builds), keep them focused on the change rather than the \
 whole repo. \
+At the start of a fresh session, call todo.list to see persistent project follow-ups; \
+record new follow-ups via todo.add (not plan.update — that's for the current turn only) \
+and mark them completed/blocked as you go. \
 End every coding turn with a short report: which files changed, which checks ran, which checks \
 were skipped and why, and any residual risk you couldn't verify.";
 

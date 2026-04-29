@@ -52,6 +52,24 @@ pub fn active_workspace_or(default: &Path) -> PathBuf {
     active_workspace().unwrap_or_else(|| default.to_path_buf())
 }
 
+/// Produce a canonicalised string key for a workspace path, used as
+/// the join key for the persistent TODO board (and any future
+/// per-workspace persistence). Resolves symlinks (so macOS
+/// `/var` ↔ `/private/var` differences vanish) and produces a
+/// stable form regardless of trailing separators or
+/// `.`/`..` components.
+///
+/// Falls back to the lossy display string when canonicalisation
+/// fails (e.g. the path doesn't exist yet) — that's fine for the
+/// REST contract because a non-existent root is a caller-chosen
+/// value, not a server bug.
+pub fn canonicalize_workspace(path: &Path) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => path.to_string_lossy().into_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

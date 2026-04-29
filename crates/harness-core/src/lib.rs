@@ -18,6 +18,7 @@ pub mod plan;
 pub mod progress;
 pub mod project;
 pub mod store;
+pub mod todo;
 pub mod tool;
 pub mod workspace;
 
@@ -48,8 +49,9 @@ pub use permission::{
     PermissionTable, RuleHit, Scope as PermissionScope, ScopedRule,
 };
 pub use project::{derive_slug, validate_slug, Project};
-pub use store::{ConversationMetadata, ConversationRecord, ConversationStore, ProjectStore};
+pub use store::{ConversationMetadata, ConversationRecord, ConversationStore, ProjectStore, TodoStore};
+pub use todo::{TodoEvent, TodoItem, TodoPriority, TodoStatus};
 pub use tool::{Tool, ToolCategory, ToolRegistry, ToolSpec};
 pub use workspace::{
-    active_workspace, active_workspace_or, with_session_workspace,
+    active_workspace, active_workspace_or, canonicalize_workspace, with_session_workspace,
 };

@@ -11,10 +11,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
-    ProjectStore,
+    ProjectStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
+use tokio::sync::broadcast;
 
 use crate::error::StoreError;
 
@@ -103,6 +104,53 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS todos (
+            id         VARCHAR(255) NOT NULL PRIMARY KEY,
+            workspace  VARCHAR(255) NOT NULL,
+            title      TEXT         NOT NULL,
+            status     VARCHAR(32)  NOT NULL,
+            notes      TEXT,
+            created_at VARCHAR(64)  NOT NULL,
+            updated_at VARCHAR(64)  NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    let has_todos_index: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'todos'
+             AND INDEX_NAME = 'idx_todos_workspace'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_todos_index {
+        sqlx::query("CREATE INDEX idx_todos_workspace ON todos(workspace)")
+            .execute(pool)
+            .await?;
+    }
+    // Forward-compat: add `priority` column to existing databases
+    // that pre-date the field. MySQL <8.0.29 lacks IF NOT EXISTS,
+    // so sniff INFORMATION_SCHEMA first.
+    let has_priority: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'todos'
+             AND COLUMN_NAME = 'priority'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_priority {
+        sqlx::query("ALTER TABLE todos ADD COLUMN priority VARCHAR(32) NULL")
+            .execute(pool)
+            .await?;
+    }
 
     Ok(())
 }
@@ -381,5 +429,141 @@ impl ProjectRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
+    }
+}
+
+// ---------- TodoStore -----------------------------------------------------
+
+pub struct MysqlTodoStore {
+    pool: MySqlPool,
+    tx: broadcast::Sender<TodoEvent>,
+}
+
+impl MysqlTodoStore {
+    /// Wrap a pool that's already had [`migrate`] run against it.
+    pub fn from_pool(pool: MySqlPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct TodoRow {
+    id: String,
+    workspace: String,
+    title: String,
+    status: String,
+    priority: Option<String>,
+    notes: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl TodoRow {
+    fn into_item(self) -> Result<TodoItem, BoxError> {
+        let status = TodoStatus::from_wire(&self.status)
+            .ok_or_else(|| -> BoxError { format!("unknown status `{}`", self.status).into() })?;
+        let priority = self.priority.as_deref().and_then(TodoPriority::from_wire);
+        Ok(TodoItem {
+            id: self.id,
+            workspace: self.workspace,
+            title: self.title,
+            status,
+            priority,
+            notes: self.notes,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[async_trait]
+impl TodoStore for MysqlTodoStore {
+    async fn list(&self, workspace: &str) -> Result<Vec<TodoItem>, BoxError> {
+        let rows: Vec<TodoRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, status, priority, notes, created_at, updated_at
+                 FROM todos
+                 WHERE workspace = ?
+                 ORDER BY updated_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(workspace)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(workspace, "todo list hit 500-item soft cap");
+        }
+        rows.into_iter().map(TodoRow::into_item).collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<TodoItem>, BoxError> {
+        let row: Option<TodoRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, status, priority, notes, created_at, updated_at
+                 FROM todos WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        row.map(TodoRow::into_item).transpose()
+    }
+
+    async fn upsert(&self, item: &TodoItem) -> Result<(), BoxError> {
+        sqlx::query(
+            r#"INSERT INTO todos
+                (id, workspace, title, status, priority, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    workspace  = VALUES(workspace),
+                    title      = VALUES(title),
+                    status     = VALUES(status),
+                    priority   = VALUES(priority),
+                    notes      = VALUES(notes),
+                    updated_at = VALUES(updated_at)"#,
+        )
+        .bind(&item.id)
+        .bind(&item.workspace)
+        .bind(&item.title)
+        .bind(item.status.as_wire())
+        .bind(item.priority.map(|p| p.as_wire()))
+        .bind(&item.notes)
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(TodoEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let workspace: Option<String> =
+            sqlx::query_scalar("SELECT workspace FROM todos WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        let Some(workspace) = workspace else {
+            return Ok(false);
+        };
+        let res = sqlx::query("DELETE FROM todos WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(TodoEvent::Deleted {
+                workspace,
+                id: id.to_string(),
+            });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<TodoEvent> {
+        self.tx.subscribe()
     }
 }

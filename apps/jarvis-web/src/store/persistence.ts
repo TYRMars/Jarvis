@@ -257,7 +257,8 @@ export type WorkspacePanelKey =
   | "files"
   | "tasks"
   | "plan"
-  | "changeReport";
+  | "changeReport"
+  | "todos";
 
 const PANEL_DEFAULTS: Record<WorkspacePanelKey, boolean> = {
   preview: false,
@@ -267,6 +268,7 @@ const PANEL_DEFAULTS: Record<WorkspacePanelKey, boolean> = {
   tasks: false,
   plan: false,
   changeReport: false,
+  todos: false,
 };
 
 export function initialWorkspacePanel(key: WorkspacePanelKey): boolean {

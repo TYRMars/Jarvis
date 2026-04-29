@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Pluggable sqlx-backed persistence for the agent harness. SQLite by default; Postgres and MySQL behind features."
+description = "Pluggable persistence for the agent harness. JSON-file by default; SQLite / Postgres / MySQL behind opt-in features."
 
 [dependencies]
 harness-core.workspace = true
@@ -14,7 +14,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-sqlx = { workspace = true }
+# `sqlx` only compiles when one of the SQL backend features is enabled
+# — the default JSON-file backend ships without it so users get a
+# zero-extra-deps install.
+sqlx = { workspace = true, optional = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
@@ -22,7 +25,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile.workspace = true
 
 [features]
-default = ["sqlite"]
-sqlite = ["sqlx/sqlite"]
-postgres = ["sqlx/postgres"]
-mysql = ["sqlx/mysql"]
+# Default: JSON-file + in-memory backends only. SQL backends are
+# opt-in extensions — enable with `--features sqlite` (or
+# `postgres` / `mysql`) when a DB makes sense for the deployment.
+default = []
+sqlite = ["dep:sqlx", "sqlx/sqlite"]
+postgres = ["dep:sqlx", "sqlx/postgres"]
+mysql = ["dep:sqlx", "sqlx/mysql"]

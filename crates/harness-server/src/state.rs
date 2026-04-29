@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use harness_core::{
     Agent, AgentConfig, ConversationStore, LlmProvider, PermissionMode, PermissionStore,
-    ProjectStore, ToolRegistry,
+    ProjectStore, TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
@@ -131,6 +131,19 @@ pub struct AppState {
     /// workspace binding (so `Resume` can restore which folder a
     /// session was started in).
     pub workspaces: Option<Arc<WorkspaceStore>>,
+    /// Optional persistent project TODO store. When `Some(_)`,
+    /// `/v1/todos` REST endpoints work and WS sessions broadcast
+    /// `todo_upserted` / `todo_deleted` frames. `None` ⇒ those
+    /// endpoints return 503 and the agent's `todo.*` tools are
+    /// unregistered (set up in the binary's composition root).
+    pub todos: Option<Arc<dyn TodoStore>>,
+    /// Inject the current pending/in_progress/blocked TODOs into
+    /// the system prompt at the start of every turn? Defaults to
+    /// `true` — gives the agent cheap awareness without an extra
+    /// `todo.list` round-trip. The binary flips it to `false` when
+    /// `JARVIS_NO_TODOS_IN_PROMPT` is set. No-op when `todos` is
+    /// `None`.
+    pub todos_in_prompt: bool,
 }
 
 impl AppState {
@@ -153,6 +166,8 @@ impl AppState {
             skills: None,
             plugins: None,
             workspaces: None,
+            todos: None,
+            todos_in_prompt: true,
         }
     }
 
@@ -180,6 +195,8 @@ impl AppState {
             skills: None,
             plugins: None,
             workspaces: None,
+            todos: None,
+            todos_in_prompt: true,
         }
     }
 
@@ -270,6 +287,23 @@ impl AppState {
     /// session — it just won't remember the choice across restarts.
     pub fn with_workspaces(mut self, store: Arc<WorkspaceStore>) -> Self {
         self.workspaces = Some(store);
+        self
+    }
+
+    /// Wire in the persistent TODO store. Without one,
+    /// `/v1/todos*` returns 503; the agent's `todo.*` tools are
+    /// also unregistered (the binary handles that via
+    /// `BuiltinsConfig::todo_store`).
+    pub fn with_todo_store(mut self, store: Arc<dyn TodoStore>) -> Self {
+        self.todos = Some(store);
+        self
+    }
+
+    /// Toggle the per-turn TODO injection into the system prompt.
+    /// The binary flips this to `false` when
+    /// `JARVIS_NO_TODOS_IN_PROMPT` is set.
+    pub fn with_todos_in_prompt(mut self, enabled: bool) -> Self {
+        self.todos_in_prompt = enabled;
         self
     }
 

@@ -27,6 +27,7 @@ Status legend in each doc's header:
 | [aicoding-agent.md](aicoding-agent.md) | Codex / Claude Code style coding-agent workflow | Proposed |
 | [aicoding-agent.zh-CN.md](aicoding-agent.zh-CN.md) | Codex / Claude Code 风格 AI Coding 工作流中文版 | Proposed |
 | [cloud-capabilities.zh-CN.md](cloud-capabilities.zh-CN.md) | 云端能力包、端云协同与多云厂商适配 | Proposed |
+| [work-orchestration.zh-CN.md](work-orchestration.zh-CN.md) | Work 编排、自动执行、验证门禁与 GSD 2 参考吸收 | Proposed |
 | [permission-modes.md](permission-modes.md) | Five permission modes (`ask` / `accept-edits` / `plan` / `auto` / `bypass`) + rule engine | Adopted (backend); Web UI follow-up |
 
 ## Cross-cutting principles

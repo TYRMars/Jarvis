@@ -134,6 +134,13 @@ export function handleFrame(ev: any): void {
       store.setSocketWorkspace?.(path, ev.workspace ?? null);
       break;
     }
+    // ---- Persistent TODO board frames ----
+    case "todo_upserted":
+      if (ev.todo) store.upsertTodo(ev.todo);
+      break;
+    case "todo_deleted":
+      if (typeof ev.id === "string") store.removeTodo(ev.id);
+      break;
     default:
       console.warn("unknown frame", ev);
   }

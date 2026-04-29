@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { ChangeReport, ChangeReportCount } from "./Workspace/ChangeReport";
 import { PlanCountSpan, PlanList } from "./Workspace/PlanList";
 import { TaskCountSpan, TasksList } from "./Workspace/TasksRail";
+import { TodosCountSpan, TodosList } from "./Workspace/TodosRail";
 import { WorkspaceDiff, WorkspaceDiffCount } from "./Workspace/WorkspaceDiff";
 import { ClearTasksButton } from "./Workspace/WorkspaceToggles";
 import { useAppStore } from "../store/appStore";
@@ -103,6 +104,18 @@ export function AppWorkspaceRail() {
         </>
       ),
       content: <PlanList />,
+    },
+    {
+      key: "todos",
+      className: "rail-todos",
+      title: tx("panelTodos", "TODOs"),
+      subtitle: (
+        <>
+          <TodosCountSpan />{" "}
+          <span>{tx("todosCountLabel", "items in backlog")}</span>
+        </>
+      ),
+      content: <TodosList />,
     },
   ];
 

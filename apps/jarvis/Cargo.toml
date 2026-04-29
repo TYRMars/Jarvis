@@ -39,3 +39,14 @@ chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# Persistence-backend opt-ins. Default build ships JSON-file +
+# in-memory backends only (zero extra deps). Pass
+# `--features sqlite` (or `postgres` / `mysql`) when a SQL backend
+# fits the deployment — these forward to the same-named
+# `harness-store` features.
+[features]
+default = []
+sqlite = ["harness-store/sqlite"]
+postgres = ["harness-store/postgres"]
+mysql = ["harness-store/mysql"]

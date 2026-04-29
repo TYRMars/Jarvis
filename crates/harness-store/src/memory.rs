@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
-    ProjectStore,
+    ProjectStore, TodoEvent, TodoItem, TodoStore,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 #[derive(Clone)]
 struct ConversationEntry {
@@ -166,6 +166,87 @@ impl ProjectStore for MemoryProjectStore {
     }
 }
 
+/// In-process [`TodoStore`]. Items keyed by id; broadcast fanout
+/// shared by every clone of this struct via `Arc`.
+#[derive(Clone)]
+pub struct MemoryTodoStore {
+    inner: Arc<RwLock<HashMap<String, TodoItem>>>,
+    tx: broadcast::Sender<TodoEvent>,
+}
+
+impl Default for MemoryTodoStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryTodoStore {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            tx,
+        }
+    }
+}
+
+#[async_trait]
+impl TodoStore for MemoryTodoStore {
+    async fn list(&self, workspace: &str) -> Result<Vec<TodoItem>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<TodoItem> = guard
+            .values()
+            .filter(|t| t.workspace == workspace)
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                workspace,
+                count = rows.len(),
+                "todo list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<TodoItem>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn upsert(&self, item: &TodoItem) -> Result<(), BoxError> {
+        {
+            let mut guard = self.inner.write().await;
+            guard.insert(item.id.clone(), item.clone());
+        }
+        let _ = self.tx.send(TodoEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let removed = {
+            let mut guard = self.inner.write().await;
+            guard.remove(id)
+        };
+        match removed {
+            Some(item) => {
+                let _ = self.tx.send(TodoEvent::Deleted {
+                    workspace: item.workspace,
+                    id: item.id,
+                });
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<TodoEvent> {
+        self.tx.subscribe()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +391,64 @@ mod tests {
         store.save(&p).await.unwrap();
         assert!(store.delete(&p.id).await.unwrap());
         assert!(!store.delete(&p.id).await.unwrap());
+    }
+
+    // ---- TodoStore -----------------------------------------------------
+
+    use harness_core::TodoStatus;
+
+    #[tokio::test]
+    async fn todo_upsert_list_round_trip_filters_by_workspace() {
+        let store = MemoryTodoStore::new();
+        let mut a = TodoItem::new("/repo-a", "fix parser");
+        let b = TodoItem::new("/repo-b", "rewrite docs");
+        store.upsert(&a).await.unwrap();
+        store.upsert(&b).await.unwrap();
+
+        let only_a = store.list("/repo-a").await.unwrap();
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].id, a.id);
+
+        // Update flips status; upsert overwrites.
+        a.status = TodoStatus::Completed;
+        a.touch();
+        store.upsert(&a).await.unwrap();
+        let updated = store.get(&a.id).await.unwrap().unwrap();
+        assert_eq!(updated.status, TodoStatus::Completed);
+
+        // Delete by id reports existence.
+        assert!(store.delete(&b.id).await.unwrap());
+        assert!(!store.delete(&b.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn todo_subscribe_fires_on_upsert_and_delete() {
+        let store = MemoryTodoStore::new();
+        let mut rx = store.subscribe();
+        let t = TodoItem::new("/r", "x");
+        store.upsert(&t).await.unwrap();
+        let evt = rx.recv().await.unwrap();
+        match evt {
+            TodoEvent::Upserted(item) => assert_eq!(item.id, t.id),
+            _ => panic!("expected Upserted"),
+        }
+        store.delete(&t.id).await.unwrap();
+        let evt = rx.recv().await.unwrap();
+        match evt {
+            TodoEvent::Deleted { id, workspace } => {
+                assert_eq!(id, t.id);
+                assert_eq!(workspace, "/r");
+            }
+            _ => panic!("expected Deleted"),
+        }
+    }
+
+    #[tokio::test]
+    async fn todo_delete_no_op_does_not_emit() {
+        let store = MemoryTodoStore::new();
+        let mut rx = store.subscribe();
+        assert!(!store.delete("never-existed").await.unwrap());
+        // No event in the channel.
+        assert!(rx.try_recv().is_err());
     }
 }
