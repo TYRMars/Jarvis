@@ -20,6 +20,8 @@
 
 pub mod catalog;
 pub mod manifest;
+pub mod selector;
 
 pub use catalog::{SkillCatalog, SkillEntry, SkillSource};
-pub use manifest::{SkillActivation, SkillError, SkillManifest, parse_skill};
+pub use manifest::{parse_skill, SkillActivation, SkillError, SkillManifest};
+pub use selector::{pick_auto_skills, query_token_set, score_skill};

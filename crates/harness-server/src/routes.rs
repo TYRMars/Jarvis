@@ -564,6 +564,39 @@ async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Respons
 ///
 /// Returns `None` when the catalogue is absent or no active skill
 /// resolved to a known entry — leaves `cfg.system_prompt` alone.
+/// Default cap on how many auto-activated skills to inject per turn.
+/// Two keeps the system-prompt overhead small while still letting two
+/// orthogonal skills (e.g. "code-review" + "pdf-helper") fire on a
+/// mixed query. Reachable via [`merged_skills_for_turn`].
+const AUTO_SKILL_TOP_K: usize = 2;
+
+/// Build the per-turn skill list: manual activations first, then up
+/// to `AUTO_SKILL_TOP_K` auto-picks scored against the user's
+/// most recent message. Manual entries always survive; auto entries
+/// are deduped against the manual set so the same body never gets
+/// injected twice.
+fn merged_skills_for_turn(
+    catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
+    manual_active: &[String],
+    user_content: &str,
+) -> Vec<String> {
+    let mut merged: Vec<String> = manual_active.to_vec();
+    let Some(cat_arc) = catalog else {
+        return merged;
+    };
+    let Ok(guard) = cat_arc.read() else {
+        return merged;
+    };
+    let picks =
+        harness_skill::pick_auto_skills(&guard, user_content, AUTO_SKILL_TOP_K, manual_active);
+    for n in picks {
+        if !merged.iter().any(|m| m == &n) {
+            merged.push(n);
+        }
+    }
+    merged
+}
+
 fn compose_with_skills(
     template: Option<&str>,
     catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
@@ -938,8 +971,9 @@ async fn handle_client_frame(
             // so. Done per-turn (not once at socket open) so a mid-
             // session `set_mode` flip takes effect on the next message.
             let active_mode = *mode_handle.read().await;
-            let skills_snapshot = active_skills.clone();
             let skills_catalog = state.skills.as_ref().cloned();
+            let skills_snapshot =
+                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
@@ -1242,8 +1276,9 @@ async fn handle_client_frame(
             let approver = socket_approver.clone();
             let hitl = hitl_tx.clone();
             let active_mode = *mode_handle.read().await;
-            let skills_snapshot = active_skills.clone();
             let skills_catalog = state.skills.as_ref().cloned();
+            let skills_snapshot =
+                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
@@ -1376,8 +1411,9 @@ async fn handle_client_frame(
             // arm. We rebuild on each turn so per-socket mode is
             // honoured even if the user just toggled it.
             let active_mode = *mode_handle.read().await;
-            let skills_snapshot = active_skills.clone();
             let skills_catalog = state.skills.as_ref().cloned();
+            let skills_snapshot =
+                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &feedback);
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
