@@ -5502,6 +5502,71 @@ body.approvals-open #panel {
   font-size: 12px;
 }
 
+.new-convo-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+  padding: 6px 10px 2px;
+}
+
+.new-convo-popover-row.selected {
+  background: color-mix(in srgb, #2563eb 10%, transparent);
+}
+
+.new-convo-popover-check {
+  color: #2563eb;
+  font-size: 12px;
+  margin-left: 6px;
+}
+
+.new-convo-popover-error {
+  font-size: 12px;
+  color: #b91c1c;
+  padding: 4px 10px;
+}
+
+.new-convo-popover-free {
+  padding: 4px 10px 8px;
+}
+
+.new-convo-popover-free-input {
+  width: 100%;
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.new-convo-popover-free-input:focus {
+  outline: none;
+  border-style: solid;
+  border-color: #2563eb;
+}
+
+.new-convo-popover-actions {
+  padding: 6px 10px 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.new-convo-popover-start {
+  font-size: 12px;
+  padding: 4px 12px;
+  border: 1px solid #2563eb;
+  background: #2563eb;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.new-convo-popover-start:hover {
+  background: #1d4ed8;
+}
+
 /* ConvoRow project chip */
 
 .convo-project-chip {

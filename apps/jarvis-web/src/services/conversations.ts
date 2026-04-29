@@ -46,11 +46,19 @@ export async function refreshConvoList(): Promise<void> {
 }
 
 /// Open a fresh persisted session (or reset the in-memory free-chat
-/// session). When `opts.projectId` is set, the new conversation is
-/// bound to that project so every turn re-injects its instructions
-/// (see `harness-server::project_binder`). Pass `null` (the default)
-/// for a free-chat session.
-export function newConversation(opts: { projectId?: string | null } = {}): void {
+/// session).
+///
+/// - `opts.projectId` binds the new conversation to a Project (its
+///   `instructions` get re-injected as a system message every turn).
+///   `null` / unset = free chat.
+/// - `opts.workspacePath` pins this socket's filesystem root and
+///   records the binding in the workspaces ledger. `null` /
+///   undefined defaults to the currently-pinned `socketWorkspace`
+///   (so callers without a picker still inherit). Pass an empty
+///   string or explicit `null` to force "no workspace".
+export function newConversation(
+  opts: { projectId?: string | null; workspacePath?: string | null } = {},
+): void {
   const store = appStore.getState();
   if (store.inFlight) {
     showError(t("turnInProgress"));
@@ -67,11 +75,16 @@ export function newConversation(opts: { projectId?: string | null } = {}): void 
   if (provider) frame.provider = provider;
   if (model) frame.model = model;
   if (opts.projectId) frame.project_id = opts.projectId;
-  // Inherit the currently-pinned workspace so new conversations
-  // persist their binding from the start. The server canonicalises
-  // and validates; an invalid path errors the New handshake rather
-  // than silently falling through to the binary's startup root.
-  if (store.socketWorkspace) frame.workspace_path = store.socketWorkspace;
+  // Workspace resolution:
+  // - explicit `null` from the caller (e.g. picker → "No workspace")
+  //   leaves the field off, dropping the per-session pin so the
+  //   server falls back to its startup root.
+  // - explicit string is sent verbatim; server canonicalises.
+  // - undefined falls back to the live socket pin so callers that
+  //   don't expose a picker (slash command etc.) still inherit.
+  const explicit = opts.workspacePath;
+  const resolved = explicit === undefined ? store.socketWorkspace : explicit;
+  if (resolved) frame.workspace_path = resolved;
   if (!sendFrame(frame)) return;
   store.clearMessages();
 }

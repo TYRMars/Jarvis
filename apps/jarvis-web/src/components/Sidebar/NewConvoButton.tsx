@@ -1,29 +1,47 @@
-// Sidebar "New session" button. When the server has projects
-// configured, clicking opens a small popover with two paths:
+// Sidebar "New session" button. Click opens a single popover that
+// covers two orthogonal bindings the new conversation will inherit:
 //
-//  - "Free chat" — same as the original behaviour.
-//  - one-click pick from the existing project list.
+//   1. **Workspace** — which folder the agent's fs / git / shell
+//      tools target. Lives in the per-conversation
+//      workspaces ledger (so `Resume` later restores it).
+//   2. **Project** — which `harness-core::Project` metadata
+//      container injects its `instructions` into the system prompt.
 //
-// Without projects available it collapses back to the original
-// single-action button so deployments without a project store don't
-// pay any UX cost.
+// They're independent: a session can have a workspace but no
+// project (most common — every chat in a repo), a project but no
+// workspace (rare — pure prompt-bound chat), both, or neither.
+//
+// Without projects available the popover collapses to "workspace
+// only"; without workspaces (e.g. server didn't wire the registry)
+// it falls back to the legacy project-only flow.
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../store/appStore";
 import { newConversation } from "../../services/conversations";
 import { isLocalProjectId } from "../../services/projects";
+import { listRecentWorkspaces, touchWorkspace, type RecentWorkspace } from "../../services/workspaces";
+import { shortenPath } from "../../services/workspace";
 import { chipColor } from "./ProjectsList";
 import { t } from "../../utils/i18n";
+
+function tx(key: string, fallback: string): string {
+  const v = t(key);
+  return v === key ? fallback : v;
+}
 
 export function NewConvoButton() {
   const persistEnabled = useAppStore((s) => s.persistEnabled);
   const projectsAvailable = useAppStore((s) => s.projectsAvailable);
   const projects = useAppStore((s) => s.projects);
   const activeFilter = useAppStore((s) => s.activeProjectFilter);
+  const socketWorkspace = useAppStore((s) => s.socketWorkspace);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [recent, setRecent] = useState<RecentWorkspace[]>([]);
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Close on outside click / Escape.
@@ -43,12 +61,24 @@ export function NewConvoButton() {
     };
   }, [open]);
 
+  // Load recent + initialise the selected workspace from the active
+  // pin every time the popover opens.
+  useEffect(() => {
+    if (!open) return;
+    setSelectedWorkspace(socketWorkspace ?? null);
+    setPickError(null);
+    listRecentWorkspaces()
+      .then((rows) => setRecent(rows))
+      .catch(() => setRecent([]));
+  }, [open, socketWorkspace]);
+
   const onClick = () => {
-    if (!projectsAvailable || projects.length === 0) {
-      // No projects to pick from → behave like the legacy button:
-      // start a free-chat session bound to the active filter (so a
-      // user inside a project filter still gets a project chat by
-      // default).
+    const noProjects = !projectsAvailable || projects.length === 0;
+    // Even with no projects we still want the workspace picker —
+    // open the popover unless the user has neither projects nor any
+    // recent workspaces, in which case there's nothing to choose
+    // and the legacy single-action button is the right behaviour.
+    if (noProjects && recent.length === 0 && !socketWorkspace) {
       const projectId = activeFilter ?? null;
       newConversation({ projectId: isLocalProjectId(projectId) ? null : projectId });
       navigate("/");
@@ -57,10 +87,35 @@ export function NewConvoButton() {
     setOpen((v) => !v);
   };
 
-  const pick = (projectId: string | null) => {
+  // Run a free-text path through the workspaces registry so the
+  // canonicalised value lands in Recent and gets used verbatim
+  // by the WS New frame.
+  const acceptFreePath = async (raw: string) => {
+    setPickError(null);
+    try {
+      const canonical = await touchWorkspace(raw);
+      setSelectedWorkspace(canonical);
+      setRecent((rows) => {
+        const filtered = rows.filter((r) => r.path !== canonical);
+        const name =
+          canonical.split("/").filter((s) => s.length > 0).pop() ?? canonical;
+        return [
+          { path: canonical, name, last_used_at: new Date().toISOString() },
+          ...filtered,
+        ];
+      });
+    } catch (e: unknown) {
+      setPickError(t("workspacePinFailed", String(e)));
+    }
+  };
+
+  const fire = (projectId: string | null) => {
     setOpen(false);
     setSearch("");
-    newConversation({ projectId: isLocalProjectId(projectId) ? null : projectId });
+    newConversation({
+      projectId: isLocalProjectId(projectId) ? null : projectId,
+      workspacePath: selectedWorkspace,
+    });
     navigate("/");
   };
 
@@ -74,6 +129,8 @@ export function NewConvoButton() {
     );
   })();
 
+  const showProjects = projectsAvailable && projects.length > 0;
+
   return (
     <div className="new-convo-wrapper" ref={containerRef}>
       <button
@@ -83,7 +140,7 @@ export function NewConvoButton() {
         title={t("newConversation")}
         disabled={!persistEnabled}
         onClick={onClick}
-        aria-haspopup={projectsAvailable && projects.length > 0 ? "menu" : undefined}
+        aria-haspopup="menu"
         aria-expanded={open}
       >
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -95,57 +152,148 @@ export function NewConvoButton() {
 
       {open && (
         <div className="new-convo-popover" role="menu">
+          {/* ---------- Workspace section ---------- */}
+          <div className="new-convo-section-label">
+            {tx("newWorkspaceHeading", "Workspace")}
+          </div>
           <button
             type="button"
-            className="new-convo-popover-row default"
-            onClick={() => pick(null)}
+            className={
+              "new-convo-popover-row" +
+              (selectedWorkspace == null ? " selected" : "")
+            }
+            onClick={() => setSelectedWorkspace(null)}
           >
             <span className="project-dot" aria-hidden="true" />
             <div className="new-convo-popover-text">
-              <strong>Free chat</strong>
-              <em>No project context</em>
+              <strong>{tx("newWorkspaceNone", "No workspace")}</strong>
+              <em>{tx("newWorkspaceNoneHint", "Use the binary's startup root")}</em>
             </div>
           </button>
-          {projects.length > 5 && (
-            <input
-              type="search"
-              className="new-convo-popover-search"
-              placeholder="Search projects..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              autoFocus
-            />
-          )}
-          <div className="new-convo-popover-list">
-            {visibleProjects.length === 0 && (
-              <div className="new-convo-popover-empty">No matching projects</div>
-            )}
-            {visibleProjects.map((p) => (
+          {recent.map((r) => {
+            const isSel = r.path === selectedWorkspace;
+            return (
               <button
-                key={p.id}
+                key={r.path}
                 type="button"
-                className="new-convo-popover-row"
-                onClick={() => pick(p.id)}
-                title={p.description ?? p.name}
+                className={"new-convo-popover-row" + (isSel ? " selected" : "")}
+                onClick={() => setSelectedWorkspace(r.path)}
+                title={r.path}
               >
-                <span
-                  className="project-dot"
-                  style={{ background: chipColor(p.slug) }}
-                  aria-hidden="true"
-                />
+                <span className="project-dot" aria-hidden="true" />
                 <div className="new-convo-popover-text">
-                  <strong>{p.name}</strong>
-                  {p.description ? (
-                    <em>{p.description}</em>
-                  ) : (
-                    <em>{p.slug}</em>
-                  )}
+                  <strong>{r.name}</strong>
+                  <em>{shortenPath(r.path)}</em>
+                </div>
+                {isSel && <span className="new-convo-popover-check">✓</span>}
+              </button>
+            );
+          })}
+          <FreePathRow onSubmit={acceptFreePath} />
+          {pickError && (
+            <div className="new-convo-popover-error">{pickError}</div>
+          )}
+
+          {/* ---------- Project section ---------- */}
+          {showProjects && (
+            <>
+              <div className="new-convo-section-label">
+                {tx("newProjectHeading", "Project")}
+              </div>
+              <button
+                type="button"
+                className="new-convo-popover-row default"
+                onClick={() => fire(null)}
+              >
+                <span className="project-dot" aria-hidden="true" />
+                <div className="new-convo-popover-text">
+                  <strong>{tx("freeChat", "Free chat")}</strong>
+                  <em>{tx("freeChatHint", "No project context")}</em>
                 </div>
               </button>
-            ))}
-          </div>
+              {projects.length > 5 && (
+                <input
+                  type="search"
+                  className="new-convo-popover-search"
+                  placeholder="Search projects..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              )}
+              <div className="new-convo-popover-list">
+                {visibleProjects.length === 0 && (
+                  <div className="new-convo-popover-empty">No matching projects</div>
+                )}
+                {visibleProjects.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="new-convo-popover-row"
+                    onClick={() => fire(p.id)}
+                    title={p.description ?? p.name}
+                  >
+                    <span
+                      className="project-dot"
+                      style={{ background: chipColor(p.slug) }}
+                      aria-hidden="true"
+                    />
+                    <div className="new-convo-popover-text">
+                      <strong>{p.name}</strong>
+                      {p.description ? (
+                        <em>{p.description}</em>
+                      ) : (
+                        <em>{p.slug}</em>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* No projects available → just a "Start" button so the
+              workspace selection can land without forcing the user
+              to pick a project. */}
+          {!showProjects && (
+            <div className="new-convo-popover-actions">
+              <button
+                type="button"
+                className="new-convo-popover-start"
+                onClick={() => fire(null)}
+              >
+                {tx("newConversationStart", "Start session")}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+/// Inline "type a path and press enter" row. Lives at the bottom of
+/// the workspace section so users who haven't pinned anything
+/// recently can still bring up a folder without leaving the popover.
+function FreePathRow({ onSubmit }: { onSubmit: (path: string) => void }) {
+  const [draft, setDraft] = useState("");
+  return (
+    <form
+      className="new-convo-popover-free"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (draft.trim()) {
+          onSubmit(draft.trim());
+          setDraft("");
+        }
+      }}
+    >
+      <input
+        type="text"
+        className="new-convo-popover-free-input"
+        placeholder={tx("newWorkspaceFreePlaceholder", "Open folder…  /path/to/project")}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+    </form>
   );
 }
