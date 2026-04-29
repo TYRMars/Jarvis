@@ -1260,14 +1260,16 @@ async fn handle_client_frame(
 
             let new_id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
             *conv = Conversation::new();
-            let metadata = ConversationMetadata {
-                project_id: resolved_project_id.clone(),
-            };
-            if let Err(e) = store.save_envelope(&new_id, conv, &metadata).await {
-                error!(error = %e, "ws new save failed");
-                send_error(ws_tx, &format!("save failed: {e}")).await;
-                return true;
-            }
+            // Deferred persistence: we DON'T write the empty
+            // conversation row to the store now. The first User
+            // turn's post-run save flushes everything atomically
+            // with whatever metadata is on this socket at the time
+            // (including any in-the-meantime `set_mode` /
+            // `set_workspace` flips). The earlier `state.store`
+            // require above stays so we still refuse `New` when
+            // persistence isn't configured — the difference is
+            // only whether we call `save_envelope` here.
+            let _ = store; // intentionally unused — see comment above
             *persisted_id = Some(new_id.clone());
             *persisted_project_id = resolved_project_id.clone();
 
