@@ -110,6 +110,14 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     } else if todos_disabled {
         info!("persistent TODOs disabled via JARVIS_DISABLE_TODOS");
     }
+    bcfg.project_store = project_store.clone();
+    if project_store.is_some() {
+        info!("persistent project store active (project.* tools registered)");
+    }
+    bcfg.doc_store = doc_store.clone();
+    if doc_store.is_some() {
+        info!("persistent doc store active (doc.* tools registered)");
+    }
 
     register_builtins(&mut tools, bcfg);
     info!(workspace = %workspace_root.display(), "workspace root resolved");
@@ -299,16 +307,26 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         "permission store ready",
     );
 
-    // Build the skill catalogue. Roots: user-scope ($XDG_CONFIG_HOME/
-    // jarvis/skills, override via $JARVIS_SKILLS_DIR), workspace-scope
-    // (<root>/.jarvis/skills). Loading is silent on missing dirs;
-    // malformed SKILL.md files warn and skip.
+    // Build the skill catalogue. Layers (lowest precedence first):
+    //   1. Bundled defaults compiled into the binary (`work`, `doc`).
+    //   2. User-scope ($XDG_CONFIG_HOME/jarvis/skills, override via
+    //      $JARVIS_SKILLS_DIR).
+    //   3. Workspace-scope (<root>/.jarvis/skills).
+    // Later layers shadow earlier ones, so `~/.config/jarvis/skills/work/SKILL.md`
+    // overrides the bundled `work` and the workspace can override both.
+    // Loading is silent on missing dirs; malformed SKILL.md files
+    // warn and skip.
     let user_skills_dir = std::env::var_os("JARVIS_SKILLS_DIR")
         .map(PathBuf::from)
         .or_else(|| dirs_user_config().ok().map(|d| d.join("skills")));
     let workspace_skills_dir = Some(workspace_root.join(".jarvis").join("skills"));
     let skill_roots = default_skill_roots(user_skills_dir, workspace_skills_dir);
-    let skill_catalog = Arc::new(RwLock::new(SkillCatalog::load(skill_roots)));
+    let mut catalog = SkillCatalog::new();
+    catalog.merge_bundled(harness_skill::bundled_defaults());
+    for (root, source) in skill_roots {
+        catalog.merge_disk(&root, source);
+    }
+    let skill_catalog = Arc::new(RwLock::new(catalog));
     let initial_skill_count = skill_catalog.read().map(|g| g.len()).unwrap_or(0);
     info!(skills = initial_skill_count, "skill catalog loaded");
 

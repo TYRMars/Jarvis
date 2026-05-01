@@ -62,7 +62,74 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::docs_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
+        .layer(axum::middleware::from_fn(loopback_cors))
         .with_state(state)
+}
+
+/// Permissive CORS for loopback origins so `vite dev` (5173/4173)
+/// can hit the API on `:7001` without a same-origin proxy. Echoes
+/// the `Origin` header back when it's `127.0.0.1` / `localhost` on
+/// any port, otherwise the response carries no `Access-Control-*`
+/// headers and same-origin browsers (production) keep working
+/// unchanged. OPTIONS preflights short-circuit to 204.
+async fn loopback_cors(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::{header, HeaderValue, Method, StatusCode};
+
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let allowed = origin.as_deref().is_some_and(is_loopback_origin);
+    let allow_origin =
+        allowed.then(|| HeaderValue::from_str(origin.as_deref().unwrap_or("*")).ok()).flatten();
+
+    if req.method() == Method::OPTIONS && allowed {
+        let mut resp = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let h = resp.headers_mut();
+        if let Some(o) = allow_origin {
+            h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
+        }
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("content-type, authorization"),
+        );
+        h.insert(header::VARY, HeaderValue::from_static("Origin"));
+        return resp;
+    }
+
+    let mut response = next.run(req).await;
+    if let Some(o) = allow_origin {
+        let h = response.headers_mut();
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
+        h.append(header::VARY, HeaderValue::from_static("Origin"));
+    }
+    response
+}
+
+fn is_loopback_origin(origin: &str) -> bool {
+    // `Origin: scheme://host[:port]`. We accept loopback hosts on any
+    // port so vite dev (5173) and vite preview (4173) both work, and
+    // future tooling doesn't need a code change to add another port.
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let host = rest.split(':').next().unwrap_or("");
+    host == "127.0.0.1" || host == "localhost" || host == "[::1]"
 }
 
 async fn health() -> impl IntoResponse {

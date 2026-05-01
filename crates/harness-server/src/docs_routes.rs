@@ -187,6 +187,12 @@ struct UpdateBody {
     title: Option<String>,
     #[serde(default)]
     kind: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default)]
+    pinned: Option<bool>,
+    #[serde(default)]
+    archived: Option<bool>,
 }
 
 async fn update_project(
@@ -221,6 +227,22 @@ async fn update_project(
             Some(parsed) => item.kind = parsed,
             None => return bad_request(format!("unknown kind `{k}`")),
         }
+    }
+    if let Some(tags) = body.tags {
+        // Trim, drop empties, dedup while preserving caller order.
+        let mut seen = std::collections::HashSet::new();
+        let cleaned: Vec<String> = tags
+            .into_iter()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty() && seen.insert(t.clone()))
+            .collect();
+        item.tags = cleaned;
+    }
+    if let Some(p) = body.pinned {
+        item.pinned = p;
+    }
+    if let Some(a) = body.archived {
+        item.archived = a;
     }
     item.touch();
     match store.upsert_project(&item).await {
@@ -473,6 +495,70 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn patch_persists_tags_pinned_archived() {
+        let app = app(state_with_store());
+
+        // Create.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/doc-projects")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"design doc","kind":"design"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let id = v["id"].as_str().unwrap().to_string();
+
+        // Patch tags + pin + archive in one shot. Whitespace in tags
+        // should be trimmed and duplicates dropped.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/doc-projects/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"tags":["q3"," q3 ","ship-ready",""],"pinned":true,"archived":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["pinned"], true);
+        assert_eq!(v["archived"], true);
+        let tags = v["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0], "q3");
+        assert_eq!(tags[1], "ship-ready");
+
+        // Patch with only one field doesn't clobber the others.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/doc-projects/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"pinned":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v["pinned"], false);
+        assert_eq!(v["archived"], true);
+        assert_eq!(v["tags"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

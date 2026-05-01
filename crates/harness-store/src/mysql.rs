@@ -238,7 +238,10 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
             title      TEXT         NOT NULL,
             kind       VARCHAR(32)  NOT NULL,
             created_at VARCHAR(64)  NOT NULL,
-            updated_at VARCHAR(64)  NOT NULL
+            updated_at VARCHAR(64)  NOT NULL,
+            tags       TEXT         NOT NULL,
+            pinned     TINYINT(1)   NOT NULL DEFAULT 0,
+            archived   TINYINT(1)   NOT NULL DEFAULT 0
         )
         "#,
     )
@@ -257,6 +260,44 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
         sqlx::query("CREATE INDEX idx_doc_projects_workspace ON doc_projects(workspace)")
             .execute(pool)
             .await?;
+    }
+    // Forward-compat for databases created before three-pane shipped:
+    // add tags / pinned / archived if they're missing. MySQL <8.0.29 has
+    // no `ADD COLUMN IF NOT EXISTS`, so sniff INFORMATION_SCHEMA.
+    for (col, ddl) in [
+        (
+            "tags",
+            "ALTER TABLE doc_projects ADD COLUMN tags TEXT NOT NULL",
+        ),
+        (
+            "pinned",
+            "ALTER TABLE doc_projects ADD COLUMN pinned TINYINT(1) NOT NULL DEFAULT 0",
+        ),
+        (
+            "archived",
+            "ALTER TABLE doc_projects ADD COLUMN archived TINYINT(1) NOT NULL DEFAULT 0",
+        ),
+    ] {
+        let present: bool = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE()
+                 AND TABLE_NAME = 'doc_projects'
+                 AND COLUMN_NAME = ?",
+        )
+        .bind(col)
+        .fetch_one(pool)
+        .await?
+            > 0;
+        if !present {
+            sqlx::query(ddl).execute(pool).await?;
+            // tags is NOT NULL with no default — backfill on rows that
+            // existed before the column was added.
+            if col == "tags" {
+                sqlx::query("UPDATE doc_projects SET tags = '[]' WHERE tags IS NULL OR tags = ''")
+                    .execute(pool)
+                    .await?;
+            }
+        }
     }
 
     sqlx::query(
@@ -959,12 +1000,16 @@ struct DocProjectRow {
     kind: String,
     created_at: String,
     updated_at: String,
+    tags: String,
+    pinned: i8,
+    archived: i8,
 }
 
 impl DocProjectRow {
     fn into_project(self) -> Result<DocProject, BoxError> {
         let kind = DocKind::from_wire(&self.kind)
             .ok_or_else(|| -> BoxError { format!("unknown doc kind `{}`", self.kind).into() })?;
+        let tags: Vec<String> = serde_json::from_str(&self.tags).map_err(StoreError::from)?;
         Ok(DocProject {
             id: self.id,
             workspace: self.workspace,
@@ -972,6 +1017,9 @@ impl DocProjectRow {
             kind,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            tags,
+            pinned: self.pinned != 0,
+            archived: self.archived != 0,
         })
     }
 }
@@ -1003,7 +1051,8 @@ impl DocDraftRow {
 impl DocStore for MysqlDocStore {
     async fn list_projects(&self, workspace: &str) -> Result<Vec<DocProject>, BoxError> {
         let rows: Vec<DocProjectRow> = sqlx::query_as(
-            r#"SELECT id, workspace, title, kind, created_at, updated_at
+            r#"SELECT id, workspace, title, kind, created_at, updated_at,
+                        tags, pinned, archived
                  FROM doc_projects
                  WHERE workspace = ?
                  ORDER BY updated_at DESC
@@ -1021,7 +1070,8 @@ impl DocStore for MysqlDocStore {
 
     async fn get_project(&self, id: &str) -> Result<Option<DocProject>, BoxError> {
         let row: Option<DocProjectRow> = sqlx::query_as(
-            r#"SELECT id, workspace, title, kind, created_at, updated_at
+            r#"SELECT id, workspace, title, kind, created_at, updated_at,
+                        tags, pinned, archived
                  FROM doc_projects WHERE id = ?"#,
         )
         .bind(id)
@@ -1032,15 +1082,22 @@ impl DocStore for MysqlDocStore {
     }
 
     async fn upsert_project(&self, project: &DocProject) -> Result<(), BoxError> {
+        let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
+        let pinned: i8 = if project.pinned { 1 } else { 0 };
+        let archived: i8 = if project.archived { 1 } else { 0 };
         sqlx::query(
             r#"INSERT INTO doc_projects
-                (id, workspace, title, kind, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (id, workspace, title, kind, created_at, updated_at,
+                 tags, pinned, archived)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     workspace  = VALUES(workspace),
                     title      = VALUES(title),
                     kind       = VALUES(kind),
-                    updated_at = VALUES(updated_at)"#,
+                    updated_at = VALUES(updated_at),
+                    tags       = VALUES(tags),
+                    pinned     = VALUES(pinned),
+                    archived   = VALUES(archived)"#,
         )
         .bind(&project.id)
         .bind(&project.workspace)
@@ -1048,6 +1105,9 @@ impl DocStore for MysqlDocStore {
         .bind(project.kind.as_wire())
         .bind(&project.created_at)
         .bind(&project.updated_at)
+        .bind(&tags)
+        .bind(pinned)
+        .bind(archived)
         .execute(&self.pool)
         .await
         .map_err(StoreError::from)?;

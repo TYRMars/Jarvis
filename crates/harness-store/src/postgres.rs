@@ -157,7 +157,10 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             title      TEXT NOT NULL,
             kind       TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            tags       TEXT    NOT NULL DEFAULT '[]',
+            pinned     BOOLEAN NOT NULL DEFAULT FALSE,
+            archived   BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
     )
@@ -168,6 +171,17 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
+    // Forward-compat: add the three-pane columns to databases that
+    // pre-date them. Postgres supports `ADD COLUMN IF NOT EXISTS`
+    // since 9.6 — no probe needed. We mirror the existing Project
+    // table's storage shape (TEXT for tags) for consistency.
+    for ddl in [
+        "ALTER TABLE doc_projects ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE doc_projects ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE doc_projects ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE",
+    ] {
+        sqlx::query(ddl).execute(pool).await?;
+    }
 
     sqlx::query(
         r#"
@@ -856,12 +870,16 @@ struct DocProjectRow {
     kind: String,
     created_at: String,
     updated_at: String,
+    tags: String,
+    pinned: bool,
+    archived: bool,
 }
 
 impl DocProjectRow {
     fn into_project(self) -> Result<DocProject, BoxError> {
         let kind = DocKind::from_wire(&self.kind)
             .ok_or_else(|| -> BoxError { format!("unknown doc kind `{}`", self.kind).into() })?;
+        let tags: Vec<String> = serde_json::from_str(&self.tags).map_err(StoreError::from)?;
         Ok(DocProject {
             id: self.id,
             workspace: self.workspace,
@@ -869,6 +887,9 @@ impl DocProjectRow {
             kind,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            tags,
+            pinned: self.pinned,
+            archived: self.archived,
         })
     }
 }
@@ -900,7 +921,8 @@ impl DocDraftRow {
 impl DocStore for PostgresDocStore {
     async fn list_projects(&self, workspace: &str) -> Result<Vec<DocProject>, BoxError> {
         let rows: Vec<DocProjectRow> = sqlx::query_as(
-            r#"SELECT id, workspace, title, kind, created_at, updated_at
+            r#"SELECT id, workspace, title, kind, created_at, updated_at,
+                        tags, pinned, archived
                  FROM doc_projects
                  WHERE workspace = $1
                  ORDER BY updated_at DESC
@@ -918,7 +940,8 @@ impl DocStore for PostgresDocStore {
 
     async fn get_project(&self, id: &str) -> Result<Option<DocProject>, BoxError> {
         let row: Option<DocProjectRow> = sqlx::query_as(
-            r#"SELECT id, workspace, title, kind, created_at, updated_at
+            r#"SELECT id, workspace, title, kind, created_at, updated_at,
+                        tags, pinned, archived
                  FROM doc_projects WHERE id = $1"#,
         )
         .bind(id)
@@ -929,15 +952,20 @@ impl DocStore for PostgresDocStore {
     }
 
     async fn upsert_project(&self, project: &DocProject) -> Result<(), BoxError> {
+        let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
         sqlx::query(
             r#"INSERT INTO doc_projects
-                (id, workspace, title, kind, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                (id, workspace, title, kind, created_at, updated_at,
+                 tags, pinned, archived)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (id) DO UPDATE SET
                     workspace  = EXCLUDED.workspace,
                     title      = EXCLUDED.title,
                     kind       = EXCLUDED.kind,
-                    updated_at = EXCLUDED.updated_at"#,
+                    updated_at = EXCLUDED.updated_at,
+                    tags       = EXCLUDED.tags,
+                    pinned     = EXCLUDED.pinned,
+                    archived   = EXCLUDED.archived"#,
         )
         .bind(&project.id)
         .bind(&project.workspace)
@@ -945,6 +973,9 @@ impl DocStore for PostgresDocStore {
         .bind(project.kind.as_wire())
         .bind(&project.created_at)
         .bind(&project.updated_at)
+        .bind(&tags)
+        .bind(project.pinned)
+        .bind(project.archived)
         .execute(&self.pool)
         .await
         .map_err(StoreError::from)?;

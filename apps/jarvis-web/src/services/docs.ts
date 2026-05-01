@@ -39,6 +39,19 @@ function notify(): void {
   }
 }
 
+/// Backfill the three-pane fields when a legacy payload comes in
+/// over WS or REST. Servers running an older harness binary or old
+/// stored rows can omit `tags / pinned / archived`; the UI assumes
+/// they're always present.
+function normalize(p: DocProject): DocProject {
+  return {
+    ...p,
+    tags: Array.isArray(p.tags) ? p.tags : [],
+    pinned: typeof p.pinned === "boolean" ? p.pinned : false,
+    archived: typeof p.archived === "boolean" ? p.archived : false,
+  };
+}
+
 function sortProjects(workspace: string): void {
   const list = projectsByWorkspace.get(workspace);
   if (!list) return;
@@ -94,7 +107,7 @@ export async function loadDocProjects(workspace?: string): Promise<void> {
     }
     if (!r.ok) throw new Error(`doc-projects list: ${r.status}`);
     const body = (await r.json()) as ListResponse;
-    projectsByWorkspace.set(body.workspace, body.items.slice());
+    projectsByWorkspace.set(body.workspace, body.items.map(normalize));
     sortProjects(body.workspace);
     lastLoadedWorkspace = body.workspace;
     notify();
@@ -132,6 +145,14 @@ export interface CreateDocProjectInput {
   workspace?: string;
 }
 
+export interface UpdateDocProjectPatch {
+  title?: string;
+  kind?: DocKind;
+  tags?: string[];
+  pinned?: boolean;
+  archived?: boolean;
+}
+
 export async function createDocProject(
   input: CreateDocProjectInput,
 ): Promise<DocProject | null> {
@@ -161,7 +182,7 @@ export async function createDocProject(
 
 export async function updateDocProject(
   id: string,
-  patch: { title?: string; kind?: DocKind },
+  patch: UpdateDocProjectPatch,
 ): Promise<DocProject | null> {
   try {
     const r = await fetch(apiUrl(`/v1/doc-projects/${encodeURIComponent(id)}`), {
@@ -241,12 +262,13 @@ export function applyDocDraftUpserted(d: DocDraft): void {
 // ---------- internal helpers --------------------------------------
 
 function upsertLocalProject(p: DocProject): void {
-  const list = projectsByWorkspace.get(p.workspace) ?? [];
-  const i = list.findIndex((r) => r.id === p.id);
-  if (i >= 0) list[i] = p;
-  else list.unshift(p);
-  projectsByWorkspace.set(p.workspace, list);
-  sortProjects(p.workspace);
+  const project = normalize(p);
+  const list = projectsByWorkspace.get(project.workspace) ?? [];
+  const i = list.findIndex((r) => r.id === project.id);
+  if (i >= 0) list[i] = project;
+  else list.unshift(project);
+  projectsByWorkspace.set(project.workspace, list);
+  sortProjects(project.workspace);
   notify();
 }
 

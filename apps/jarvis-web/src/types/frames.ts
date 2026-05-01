@@ -327,6 +327,13 @@ export interface DocProject {
   kind: DocKind;
   created_at: string;
   updated_at: string;
+  /** Free-form labels. New since the three-pane redesign — old wire
+   *  payloads may omit this; readers should default to []. */
+  tags?: string[];
+  /** Soft "favourite" flag. Defaults to false on legacy payloads. */
+  pinned?: boolean;
+  /** Soft delete flag. Defaults to false on legacy payloads. */
+  archived?: boolean;
 }
 
 export interface DocDraft {

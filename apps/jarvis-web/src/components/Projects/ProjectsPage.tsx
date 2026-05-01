@@ -16,6 +16,7 @@ import {
   ProjectListRow,
   ProjectUnavailable,
 } from "./ProjectList";
+import { OpenSidebarButton } from "../Workspace/WorkspaceToggles";
 
 // Top-level Projects route: search + list + create + open. Three view
 // modes share the same chrome (header search / new-project), the body
@@ -68,6 +69,41 @@ export function ProjectsPage() {
     );
   }, [projects, query]);
 
+  // ↑/↓ to cycle through the visible project list. Mirrors the docs
+  // page pattern so the same muscle memory works on /, /projects,
+  // /docs. Gated on `target inside #projects-page` (so arrows on the
+  // sidebar / global modal still flow through their own handlers)
+  // and `!inEditable` (so search-input cursor keys aren't hijacked).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const target = e.target as HTMLElement | null;
+      const inEditable =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (inEditable) return;
+      const onPage =
+        document.getElementById("projects-page")?.contains(target ?? null) ?? false;
+      if (!onPage) return;
+      if (visibleProjects.length === 0) return;
+      e.preventDefault();
+      const direction = e.key === "ArrowDown" ? 1 : -1;
+      const idx = visibleProjects.findIndex((p) => p.id === selectedProjectId);
+      const nextIdx =
+        idx < 0
+          ? direction === 1
+            ? 0
+            : visibleProjects.length - 1
+          : (idx + direction + visibleProjects.length) % visibleProjects.length;
+      setSelectedProjectId(visibleProjects[nextIdx].id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visibleProjects, selectedProjectId]);
+
   const selectedProject = selectedProjectId
     ? projects.find((p) => p.id === selectedProjectId) ?? null
     : null;
@@ -101,6 +137,7 @@ export function ProjectsPage() {
       tabIndex={-1}
     >
       <header className="projects-page-header">
+        <OpenSidebarButton />
         <h1>{t("projectsTitle")}</h1>
         <div className="projects-page-actions">
           <button

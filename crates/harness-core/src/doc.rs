@@ -39,6 +39,21 @@ pub struct DocProject {
     pub created_at: String,
     /// RFC-3339; bumped on every mutation via [`Self::touch`].
     pub updated_at: String,
+    /// Free-form labels for cross-kind organisation. Wire form is a
+    /// JSON array of strings. Tag values are kept as-is (no
+    /// case-folding / dedup at the store layer); UIs are responsible
+    /// for the input UX.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Soft "favourite" flag. Pinned docs surface to the top of the
+    /// rail-level "Pinned" scope and otherwise behave normally.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Soft delete / archive flag. Archived docs are hidden from the
+    /// default list and only show up under the "Archive" scope; they
+    /// are not removed from the store.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// Document type. Wire form lowercase snake_case
@@ -93,6 +108,9 @@ impl DocProject {
             kind: DocKind::Note,
             created_at: now.clone(),
             updated_at: now,
+            tags: Vec::new(),
+            pinned: false,
+            archived: false,
         }
     }
 
@@ -228,9 +246,30 @@ mod tests {
     fn project_round_trips_through_json() {
         let mut p = DocProject::new("/repo", "design doc");
         p.kind = DocKind::Design;
+        p.tags = vec!["q3".into(), "ship-ready".into()];
+        p.pinned = true;
         let json = serde_json::to_string(&p).unwrap();
         let back: DocProject = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn legacy_json_without_new_fields_still_deserialises() {
+        // Older JSON files (pre-three-pane) won't have tags / pinned /
+        // archived. They must continue to load via serde defaults so a
+        // version upgrade doesn't trash existing doc projects.
+        let legacy = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/repo",
+            "title": "old doc",
+            "kind": "note",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z"
+        });
+        let p: DocProject = serde_json::from_value(legacy).unwrap();
+        assert_eq!(p.tags, Vec::<String>::new());
+        assert!(!p.pinned);
+        assert!(!p.archived);
     }
 
     #[test]
@@ -255,7 +294,17 @@ mod tests {
         // keys. Drift here breaks the migration silently.
         let p = DocProject::new("/r", "title");
         let json: serde_json::Value = serde_json::to_value(&p).unwrap();
-        for key in ["id", "workspace", "title", "kind", "created_at", "updated_at"] {
+        for key in [
+            "id",
+            "workspace",
+            "title",
+            "kind",
+            "created_at",
+            "updated_at",
+            "tags",
+            "pinned",
+            "archived",
+        ] {
             assert!(json.get(key).is_some(), "missing wire key: {key}");
         }
         let d = DocDraft::new("p", "body");

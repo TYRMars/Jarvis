@@ -997,6 +997,7 @@ name = "harness-skill"
 version = "0.1.0"
 dependencies = [
  "harness-core",
+ "include_dir",
  "serde",
  "serde_json",
  "serde_yaml",

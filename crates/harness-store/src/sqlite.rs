@@ -202,7 +202,10 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
             title      TEXT NOT NULL,
             kind       TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            tags       TEXT NOT NULL DEFAULT '[]',
+            pinned     INTEGER NOT NULL DEFAULT 0,
+            archived   INTEGER NOT NULL DEFAULT 0
         )
         "#,
     )
@@ -211,6 +214,34 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_doc_projects_workspace ON doc_projects(workspace)")
         .execute(pool)
         .await?;
+    // Forward-compat: older databases created before three-pane shipped
+    // are missing tags / pinned / archived. SQLite has no
+    // `ADD COLUMN IF NOT EXISTS`, so we sniff pragma_table_info first.
+    for (col, ddl) in [
+        (
+            "tags",
+            "ALTER TABLE doc_projects ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+        ),
+        (
+            "pinned",
+            "ALTER TABLE doc_projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "archived",
+            "ALTER TABLE doc_projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        let present: bool = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('doc_projects') WHERE name = ?1",
+        )
+        .bind(col)
+        .fetch_one(pool)
+        .await?
+            > 0;
+        if !present {
+            sqlx::query(ddl).execute(pool).await?;
+        }
+    }
 
     sqlx::query(
         r#"
@@ -912,12 +943,16 @@ struct DocProjectRow {
     kind: String,
     created_at: String,
     updated_at: String,
+    tags: String,
+    pinned: i64,
+    archived: i64,
 }
 
 impl DocProjectRow {
     fn into_project(self) -> Result<DocProject, BoxError> {
         let kind = DocKind::from_wire(&self.kind)
             .ok_or_else(|| -> BoxError { format!("unknown doc kind `{}`", self.kind).into() })?;
+        let tags: Vec<String> = serde_json::from_str(&self.tags).map_err(StoreError::from)?;
         Ok(DocProject {
             id: self.id,
             workspace: self.workspace,
@@ -925,6 +960,9 @@ impl DocProjectRow {
             kind,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            tags,
+            pinned: self.pinned != 0,
+            archived: self.archived != 0,
         })
     }
 }
@@ -956,7 +994,8 @@ impl DocDraftRow {
 impl DocStore for SqliteDocStore {
     async fn list_projects(&self, workspace: &str) -> Result<Vec<DocProject>, BoxError> {
         let rows: Vec<DocProjectRow> = sqlx::query_as(
-            r#"SELECT id, workspace, title, kind, created_at, updated_at
+            r#"SELECT id, workspace, title, kind, created_at, updated_at,
+                        tags, pinned, archived
                  FROM doc_projects
                  WHERE workspace = ?1
                  ORDER BY updated_at DESC
@@ -974,7 +1013,8 @@ impl DocStore for SqliteDocStore {
 
     async fn get_project(&self, id: &str) -> Result<Option<DocProject>, BoxError> {
         let row: Option<DocProjectRow> = sqlx::query_as(
-            r#"SELECT id, workspace, title, kind, created_at, updated_at
+            r#"SELECT id, workspace, title, kind, created_at, updated_at,
+                        tags, pinned, archived
                  FROM doc_projects WHERE id = ?1"#,
         )
         .bind(id)
@@ -985,15 +1025,22 @@ impl DocStore for SqliteDocStore {
     }
 
     async fn upsert_project(&self, project: &DocProject) -> Result<(), BoxError> {
+        let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
+        let pinned: i64 = if project.pinned { 1 } else { 0 };
+        let archived: i64 = if project.archived { 1 } else { 0 };
         sqlx::query(
             r#"INSERT INTO doc_projects
-                (id, workspace, title, kind, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                (id, workspace, title, kind, created_at, updated_at,
+                 tags, pinned, archived)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 ON CONFLICT(id) DO UPDATE SET
                     workspace  = excluded.workspace,
                     title      = excluded.title,
                     kind       = excluded.kind,
-                    updated_at = excluded.updated_at"#,
+                    updated_at = excluded.updated_at,
+                    tags       = excluded.tags,
+                    pinned     = excluded.pinned,
+                    archived   = excluded.archived"#,
         )
         .bind(&project.id)
         .bind(&project.workspace)
@@ -1001,6 +1048,9 @@ impl DocStore for SqliteDocStore {
         .bind(project.kind.as_wire())
         .bind(&project.created_at)
         .bind(&project.updated_at)
+        .bind(&tags)
+        .bind(pinned)
+        .bind(archived)
         .execute(&self.pool)
         .await
         .map_err(StoreError::from)?;
@@ -1430,6 +1480,33 @@ mod tests {
 
         let listed = store.list_projects("/r").await.unwrap();
         assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn doc_project_persists_tags_pinned_archived() {
+        let (_, store) = make_doc_store().await;
+        let mut p = DocProject::new("/r", "weekly");
+        p.tags = vec!["q3".into(), "ship".into()];
+        p.pinned = true;
+        p.archived = true;
+        store.upsert_project(&p).await.unwrap();
+
+        let loaded = store.get_project(&p.id).await.unwrap().unwrap();
+        assert_eq!(loaded.tags, vec!["q3", "ship"]);
+        assert!(loaded.pinned);
+        assert!(loaded.archived);
+
+        // Toggle off and re-save — confirms the upsert UPDATE branch
+        // keeps the new columns in sync.
+        let mut p2 = loaded;
+        p2.pinned = false;
+        p2.archived = false;
+        p2.tags.clear();
+        store.upsert_project(&p2).await.unwrap();
+        let again = store.get_project(&p2.id).await.unwrap().unwrap();
+        assert!(!again.pinned);
+        assert!(!again.archived);
+        assert!(again.tags.is_empty());
     }
 
     #[tokio::test]
