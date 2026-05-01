@@ -14,8 +14,9 @@ composition wiring in `apps/jarvis/src/serve.rs`.
 `plan.update` (per-turn ephemeral checklist via the
 `harness_core::plan` task-local channel) is great for showing the
 agent's *current working steps*, but it's wiped on every reset and
-doesn't survive a restart. Real coding sessions need a separate
-**long-lived backlog** the agent and the human can both edit:
+doesn't survive a restart. Real Work sessions, long Chat threads,
+and Doc drafting flows need a separate **long-lived backlog** the
+agent and the human can both edit:
 
 - During a long refactor, the agent surfaces follow-ups (`"add a
   test for the negative branch"`, `"run cargo udeps"`) that
@@ -27,6 +28,22 @@ doesn't survive a restart. Real coding sessions need a separate
 
 `plan.update` stays for the per-turn working checklist. This
 proposal adds a *parallel* persistent surface; nothing replaces.
+
+## Product alignment
+
+Under the Chat / Work / Doc product design, the TODO board is the
+already-shipped lightweight backlog for **Work**. It also appears in
+Chat as "save this for later" and in Doc as extracted action items,
+but Work owns the durable task lifecycle above it:
+
+- Chat message → TODO.
+- TODO → Work task.
+- Work run → follow-up TODO.
+- Doc action item → TODO / Work task.
+
+This proposal should stay intentionally small. It is not the Work
+state machine and should not grow milestones, verification, runs, or
+artifact management; those belong to `work-orchestration.zh-CN.md`.
 
 ## Non-goals
 

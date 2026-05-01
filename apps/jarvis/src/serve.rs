@@ -66,26 +66,32 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     let persistence_scheme = persistence_url
         .as_deref()
         .and_then(|s| s.split(':').next().map(str::to_string));
-    let (store, project_store, todo_store) = match persistence_url.as_deref() {
-        Some(url) => {
-            let bundle = harness_store::connect_all(url)
-                .await
-                .with_context(|| format!("opening persistence url `{url}`"))?;
-            info!(url = %url, "conversation + project + todo store connected");
-            (
-                Some(bundle.conversations),
-                Some(bundle.projects),
-                Some(bundle.todos),
-            )
-        }
-        None => {
-            info!(
-                "no persistence URL resolved (HOME unset?); running in-memory \
-                 (conversations / TODOs will not survive restart)"
-            );
-            (None, None, None)
-        }
-    };
+    let (store, project_store, todo_store, requirement_store, doc_store) =
+        match persistence_url.as_deref() {
+            Some(url) => {
+                let bundle = harness_store::connect_all(url)
+                    .await
+                    .with_context(|| format!("opening persistence url `{url}`"))?;
+                info!(
+                    url = %url,
+                    "conversation + project + todo + requirement + doc store connected"
+                );
+                (
+                    Some(bundle.conversations),
+                    Some(bundle.projects),
+                    Some(bundle.todos),
+                    Some(bundle.requirements),
+                    Some(bundle.docs),
+                )
+            }
+            None => {
+                info!(
+                    "no persistence URL resolved (HOME unset?); running in-memory \
+                     (conversations / TODOs / requirements / docs will not survive restart)"
+                );
+                (None, None, None, None, None)
+            }
+        };
     // `JARVIS_DISABLE_TODOS=1` opts out of the persistent TODO board
     // even when a DB is configured. Useful for shared deployments
     // that want todos managed elsewhere.
@@ -357,6 +363,12 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     }
     if let Some(ts) = active_todo_store {
         state = state.with_todo_store(ts);
+    }
+    if let Some(rs) = requirement_store {
+        state = state.with_requirement_store(rs);
+    }
+    if let Some(ds) = doc_store {
+        state = state.with_doc_store(ds);
     }
     // `JARVIS_NO_TODOS_IN_PROMPT=1` opts out of injecting the
     // current TODO list into the system prompt every turn. The

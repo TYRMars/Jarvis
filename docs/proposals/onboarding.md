@@ -47,6 +47,20 @@ Goal: bring all three to OpenClaw parity without compromising the
 "power users keep using env vars and get reproducible behaviour"
 property.
 
+## Product alignment
+
+Onboarding should set up Jarvis as a Chat / Work / Doc workspace, not
+as a coding-only CLI. The first-run flow still asks for a workspace
+root because Work and Coding capability need one, but the language and
+defaults should make the broader product clear:
+
+- choose provider/model once for all product surfaces;
+- choose initial capabilities (`coding`, `office`, `research`);
+- choose persistence so Chat conversations, TODO/Work state, and Doc
+  drafts can survive restarts;
+- open the Web UI at the product home rather than a coding-specific
+  screen.
+
 ## Target UX
 
 ```

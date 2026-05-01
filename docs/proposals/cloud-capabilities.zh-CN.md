@@ -16,6 +16,46 @@ agent runtime。当前 crate 边界里，`harness-core` 只负责 agent loop 和
 阿里云、AWS、Azure、腾讯云、华为云等厂商成为可选适配层。第一版目标不是“一次性
 接完所有云 SDK”，而是先做稳定的通用端云协议和最小云端控制面，再逐步补厂商增强。
 
+## 产品对齐
+
+云端能力不是新的顶层产品入口，而是 Chat / Work / Doc 的部署与执行增强：
+
+- **Chat：** 云端托管会话、跨设备访问、远程工具调用；
+- **Work：** Cloud 调度 Edge 节点执行 Work unit，回传验证结果和 artifact；
+- **Doc：** 云端保存资料、文档草稿、导出产物和引用来源；
+- **基础能力：** Coding、日常办公、资料研究等 capability pack 可以按节点和权限选择
+  可用工具。
+
+因此 `harness-cloud` 只提供节点、传输、对象存储、策略和审计能力，不拥有产品状态。
+
+## 借鉴 Multica 的 same-code two-shapes 部署形态
+
+[Multica](https://github.com/multica-ai/multica) 把 cloud 与 self-host 做成了**同一份后端二进制 + 同一套 schema 的两种部署形态**——区别只在 daemon 端连的 URL 不同（`wss://api.multica.ai/v1/daemon` vs `ws://localhost:8080/v1/daemon`）。这正好对齐本 proposal "本地可运行、云端可托管、端侧可协作" 的目标，所以**不**重新发明部署形态，而是吸收 multica 已经验证的三个支撑点。
+
+### 1. Reverse-WebSocket：Edge 主动连 Cloud（最关键的一条）
+
+Daemon / Edge 节点**永远主动连 server**，server 不主动连 daemon。三个直接收益：
+
+1. **NAT / 防火墙友好** — Edge 跑在用户笔记本 / 内网开发机上，不需要任何入站端口或公网 IP。
+2. **协议同源** — cloud 与 self-host 用完全相同的 WS 帧（`runtime.register / task.claim / task.dispatch / task.progress / task.complete / task.fail`），Edge 二进制不需要"模式切换"，只是 URL 不同。
+3. **认证统一** — `jarvis login` 拿到的 PAT 与 daemon-token 在两种部署里走同一条 header 校验路径。
+
+→ 落地到本 proposal：`EdgeTransport` trait 的第一个实现就是"WebSocket transport"，**第一版同时承担两个角色**——本地单机用 loopback WS（agent loop 不再嵌死在 HTTP handler 里），未来 cloud 部署用远程 WS。两种形态共享同一套消息 envelope，详见下文 §端云协议。
+
+### 2. 12-factor env 驱动 + 云增强能力一律 optional fallback
+
+Multica 后端没有 `--cloud` / `--self-host` 编译开关，所有差异都在环境变量里：S3 / CloudFront / Resend / OAuth 一律 **optional fallback**——缺失就降级到本地存储 + 验证码打日志，self-host 用户不会被云依赖卡住。
+
+→ 落地到本 proposal：本仓库 `CLAUDE.md` 已经把 `JARVIS_*` 环境变量列得很完整。本 proposal 新增的 `JARVIS_OBJECT_STORE` / `JARVIS_EDGE_CLOUD_URL` / 厂商 secrets 等**全部按 "缺失即降级到本地实现" 原则设计**——不让 self-host 必须配对象存储、不让本地开发必须配 OAuth、不让单机必须装 Redis。
+
+### 3. 同一份后端 + 同一套 schema 跑两种形态
+
+Multica 通过 `workspace.slug` + `member.role` + `X-Workspace-Slug` 头让一份 schema 同时支持：cloud 多 workspace 多租户、self-host 单 workspace 内部部署。**不为单租户做 schema 简化**——self-host 用户随时能"升级"成多团队部署，零数据迁移。
+
+→ 落地到本 proposal：在下文 "核心模型" 之上**前置 Workspace 抽象**（详见 §核心模型 / Workspace 子节）。这是个早做成本低、晚做成本高的决策，**所有 cloud 路线的下游决策都依赖它存在**。
+
+**核心心法**：cloud-first 的产品体验 ≠ cloud-first 的架构耦合。Multica 做对的事是 "两边用同一套代码"，本 proposal 跟做这点即可——既不被云依赖锁死，也不为未来的云形态买单。
+
 ## 目标
 
 1. **云端能力独立成包。**
@@ -136,6 +176,47 @@ pub struct EdgeToolSpec {
 这些类型只描述 Jarvis 视角的节点与能力，不直接暴露厂商对象，例如 AWS Thing、
 阿里云设备、Azure device twin。厂商 ID 可以放进 `metadata`，但核心调度不依赖它。
 
+### Workspace 抽象（前置必要条件）
+
+`harness_core` 当前只有 `Project` 概念。**在加任何 cloud / multi-tenant 字段之前**，需要先在 Project 之上垫一层 `Workspace`——否则后续要支持多团队、多租户时整张 schema 要重写。这是 multica 把 workspace.slug 做在第一版的原因。
+
+最小骨架：
+
+```rust
+pub struct Workspace {
+    pub id: String,           // UUID v4
+    pub slug: String,         // URL 友好短 ID, e.g. "acme"
+    pub name: String,         // 显示名
+    pub settings: WorkspaceSettings,  // JSONB-equivalent
+    pub created_at: String,   // RFC3339
+    pub updated_at: String,
+}
+
+pub struct WorkspaceSettings {
+    pub issue_prefix: Option<String>,        // e.g. "ACME" → "ACME-42"
+    pub default_provider: Option<String>,
+    pub default_model: Option<String>,
+    pub allowed_repo_urls: Vec<String>,      // 白名单
+    // future: agent system prompt, theme, etc.
+}
+```
+
+**HTTP 路径与头**（与 multica 对齐）：
+
+- URL 形如 `/{workspace-slug}/projects/...` 或带 `/v1/{workspace-slug}/...` 前缀
+- 或者保留扁平 URL，要求所有写操作携带 `X-Workspace-Slug: <slug>` 头
+- 推荐**同时支持**：URL 路径优先于 header；都缺失时返回 400
+
+**"单租户" 也用同一套 schema**：本地单机部署默认创建一个 `slug = "default"` 的 workspace，所有现有 Project / Conversation / Requirement 落到它下面。后续无论 self-host 多团队、还是 cloud SaaS，都不需要 schema 迁移——只需要允许多 workspace 行存在。
+
+**与 cloud 路线的关系**：cloud 控制面所有 API 都需要 workspace 维度（"看 acme workspace 的 nodes / 看 widget-co workspace 的 tool invocations"），所以 §API 草案 / §存储 / §配置 章节都隐含 workspace_id 列。本 proposal 不重复写每张表都加 `workspace_id` 这件事——视为 §核心模型 之后的全局前提。
+
+**迁移策略**：当前数据库里没有 workspace 概念。引入时走 Phase 0：
+1. 加 `workspace` 表 + 系统启动时自动 ensure 一行 `slug = "default"`
+2. 给 `project` / `conversation` / `requirement` 等已有表加 nullable `workspace_id`，运行时缺省回填到 default workspace
+3. 一个版本周期后改为 NOT NULL
+4. API 路径加 workspace 前缀；旧路径作为过渡兼容（读 `X-Workspace-Slug` 或回落到 default）
+
 ## Provider 抽象
 
 云厂商适配分成多个小 trait，而不是一个巨型 SDK 包装器。
@@ -189,21 +270,62 @@ pub struct CloudRuntime {
 
 ## 端云协议
 
-第一版推荐 WebSocket 长连接。Edge 主动连 Cloud，适合 NAT、家庭网络、企业内网和普通
-Docker 部署。
+第一版推荐 WebSocket 长连接。Edge 主动连 Cloud（reverse-WS，详见 §借鉴 Multica），
+适合 NAT、家庭网络、企业内网和普通 Docker 部署。**第一版 in-proc loopback 就用这套
+协议**——把 agent loop 从 HTTP handler 里拆出来，让 server 入队、本地 runtime 认领，
+未来切到远程 transport 不需要改协议层。
+
+### 协议帧分两组
+
+第一组是**任务调度**（与 multica `daemon_ws.go` 命名对齐，方便对照参考实现）：
+
+| 方向 | 帧 | 用途 |
+|---|---|---|
+| Edge → Cloud | `runtime.register` | 启动握手，声明 runtime_id 数组 + capabilities |
+| Edge → Cloud | `runtime.heartbeat` | 心跳 + 负载汇报（idle / running / count） |
+| Cloud → Edge | `task.dispatch` | 派发一个 RequirementRun（含 conversation_id / work_dir / session_id?） |
+| Edge → Cloud | `task.claim` | （可选）显式认领，幂等去重 |
+| Edge → Cloud | `task.progress` | 流式进度（AgentEvent::Delta / ToolStart / ToolEnd / PlanUpdate / ApprovalRequest） |
+| Edge → Cloud | `task.complete` | 终止：成功，附 final conversation + result |
+| Edge → Cloud | `task.fail` | 终止：失败，附 error 消息 |
+| Cloud → Edge | `task.cancel` | 用户取消请求 |
+
+第二组是**远程工具调用**（cloud 把 Edge 工具暴露给 agent 时使用，与上一组解耦）：
 
 ```text
-Edge -> Cloud: hello
-Cloud -> Edge: hello_ack
-Edge -> Cloud: heartbeat
-Edge -> Cloud: capabilities
-Cloud -> Edge: invoke_tool
-Edge -> Cloud: tool_started
-Edge -> Cloud: tool_delta
-Edge -> Cloud: tool_finished
-Edge -> Cloud: approval_required
-Cloud -> Edge: approval_decision
+Edge → Cloud: hello / hello_ack          # 兼容旧版协议名
+Edge → Cloud: capabilities               # 工具清单上报
+Cloud → Edge: invoke_tool
+Edge → Cloud: tool_started
+Edge → Cloud: tool_delta
+Edge → Cloud: tool_finished
+Edge → Cloud: approval_required
+Cloud → Edge: approval_decision
 ```
+
+### Envelope
+
+所有帧用同一个 envelope，便于路由与版本兼容：
+
+```json
+{
+  "v": 1,
+  "type": "task.dispatch",
+  "id": "msg_<ulid>",
+  "ts": "2026-04-30T12:00:00Z",
+  "workspace_slug": "default",
+  "runtime_id": "rt_local_001",
+  "payload": { /* 帧专属字段 */ }
+}
+```
+
+`workspace_slug` 字段是 §Workspace 抽象 落地的体现——cloud 形态下同一个 transport
+连接可以为多个 workspace 路由消息（取决于 PAT 范围）。
+
+旧版 `hello / capabilities / invoke_tool` 等帧名在第二组中保留以向后兼容；新增的
+`runtime.* / task.*` 命名空间用于第一组任务调度，未来废弃 `hello` 时只动第二组。
+
+
 
 消息草案：
 
@@ -478,14 +600,32 @@ docs/
 
 ## 迭代计划
 
-### Phase 1：通用 Docker 与 Cloud / Edge 骨架
+### Phase 0：Workspace 抽象 + slug 路由（前置基础）
+
+**目的**：所有 cloud 路线的下游决策都依赖 workspace 存在；这一阶段与 Phase 1 解耦，**可以独立先做**，且不引入任何 cloud 依赖。
+
+- 在 `harness_core` 新增 `Workspace` 类型 + `WorkspaceStore` trait；
+- `harness-store` 5 个后端（json / memory / sqlite / postgres / mysql）实现 `WorkspaceStore`；启动时 ensure 一行 `slug = "default"`；
+- 给 `project / conversation / requirement / todo` 等已有表加 nullable `workspace_id`，运行时缺省回填到 default workspace；
+- `harness-server` 路由解析 `X-Workspace-Slug` 头（缺失则回落 default），所有现有 API 对 default workspace 行为保持向后兼容；
+- Web UI 增加（隐藏的）workspace 切换器，单 workspace 时折叠不显示。
+
+**验收**：现有所有 e2e 测试在不传 `X-Workspace-Slug` 头的情况下行为不变；新增一个测试覆盖"建第二个 workspace 隔离 project 列表"。
+
+### Phase 1：In-proc reverse-WS + Cloud / Edge 骨架
+
+**关键变化**：第一版**就**把 agent loop 从 HTTP handler 里拆出来——server 入队、本地 runtime 认领——但 transport 用 in-proc loopback WS（同进程内）。这样未来切到远程 transport 时不需要重写调度层。
 
 - 新增 `harness-cloud` crate；
-- 定义模型、config、policy、WebSocket 消息类型；
-- `apps/jarvis` 支持 `JARVIS_CLOUD_MODE=cloud | edge | off`；
-- Cloud 模式暴露 `/v1/edge/ws`；
-- Edge 模式连接 Cloud、注册节点、发送心跳；
+- 定义模型、config、policy、WebSocket 消息类型（envelope + `runtime.* / task.*` 帧）；
+- 实现 `EdgeTransport` 的 `LoopbackTransport`（in-proc mpsc）和 `WebSocketTransport`（远程）两个 backend，**先用前者**；
+- `apps/jarvis` 支持 `JARVIS_CLOUD_MODE=cloud | edge | off`，单机部署默认 `off`（隐式跑 loopback）；
+- Cloud 模式暴露 `/v1/edge/ws`（即 reverse-WS 入口）；
+- Edge 模式连接 Cloud、注册节点（携 workspace_slug 列表）、发送心跳；
+- agent loop 改成"`server 入队 RequirementRun → runtime claim → runtime 跑 → runtime 上报`"形态；
 - 不接厂商 SDK。
+
+**验收**：单机模式 `JARVIS_CLOUD_MODE=off` 跑现有 e2e 不退化；额外验证 `cloud + edge` 双进程能本地起来、能跑通一次 RequirementRun（in-proc loopback 与远程 WS 走同一份消息处理代码）。
 
 ### Phase 2：远程工具调用闭环
 
@@ -509,9 +649,17 @@ docs/
 - 工具大输出、附件、日志、导出物进入对象存储；
 - 本地开发可用 MinIO。
 
-### Phase 5：厂商增强
+### Phase 5：发布与厂商增强
 
-优先级：
+发布形态（与厂商集成解耦，可任意阶段穿插）：
+
+- **GHCR docker image 发布**：CI 加 `docker build` + `docker push ghcr.io/<org>/jarvis-server:<tag>`，与现有 5-triple cargo release 并行；
+- **`docker-compose.selfhost.yml` 模板**：起 jarvis-server + 可选 postgres + 可选 minio（对象存储）；自托管用户一行 `docker compose up -d` 起来，所有云增强能力 env 缺失即降级到本地实现；
+- **`scripts/install.sh --with-server`**：一键拉镜像 + 写 `.env` + 启动 compose 的脚本（参照 multica 的同名脚本）；
+- **远程 `WebSocketTransport`**：把 Phase 1 留下的 in-proc loopback 切换成跨进程跨主机的远程 WS（实质只是配置项变更）；
+- **远程 EdgeTransport hub**：一个 cloud server 同时管理多 edge runtime；可选 Redis 缓存空队列（multica `EmptyClaimCache` 的对应物）。**Redis 必须是 optional**——不带 Redis 也要能跑。
+
+厂商集成优先级：
 
 1. 阿里云：ECS/ACK 部署、OSS、SLS、IoT Platform；
 2. AWS：EC2/ECS/EKS 部署、S3、CloudWatch、IoT Core、SSM；
@@ -535,6 +683,12 @@ docs/
 
 - **多云适配范围过大。**
   文档和 generic 部署覆盖长尾云厂商；只有真实需求明确的厂商才做 SDK 级适配。
+
+- **Workspace 抽象拖到有 cloud 用户后再加。**
+  如果先发布单租户 self-host、有真实数据沉淀后再补 workspace 列，所有 `project / conversation / requirement / todo` 表都要做 NOT NULL 迁移 + API 路径加前缀 + 客户端兼容层。multica 把它做在第一版的原因正是这个。**对策**：Phase 0 与 Phase 1 解耦但前置完成；nullable workspace_id 的过渡期不超过 1-2 个 minor 版本。
+
+- **云依赖被默认开启。**
+  Redis / 对象存储 / OAuth / 邮件服务一旦在某个 Phase "默认必装"，self-host 用户就被卡住。**对策**：env 缺失时一律 fallback 到本地实现（参考 multica 的 S3 → backend_uploads volume / Resend → log dev-code / OAuth → 邮箱验证码）；CI 加 "无 env 启动" 烟测确保 fallback 路径不腐烂。
 
 ## 验收标准
 

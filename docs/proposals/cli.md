@@ -1,4 +1,4 @@
-# `harness-cli` — terminal coding-agent
+# `harness-cli` — terminal Chat / Work client
 
 **Status:** Proposed
 **Touches:** new `apps/jarvis-cli` binary, no library changes (reuses
@@ -6,15 +6,31 @@
 
 ## Motivation
 
-Today the only way to drive Jarvis is HTTP/WS. For coding work the
-natural front-end is a terminal: prompt at the bottom, streamed
-output above, tool approvals on tty. A CLI also exercises the
-`harness-core` traits without touching `harness-server`, so it
-doubles as the simplest reference integration.
+Today the primary way to drive Jarvis is HTTP/WS. For local Chat and
+Work, the natural power-user front-end is also a terminal: prompt at
+the bottom, streamed output above, tool approvals on tty. A CLI
+exercises the `harness-core` traits without touching
+`harness-server`, so it doubles as the simplest reference
+integration.
 
-This is a Claude-Code-shaped UX, *not* a `curl` wrapper around the
-HTTP API. The CLI talks to the harness directly, in-process — no
-server required.
+This is a product surface for Chat-first and Work-adjacent usage, not
+only a coding-agent shell. The Coding capability pack is its first
+rich use case because terminals are excellent for repositories,
+patches, checks, and approvals. Later the same CLI should also drive
+office/research prompts, TODO capture, and Work unit execution. The
+CLI talks to the harness directly, in-process — no server required.
+
+## Product alignment
+
+Under the Chat / Work / Doc product design:
+
+- **Chat:** interactive REPL and pipe mode are terminal Chat.
+- **Work:** `--root`, approval policy, persistence, and future
+  `/work` commands let the CLI start or inspect Work units.
+- **Doc:** out of scope for v0, but pipe mode can generate drafts and
+  later save them through Doc APIs.
+- **Capability layer:** Coding is a capability pack surfaced through
+  the CLI, not the CLI's product identity.
 
 ## UX target
 
@@ -121,8 +137,9 @@ BuiltinsConfig {
 }
 ```
 
-`fs_root = cwd` is intentional — coding agents work on the project
-they're invoked from. `--root <path>` overrides.
+`fs_root = cwd` is intentional for local Work and Coding capability
+use: users invoke the CLI from the project they want Jarvis to see.
+`--root <path>` overrides.
 
 ## Slash commands
 

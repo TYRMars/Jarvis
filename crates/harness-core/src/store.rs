@@ -9,8 +9,10 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use crate::conversation::Conversation;
+use crate::doc::{DocDraft, DocEvent, DocProject};
 use crate::error::BoxError;
 use crate::project::Project;
+use crate::requirement::{Requirement, RequirementEvent};
 use crate::todo::{TodoEvent, TodoItem};
 
 /// Summary record returned by [`ConversationStore::list`].
@@ -209,4 +211,98 @@ pub trait TodoStore: Send + Sync {
     /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
     /// and should refetch via `list`.
     fn subscribe(&self) -> broadcast::Receiver<TodoEvent>;
+}
+
+/// Persistence operations on per-project [`Requirement`]s — the
+/// kanban backlog under each [`Project`].
+///
+/// Mirrors [`TodoStore`]: a single `subscribe()` fanout for both REST
+/// mutations and (later) `requirement.*` tool calls; `list` is
+/// project-scoped, `get` / `delete` operate by globally-unique id;
+/// each row carries its own `project_id`. WS sessions filter
+/// [`RequirementEvent`]s by `project_id` against the socket's pinned
+/// project — a multi-window UI focused on different projects only sees
+/// its own kanban move.
+///
+/// All methods are project-scoped at the row level; there is no
+/// cross-project listing. Callers that don't know the project yet
+/// should use the REST query parameter or the session-pinned project
+/// id. There is intentionally no soft-delete equivalent of
+/// [`ProjectStore::archive`] — the kanban's `done` column is the
+/// graveyard, and deletes here are hard.
+#[async_trait]
+pub trait RequirementStore: Send + Sync {
+    /// Return up to ~500 requirements for `project_id`, sorted by
+    /// `updated_at` descending. Implementations should
+    /// `tracing::warn!` when the cap is hit so operators notice
+    /// runaway backlogs.
+    async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError>;
+
+    /// Look up by id. Returns `None` if absent. Note that this is
+    /// NOT project-scoped — id is globally unique (UUID v4) and the
+    /// row carries its own `project_id`.
+    async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError>;
+
+    /// Insert or overwrite a requirement. Implementations must
+    /// broadcast `RequirementEvent::Upserted(item.clone())` after a
+    /// successful write.
+    async fn upsert(&self, item: &Requirement) -> Result<(), BoxError>;
+
+    /// Delete by id. Returns `true` if a row was removed; `false`
+    /// if it was already absent (idempotent). Implementations must
+    /// broadcast `RequirementEvent::Deleted { project_id, id }`
+    /// after a successful delete (skip the broadcast on the no-op
+    /// `false` path so listeners don't see ghost events).
+    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
+
+    /// Subscribe to mutation events. Each call returns a fresh
+    /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
+    /// and should refetch via `list`.
+    fn subscribe(&self) -> broadcast::Receiver<RequirementEvent>;
+}
+
+/// Persistence operations on [`DocProject`] + [`DocDraft`] rows.
+///
+/// One trait covers both halves of the doc workspace because they
+/// share a fanout — REST mutations on either type broadcast through
+/// the same `subscribe()` channel as [`DocEvent`]s.
+///
+/// Layout:
+/// - `list_projects(workspace)` — projects scoped to a workspace
+///   (newest-first, soft cap of 500).
+/// - `get_project(id)` — globally-unique project lookup.
+/// - `upsert_project(p)` — insert or replace.
+/// - `delete_project(id)` — removes the project AND all of its
+///   drafts; broadcasts `ProjectDeleted` only (one event per call).
+/// - `list_drafts(project_id)` — drafts belonging to a project,
+///   newest-first.
+/// - `latest_draft(project_id)` — the single most-recent draft, or
+///   `None`. v0 UIs use this for "the body".
+/// - `upsert_draft(d)` — save draft (insert by id or replace).
+#[async_trait]
+pub trait DocStore: Send + Sync {
+    async fn list_projects(&self, workspace: &str) -> Result<Vec<DocProject>, BoxError>;
+
+    async fn get_project(&self, id: &str) -> Result<Option<DocProject>, BoxError>;
+
+    async fn upsert_project(&self, project: &DocProject) -> Result<(), BoxError>;
+
+    /// Hard-delete a project and every draft attached to it.
+    /// Returns `true` if the project existed.
+    async fn delete_project(&self, id: &str) -> Result<bool, BoxError>;
+
+    async fn list_drafts(&self, project_id: &str) -> Result<Vec<DocDraft>, BoxError>;
+
+    /// Convenience for v0 UIs: the most-recent draft by `updated_at`.
+    /// Default impl scans `list_drafts` and picks the head; SQL
+    /// backends can override with `ORDER BY updated_at DESC LIMIT 1`.
+    async fn latest_draft(&self, project_id: &str) -> Result<Option<DocDraft>, BoxError> {
+        let rows = self.list_drafts(project_id).await?;
+        Ok(rows.into_iter().next())
+    }
+
+    async fn upsert_draft(&self, draft: &DocDraft) -> Result<(), BoxError>;
+
+    /// Subscribe to mutation events.
+    fn subscribe(&self) -> broadcast::Receiver<DocEvent>;
 }

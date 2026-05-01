@@ -35,7 +35,7 @@ export function AppChatPane() {
   const proposedPlan = useAppStore((s) => s.proposedPlan);
 
   return (
-    <main id="chat">
+    <main id="chat" tabIndex={-1}>
       <header id="chat-header">
         <div className="header-leading">
           <OpenSidebarButton />

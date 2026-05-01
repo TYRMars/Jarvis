@@ -23,6 +23,22 @@ Goal is **minimum-viable**, not a polished product. No framework
 build step, no design system, no auth. ~600 lines of vanilla JS +
 HTML + CSS, fits in three files.
 
+## Product alignment
+
+This document is historical for the adopted MVP. The current product
+design supersedes the old "single chat page with three columns" as the
+long-term shape:
+
+- **Chat** remains the primary conversation surface.
+- **Work** owns TODO, task execution, verification, review, and
+  diagnostics panels.
+- **Doc** owns sources, outlines, drafts, citations, and exports.
+
+Future Web UI proposals should reference
+`product-design.zh-CN.md` and avoid adding new top-level routes for
+individual capabilities. Coding, office, and research should appear
+as capability packs inside Chat / Work / Doc.
+
 ## UX target
 
 Single page, three columns:

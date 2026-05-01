@@ -82,42 +82,51 @@ export function App() {
 /// archive) don't carry the chat-specific chrome.
 function ChatLayout() {
   return (
-    <div id="app">
-      <AppSidebar />
-      <AppChatPane />
-      <AppWorkspaceRail />
-      <AppApprovalsRail />
+    <>
+      <a className="skip-link" href="#chat">Skip to main content</a>
+      <div id="app">
+        <AppSidebar />
+        <AppChatPane />
+        <AppWorkspaceRail />
+        <AppApprovalsRail />
 
-      <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
-      <div id="resize-rail" className="resize-handle resize-rail" role="separator" aria-orientation="vertical" aria-label="Resize approvals panel" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+        <div id="resize-rail" className="resize-handle resize-rail" role="separator" aria-orientation="vertical" aria-label="Resize approvals panel" tabIndex={-1} />
 
-      <QuickSwitcher />
-    </div>
+        <QuickSwitcher />
+      </div>
+    </>
   );
 }
 
 function ProjectsLayout() {
   return (
-    <div id="app" className="page-app projects-app">
-      <AppSidebar />
-      <ProjectsPage />
+    <>
+      <a className="skip-link" href="#projects-page">Skip to main content</a>
+      <div id="app" className="page-app projects-app">
+        <AppSidebar />
+        <ProjectsPage />
 
-      <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
 
-      <QuickSwitcher />
-    </div>
+        <QuickSwitcher />
+      </div>
+    </>
   );
 }
 
 function DocsLayout() {
   return (
-    <div id="app" className="page-app docs-app">
-      <AppSidebar />
-      <DocsPage />
+    <>
+      <a className="skip-link" href="#docs-page">Skip to main content</a>
+      <div id="app" className="page-app docs-app">
+        <AppSidebar />
+        <DocsPage />
 
-      <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
 
-      <QuickSwitcher />
-    </div>
+        <QuickSwitcher />
+      </div>
+    </>
   );
 }

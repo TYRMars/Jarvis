@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import pkg from "./package.json" with { type: "json" };
 
 export default defineConfig({
@@ -7,7 +8,13 @@ export default defineConfig({
   // `base` at the default "/" so vite emits absolute asset paths
   // (`/assets/foo.js`) that work both behind the bundled
   // `harness-server` binary and from `vite preview` directly.
-  plugins: [react()],
+  //
+  // Tailwind v4 ships its own Vite plugin; no `tailwind.config.js` /
+  // PostCSS / `content` glob needed — utilities are JIT-scanned from
+  // `src/**` automatically. The legacy `styles.css` continues to work
+  // alongside Tailwind utilities (we layer Tailwind under the existing
+  // base layer via `@import "tailwindcss"` at the top of styles.css).
+  plugins: [react(), tailwindcss()],
   define: {
     // Surfaced in the Settings → About section so users can confirm
     // which build is running. `JSON.stringify` because vite's
@@ -22,5 +29,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: false,
+    // Dev-time proxy so cross-origin fetches from `http://localhost:5173`
+    // don't hit CORS against the bundled `harness-server` on :7001.
+    // Production builds are served same-origin from the Rust binary
+    // (via `include_dir!`), so this only kicks in during `vite dev`.
+    proxy: {
+      "/v1": { target: "http://127.0.0.1:7001", changeOrigin: true, ws: true },
+      "/health": { target: "http://127.0.0.1:7001", changeOrigin: true },
+    },
   },
 });

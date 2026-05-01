@@ -7,10 +7,21 @@
 // (`projectsAvailable === false`) — the conversation list keeps
 // working without it.
 
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { useAppStore } from "../../store/appStore";
+import { t } from "../../utils/i18n";
 import { archiveProject, createProject, restoreProject } from "../../services/projects";
 import { refreshConvoList } from "../../services/conversations";
+
+// Keyboard activation for non-button elements with role="button". Enter
+// and Space activate; preventDefault on Space stops the page from
+// scrolling. Mirrors what a real <button> does for free.
+const activateOnKey = (fn: () => void) => (e: KeyboardEvent) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    fn();
+  }
+};
 
 export function ProjectsList() {
   const available = useAppStore((s) => s.projectsAvailable);
@@ -29,12 +40,12 @@ export function ProjectsList() {
   return (
     <div className="sidebar-section projects-section">
       <div className="section-label projects-section-header">
-        <span>Projects</span>
+        <span>{t("projectsTitle")}</span>
         <button
           type="button"
           className="ghost-icon projects-create-btn"
-          title="New project"
-          aria-label="New project"
+          title={t("projectsNewBtn")}
+          aria-label={t("projectsNewBtn")}
           onClick={() => setCreating(true)}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -50,11 +61,12 @@ export function ProjectsList() {
         <li
           className={"project-row" + (activeFilter === null ? " active" : "")}
           onClick={() => onPickFilter(null)}
+          onKeyDown={activateOnKey(() => onPickFilter(null))}
           role="button"
           tabIndex={0}
         >
           <span className="project-dot all" aria-hidden="true" />
-          <span className="project-name">All conversations</span>
+          <span className="project-name">{t("sidebarAllConvos")}</span>
         </li>
         {projects.map((p) => (
           <li
@@ -65,6 +77,7 @@ export function ProjectsList() {
               (p.archived ? " archived" : "")
             }
             onClick={() => onPickFilter(p.id)}
+            onKeyDown={activateOnKey(() => onPickFilter(p.id))}
             role="button"
             tabIndex={0}
             title={p.description ?? p.name}
@@ -89,8 +102,8 @@ function ProjectRowActions({ project }: { project: { id: string; archived: boole
         <button
           type="button"
           className="convo-action"
-          title="Restore"
-          aria-label="Restore project"
+          title={t("projectListRestore")}
+          aria-label={t("sidebarRestoreAria")}
           onClick={(e) => {
             e.stopPropagation();
             void restoreProject(project.id);
@@ -102,11 +115,11 @@ function ProjectRowActions({ project }: { project: { id: string; archived: boole
         <button
           type="button"
           className="convo-action delete"
-          title="Archive"
-          aria-label="Archive project"
+          title={t("projectListArchive")}
+          aria-label={t("sidebarArchiveAria")}
           onClick={(e) => {
             e.stopPropagation();
-            if (confirm("Archive this project? Bound conversations keep working.")) {
+            if (confirm(t("sidebarArchiveConfirm"))) {
               void archiveProject(project.id);
             }
           }}
@@ -138,20 +151,20 @@ function CreateProjectForm({ onDone }: { onDone: () => void }) {
     <div className="project-create-form" onClick={(e) => e.stopPropagation()}>
       <input
         type="text"
-        placeholder="Project name"
+        placeholder={t("projectCreateName")}
         value={name}
         onChange={(e) => setName(e.target.value)}
         autoFocus
       />
       <textarea
-        placeholder="Instructions injected into every turn..."
+        placeholder={t("sidebarInstructionsPlaceholder")}
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
         rows={4}
       />
       <div className="project-create-form-actions">
         <button type="button" onClick={onDone} disabled={busy}>
-          Cancel
+          {t("projectCreateCancel")}
         </button>
         <button
           type="button"
@@ -159,7 +172,7 @@ function CreateProjectForm({ onDone }: { onDone: () => void }) {
           onClick={() => void submit()}
           disabled={busy || !name.trim() || !instructions.trim()}
         >
-          {busy ? "Creating..." : "Create"}
+          {busy ? t("projectCreateBusy") : t("projectCreateSubmit")}
         </button>
       </div>
     </div>
