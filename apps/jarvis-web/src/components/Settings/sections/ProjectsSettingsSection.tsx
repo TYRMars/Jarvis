@@ -16,7 +16,7 @@ import {
   restoreProject,
   updateProject,
 } from "../../../services/projects";
-import { chipColor } from "../../Sidebar/ProjectsList";
+import { chipColor } from "../../../utils/chipColor";
 
 function tx(key: string, fallback: string): string {
   const v = t(key);

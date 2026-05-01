@@ -12,7 +12,7 @@ import { relTime } from "../../utils/time";
 import { resumeConversation, deleteConversation } from "../../services/conversations";
 import { exportConversationMarkdown } from "../../services/export";
 import type { ConvoListRow } from "../../types/frames";
-import { chipColor } from "./ProjectsList";
+import { chipColor } from "../../utils/chipColor";
 
 interface Props {
   row: ConvoListRow;
