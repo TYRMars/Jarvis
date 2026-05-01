@@ -22,6 +22,7 @@
 //! - `POST   /v1/conversations/:id/messages` — append + run (blocking)
 //! - `POST   /v1/conversations/:id/messages/stream` — append + run (SSE)
 
+mod agent_profiles_routes;
 mod conversations;
 mod docs_routes;
 mod mcp_routes;
@@ -29,6 +30,8 @@ mod permissions;
 mod plugin_routes;
 mod project_binder;
 mod projects;
+mod provider_admin;
+mod provider_admin_routes;
 mod provider_registry;
 mod requirements_routes;
 mod routes;
@@ -42,6 +45,7 @@ mod workspaces_routes;
 
 pub use skill_routes::default_roots as default_skill_roots;
 
+pub use provider_admin::{ProviderAdmin, ProviderDef, ProviderSnapshot, ProvisionError};
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
 pub use routes::router;
 pub use state::{AppState, ServerInfo};

@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
+use crate::agent_profile::{AgentProfile, AgentProfileEvent};
 use crate::conversation::Conversation;
 use crate::doc::{DocDraft, DocEvent, DocProject};
 use crate::error::BoxError;
@@ -259,6 +260,48 @@ pub trait RequirementStore: Send + Sync {
     /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
     /// and should refetch via `list`.
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent>;
+}
+
+/// Persistence operations on [`AgentProfile`]s — named provider /
+/// model / system_prompt bundles users can save and reuse as
+/// requirement assignees, @mentions, or auto-loop dispatch targets.
+///
+/// Mirrors the `RequirementStore` shape but is **server-global**, not
+/// project-scoped: there is no `project_id` filter on `list`. WS
+/// listeners see every mutation; the UI can scope by name in the
+/// settings page itself if needed.
+///
+/// Consistent with the rest of the store traits, mutations broadcast
+/// through `subscribe()` regardless of whether the call came from a
+/// REST handler or a future tool. Lagged receivers should refetch via
+/// `list`.
+#[async_trait]
+pub trait AgentProfileStore: Send + Sync {
+    /// Return all profiles, sorted by `updated_at` descending. The
+    /// expected cardinality is small (single-digit to low double-digit
+    /// per server), so no pagination — implementations are free to cap
+    /// at ~500 and `tracing::warn!` on overflow if that ever becomes
+    /// realistic.
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError>;
+
+    /// Look up by id. Returns `None` if absent.
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError>;
+
+    /// Insert or overwrite a profile. Implementations must broadcast
+    /// `AgentProfileEvent::Upserted(item.clone())` after a successful
+    /// write.
+    async fn upsert(&self, item: &AgentProfile) -> Result<(), BoxError>;
+
+    /// Delete by id. Returns `true` if a row was removed; `false`
+    /// if it was already absent (idempotent). Implementations must
+    /// broadcast `AgentProfileEvent::Deleted { id }` after a
+    /// successful delete (skip the broadcast on the no-op `false`
+    /// path so listeners don't see ghost events).
+    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
+
+    /// Subscribe to mutation events. Each call returns a fresh
+    /// receiver.
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent>;
 }
 
 /// Persistence operations on [`DocProject`] + [`DocDraft`] rows.

@@ -292,7 +292,7 @@ impl GoogleRequest {
         for m in &r.messages {
             match m {
                 Message::System { .. } => {}
-                Message::User { content } => contents.push(GeContent {
+                Message::User { content, .. } => contents.push(GeContent {
                     role: Some("user"),
                     parts: vec![GePart::Text {
                         text: content.clone(),
@@ -302,6 +302,7 @@ impl GoogleRequest {
                     content,
                     tool_calls,
                     reasoning_content: _,
+                    ..
                 } => {
                     let mut parts: Vec<GePart> = Vec::new();
                     if let Some(text) = content {
@@ -332,6 +333,7 @@ impl GoogleRequest {
                 Message::Tool {
                     tool_call_id,
                     content,
+                    ..
                 } => {
                     let name = id_to_name
                         .get(tool_call_id.as_str())
@@ -527,6 +529,7 @@ impl GoogleResponse {
                 content,
                 tool_calls,
                 reasoning_content: None,
+                cache: None,
             },
             finish_reason,
         })
@@ -633,6 +636,7 @@ impl StreamAccumulator {
                 content,
                 tool_calls,
                 reasoning_content: None,
+                cache: None,
             },
             finish_reason,
         });
@@ -690,6 +694,7 @@ mod tests {
                     arguments: json!({"text": "hi"}),
                 }],
                 reasoning_content: None,
+            cache: None,
             },
         ]);
         let body = GoogleRequest::from_request(&r);
@@ -713,6 +718,7 @@ mod tests {
                     arguments: json!({}),
                 }],
                 reasoning_content: None,
+            cache: None,
             },
             Message::tool_result("abc", "got it"),
         ]);
@@ -743,6 +749,7 @@ mod tests {
                     },
                 ],
                 reasoning_content: None,
+            cache: None,
             },
             Message::tool_result("a", "first"),
             Message::tool_result("b", "second"),
@@ -779,6 +786,7 @@ mod tests {
                 content,
                 tool_calls,
                 reasoning_content: _,
+            cache: None,
             } => {
                 assert_eq!(content.as_deref(), Some("thinking..."));
                 assert_eq!(tool_calls.len(), 1);
@@ -878,6 +886,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
+                    cache: None,
                     } => {
                         assert_eq!(content.as_deref(), Some("Hello world"));
                         assert!(tool_calls.is_empty());
@@ -974,6 +983,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
+                    cache: None,
                     } => {
                         assert_eq!(content.as_deref(), Some("thinking..."));
                         assert_eq!(tool_calls.len(), 1);
@@ -1000,6 +1010,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
+                    cache: None,
                     } => {
                         assert!(content.is_none());
                         assert!(tool_calls.is_empty());

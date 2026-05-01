@@ -147,6 +147,7 @@ mod tests {
                 arguments: json!({}),
             }],
             reasoning_content: None,
+            cache: None,
         }
     }
 
@@ -184,13 +185,13 @@ mod tests {
             .any(|m| matches!(m, Message::System { content, .. } if content == "sys")));
         assert!(out
             .iter()
-            .any(|m| matches!(m, Message::User { content } if content == "turn 3 user")));
+            .any(|m| matches!(m, Message::User { content, .. } if content == "turn 3 user")));
         assert!(out
             .iter()
-            .any(|m| matches!(m, Message::User { content } if content == "turn 2 user")));
+            .any(|m| matches!(m, Message::User { content, .. } if content == "turn 2 user")));
         assert!(!out
             .iter()
-            .any(|m| matches!(m, Message::User { content } if content == "turn 1 user")));
+            .any(|m| matches!(m, Message::User { content, .. } if content == "turn 1 user")));
         assert!(out
             .iter()
             .any(|m| matches!(m, Message::System { content, .. } if content.contains("omitted"))));
@@ -203,7 +204,7 @@ mod tests {
         let out = compact(&msgs, 10, true, &CharRatioEstimator);
         assert!(out
             .iter()
-            .any(|m| matches!(m, Message::User { content } if content.starts_with("xxxx"))));
+            .any(|m| matches!(m, Message::User { content, .. } if content.starts_with("xxxx"))));
     }
 
     #[test]
@@ -235,7 +236,7 @@ mod tests {
         // Old turn is gone.
         assert!(!out
             .iter()
-            .any(|m| matches!(m, Message::User { content } if content == "old")));
+            .any(|m| matches!(m, Message::User { content, .. } if content == "old")));
     }
 
     #[test]
@@ -338,7 +339,7 @@ mod tests {
         let positions: Vec<&str> = out
             .iter()
             .filter_map(|m| match m {
-                Message::User { content } => Some(content.as_str()),
+                Message::User { content, .. } => Some(content.as_str()),
                 _ => None,
             })
             .collect();

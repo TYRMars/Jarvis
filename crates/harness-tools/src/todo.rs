@@ -97,7 +97,12 @@ impl Tool for TodoListTool {
         "List persistent TODOs for the current workspace, newest \
          first. Capped at 500 items. Pass an explicit `workspace` \
          (absolute path) only if you need to query a different \
-         workspace than the agent is pinned to."
+         workspace than the agent is pinned to. \
+         Usually unnecessary on the first turn — pending / in_progress / blocked items \
+         for the pinned workspace are already injected into the system prompt as a \
+         `=== project todos ===` block. Call this when you need the full list \
+         (including completed/cancelled), an item the binder may have just missed, \
+         or a different workspace."
     }
 
     fn parameters(&self) -> Value {
@@ -163,8 +168,11 @@ impl Tool for TodoAddTool {
     fn description(&self) -> &str {
         "Append a new TODO to the current workspace's persistent \
          board. Returns the created item with a server-allocated \
-         id. Use sparingly — TODOs are project-scoped follow-ups, \
-         not per-turn working steps (use `plan.update` for those)."
+         id. Use this to record persistent follow-ups that should \
+         survive the current turn (cleanups, deferred refactors, \
+         things the user asked you to remember). For ephemeral \
+         in-turn planning — a checklist you want to render in the \
+         UI for this single turn — use `plan.update` instead."
     }
 
     fn parameters(&self) -> Value {
@@ -249,9 +257,12 @@ impl Tool for TodoUpdateTool {
     }
 
     fn description(&self) -> &str {
-        "Update a persistent TODO by id. Pass any subset of \
-         {title, status, priority, notes} — omitted fields keep \
-         their existing value. To clear `notes` or `priority`, \
+        "Update a persistent TODO by id. Pass the `id` from the \
+         `=== project todos ===` block in the system prompt or from \
+         `todo.list`. Status transitions are: pending → in_progress → \
+         completed (or blocked / cancelled at any point). Pass any \
+         subset of {title, status, priority, notes} — omitted fields \
+         keep their existing value. To clear `notes` or `priority`, \
          pass an empty string."
     }
 

@@ -291,6 +291,27 @@ export interface Requirement {
   description?: string | null;
   status: RequirementStatus;
   conversation_ids: string[];
+  /// Optional `AgentProfile.id` this requirement is assigned to.
+  /// `null` / absent means "no specific assignee" — runs use the
+  /// global default provider/model.
+  assignee_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ----------------- AgentProfile -----------------------------------
+
+/// Server-global named agent identity. See
+/// `crates/harness-core/src/agent_profile.rs` for the wire shape.
+export interface AgentProfile {
+  id: string;
+  name: string;
+  avatar?: string | null;
+  provider: string;
+  model: string;
+  system_prompt?: string | null;
+  default_workspace?: string | null;
+  allowed_tools?: string[];
   created_at: string;
   updated_at: string;
 }

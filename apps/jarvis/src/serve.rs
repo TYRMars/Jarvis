@@ -66,32 +66,39 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     let persistence_scheme = persistence_url
         .as_deref()
         .and_then(|s| s.split(':').next().map(str::to_string));
-    let (store, project_store, todo_store, requirement_store, doc_store) =
-        match persistence_url.as_deref() {
-            Some(url) => {
-                let bundle = harness_store::connect_all(url)
-                    .await
-                    .with_context(|| format!("opening persistence url `{url}`"))?;
-                info!(
-                    url = %url,
-                    "conversation + project + todo + requirement + doc store connected"
-                );
-                (
-                    Some(bundle.conversations),
-                    Some(bundle.projects),
-                    Some(bundle.todos),
-                    Some(bundle.requirements),
-                    Some(bundle.docs),
-                )
-            }
-            None => {
-                info!(
-                    "no persistence URL resolved (HOME unset?); running in-memory \
-                     (conversations / TODOs / requirements / docs will not survive restart)"
-                );
-                (None, None, None, None, None)
-            }
-        };
+    let (
+        store,
+        project_store,
+        todo_store,
+        requirement_store,
+        doc_store,
+        agent_profile_store,
+    ) = match persistence_url.as_deref() {
+        Some(url) => {
+            let bundle = harness_store::connect_all(url)
+                .await
+                .with_context(|| format!("opening persistence url `{url}`"))?;
+            info!(
+                url = %url,
+                "conversation + project + todo + requirement + doc + agent-profile store connected"
+            );
+            (
+                Some(bundle.conversations),
+                Some(bundle.projects),
+                Some(bundle.todos),
+                Some(bundle.requirements),
+                Some(bundle.docs),
+                Some(bundle.agent_profiles),
+            )
+        }
+        None => {
+            info!(
+                "no persistence URL resolved (HOME unset?); running in-memory \
+                 (conversations / TODOs / requirements / docs / agent profiles will not survive restart)"
+            );
+            (None, None, None, None, None, None)
+        }
+    };
     // `JARVIS_DISABLE_TODOS=1` opts out of the persistent TODO board
     // even when a DB is configured. Useful for shared deployments
     // that want todos managed elsewhere.
@@ -370,6 +377,21 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if let Some(ds) = doc_store {
         state = state.with_doc_store(ds);
     }
+    if let Some(aps) = agent_profile_store {
+        state = state.with_agent_profile_store(aps);
+    }
+    // Wire the provider admin so the Web UI can add / edit / remove
+    // providers at runtime. The Provisioner shares `state.providers`
+    // (the live registry) and `state.providers_changed` (the
+    // broadcast that triggers WS clients to refetch); it owns its
+    // own `Arc<RwLock<Config>>` so mutations and disk writes go
+    // through one consistent point.
+    let provisioner = Arc::new(crate::provisioner::Provisioner::new(
+        cfg.clone(),
+        config_path.clone(),
+        Arc::clone(&state.providers),
+    ));
+    state = state.with_provider_admin(provisioner);
     // `JARVIS_NO_TODOS_IN_PROMPT=1` opts out of injecting the
     // current TODO list into the system prompt every turn. The
     // `todo.*` tools stay registered (the model can still query
@@ -626,7 +648,7 @@ fn pick_shell_sandbox(cfg: &Config) -> Sandbox {
     }
 }
 
-async fn build_provider(
+pub(crate) async fn build_provider(
     name: &str,
     model_override: Option<String>,
     cfg: &Config,
@@ -1124,7 +1146,11 @@ fn spec_to_client_config(
 /// hasn't set their own prompt.
 const GENERAL_SYSTEM_PROMPT: &str = "You are Jarvis, a concise and capable assistant. \
 When you need a human decision, missing information, or a choice among acceptable options, \
-use ask.text instead of guessing.";
+use ask.text instead of guessing. \
+If a `=== project todos ===` block appears in this prompt, those are the live persistent \
+follow-ups for this workspace — read them as part of the user's context, mark them \
+completed/blocked via todo.update as work lands, and add new ones via todo.add when the \
+user asks you to remember something for later.";
 
 /// Coding-agent system prompt — used automatically when any of
 /// `fs.edit`, `fs.write`, or `shell.exec` is enabled (signal: the
@@ -1144,9 +1170,12 @@ Use fs.edit (uniqueness-checked single replace) or fs.patch (unified-diff multi-
 reviewable edits; reach for fs.write only to create new files. \
 When you run checks (tests, lints, builds), keep them focused on the change rather than the \
 whole repo. \
-At the start of a fresh session, call todo.list to see persistent project follow-ups; \
-record new follow-ups via todo.add (not plan.update — that's for the current turn only) \
-and mark them completed/blocked as you go. \
+The active project backlog is already injected into this prompt as a \
+`=== project todos ===` block (when there are any) — use it directly; only call todo.list \
+if you suspect it is stale (just-completed items, just-added by the user, or operating \
+across workspaces). Record NEW follow-ups via todo.add (use plan.update only for ephemeral \
+within-turn planning), and mark items completed/blocked via todo.update {id, status} as \
+soon as the underlying work lands. \
 End every coding turn with a short report: which files changed, which checks ran, which checks \
 were skipped and why, and any residual risk you couldn't verify.";
 

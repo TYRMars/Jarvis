@@ -6,6 +6,7 @@
 //! transports, and storage live in sibling crates.
 
 pub mod agent;
+pub mod agent_profile;
 pub mod approval;
 pub mod conversation;
 pub mod doc;
@@ -25,6 +26,7 @@ pub mod tool;
 pub mod workspace;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, AgentStream, RunOutcome};
+pub use agent_profile::{AgentProfile, AgentProfileEvent};
 pub use approval::{
     AlwaysApprove, AlwaysDeny, ApprovalDecision, ApprovalRequest, Approver, ChannelApprover,
     PendingApproval,
@@ -54,8 +56,8 @@ pub use permission::{
 pub use project::{derive_slug, validate_slug, Project};
 pub use requirement::{Requirement, RequirementEvent, RequirementStatus};
 pub use store::{
-    ConversationMetadata, ConversationRecord, ConversationStore, DocStore, ProjectStore,
-    RequirementStore, TodoStore,
+    AgentProfileStore, ConversationMetadata, ConversationRecord, ConversationStore, DocStore,
+    ProjectStore, RequirementStore, TodoStore,
 };
 pub use todo::{TodoEvent, TodoItem, TodoPriority, TodoStatus};
 pub use tool::{Tool, ToolCategory, ToolRegistry, ToolSpec};

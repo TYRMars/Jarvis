@@ -243,8 +243,10 @@ pub fn count_mutation() -> Result<(), BoxError> {
             let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
             if n > MAX_MUTATIONS_PER_TURN {
                 Err(format!(
-                    "todo: per-turn mutation cap ({MAX_MUTATIONS_PER_TURN}) reached; \
-                     stop calling todo.add / todo.update / todo.delete this turn"
+                    "todo mutation budget exhausted: per-turn mutation cap \
+                     ({MAX_MUTATIONS_PER_TURN}) reached. This guard exists to prevent \
+                     runaway loops. Stop calling todo.add / todo.update / todo.delete for \
+                     this turn — summarise the remaining changes for the user instead."
                 )
                 .into())
             } else {

@@ -166,6 +166,13 @@ struct UpdateBody {
     /// without a round-trip use `POST /v1/requirements/:id/conversations`.
     #[serde(default)]
     conversation_ids: Option<Vec<String>>,
+    /// `Some("")` clears the assignee; `Some(id)` sets it; `None`
+    /// leaves it alone. Cross-validation against `AgentProfileStore`
+    /// is intentionally not done here — a deleted profile id leaves a
+    /// dangling pointer that the UI renders as "(unknown agent)"
+    /// rather than failing the patch.
+    #[serde(default)]
+    assignee_id: Option<String>,
 }
 
 async fn update_requirement(
@@ -210,6 +217,10 @@ async fn update_requirement(
     }
     if let Some(ids) = body.conversation_ids {
         item.conversation_ids = ids;
+    }
+    if let Some(a) = body.assignee_id {
+        let trimmed = a.trim().to_string();
+        item.assignee_id = if trimmed.is_empty() { None } else { Some(trimmed) };
     }
     item.touch();
     match store.upsert(&item).await {

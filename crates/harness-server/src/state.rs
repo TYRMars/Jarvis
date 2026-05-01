@@ -2,15 +2,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use harness_core::{
-    Agent, AgentConfig, ConversationStore, DocStore, LlmProvider, PermissionMode, PermissionStore,
-    ProjectStore, RequirementStore, TodoStore, ToolRegistry,
+    Agent, AgentConfig, AgentProfileStore, ConversationStore, DocStore, LlmProvider,
+    PermissionMode, PermissionStore, ProjectStore, RequirementStore, TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
 use harness_skill::SkillCatalog;
 use harness_store::WorkspaceStore;
 
-use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
+use crate::provider_admin::ProviderAdmin;
+use crate::provider_registry::{ProviderRegistry, RouteError};
 
 /// Runtime metadata the binary populates at startup so the
 /// `GET /v1/server/info` endpoint (and the Settings page that reads
@@ -71,7 +72,12 @@ pub struct ServerInfo {
 /// providers within the same process.
 #[derive(Clone)]
 pub struct AppState {
-    pub providers: Arc<ProviderRegistry>,
+    /// Multi-provider routing registry, runtime-mutable so `POST`/
+    /// `PATCH`/`DELETE /v1/providers` can register or drop entries
+    /// without restarting the server. Per-request reads take a brief
+    /// `RwLock::read` and clone the routed `Arc<dyn LlmProvider>` out
+    /// before the guard drops; admin writes take `RwLock::write`.
+    pub providers: Arc<RwLock<ProviderRegistry>>,
     pub agent_template: AgentConfig,
     /// Optional persistence layer. `None` means conversations are in-memory
     /// only (the current default); handlers that want to save history should
@@ -148,6 +154,27 @@ pub struct AppState {
     /// Optional persistent Doc store — backs the `/docs` page.
     /// Returns 503 from `/v1/doc-projects*` when `None`.
     pub docs: Option<Arc<dyn DocStore>>,
+    /// Optional persistent [`AgentProfileStore`]. When `Some(_)`,
+    /// the `/v1/agent-profiles*` REST endpoints work and WS sessions
+    /// broadcast `agent_profile_upserted` / `agent_profile_deleted`
+    /// frames. `None` ⇒ those endpoints return 503. Settings →
+    /// "Agent profiles" reads via REST and live-updates via the WS
+    /// bridge.
+    pub agent_profiles: Option<Arc<dyn AgentProfileStore>>,
+    /// Optional [`ProviderAdmin`] impl. When `Some(_)` the
+    /// `POST/PATCH/DELETE /v1/providers` admin endpoints work; the
+    /// binary wires this in `serve.rs` so the Web UI can add /
+    /// edit / remove providers without restarting.  Without an impl
+    /// the admin endpoints return `503` and the read-only `GET
+    /// /v1/providers` still serves the boot-time registry.
+    pub provider_admin: Option<Arc<dyn ProviderAdmin>>,
+    /// Broadcast channel for `providers_changed` WS frames. Each
+    /// successful provision / unprovision / set-default sends a tick
+    /// here; connected web clients refetch `/v1/providers` on receipt.
+    /// The channel is always present (constructed in `from_registry` /
+    /// `new`); subscribers only fire when `provider_admin` is set
+    /// because that's the only path that emits.
+    pub providers_changed: tokio::sync::broadcast::Sender<()>,
     /// Inject the current pending/in_progress/blocked TODOs into
     /// the system prompt at the start of every turn? Defaults to
     /// `true` — gives the agent cheap awareness without an extra
@@ -164,7 +191,7 @@ impl AppState {
     pub fn from_registry(providers: ProviderRegistry, template: AgentConfig) -> Self {
         let seed: ToolRegistry = (*template.tools).clone();
         Self {
-            providers: Arc::new(providers),
+            providers: Arc::new(RwLock::new(providers)),
             agent_template: template,
             store: None,
             projects: None,
@@ -180,6 +207,9 @@ impl AppState {
             todos: None,
             requirements: None,
             docs: None,
+            agent_profiles: None,
+            provider_admin: None,
+            providers_changed: tokio::sync::broadcast::channel(16).0,
             todos_in_prompt: true,
         }
     }
@@ -195,7 +225,7 @@ impl AppState {
         registry.insert("default", llm, agent.config.model.clone());
         let seed: ToolRegistry = (*agent.config.tools).clone();
         Self {
-            providers: Arc::new(registry),
+            providers: Arc::new(RwLock::new(registry)),
             agent_template: agent.config.clone(),
             store: None,
             projects: None,
@@ -211,6 +241,9 @@ impl AppState {
             todos: None,
             requirements: None,
             docs: None,
+            agent_profiles: None,
+            provider_admin: None,
+            providers_changed: tokio::sync::broadcast::channel(16).0,
             todos_in_prompt: true,
         }
     }
@@ -330,6 +363,25 @@ impl AppState {
         self
     }
 
+    /// Wire in the persistent [`AgentProfileStore`]. Without one, the
+    /// `/v1/agent-profiles*` endpoints return 503 and the
+    /// Settings → "Agent profiles" section renders the empty state.
+    pub fn with_agent_profile_store(mut self, store: Arc<dyn AgentProfileStore>) -> Self {
+        self.agent_profiles = Some(store);
+        self
+    }
+
+    /// Wire in the [`ProviderAdmin`] impl. Without one the admin
+    /// endpoints (`POST/PATCH/DELETE /v1/providers`) return 503; the
+    /// read-only `GET /v1/providers` still works against the boot-time
+    /// registry. The binary supplies an impl in `serve.rs` so the Web
+    /// UI's Settings → Providers can add / edit / remove providers
+    /// without a restart.
+    pub fn with_provider_admin(mut self, admin: Arc<dyn ProviderAdmin>) -> Self {
+        self.provider_admin = Some(admin);
+        self
+    }
+
     /// Toggle the per-turn TODO injection into the system prompt.
     /// The binary flips this to `false` when
     /// `JARVIS_NO_TODOS_IN_PROMPT` is set.
@@ -346,8 +398,11 @@ impl AppState {
         explicit_provider: Option<&str>,
         model: Option<&str>,
     ) -> Result<Arc<Agent>, RouteError> {
-        let routed = self.providers.pick(explicit_provider, model)?;
-        Ok(Arc::new(self.agent_from_routed(routed)))
+        let (provider, picked_model) = self.pick_routed_owned(explicit_provider, model)?;
+        let mut cfg = self.agent_template.clone();
+        cfg.model = picked_model;
+        cfg.tools = self.snapshot_tools();
+        Ok(Arc::new(Agent::new(provider, cfg)))
     }
 
     /// Like `build_agent` but lets the caller mutate the cloned
@@ -362,19 +417,29 @@ impl AppState {
     where
         F: FnOnce(&mut AgentConfig),
     {
-        let routed = self.providers.pick(explicit_provider, model)?;
+        let (provider, picked_model) = self.pick_routed_owned(explicit_provider, model)?;
         let mut cfg = self.agent_template.clone();
-        cfg.model = routed.model.clone();
+        cfg.model = picked_model;
         cfg.tools = self.snapshot_tools();
         customise(&mut cfg);
-        Ok(Arc::new(Agent::new(routed.entry.provider.clone(), cfg)))
+        Ok(Arc::new(Agent::new(provider, cfg)))
     }
 
-    fn agent_from_routed(&self, routed: Routed<'_>) -> Agent {
-        let mut cfg = self.agent_template.clone();
-        cfg.model = routed.model;
-        cfg.tools = self.snapshot_tools();
-        Agent::new(routed.entry.provider.clone(), cfg)
+    /// Take a brief read lock on the registry, route, and clone out
+    /// the owned bits the caller actually needs. Keeps the lock
+    /// guard scope as tight as possible so admin writers don't block
+    /// behind long-lived agent construction.
+    fn pick_routed_owned(
+        &self,
+        explicit_provider: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<(Arc<dyn LlmProvider>, String), RouteError> {
+        let guard = self
+            .providers
+            .read()
+            .expect("provider registry RwLock poisoned");
+        let routed = guard.pick(explicit_provider, model)?;
+        Ok((routed.entry.provider.clone(), routed.model))
     }
 
     /// Take a per-request snapshot of the canonical registry. The

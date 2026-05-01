@@ -18,9 +18,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
-    DocEvent, DocKind, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementStatus, RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
+    AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
+    ConversationMetadata, ConversationRecord, ConversationStore, DocDraft, DocEvent, DocKind,
+    DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent, RequirementStatus,
+    RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -149,6 +150,7 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
             description      TEXT,
             status           TEXT NOT NULL,
             conversation_ids TEXT NOT NULL,
+            assignee_id      TEXT,
             created_at       TEXT NOT NULL,
             updated_at       TEXT NOT NULL
         )
@@ -159,6 +161,38 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_requirements_project ON requirements(project_id)")
         .execute(pool)
         .await?;
+    // Idempotent migration: add `assignee_id` to pre-existing
+    // tables. SQLite has no `ADD COLUMN IF NOT EXISTS`, so we check
+    // `pragma_table_info` first.
+    let has_assignee: bool =
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('requirements') WHERE name = 'assignee_id'",
+        )
+        .fetch_one(pool)
+        .await?
+            > 0;
+    if !has_assignee {
+        sqlx::query("ALTER TABLE requirements ADD COLUMN assignee_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_profiles (
+            id         TEXT PRIMARY KEY,
+            payload    TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_agent_profiles_updated ON agent_profiles(updated_at DESC)",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"
@@ -646,6 +680,7 @@ struct RequirementRow {
     description: Option<String>,
     status: String,
     conversation_ids: String,
+    assignee_id: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -664,6 +699,7 @@ impl RequirementRow {
             description: self.description,
             status,
             conversation_ids,
+            assignee_id: self.assignee_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -675,7 +711,7 @@ impl RequirementStore for SqliteRequirementStore {
     async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
         let rows: Vec<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       created_at, updated_at
+                       assignee_id, created_at, updated_at
                  FROM requirements
                  WHERE project_id = ?1
                  ORDER BY updated_at DESC
@@ -694,7 +730,7 @@ impl RequirementStore for SqliteRequirementStore {
     async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
         let row: Option<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       created_at, updated_at
+                       assignee_id, created_at, updated_at
                  FROM requirements WHERE id = ?1"#,
         )
         .bind(id)
@@ -709,14 +745,15 @@ impl RequirementStore for SqliteRequirementStore {
         sqlx::query(
             r#"INSERT INTO requirements
                 (id, project_id, title, description, status, conversation_ids,
-                 created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 assignee_id, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 ON CONFLICT(id) DO UPDATE SET
                     project_id       = excluded.project_id,
                     title            = excluded.title,
                     description      = excluded.description,
                     status           = excluded.status,
                     conversation_ids = excluded.conversation_ids,
+                    assignee_id      = excluded.assignee_id,
                     updated_at       = excluded.updated_at"#,
         )
         .bind(&item.id)
@@ -725,6 +762,7 @@ impl RequirementStore for SqliteRequirementStore {
         .bind(&item.description)
         .bind(item.status.as_wire())
         .bind(&conv_ids)
+        .bind(&item.assignee_id)
         .bind(&item.created_at)
         .bind(&item.updated_at)
         .execute(&self.pool)
@@ -761,6 +799,93 @@ impl RequirementStore for SqliteRequirementStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- AgentProfileStore -------------------------------------------
+
+pub struct SqliteAgentProfileStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<AgentProfileEvent>,
+}
+
+impl SqliteAgentProfileStore {
+    /// Wrap a pool that's already had [`migrate`] run against it.
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl AgentProfileStore for SqliteAgentProfileStore {
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload FROM agent_profiles ORDER BY updated_at DESC LIMIT 500"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!("agent profile list hit 500-item soft cap");
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<AgentProfile>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError> {
+        let row: Option<(String,)> =
+            sqlx::query_as(r#"SELECT payload FROM agent_profiles WHERE id = ?1"#)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        match row {
+            Some((payload,)) => Ok(Some(
+                serde_json::from_str::<AgentProfile>(&payload).map_err(StoreError::from)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn upsert(&self, item: &AgentProfile) -> Result<(), BoxError> {
+        let payload = serde_json::to_string(item).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO agent_profiles (id, payload, updated_at) VALUES (?1, ?2, ?3)
+               ON CONFLICT(id) DO UPDATE SET
+                   payload    = excluded.payload,
+                   updated_at = excluded.updated_at"#,
+        )
+        .bind(&item.id)
+        .bind(&payload)
+        .bind(&item.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(AgentProfileEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let res = sqlx::query("DELETE FROM agent_profiles WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
         self.tx.subscribe()
     }
 }

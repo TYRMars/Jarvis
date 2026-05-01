@@ -61,6 +61,14 @@ pub struct Requirement {
     /// requirement card.
     #[serde(default)]
     pub conversation_ids: Vec<String>,
+    /// Optional [`AgentProfile`](crate::AgentProfile) id this
+    /// requirement is assigned to. `None` means "no specific
+    /// assignee" — runs spawned from the card use the binary's
+    /// global default provider/model. When set, `POST
+    /// /v1/requirements/:id/runs` reads the profile to override
+    /// provider / model / system_prompt for the new conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee_id: Option<String>,
     /// RFC-3339 / ISO-8601 timestamp of creation.
     pub created_at: String,
     /// RFC-3339 / ISO-8601 timestamp; bumped on every mutation via
@@ -121,6 +129,7 @@ impl Requirement {
             description: None,
             status: RequirementStatus::Backlog,
             conversation_ids: Vec::new(),
+            assignee_id: None,
             created_at: now.clone(),
             updated_at: now,
         }

@@ -13,6 +13,12 @@ import {
   applyDocProjectDeleted,
   applyDocProjectUpserted,
 } from "../docs";
+import {
+  applyAgentProfileDeleted,
+  applyAgentProfileUpserted,
+} from "../agentProfiles";
+import { loadProviders } from "../providers";
+import { apiUrl } from "../api";
 
 export const domainFrameHandlers: Record<string, (ev: any) => void> = {
   // ---- Persistent TODO board frames ----
@@ -40,5 +46,20 @@ export const domainFrameHandlers: Record<string, (ev: any) => void> = {
   },
   doc_draft_upserted: (ev) => {
     if (ev.draft) applyDocDraftUpserted(ev.draft);
+  },
+  // ---- Agent profile frames (server-global) ----
+  agent_profile_upserted: (ev) => {
+    if (ev.profile) applyAgentProfileUpserted(ev.profile);
+  },
+  agent_profile_deleted: (ev) => {
+    if (typeof ev.id === "string") applyAgentProfileDeleted(ev.id);
+  },
+  // ---- Provider registry mutated (Settings → Providers admin) ----
+  // Bare tick — the server doesn't ship a payload to avoid leaking
+  // api-key state. We refetch /v1/providers via the same loader the
+  // boot path uses; any subscribers (model picker, Subagents form)
+  // re-render off `appStore.providers`.
+  providers_changed: (_ev) => {
+    void loadProviders(apiUrl);
   },
 };

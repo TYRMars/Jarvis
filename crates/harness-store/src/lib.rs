@@ -38,12 +38,12 @@ mod workspace;
 
 pub use error::StoreError;
 pub use json_file::{
-    JsonFileConversationStore, JsonFileDocStore, JsonFileProjectStore, JsonFileRequirementStore,
-    JsonFileTodoStore,
+    JsonFileAgentProfileStore, JsonFileConversationStore, JsonFileDocStore, JsonFileProjectStore,
+    JsonFileRequirementStore, JsonFileTodoStore,
 };
 pub use memory::{
-    MemoryConversationStore, MemoryDocStore, MemoryProjectStore, MemoryRequirementStore,
-    MemoryTodoStore,
+    MemoryAgentProfileStore, MemoryConversationStore, MemoryDocStore, MemoryProjectStore,
+    MemoryRequirementStore, MemoryTodoStore,
 };
 pub use permission::JsonFilePermissionStore;
 pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, WorkspaceStore};
@@ -52,28 +52,31 @@ pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, Wor
 mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::{
-    SqliteConversationStore, SqliteDocStore, SqliteProjectStore, SqliteRequirementStore,
-    SqliteTodoStore,
+    SqliteAgentProfileStore, SqliteConversationStore, SqliteDocStore, SqliteProjectStore,
+    SqliteRequirementStore, SqliteTodoStore,
 };
 
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(feature = "postgres")]
 pub use postgres::{
-    PostgresConversationStore, PostgresDocStore, PostgresProjectStore, PostgresRequirementStore,
-    PostgresTodoStore,
+    PostgresAgentProfileStore, PostgresConversationStore, PostgresDocStore, PostgresProjectStore,
+    PostgresRequirementStore, PostgresTodoStore,
 };
 
 #[cfg(feature = "mysql")]
 mod mysql;
 #[cfg(feature = "mysql")]
 pub use mysql::{
-    MysqlConversationStore, MysqlDocStore, MysqlProjectStore, MysqlRequirementStore, MysqlTodoStore,
+    MysqlAgentProfileStore, MysqlConversationStore, MysqlDocStore, MysqlProjectStore,
+    MysqlRequirementStore, MysqlTodoStore,
 };
 
 use std::sync::Arc;
 
-use harness_core::{ConversationStore, DocStore, ProjectStore, RequirementStore, TodoStore};
+use harness_core::{
+    AgentProfileStore, ConversationStore, DocStore, ProjectStore, RequirementStore, TodoStore,
+};
 
 /// Bundle of stores returned by [`connect_all`]. The backends share
 /// their underlying resource (DB pool or base directory) so a single
@@ -89,6 +92,9 @@ pub struct StoreBundle {
     /// Per-workspace doc workspaces (notes, designs, reports) with
     /// Markdown drafts attached.
     pub docs: Arc<dyn DocStore>,
+    /// Server-global named agent profiles (provider/model/system_prompt
+    /// presets). See [`harness_core::AgentProfile`].
+    pub agent_profiles: Arc<dyn AgentProfileStore>,
 }
 
 /// Open both stores for a given database URL. The scheme selects the
@@ -110,12 +116,15 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let requirements =
                 Arc::new(JsonFileRequirementStore::open(&path)?) as Arc<dyn RequirementStore>;
             let docs = Arc::new(JsonFileDocStore::open(&path)?) as Arc<dyn DocStore>;
+            let agent_profiles = Arc::new(JsonFileAgentProfileStore::open(&path)?)
+                as Arc<dyn AgentProfileStore>;
             Ok(StoreBundle {
                 conversations,
                 projects,
                 todos,
                 requirements,
                 docs,
+                agent_profiles,
             })
         }
         #[cfg(feature = "sqlite")]
@@ -125,12 +134,14 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let todos = SqliteTodoStore::from_pool(conv.pool());
             let requirements = SqliteRequirementStore::from_pool(conv.pool());
             let docs = SqliteDocStore::from_pool(conv.pool());
+            let agent_profiles = SqliteAgentProfileStore::from_pool(conv.pool());
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
                 todos: Arc::new(todos),
                 requirements: Arc::new(requirements),
                 docs: Arc::new(docs),
+                agent_profiles: Arc::new(agent_profiles),
             })
         }
         #[cfg(feature = "postgres")]
@@ -140,12 +151,14 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let todos = PostgresTodoStore::from_pool(conv.pool());
             let requirements = PostgresRequirementStore::from_pool(conv.pool());
             let docs = PostgresDocStore::from_pool(conv.pool());
+            let agent_profiles = PostgresAgentProfileStore::from_pool(conv.pool());
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
                 todos: Arc::new(todos),
                 requirements: Arc::new(requirements),
                 docs: Arc::new(docs),
+                agent_profiles: Arc::new(agent_profiles),
             })
         }
         #[cfg(feature = "mysql")]
@@ -155,12 +168,14 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let todos = MysqlTodoStore::from_pool(conv.pool());
             let requirements = MysqlRequirementStore::from_pool(conv.pool());
             let docs = MysqlDocStore::from_pool(conv.pool());
+            let agent_profiles = MysqlAgentProfileStore::from_pool(conv.pool());
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
                 todos: Arc::new(todos),
                 requirements: Arc::new(requirements),
                 docs: Arc::new(docs),
+                agent_profiles: Arc::new(agent_profiles),
             })
         }
         other => Err(StoreError::UnsupportedScheme(other.to_string())),

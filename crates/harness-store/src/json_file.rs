@@ -42,9 +42,10 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
-    DocEvent, DocProject, DocStore, Message, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementStore, TodoEvent, TodoItem, TodoStore,
+    AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
+    ConversationMetadata, ConversationRecord, ConversationStore, DocDraft, DocEvent, DocProject,
+    DocStore, Message, Project, ProjectStore, Requirement, RequirementEvent, RequirementStore,
+    TodoEvent, TodoItem, TodoStore,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -568,6 +569,110 @@ impl RequirementStore for JsonFileRequirementStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- AgentProfileStore --------------------------------------------
+
+/// One JSON file per agent profile, in a flat
+/// `<base>/agent_profiles/` directory:
+/// `<base>/agent_profiles/<encode_id(id)>.json`. Profiles are
+/// server-global so there's no per-project partitioning.
+pub struct JsonFileAgentProfileStore {
+    base: PathBuf,
+    tx: broadcast::Sender<AgentProfileEvent>,
+}
+
+impl JsonFileAgentProfileStore {
+    /// Open or create a store at `<base>/agent_profiles/`. The
+    /// subdirectory is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.base.join("agent_profiles")
+    }
+
+    fn path_for(&self, id: &str) -> PathBuf {
+        self.dir().join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl AgentProfileStore for JsonFileAgentProfileStore {
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
+        let dir = self.dir();
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<AgentProfile> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(item) = serde_json::from_slice::<AgentProfile>(&bytes) {
+                rows.push(item);
+            }
+        }
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                count = rows.len(),
+                "agent profile list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => match serde_json::from_slice::<AgentProfile>(&bytes) {
+                Ok(item) => Ok(Some(item)),
+                Err(e) => Err(Box::new(e)),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    async fn upsert(&self, item: &AgentProfile) -> Result<(), BoxError> {
+        ensure_dir(&self.dir()).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&item.id);
+        let bytes = serde_json::to_vec_pretty(item)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(AgentProfileEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
         self.tx.subscribe()
     }
 }

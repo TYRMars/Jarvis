@@ -10,9 +10,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
-    DocEvent, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementStore, TodoEvent, TodoItem, TodoStore,
+    AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
+    ConversationMetadata, ConversationRecord, ConversationStore, DocDraft, DocEvent, DocProject,
+    DocStore, Project, ProjectStore, Requirement, RequirementEvent, RequirementStore, TodoEvent,
+    TodoItem, TodoStore,
 };
 use tokio::sync::{broadcast, RwLock};
 
@@ -325,6 +326,76 @@ impl RequirementStore for MemoryRequirementStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+/// In-process [`AgentProfileStore`]. Items keyed by id; broadcast
+/// fanout shared by every clone via `Arc`.
+#[derive(Clone)]
+pub struct MemoryAgentProfileStore {
+    inner: Arc<RwLock<HashMap<String, AgentProfile>>>,
+    tx: broadcast::Sender<AgentProfileEvent>,
+}
+
+impl Default for MemoryAgentProfileStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryAgentProfileStore {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            tx,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentProfileStore for MemoryAgentProfileStore {
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<AgentProfile> = guard.values().cloned().collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                count = rows.len(),
+                "agent profile list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn upsert(&self, item: &AgentProfile) -> Result<(), BoxError> {
+        {
+            let mut guard = self.inner.write().await;
+            guard.insert(item.id.clone(), item.clone());
+        }
+        let _ = self.tx.send(AgentProfileEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let removed = {
+            let mut guard = self.inner.write().await;
+            guard.remove(id).is_some()
+        };
+        if removed {
+            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+        }
+        Ok(removed)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
         self.tx.subscribe()
     }
 }

@@ -13,6 +13,7 @@ use harness_core::{
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
     DocDraft, DocEvent, DocKind, DocProject, DocStore, ProjectStore, Requirement, RequirementEvent,
     RequirementStatus, RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
+    AgentProfile, AgentProfileEvent, AgentProfileStore,
 };
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
@@ -162,6 +163,7 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
             description      TEXT,
             status           VARCHAR(32)  NOT NULL,
             conversation_ids TEXT         NOT NULL,
+            assignee_id      VARCHAR(255),
             created_at       VARCHAR(64)  NOT NULL,
             updated_at       VARCHAR(64)  NOT NULL
         )
@@ -180,6 +182,50 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
         > 0;
     if !has_req_index {
         sqlx::query("CREATE INDEX idx_requirements_project ON requirements(project_id)")
+            .execute(pool)
+            .await?;
+    }
+    // Idempotent migration: add `assignee_id` to pre-existing tables.
+    // MySQL 8.0.29+ supports `ADD COLUMN IF NOT EXISTS`, but earlier
+    // versions don't — check INFORMATION_SCHEMA.COLUMNS first to stay
+    // portable.
+    let has_req_assignee: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'requirements'
+             AND COLUMN_NAME = 'assignee_id'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_req_assignee {
+        sqlx::query("ALTER TABLE requirements ADD COLUMN assignee_id VARCHAR(255)")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_profiles (
+            id         VARCHAR(255) NOT NULL PRIMARY KEY,
+            payload    TEXT         NOT NULL,
+            updated_at VARCHAR(64)  NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    let has_ap_index: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'agent_profiles'
+             AND INDEX_NAME = 'idx_agent_profiles_updated'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_ap_index {
+        sqlx::query("CREATE INDEX idx_agent_profiles_updated ON agent_profiles(updated_at)")
             .execute(pool)
             .await?;
     }
@@ -680,6 +726,7 @@ struct RequirementRow {
     description: Option<String>,
     status: String,
     conversation_ids: String,
+    assignee_id: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -698,6 +745,7 @@ impl RequirementRow {
             description: self.description,
             status,
             conversation_ids,
+            assignee_id: self.assignee_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -709,7 +757,7 @@ impl RequirementStore for MysqlRequirementStore {
     async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
         let rows: Vec<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       created_at, updated_at
+                       assignee_id, created_at, updated_at
                  FROM requirements
                  WHERE project_id = ?
                  ORDER BY updated_at DESC
@@ -730,7 +778,7 @@ impl RequirementStore for MysqlRequirementStore {
     async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
         let row: Option<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       created_at, updated_at
+                       assignee_id, created_at, updated_at
                  FROM requirements WHERE id = ?"#,
         )
         .bind(id)
@@ -745,14 +793,15 @@ impl RequirementStore for MysqlRequirementStore {
         sqlx::query(
             r#"INSERT INTO requirements
                 (id, project_id, title, description, status, conversation_ids,
-                 created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 assignee_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     project_id       = VALUES(project_id),
                     title            = VALUES(title),
                     description      = VALUES(description),
                     status           = VALUES(status),
                     conversation_ids = VALUES(conversation_ids),
+                    assignee_id      = VALUES(assignee_id),
                     updated_at       = VALUES(updated_at)"#,
         )
         .bind(&item.id)
@@ -761,6 +810,7 @@ impl RequirementStore for MysqlRequirementStore {
         .bind(&item.description)
         .bind(item.status.as_wire())
         .bind(&conv_ids)
+        .bind(&item.assignee_id)
         .bind(&item.created_at)
         .bind(&item.updated_at)
         .execute(&self.pool)
@@ -797,6 +847,92 @@ impl RequirementStore for MysqlRequirementStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- AgentProfileStore -------------------------------------------
+
+pub struct MysqlAgentProfileStore {
+    pool: MySqlPool,
+    tx: broadcast::Sender<AgentProfileEvent>,
+}
+
+impl MysqlAgentProfileStore {
+    pub fn from_pool(pool: MySqlPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl AgentProfileStore for MysqlAgentProfileStore {
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload FROM agent_profiles ORDER BY updated_at DESC LIMIT 500"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!("agent profile list hit 500-item soft cap");
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<AgentProfile>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError> {
+        let row: Option<(String,)> =
+            sqlx::query_as(r#"SELECT payload FROM agent_profiles WHERE id = ?"#)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        match row {
+            Some((payload,)) => Ok(Some(
+                serde_json::from_str::<AgentProfile>(&payload).map_err(StoreError::from)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn upsert(&self, item: &AgentProfile) -> Result<(), BoxError> {
+        let payload = serde_json::to_string(item).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO agent_profiles (id, payload, updated_at) VALUES (?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+                   payload    = VALUES(payload),
+                   updated_at = VALUES(updated_at)"#,
+        )
+        .bind(&item.id)
+        .bind(&payload)
+        .bind(&item.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(AgentProfileEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let res = sqlx::query("DELETE FROM agent_profiles WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
         self.tx.subscribe()
     }
 }

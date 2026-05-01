@@ -18,9 +18,9 @@ use axum::{
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use harness_core::{
-    canonicalize_workspace, AgentEvent, ApprovalDecision, Approver, ChannelApprover, Conversation,
-    ConversationMetadata, DocEvent, HitlResponse, HitlStatus, Message, PendingHitl,
-    RequirementEvent, RunOutcome, TodoEvent,
+    canonicalize_workspace, AgentEvent, AgentProfileEvent, ApprovalDecision, Approver,
+    ChannelApprover, Conversation, ConversationMetadata, DocEvent, HitlResponse, HitlStatus,
+    Message, PendingHitl, RequirementEvent, RunOutcome, TodoEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -57,6 +57,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::workspaces_routes::router())
         .merge(crate::todos_routes::router())
         .merge(crate::requirements_routes::router())
+        .merge(crate::agent_profiles_routes::router())
+        .merge(crate::provider_admin_routes::router())
         .merge(crate::docs_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
@@ -68,9 +70,16 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
+    let (default_name, providers) = {
+        let guard = state
+            .providers
+            .read()
+            .expect("provider registry poisoned");
+        (guard.default_name().to_string(), guard.list())
+    };
     Json(json!({
-        "default": state.providers.default_name(),
-        "providers": state.providers.list(),
+        "default": default_name,
+        "providers": providers,
     }))
 }
 
@@ -195,6 +204,11 @@ async fn get_server_info(State(state): State<AppState>) -> Response {
     let preview_len = prompt_len.min(280);
     let preview: String = prompt_text.chars().take(preview_len).collect();
 
+    let providers_snapshot = {
+        let guard = state.providers.read().expect("provider registry poisoned");
+        guard.list()
+    };
+
     Json(json!({
         "version": info.version,
         "listen_addr": info.listen_addr,
@@ -213,7 +227,7 @@ async fn get_server_info(State(state): State<AppState>) -> Response {
         "tools": tools,
         "tool_count": tool_count,
         "mcp_servers": info.mcp_prefixes,
-        "providers": state.providers.list(),
+        "providers": providers_snapshot,
         "workspace_root": state.workspace_root.as_ref().map(|p| p.display().to_string()),
     }))
     .into_response()
@@ -749,6 +763,15 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // requirements; the `/docs` page listens globally and routes
     // events by project_id itself.
     let mut docs_changed_rx = state.docs.as_ref().map(|s| s.subscribe());
+    // Subscribe to AgentProfile-store mutations. Server-global; every
+    // connected client sees every change (the Settings page and any
+    // future assignee picker rerender accordingly).
+    let mut agent_profiles_changed_rx = state.agent_profiles.as_ref().map(|s| s.subscribe());
+    // Subscribe to provider-registry mutations (the
+    // `POST/PATCH/DELETE /v1/providers` admin routes). One bare tick
+    // per change; clients refetch `/v1/providers` on receipt to
+    // repopulate the model picker, default badge, etc.
+    let mut providers_changed_rx = state.providers_changed.subscribe();
     let (hitl_tx, mut pending_hitl_rx) = mpsc::channel::<PendingHitl>(8);
 
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -953,6 +976,36 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         json!({ "type": "doc_draft_upserted", "draft": item })
                     }
                 };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- agent profile store mutated (REST) ----
+            // Server-global fanout: every connected client sees every
+            // mutation. The Settings page and any future assignee
+            // picker re-render off this stream.
+            Ok(ev) = async {
+                match agent_profiles_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<AgentProfileEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    AgentProfileEvent::Upserted(item) => {
+                        json!({ "type": "agent_profile_upserted", "profile": item })
+                    }
+                    AgentProfileEvent::Deleted { id } => {
+                        json!({ "type": "agent_profile_deleted", "id": id })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- provider registry mutated (REST admin) ----
+            // Bare tick: clients refetch /v1/providers on receipt.
+            // No payload — keeps the wire small and avoids leaking
+            // api-key state in the broadcast.
+            Ok(()) = async {
+                providers_changed_rx.recv().await.map(|_| ()).map_err(|_| ())
+            } => {
+                let frame = json!({ "type": "providers_changed" });
                 let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
             }
             // ---- native HITL tool → server ----
@@ -1249,7 +1302,11 @@ async fn handle_client_frame(
             // Validate the picked combination by routing once; if
             // it's invalid we surface a clear error instead of
             // failing on the next `User` frame.
-            if let Err(e) = state.providers.pick(provider.as_deref(), model.as_deref()) {
+            let routing_check = {
+                let guard = state.providers.read().expect("provider registry poisoned");
+                guard.pick(provider.as_deref(), model.as_deref()).map(|_| ())
+            };
+            if let Err(e) = routing_check {
                 send_error(ws_tx, &e.to_string()).await;
                 return true;
             }

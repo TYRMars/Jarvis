@@ -278,16 +278,38 @@ impl From<CacheHint> for CacheControl {
 enum AnContentBlock {
     Text {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         id: String,
         name: String,
         input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
+}
+
+impl AnContentBlock {
+    /// Set `cache_control` on this block in place. Used by the
+    /// converter to attach a mid-conversation cache breakpoint to the
+    /// last block of an assistant message, or to a specific
+    /// `tool_result` block.
+    fn set_cache_control(&mut self, cc: CacheControl) {
+        match self {
+            Self::Text { cache_control, .. }
+            | Self::ToolUse { cache_control, .. }
+            | Self::ToolResult { cache_control, .. } => {
+                *cache_control = Some(cc);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -362,21 +384,36 @@ fn convert_messages(messages: Vec<Message>) -> (Option<AnSystem>, Vec<AnMessage>
             Message::System { content, cache } => {
                 systems.push((content, cache));
             }
-            Message::User { content } => {
+            Message::User { content, cache } => {
+                // Without a cache hint we keep the historical plain-text
+                // wire shape; with one we promote to a single Text
+                // block so `cache_control` has somewhere to land.
+                let an_content = if let Some(hint) = cache {
+                    AnContent::Blocks(vec![AnContentBlock::Text {
+                        text: content,
+                        cache_control: Some(hint.into()),
+                    }])
+                } else {
+                    AnContent::Text(content)
+                };
                 out.push(AnMessage {
                     role: "user",
-                    content: AnContent::Text(content),
+                    content: an_content,
                 });
             }
             Message::Assistant {
                 content,
                 tool_calls,
                 reasoning_content: _,
+                cache,
             } => {
                 let mut blocks: Vec<AnContentBlock> = Vec::new();
                 if let Some(text) = content {
                     if !text.is_empty() {
-                        blocks.push(AnContentBlock::Text { text });
+                        blocks.push(AnContentBlock::Text {
+                            text,
+                            cache_control: None,
+                        });
                     }
                 }
                 for tc in tool_calls {
@@ -384,6 +421,7 @@ fn convert_messages(messages: Vec<Message>) -> (Option<AnSystem>, Vec<AnMessage>
                         id: tc.id,
                         name: tc.name,
                         input: tc.arguments,
+                        cache_control: None,
                     });
                 }
                 if blocks.is_empty() {
@@ -393,7 +431,13 @@ fn convert_messages(messages: Vec<Message>) -> (Option<AnSystem>, Vec<AnMessage>
                     // upstream anyway.
                     blocks.push(AnContentBlock::Text {
                         text: String::new(),
+                        cache_control: None,
                     });
+                }
+                if let Some(hint) = cache {
+                    if let Some(last) = blocks.last_mut() {
+                        last.set_cache_control(hint.into());
+                    }
                 }
                 out.push(AnMessage {
                     role: "assistant",
@@ -403,6 +447,7 @@ fn convert_messages(messages: Vec<Message>) -> (Option<AnSystem>, Vec<AnMessage>
             Message::Tool {
                 tool_call_id,
                 content,
+                cache,
             } => {
                 // Coalesce consecutive tool results into the previous
                 // user message if it already collected tool_result
@@ -412,6 +457,7 @@ fn convert_messages(messages: Vec<Message>) -> (Option<AnSystem>, Vec<AnMessage>
                 let mut new_block = Some(AnContentBlock::ToolResult {
                     tool_use_id: tool_call_id,
                     content,
+                    cache_control: cache.map(Into::into),
                 });
                 if let Some(last) = out.last_mut() {
                     if last.role == "user" {
@@ -522,6 +568,7 @@ impl AnthropicResponse {
                 content,
                 tool_calls,
                 reasoning_content: None,
+                cache: None,
             },
             finish_reason,
         })
@@ -853,6 +900,7 @@ impl StreamAccumulator {
                 content,
                 tool_calls,
                 reasoning_content: None,
+                cache: None,
             },
             finish_reason,
         }
@@ -907,6 +955,7 @@ mod tests {
                     arguments: json!({"text": "hi"}),
                 }],
                 reasoning_content: None,
+            cache: None,
             },
         ];
         let (_, msgs) = convert_messages(messages);
@@ -914,7 +963,7 @@ mod tests {
         match &msgs[1].content {
             AnContent::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 2);
-                assert!(matches!(&blocks[0], AnContentBlock::Text { text } if text == "sure"));
+                assert!(matches!(&blocks[0], AnContentBlock::Text { text, .. } if text == "sure"));
                 assert!(matches!(
                     &blocks[1],
                     AnContentBlock::ToolUse { id, name, .. } if id == "tu_1" && name == "echo"
@@ -943,6 +992,7 @@ mod tests {
                     },
                 ],
                 reasoning_content: None,
+            cache: None,
             },
             Message::tool_result("a", "first"),
             Message::tool_result("b", "second"),
@@ -984,6 +1034,7 @@ mod tests {
                 content,
                 tool_calls,
                 reasoning_content: _,
+            cache: None,
             } => {
                 assert_eq!(content.as_deref(), Some("before after"));
                 assert_eq!(tool_calls.len(), 1);
@@ -1046,6 +1097,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
+                    cache: None,
                     } => {
                         assert_eq!(content.as_deref(), Some("Hello"));
                         assert!(tool_calls.is_empty());
@@ -1259,5 +1311,79 @@ mod tests {
         // breakpoint (everything up to and including this block is cached).
         assert!(tools[0].get("cache_control").is_none());
         assert_eq!(tools[1]["cache_control"], json!({ "type": "ephemeral" }));
+    }
+
+    #[test]
+    fn user_without_hint_remains_plain_text() {
+        let messages = vec![Message::user("hi")];
+        let (_, msgs) = convert_messages(messages);
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        // String form, not an array — historical wire shape preserved.
+        assert_eq!(v["content"], json!("hi"));
+    }
+
+    #[test]
+    fn user_with_hint_emits_block_array_with_cache_control() {
+        let messages = vec![Message::user("long context").with_cache(CacheHint::Ephemeral)];
+        let (_, msgs) = convert_messages(messages);
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        let arr = v["content"].as_array().expect("blocks");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "long context");
+        assert_eq!(arr[0]["cache_control"], json!({ "type": "ephemeral" }));
+    }
+
+    #[test]
+    fn assistant_with_hint_attaches_cache_control_to_last_block() {
+        // Text-only assistant: cache_control on the single text block.
+        let text_only = vec![Message::assistant_text("hello").with_cache(CacheHint::Persistent)];
+        let (_, msgs) = convert_messages(text_only);
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        let arr = v["content"].as_array().expect("blocks");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["cache_control"],
+            json!({ "type": "ephemeral", "ttl": "1h" })
+        );
+
+        // Text + tool_use: cache_control lands on the tool_use (last block).
+        let with_tool = vec![Message::Assistant {
+            content: Some("sure".into()),
+            tool_calls: vec![ToolCall {
+                id: "tu_1".into(),
+                name: "echo".into(),
+                arguments: json!({"text": "hi"}),
+            }],
+            reasoning_content: None,
+            cache: Some(CacheHint::Ephemeral),
+        }];
+        let (_, msgs) = convert_messages(with_tool);
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        let arr = v["content"].as_array().expect("blocks");
+        assert_eq!(arr.len(), 2);
+        assert!(arr[0].get("cache_control").is_none());
+        assert_eq!(arr[1]["type"], "tool_use");
+        assert_eq!(arr[1]["cache_control"], json!({ "type": "ephemeral" }));
+    }
+
+    #[test]
+    fn tool_result_with_hint_emits_cache_control_only_on_tagged_block() {
+        let messages = vec![
+            // Two consecutive tool results coalesce into one user message;
+            // only the second carries a hint.
+            Message::tool_result("call_a", "first"),
+            Message::tool_result("call_b", "second").with_cache(CacheHint::Ephemeral),
+        ];
+        let (_, msgs) = convert_messages(messages);
+        assert_eq!(msgs.len(), 1, "tool results should coalesce");
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        assert_eq!(v["role"], "user");
+        let arr = v["content"].as_array().expect("blocks");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "tool_result");
+        assert!(arr[0].get("cache_control").is_none());
+        assert_eq!(arr[1]["type"], "tool_result");
+        assert_eq!(arr[1]["cache_control"], json!({ "type": "ephemeral" }));
     }
 }
