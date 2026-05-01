@@ -1,33 +1,26 @@
-// Generic collapsible tool block. Header shows name + status badge;
-// body holds the args (or specialised renderer for `fs.edit` /
-// `fs.write`) and the captured output once the call finishes.
+// Generic collapsible tool block. Header shows name + status badge
+// + duration / summary chips; the body delegates rendering of the
+// args and output sections to `toolRenderers/`.
 //
-// Toggling opens/closes the body via `useState`. Output longer
-// than `TOOL_PREVIEW_CHARS` collapses behind a "Show more"
-// affordance.
-//
-// Tools that stream progress (`shell.exec` line-by-line) push
-// `tool_progress` frames before `tool_end` lands. While the call
-// is `running` and `progress` has bytes, the body opens
-// automatically and renders the live scroll-back; once `output`
-// arrives the formatted summary takes over.
+// Toggling opens/closes the body via `useState`. Tools that stream
+// progress (`shell.exec` line-by-line) push `tool_progress` frames
+// before `tool_end` lands. While the call is `running` and
+// `progress` has bytes, the body opens automatically and renders
+// the live scroll-back; once `output` arrives the formatted summary
+// takes over.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { ToolBlockEntry } from "../../store/appStore";
 import { t } from "../../utils/i18n";
-import { FsEditDiff } from "./FsEditDiff";
-import { FsWriteCard } from "./FsWriteCard";
-import { UnifiedDiffViewer } from "./UnifiedDiffViewer";
-import { WorkspaceContextCard } from "./WorkspaceContextCard";
-import { ProjectChecksCard } from "./ProjectChecksCard";
 import { DecisionSourceChip } from "../Approvals/DecisionSourceChip";
 import {
   APPROVAL_GATED_TOOLS,
   SUMMARISABLE_TOOLS,
   summarise,
 } from "./toolSummaries";
-
-const TOOL_PREVIEW_CHARS = 1200;
+import { renderArgsSection, renderOutputBody } from "./toolRenderers";
+import { ToolStreamingOutput } from "./toolRenderers/ToolStreamingOutput";
+import { computeDuration } from "./toolRenderers/util";
 
 interface ToolBlockProps {
   entry: ToolBlockEntry;
@@ -119,24 +112,7 @@ export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
       {open && (
         <div className="tool-body">
           <div className="tool-section">
-            {entry.name === "fs.edit" ? (
-              <>
-                <div className="tool-label">{t("editing")}</div>
-                <FsEditDiff args={entry.args || {}} />
-              </>
-            ) : entry.name === "fs.write" ? (
-              <FsWriteCard args={entry.args || {}} />
-            ) : entry.name === "fs.patch" && typeof entry.args?.diff === "string" ? (
-              <>
-                <div className="tool-label">{t("toolArguments")}</div>
-                <UnifiedDiffViewer content={entry.args.diff} />
-              </>
-            ) : (
-              <>
-                <div className="tool-label">{t("toolArguments")}</div>
-                <pre className="tool-pre">{safeStringify(entry.args)}</pre>
-              </>
-            )}
+            {renderArgsSection(entry.name, entry.args)}
           </div>
           {entry.output == null && entry.progress.length > 0 && (
             <div className="tool-section">
@@ -147,92 +123,11 @@ export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
           {entry.output != null && (
             <div className="tool-section">
               <div className="tool-label">{t("output")}</div>
-              {entry.name === "git.diff" && entry.output.trim() && entry.output !== "(no changes)" ? (
-                <UnifiedDiffViewer content={entry.output} />
-              ) : entry.name === "workspace.context" ? (
-                <WorkspaceContextCard content={entry.output} />
-              ) : entry.name === "project.checks" ? (
-                <ProjectChecksCard content={entry.output} />
-              ) : (
-                <ToolOutput content={entry.output} />
-              )}
+              {renderOutputBody(entry.name, entry.output)}
             </div>
           )}
         </div>
       )}
     </div>
   );
-}
-
-/// Auto-scrolling pre for live streaming output. Pinned to the
-/// bottom while new chunks arrive so the user sees the latest
-/// bytes; user can still scroll up — the auto-scroll only kicks
-/// in when they're already near the bottom.
-function ToolStreamingOutput({ content }: { content: string }) {
-  const ref = useRef<HTMLPreElement | null>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [content]);
-  return (
-    <pre ref={ref} className="tool-pre tool-pre-streaming">{content}</pre>
-  );
-}
-
-function ToolOutput({ content }: { content: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const total = content.length;
-  const oversize = total > TOOL_PREVIEW_CHARS;
-  const display = expanded || !oversize ? content : content.slice(0, TOOL_PREVIEW_CHARS) + "\n…";
-  return (
-    <>
-      <pre className="tool-pre">{display}</pre>
-      {oversize && (
-        <div className="tool-show-more-row">
-          <button
-            type="button"
-            className="tool-show-more"
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpanded((v) => !v);
-            }}
-          >
-            {expanded ? t("showLess") : t("showMore")}
-          </button>
-          <span className="tool-bytes">
-            {t("bytesShown", expanded ? total : TOOL_PREVIEW_CHARS, total)}
-          </span>
-        </div>
-      )}
-    </>
-  );
-}
-
-function safeStringify(value: any): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-/// Format the tool's wall-clock duration as a chip-friendly string.
-/// Returns `null` when:
-///   - the tool is still running (would just flicker as time passes)
-///   - the timestamps are synthetic (history-restored entries — both
-///     stored as 0 by `loadHistory`)
-///   - the duration is zero (sub-millisecond; not worth surfacing)
-function computeDuration(entry: ToolBlockEntry): string | null {
-  if (entry.finishedAt == null) return null;
-  if (entry.startedAt === 0 && entry.finishedAt === 0) return null;
-  const ms = Math.max(0, entry.finishedAt - entry.startedAt);
-  if (ms === 0) return null;
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.round((ms % 60_000) / 1000);
-  return s > 0 ? `${m}m${s}s` : `${m}m`;
 }

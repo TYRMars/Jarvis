@@ -1,8 +1,7 @@
 // Assistant turn renderer. Composes:
 //   - optional ThinkingDisclosure (collapsible reasoning)
-//   - copy-whole-message button (delegated handler is installed once
-//     via legacy `installCopyAffordances`; we keep the marker class
-//     so it picks us up)
+//   - copy-whole-message button via `<MessageActions>` (owns its
+//     own onClick + flash state; no DOM delegation)
 //   - markdown body via the existing X-Markdown adapter, in
 //     streaming mode while the turn is still in flight
 //   - associated tool blocks rendered inline so they sit visually
@@ -24,6 +23,7 @@
 import { t } from "../../utils/i18n";
 import { ThinkingDisclosure } from "./ThinkingDisclosure";
 import { MarkdownView } from "./MarkdownView";
+import { MessageActions } from "./MessageActions";
 import { ToolStepRow } from "./ToolStepRow";
 
 interface Props {
@@ -63,17 +63,7 @@ export function AssistantBubble({
         {!continuation ? (
           <div className="msg-author-row">
             <div className="msg-author">{t("assistant")}</div>
-            <button
-              type="button"
-              className="msg-copy-btn"
-              title={t("copy")}
-              aria-label={t("copy")}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="9" y="9" width="13" height="13" rx="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            </button>
+            <MessageActions text={content} />
           </div>
         ) : null}
         {reasoning && <ThinkingDisclosure reasoning={reasoning} />}
