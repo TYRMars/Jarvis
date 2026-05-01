@@ -7,7 +7,7 @@ import {
   restoreProject,
 } from "../../services/projects";
 import { EmptyState } from "../shared/EmptyState";
-import { chipColor } from "../Sidebar/ProjectsList";
+import { chipColor } from "../../utils/chipColor";
 
 // Note: `t` is imported above (already used by `projects-row-count`).
 // Recent additions wire it through every user-visible string in this
@@ -16,9 +16,6 @@ import { chipColor } from "../Sidebar/ProjectsList";
 // Single row in the projects list view (renders for each project the
 // user has access to). Clicking the row body opens the kanban; the
 // archive / restore action sits as a tail button.
-//
-// Distinct from `Sidebar/ProjectsList.tsx` which is the smaller chip
-// list in the left rail — same data, different presentation.
 export function ProjectListRow({
   project,
   onOpen,

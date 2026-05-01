@@ -12,7 +12,7 @@ import {
   type RecentWorkspace,
 } from "../services/workspaces";
 import { isLocalProjectId } from "../services/projects";
-import { chipColor } from "./Sidebar/ProjectsList";
+import { chipColor } from "../utils/chipColor";
 
 type MenuKind = "workspace" | "project" | null;
 

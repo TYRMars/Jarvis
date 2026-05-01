@@ -14,7 +14,7 @@
 
 import { appStore } from "../store/appStore";
 import { t } from "../utils/i18n";
-import { installCopyAffordances } from "./copy";
+import { installCodeBlockCopyAffordances } from "./copy";
 import { installResize } from "./resize";
 import { setStatus } from "./status";
 import { apiUrl } from "./api";
@@ -48,8 +48,11 @@ export function boot(): void {
   // 2. Translate the static `data-i18n` surfaces.
   applyI18n();
 
-  // 3. Copy affordances on `<pre>` blocks etc.
-  installCopyAffordances();
+  // 3. Copy affordances on `<pre>` blocks rendered by X-Markdown
+  //    (which lives outside our React tree, so we can't slot a
+  //    button next to them via JSX). Whole-message copy lives in
+  //    `<MessageActions>`.
+  installCodeBlockCopyAffordances();
 
   // 4. Sidebar / approval-rail width drag handles.
   installResize("resize-sidebar", "--sidebar-width", "jarvis.layout.sidebar", 200, 520);

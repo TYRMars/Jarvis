@@ -14,7 +14,7 @@ import { NewConvoButton } from "./Sidebar/NewConvoButton";
 import { AccountMenu } from "./Settings/AccountMenu";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { t } from "../utils/i18n";
-import { chipColor } from "./Sidebar/ProjectsList";
+import { chipColor } from "../utils/chipColor";
 import {
   setDocScope,
   useDocScope,

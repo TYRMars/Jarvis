@@ -1,45 +1,26 @@
-// Two copy affordances:
+// Per-code-block copy affordance for X-Markdown output.
 //
-//  1. Whole-message copy — `.msg-copy-btn` next to each assistant
-//     author label. Click is handled by event delegation on the
-//     chat scroller; we read `_body._raw` (the original markdown
-//     source) when present so the user gets the prose they expect,
-//     not the rendered HTML.
+// Why this lives in a service instead of a React component:
+// `@ant-design/x-markdown` mounts its own `createRoot()` for each
+// `<MarkdownView>` instance, so the rendered `<pre>` elements do
+// NOT live inside our React tree — we can't slot a button next to
+// them with JSX. Instead we observe `#messages` for additions, wrap
+// every fresh `<pre>` we own in a `.md-code-wrap`, and let click
+// delegation route the `.md-code-copy` button back here.
 //
-//  2. Per-code-block copy — a `MutationObserver` on `#messages`
-//     wraps every freshly-mounted `<pre>` from the markdown
-//     renderer in a `.md-code-wrap` and adds a hover-revealed
-//     `.md-code-copy` button. Skips tool / fs.write / approval-args
-//     `<pre>` elements (they have their own affordances).
-//
-// `installCopyAffordances` is idempotent — call once at boot.
+// Whole-message copy moved to `<MessageActions>` (a real React
+// component). This file no longer touches `.msg-copy-btn`.
 
-import { el } from "../utils/dom";
 import { t } from "../utils/i18n";
 
-/// Body nodes built by markdown / md_render carry the original
-/// markdown source on `_raw` so the copy button hands the user the
-/// raw text instead of the rendered HTML. Declare it once so the
-/// reads below stay typed.
-type MsgBody = HTMLElement & { _raw?: string };
-
-export function installCopyAffordances(): void {
+export function installCodeBlockCopyAffordances(): void {
   const messages = document.getElementById("messages");
   if (!messages) {
-    console.warn("installCopyAffordances: #messages not in DOM yet");
+    console.warn("installCodeBlockCopyAffordances: #messages not in DOM yet");
     return;
   }
   messages.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
-    const msgBtn = target.closest<HTMLElement>(".msg-copy-btn");
-    if (msgBtn) {
-      e.stopPropagation();
-      const row = msgBtn.closest<HTMLElement>(".msg-row");
-      const body = row?.querySelector<MsgBody>(".msg-body");
-      const text = body?._raw || body?.textContent || "";
-      copyToClipboard(text, msgBtn);
-      return;
-    }
     const codeBtn = target.closest<HTMLElement>(".md-code-copy");
     if (codeBtn) {
       e.stopPropagation();
@@ -92,10 +73,12 @@ function augmentCodeBlocks(root: Element): void {
   }
 }
 
-/// Copy `text` to the clipboard with a transient "copied!" badge
-/// flash on the originating button. Falls back to a `textarea`-based
-/// hack on browsers without `navigator.clipboard` (file://, old
-/// Safari) so the affordance never silently no-ops.
+/// Copy `text` to the clipboard. Optionally flashes "copied!" on
+/// `sourceBtn` (used by the code-block delegation above; React
+/// callers like `<MessageActions>` own their own flash state and
+/// pass no button). Falls back to a `textarea`-based hack on
+/// browsers without `navigator.clipboard` (file://, old Safari)
+/// so the affordance never silently no-ops.
 export function copyToClipboard(text: string, sourceBtn?: HTMLElement): void {
   const flash = (label: string) => {
     if (!sourceBtn) return;
@@ -132,38 +115,4 @@ function fallbackCopy(text: string, flash: (s: string) => void) {
   } finally {
     document.body.removeChild(ta);
   }
-}
-
-/// "Copy whole message" SVG button slotted next to an assistant
-/// author label. Click delegation in `installCopyAffordances` reads
-/// the row's body text when fired.
-export function copyButton(): HTMLElement {
-  return el(
-    "button",
-    {
-      type: "button",
-      class: "msg-copy-btn",
-      title: t("copy"),
-      "aria-label": t("copy"),
-    },
-    [
-      el(
-        "svg",
-        {
-          width: "13",
-          height: "13",
-          viewBox: "0 0 24 24",
-          fill: "none",
-          stroke: "currentColor",
-          "stroke-width": "1.8",
-          "stroke-linecap": "round",
-          "stroke-linejoin": "round",
-        },
-        [
-          el("rect", { x: "9", y: "9", width: "13", height: "13", rx: "2" }),
-          el("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }),
-        ],
-      ),
-    ],
-  );
 }
