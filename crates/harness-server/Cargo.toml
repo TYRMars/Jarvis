@@ -10,6 +10,7 @@ description = "Axum HTTP facade exposing the agent harness behind an OpenAI-comp
 harness-core.workspace = true
 harness-mcp.workspace = true
 harness-plugin.workspace = true
+harness-requirement.workspace = true
 harness-skill.workspace = true
 harness-store.workspace = true
 axum.workspace = true

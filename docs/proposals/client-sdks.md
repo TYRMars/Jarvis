@@ -15,6 +15,23 @@ time and drift. Two thin SDKs (TS + Python) are the minimum: they
 cover ~95% of integrators and exercise the whole API surface as
 end-to-end tests.
 
+## Product alignment
+
+SDKs should expose Jarvis by product surface, while keeping the wire
+types faithful:
+
+- `client.chat.*` for conversations, streaming, approvals, and tool
+  events.
+- `client.work.*` for TODO, Work projects/units/runs, verification,
+  and artifacts once those APIs land.
+- `client.doc.*` for sources, drafts, citations, and exports once Doc
+  APIs land.
+- `client.capabilities.*` for discovering enabled tools, skills,
+  capability packs, and policies.
+
+Do not ship a coding-only SDK namespace. Coding is a capability pack
+that can appear inside Chat / Work / Doc.
+
 Goals:
 
 - **Faithful to the wire.** SDK types match server JSON 1:1; no

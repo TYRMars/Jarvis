@@ -600,6 +600,93 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsPermsBucketAsk: "Ask",
     settingsPermsBucketAllow: "Allow",
     settingsPermsUnavailable: "Permission store not configured. Restart with --workspace pointing at a writable directory.",
+
+    // ---- Projects / Kanban (Phase: Multica-style board) ----
+    // Column labels — kept distinct from `done` / `review` (which
+    // refer to the chat finish-reason and PR review respectively).
+    colBacklog: "Backlog",
+    colInProgress: "In progress",
+    colReview: "Review",
+    colDone: "Done",
+
+    // Projects index page
+    projectsTitle: "Projects",
+    projectsArchiveShow: "Show archived projects",
+    projectsArchiveHide: "Hide archived projects",
+    projectsSearch: "Search projects",
+    projectsBackBtn: "Projects",
+    projectsNewBtn: "New project",
+
+    // Project list rows + states
+    projectListRestore: "Restore",
+    projectListArchive: "Archive",
+    projectListArchiveConfirm: (name: string) =>
+      `Archive "${name}"? Bound conversations keep working.`,
+    projectListEmptyNoMatch: "No matching projects",
+    projectListEmptyTitle: "Looking to start a project?",
+    projectListEmptyHint:
+      "Point Jarvis at a folder on your machine and work on it together.",
+    projectListUnavailable: "Projects unavailable",
+    projectListUnavailableHint:
+      "Set JARVIS_DB_URL to enable the project store.",
+
+    // Project create panel
+    projectCreateName: "Project name",
+    projectCreateDesc: "Description",
+    projectCreateCancel: "Cancel",
+    projectCreateBusy: "Creating...",
+    projectCreateSubmit: "Create",
+
+    // Kanban board chrome
+    boardKicker: "Project",
+    boardNewReq: "New requirement",
+    boardEmptyCol: "No requirements",
+
+    // Requirement create panel
+    reqCreateTitle: "Requirement",
+    reqCreateDesc: "Description",
+    reqCreateCancel: "Cancel",
+    reqCreateSubmit: "Create",
+
+    // Requirement card + detail panel
+    reqOpen: "Open",
+    reqLink: "Link",
+    reqStatusAria: (label: string) => `Status: ${label}`,
+    reqSessions: (n: number) => `${n} session${n === 1 ? "" : "s"}`,
+    detailClose: "Close",
+    detailCloseTitle: "Close (Esc)",
+    detailEmptyDesc: "No description.",
+    detailOpenLatest: "Open latest session",
+    detailLinkCurrent: "Link current session",
+
+    // Sidebar Projects rail
+    sidebarAllConvos: "All conversations",
+    sidebarRestoreAria: "Restore project",
+    sidebarArchiveAria: "Archive project",
+    sidebarArchiveConfirm:
+      "Archive this project? Bound conversations keep working.",
+    sidebarInstructionsPlaceholder:
+      "Instructions injected into every turn...",
+
+    // AppSidebar chrome
+    sidebarAriaConversations: "Conversations",
+    sidebarToggle: "Toggle sidebar",
+    sidebarSearch: "Search",
+    sidebarModeAria: "Mode",
+    sidebarModeChat: "Chat",
+    sidebarModeWork: "Work",
+    sidebarModeDoc: "Doc",
+    sidebarNoProjects: "No projects yet.",
+    sidebarNewPage: "New page",
+    sidebarLlmWiki: "LLM Wiki",
+    sidebarPages: "Pages",
+    sidebarNoWikiPages: "No wiki pages yet.",
+
+    // Kanban toolbar (Multica-style view tabs + count)
+    boardViewBoard: "Board",
+    boardViewFilter: "Filter",
+    boardViewDisplay: "Display",
+    boardCount: (n: number) => `${n} requirement${n === 1 ? "" : "s"}`,
   },
   zh: {
     approvalsEmpty: "敏感工具会在这里暂停，等待你的批准。",
@@ -1164,6 +1251,81 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsPermsBucketAsk: "询问",
     settingsPermsBucketAllow: "允许",
     settingsPermsUnavailable: "未启用权限存储。请用 --workspace 指向可写目录后重启。",
+
+    // ---- Projects / Kanban ----
+    colBacklog: "待办",
+    colInProgress: "进行中",
+    colReview: "评审中",
+    colDone: "已完成",
+
+    projectsTitle: "项目",
+    projectsArchiveShow: "显示已归档项目",
+    projectsArchiveHide: "隐藏已归档项目",
+    projectsSearch: "搜索项目",
+    projectsBackBtn: "返回项目列表",
+    projectsNewBtn: "新建项目",
+
+    projectListRestore: "恢复",
+    projectListArchive: "归档",
+    projectListArchiveConfirm: (name: string) =>
+      `归档 "${name}"？已绑定的会话仍可继续使用。`,
+    projectListEmptyNoMatch: "没有匹配的项目",
+    projectListEmptyTitle: "准备开始一个项目？",
+    projectListEmptyHint: "选一个本机文件夹，让 Jarvis 在那里和你一起工作。",
+    projectListUnavailable: "项目功能不可用",
+    projectListUnavailableHint: "设置 JARVIS_DB_URL 以启用项目存储。",
+
+    projectCreateName: "项目名",
+    projectCreateDesc: "描述",
+    projectCreateCancel: "取消",
+    projectCreateBusy: "创建中…",
+    projectCreateSubmit: "创建",
+
+    boardKicker: "项目",
+    boardNewReq: "新建需求",
+    boardEmptyCol: "暂无需求",
+
+    reqCreateTitle: "需求",
+    reqCreateDesc: "描述",
+    reqCreateCancel: "取消",
+    reqCreateSubmit: "创建",
+
+    reqOpen: "打开",
+    reqLink: "关联",
+    reqStatusAria: (label: string) => `状态：${label}`,
+    reqSessions: (n: number) => `${n} 个会话`,
+    detailClose: "关闭",
+    detailCloseTitle: "关闭 (Esc)",
+    detailEmptyDesc: "暂无描述。",
+    detailOpenLatest: "打开最近会话",
+    detailLinkCurrent: "关联当前会话",
+
+    // 侧栏 Projects 列
+    sidebarAllConvos: "全部会话",
+    sidebarRestoreAria: "恢复项目",
+    sidebarArchiveAria: "归档项目",
+    sidebarArchiveConfirm: "归档此项目？已绑定的会话仍可继续使用。",
+    sidebarInstructionsPlaceholder: "每轮注入的项目指令…",
+
+    // AppSidebar 框架
+    sidebarAriaConversations: "会话列表",
+    sidebarToggle: "切换侧栏",
+    sidebarSearch: "搜索",
+    sidebarModeAria: "模式",
+    sidebarModeChat: "对话",
+    sidebarModeWork: "工作",
+    sidebarModeDoc: "文档",
+    sidebarNoProjects: "暂无项目",
+    sidebarNewPage: "新建页面",
+    sidebarLlmWiki: "LLM 知识库",
+    sidebarPages: "页面",
+    sidebarNoWikiPages: "暂无知识库页面",
+
+    // 看板工具条
+    boardViewBoard: "看板",
+    boardViewFilter: "筛选",
+    boardViewDisplay: "显示",
+    boardCount: (n: number) => `${n} 条需求`,
   },
 };
 

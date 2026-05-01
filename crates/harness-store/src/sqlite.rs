@@ -18,8 +18,9 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
-    ProjectStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
+    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
+    DocEvent, DocKind, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
+    RequirementStatus, RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -138,6 +139,62 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
             .execute(pool)
             .await?;
     }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS requirements (
+            id               TEXT PRIMARY KEY,
+            project_id       TEXT NOT NULL,
+            title            TEXT NOT NULL,
+            description      TEXT,
+            status           TEXT NOT NULL,
+            conversation_ids TEXT NOT NULL,
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_requirements_project ON requirements(project_id)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS doc_projects (
+            id         TEXT PRIMARY KEY,
+            workspace  TEXT NOT NULL,
+            title      TEXT NOT NULL,
+            kind       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_doc_projects_workspace ON doc_projects(workspace)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS doc_drafts (
+            id         TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            format     TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_doc_drafts_project ON doc_drafts(project_id)")
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
@@ -562,6 +619,360 @@ impl TodoStore for SqliteTodoStore {
     }
 }
 
+// ---------- RequirementStore ---------------------------------------------
+
+pub struct SqliteRequirementStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<RequirementEvent>,
+}
+
+impl SqliteRequirementStore {
+    /// Wrap a pool that's already had [`migrate`] run against it. In
+    /// practice the binary gets the pool from
+    /// [`SqliteConversationStore::pool`] so the four stores share one
+    /// connection (essential for `:memory:`, where each connection is
+    /// a separate database).
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct RequirementRow {
+    id: String,
+    project_id: String,
+    title: String,
+    description: Option<String>,
+    status: String,
+    conversation_ids: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl RequirementRow {
+    fn into_requirement(self) -> Result<Requirement, BoxError> {
+        let status = RequirementStatus::from_wire(&self.status).ok_or_else(|| -> BoxError {
+            format!("unknown requirement status `{}`", self.status).into()
+        })?;
+        let conversation_ids: Vec<String> =
+            serde_json::from_str(&self.conversation_ids).map_err(StoreError::from)?;
+        Ok(Requirement {
+            id: self.id,
+            project_id: self.project_id,
+            title: self.title,
+            description: self.description,
+            status,
+            conversation_ids,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[async_trait]
+impl RequirementStore for SqliteRequirementStore {
+    async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
+        let rows: Vec<RequirementRow> = sqlx::query_as(
+            r#"SELECT id, project_id, title, description, status, conversation_ids,
+                       created_at, updated_at
+                 FROM requirements
+                 WHERE project_id = ?1
+                 ORDER BY updated_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(project_id, "requirement list hit 500-item soft cap");
+        }
+        rows.into_iter().map(RequirementRow::into_requirement).collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
+        let row: Option<RequirementRow> = sqlx::query_as(
+            r#"SELECT id, project_id, title, description, status, conversation_ids,
+                       created_at, updated_at
+                 FROM requirements WHERE id = ?1"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        row.map(RequirementRow::into_requirement).transpose()
+    }
+
+    async fn upsert(&self, item: &Requirement) -> Result<(), BoxError> {
+        let conv_ids = serde_json::to_string(&item.conversation_ids).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO requirements
+                (id, project_id, title, description, status, conversation_ids,
+                 created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    project_id       = excluded.project_id,
+                    title            = excluded.title,
+                    description      = excluded.description,
+                    status           = excluded.status,
+                    conversation_ids = excluded.conversation_ids,
+                    updated_at       = excluded.updated_at"#,
+        )
+        .bind(&item.id)
+        .bind(&item.project_id)
+        .bind(&item.title)
+        .bind(&item.description)
+        .bind(item.status.as_wire())
+        .bind(&conv_ids)
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(RequirementEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let project_id: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM requirements WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        let Some(project_id) = project_id else {
+            return Ok(false);
+        };
+        let res = sqlx::query("DELETE FROM requirements WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(RequirementEvent::Deleted {
+                project_id,
+                id: id.to_string(),
+            });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- DocStore -----------------------------------------------------
+
+pub struct SqliteDocStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<DocEvent>,
+}
+
+impl SqliteDocStore {
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DocProjectRow {
+    id: String,
+    workspace: String,
+    title: String,
+    kind: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl DocProjectRow {
+    fn into_project(self) -> Result<DocProject, BoxError> {
+        let kind = DocKind::from_wire(&self.kind)
+            .ok_or_else(|| -> BoxError { format!("unknown doc kind `{}`", self.kind).into() })?;
+        Ok(DocProject {
+            id: self.id,
+            workspace: self.workspace,
+            title: self.title,
+            kind,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DocDraftRow {
+    id: String,
+    project_id: String,
+    format: String,
+    content: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl DocDraftRow {
+    fn into_draft(self) -> DocDraft {
+        DocDraft {
+            id: self.id,
+            project_id: self.project_id,
+            format: self.format,
+            content: self.content,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+#[async_trait]
+impl DocStore for SqliteDocStore {
+    async fn list_projects(&self, workspace: &str) -> Result<Vec<DocProject>, BoxError> {
+        let rows: Vec<DocProjectRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, kind, created_at, updated_at
+                 FROM doc_projects
+                 WHERE workspace = ?1
+                 ORDER BY updated_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(workspace)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(workspace, "doc project list hit 500-item soft cap");
+        }
+        rows.into_iter().map(DocProjectRow::into_project).collect()
+    }
+
+    async fn get_project(&self, id: &str) -> Result<Option<DocProject>, BoxError> {
+        let row: Option<DocProjectRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, kind, created_at, updated_at
+                 FROM doc_projects WHERE id = ?1"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        row.map(DocProjectRow::into_project).transpose()
+    }
+
+    async fn upsert_project(&self, project: &DocProject) -> Result<(), BoxError> {
+        sqlx::query(
+            r#"INSERT INTO doc_projects
+                (id, workspace, title, kind, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(id) DO UPDATE SET
+                    workspace  = excluded.workspace,
+                    title      = excluded.title,
+                    kind       = excluded.kind,
+                    updated_at = excluded.updated_at"#,
+        )
+        .bind(&project.id)
+        .bind(&project.workspace)
+        .bind(&project.title)
+        .bind(project.kind.as_wire())
+        .bind(&project.created_at)
+        .bind(&project.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(DocEvent::ProjectUpserted(project.clone()));
+        Ok(())
+    }
+
+    async fn delete_project(&self, id: &str) -> Result<bool, BoxError> {
+        // Fetch workspace + existence in one shot, then cascade.
+        let workspace: Option<String> =
+            sqlx::query_scalar("SELECT workspace FROM doc_projects WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        let Some(workspace) = workspace else {
+            return Ok(false);
+        };
+        sqlx::query("DELETE FROM doc_drafts WHERE project_id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        let res = sqlx::query("DELETE FROM doc_projects WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(DocEvent::ProjectDeleted {
+                workspace,
+                id: id.to_string(),
+            });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn list_drafts(&self, project_id: &str) -> Result<Vec<DocDraft>, BoxError> {
+        let rows: Vec<DocDraftRow> = sqlx::query_as(
+            r#"SELECT id, project_id, format, content, created_at, updated_at
+                 FROM doc_drafts
+                 WHERE project_id = ?1
+                 ORDER BY updated_at DESC"#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        Ok(rows.into_iter().map(DocDraftRow::into_draft).collect())
+    }
+
+    async fn latest_draft(&self, project_id: &str) -> Result<Option<DocDraft>, BoxError> {
+        let row: Option<DocDraftRow> = sqlx::query_as(
+            r#"SELECT id, project_id, format, content, created_at, updated_at
+                 FROM doc_drafts
+                 WHERE project_id = ?1
+                 ORDER BY updated_at DESC
+                 LIMIT 1"#,
+        )
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        Ok(row.map(DocDraftRow::into_draft))
+    }
+
+    async fn upsert_draft(&self, draft: &DocDraft) -> Result<(), BoxError> {
+        sqlx::query(
+            r#"INSERT INTO doc_drafts
+                (id, project_id, format, content, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    format     = excluded.format,
+                    content    = excluded.content,
+                    updated_at = excluded.updated_at"#,
+        )
+        .bind(&draft.id)
+        .bind(&draft.project_id)
+        .bind(&draft.format)
+        .bind(&draft.content)
+        .bind(&draft.created_at)
+        .bind(&draft.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(DocEvent::DraftUpserted(draft.clone()));
+        Ok(())
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<DocEvent> {
+        self.tx.subscribe()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,5 +1220,120 @@ mod tests {
         // Second delete is a no-op + no event.
         assert!(!store.delete(&t.id).await.unwrap());
         assert!(rx.try_recv().is_err());
+    }
+
+    // ---- RequirementStore -----------------------------------------------
+
+    async fn make_requirement_store() -> (SqliteConversationStore, SqliteRequirementStore) {
+        let conv = make().await;
+        let reqs = SqliteRequirementStore::from_pool(conv.pool());
+        (conv, reqs)
+    }
+
+    #[tokio::test]
+    async fn requirement_round_trip() {
+        let (_, store) = make_requirement_store().await;
+        let mut r = Requirement::new("p-a", "ship the kanban");
+        r.description = Some("Build the board".into());
+        r.status = RequirementStatus::Review;
+        r.conversation_ids = vec!["c1".into(), "c2".into()];
+        store.upsert(&r).await.unwrap();
+
+        let loaded = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(loaded, r);
+
+        let listed = store.list("p-a").await.unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn requirement_list_filters_by_project_newest_first() {
+        let (_, store) = make_requirement_store().await;
+        let a = Requirement::new("p1", "first");
+        store.upsert(&a).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let b = Requirement::new("p1", "second");
+        store.upsert(&b).await.unwrap();
+        let c = Requirement::new("p2", "other project");
+        store.upsert(&c).await.unwrap();
+
+        let p1 = store.list("p1").await.unwrap();
+        assert_eq!(p1.len(), 2);
+        assert_eq!(p1[0].id, b.id, "newest first");
+        let p2 = store.list("p2").await.unwrap();
+        assert_eq!(p2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn requirement_delete_idempotent_and_emits_once() {
+        let (_, store) = make_requirement_store().await;
+        let mut rx = store.subscribe();
+        let r = Requirement::new("p", "x");
+        store.upsert(&r).await.unwrap();
+        let _ = rx.recv().await.unwrap();
+
+        assert!(store.delete(&r.id).await.unwrap());
+        match rx.recv().await.unwrap() {
+            RequirementEvent::Deleted { project_id, id } => {
+                assert_eq!(project_id, "p");
+                assert_eq!(id, r.id);
+            }
+            other => panic!("expected Deleted, got {other:?}"),
+        }
+
+        assert!(!store.delete(&r.id).await.unwrap());
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ---- DocStore -------------------------------------------------------
+
+    async fn make_doc_store() -> (SqliteConversationStore, SqliteDocStore) {
+        let conv = make().await;
+        let docs = SqliteDocStore::from_pool(conv.pool());
+        (conv, docs)
+    }
+
+    #[tokio::test]
+    async fn doc_project_round_trip() {
+        let (_, store) = make_doc_store().await;
+        let mut p = DocProject::new("/r", "design");
+        p.kind = DocKind::Design;
+        store.upsert_project(&p).await.unwrap();
+
+        let loaded = store.get_project(&p.id).await.unwrap().unwrap();
+        assert_eq!(loaded, p);
+
+        let listed = store.list_projects("/r").await.unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn doc_delete_cascades_to_drafts_in_sql() {
+        let (_, store) = make_doc_store().await;
+        let p = DocProject::new("/r", "x");
+        store.upsert_project(&p).await.unwrap();
+        let d = DocDraft::new(&p.id, "# hi");
+        store.upsert_draft(&d).await.unwrap();
+        assert_eq!(store.list_drafts(&p.id).await.unwrap().len(), 1);
+
+        assert!(store.delete_project(&p.id).await.unwrap());
+        assert!(store.list_drafts(&p.id).await.unwrap().is_empty());
+        assert!(store.get_project(&p.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn doc_latest_draft_uses_sql_order_by() {
+        let (_, store) = make_doc_store().await;
+        let p = DocProject::new("/r", "x");
+        store.upsert_project(&p).await.unwrap();
+        store
+            .upsert_draft(&DocDraft::new(&p.id, "first"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let d2 = DocDraft::new(&p.id, "second");
+        store.upsert_draft(&d2).await.unwrap();
+        let latest = store.latest_draft(&p.id).await.unwrap().unwrap();
+        assert_eq!(latest.id, d2.id);
     }
 }

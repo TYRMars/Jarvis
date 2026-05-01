@@ -9,6 +9,15 @@ import { legacyDispatchFrame } from "../hooks/useWebSocket";
 import { applyRouting } from "./socket";
 import { setInFlight, showError, showTransientStatus } from "./status";
 import { refreshConvoList } from "./conversations";
+import {
+  applyRequirementDeleted,
+  applyRequirementUpserted,
+} from "./requirements";
+import {
+  applyDocDraftUpserted,
+  applyDocProjectDeleted,
+  applyDocProjectUpserted,
+} from "./docs";
 
 export function handleFrame(ev: any): void {
   // Fan out to React subscribers (useWebSocket consumers) before
@@ -140,6 +149,25 @@ export function handleFrame(ev: any): void {
       break;
     case "todo_deleted":
       if (typeof ev.id === "string") store.removeTodo(ev.id);
+      break;
+    // ---- Per-project Requirement kanban frames ----
+    case "requirement_upserted":
+      if (ev.requirement) applyRequirementUpserted(ev.requirement);
+      break;
+    case "requirement_deleted":
+      if (typeof ev.id === "string" && typeof ev.project_id === "string") {
+        applyRequirementDeleted(ev.id, ev.project_id);
+      }
+      break;
+    // ---- Doc workspace frames ----
+    case "doc_project_upserted":
+      if (ev.project) applyDocProjectUpserted(ev.project);
+      break;
+    case "doc_project_deleted":
+      if (typeof ev.id === "string") applyDocProjectDeleted(ev.id);
+      break;
+    case "doc_draft_upserted":
+      if (ev.draft) applyDocDraftUpserted(ev.draft);
       break;
     default:
       console.warn("unknown frame", ev);

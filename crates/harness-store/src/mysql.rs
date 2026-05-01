@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
-    ProjectStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
+    DocDraft, DocEvent, DocKind, DocProject, DocStore, ProjectStore, Requirement, RequirementEvent,
+    RequirementStatus, RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
@@ -148,6 +149,95 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
         > 0;
     if !has_priority {
         sqlx::query("ALTER TABLE todos ADD COLUMN priority VARCHAR(32) NULL")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS requirements (
+            id               VARCHAR(255) NOT NULL PRIMARY KEY,
+            project_id       VARCHAR(255) NOT NULL,
+            title            TEXT         NOT NULL,
+            description      TEXT,
+            status           VARCHAR(32)  NOT NULL,
+            conversation_ids TEXT         NOT NULL,
+            created_at       VARCHAR(64)  NOT NULL,
+            updated_at       VARCHAR(64)  NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    let has_req_index: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'requirements'
+             AND INDEX_NAME = 'idx_requirements_project'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_req_index {
+        sqlx::query("CREATE INDEX idx_requirements_project ON requirements(project_id)")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS doc_projects (
+            id         VARCHAR(255) NOT NULL PRIMARY KEY,
+            workspace  VARCHAR(255) NOT NULL,
+            title      TEXT         NOT NULL,
+            kind       VARCHAR(32)  NOT NULL,
+            created_at VARCHAR(64)  NOT NULL,
+            updated_at VARCHAR(64)  NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    let has_doc_proj_index: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'doc_projects'
+             AND INDEX_NAME = 'idx_doc_projects_workspace'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_doc_proj_index {
+        sqlx::query("CREATE INDEX idx_doc_projects_workspace ON doc_projects(workspace)")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS doc_drafts (
+            id         VARCHAR(255) NOT NULL PRIMARY KEY,
+            project_id VARCHAR(255) NOT NULL,
+            format     VARCHAR(32)  NOT NULL,
+            content    LONGTEXT     NOT NULL,
+            created_at VARCHAR(64)  NOT NULL,
+            updated_at VARCHAR(64)  NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    let has_doc_draft_index: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'doc_drafts'
+             AND INDEX_NAME = 'idx_doc_drafts_project'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_doc_draft_index {
+        sqlx::query("CREATE INDEX idx_doc_drafts_project ON doc_drafts(project_id)")
             .execute(pool)
             .await?;
     }
@@ -564,6 +654,356 @@ impl TodoStore for MysqlTodoStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<TodoEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- RequirementStore --------------------------------------------
+
+pub struct MysqlRequirementStore {
+    pool: MySqlPool,
+    tx: broadcast::Sender<RequirementEvent>,
+}
+
+impl MysqlRequirementStore {
+    pub fn from_pool(pool: MySqlPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct RequirementRow {
+    id: String,
+    project_id: String,
+    title: String,
+    description: Option<String>,
+    status: String,
+    conversation_ids: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl RequirementRow {
+    fn into_requirement(self) -> Result<Requirement, BoxError> {
+        let status = RequirementStatus::from_wire(&self.status).ok_or_else(|| -> BoxError {
+            format!("unknown requirement status `{}`", self.status).into()
+        })?;
+        let conversation_ids: Vec<String> =
+            serde_json::from_str(&self.conversation_ids).map_err(StoreError::from)?;
+        Ok(Requirement {
+            id: self.id,
+            project_id: self.project_id,
+            title: self.title,
+            description: self.description,
+            status,
+            conversation_ids,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[async_trait]
+impl RequirementStore for MysqlRequirementStore {
+    async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
+        let rows: Vec<RequirementRow> = sqlx::query_as(
+            r#"SELECT id, project_id, title, description, status, conversation_ids,
+                       created_at, updated_at
+                 FROM requirements
+                 WHERE project_id = ?
+                 ORDER BY updated_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(project_id, "requirement list hit 500-item soft cap");
+        }
+        rows.into_iter()
+            .map(RequirementRow::into_requirement)
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
+        let row: Option<RequirementRow> = sqlx::query_as(
+            r#"SELECT id, project_id, title, description, status, conversation_ids,
+                       created_at, updated_at
+                 FROM requirements WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        row.map(RequirementRow::into_requirement).transpose()
+    }
+
+    async fn upsert(&self, item: &Requirement) -> Result<(), BoxError> {
+        let conv_ids = serde_json::to_string(&item.conversation_ids).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO requirements
+                (id, project_id, title, description, status, conversation_ids,
+                 created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    project_id       = VALUES(project_id),
+                    title            = VALUES(title),
+                    description      = VALUES(description),
+                    status           = VALUES(status),
+                    conversation_ids = VALUES(conversation_ids),
+                    updated_at       = VALUES(updated_at)"#,
+        )
+        .bind(&item.id)
+        .bind(&item.project_id)
+        .bind(&item.title)
+        .bind(&item.description)
+        .bind(item.status.as_wire())
+        .bind(&conv_ids)
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(RequirementEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let project_id: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM requirements WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        let Some(project_id) = project_id else {
+            return Ok(false);
+        };
+        let res = sqlx::query("DELETE FROM requirements WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(RequirementEvent::Deleted {
+                project_id,
+                id: id.to_string(),
+            });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- DocStore -----------------------------------------------------
+
+pub struct MysqlDocStore {
+    pool: MySqlPool,
+    tx: broadcast::Sender<DocEvent>,
+}
+
+impl MysqlDocStore {
+    pub fn from_pool(pool: MySqlPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DocProjectRow {
+    id: String,
+    workspace: String,
+    title: String,
+    kind: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl DocProjectRow {
+    fn into_project(self) -> Result<DocProject, BoxError> {
+        let kind = DocKind::from_wire(&self.kind)
+            .ok_or_else(|| -> BoxError { format!("unknown doc kind `{}`", self.kind).into() })?;
+        Ok(DocProject {
+            id: self.id,
+            workspace: self.workspace,
+            title: self.title,
+            kind,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DocDraftRow {
+    id: String,
+    project_id: String,
+    format: String,
+    content: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl DocDraftRow {
+    fn into_draft(self) -> DocDraft {
+        DocDraft {
+            id: self.id,
+            project_id: self.project_id,
+            format: self.format,
+            content: self.content,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+#[async_trait]
+impl DocStore for MysqlDocStore {
+    async fn list_projects(&self, workspace: &str) -> Result<Vec<DocProject>, BoxError> {
+        let rows: Vec<DocProjectRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, kind, created_at, updated_at
+                 FROM doc_projects
+                 WHERE workspace = ?
+                 ORDER BY updated_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(workspace)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(workspace, "doc project list hit 500-item soft cap");
+        }
+        rows.into_iter().map(DocProjectRow::into_project).collect()
+    }
+
+    async fn get_project(&self, id: &str) -> Result<Option<DocProject>, BoxError> {
+        let row: Option<DocProjectRow> = sqlx::query_as(
+            r#"SELECT id, workspace, title, kind, created_at, updated_at
+                 FROM doc_projects WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        row.map(DocProjectRow::into_project).transpose()
+    }
+
+    async fn upsert_project(&self, project: &DocProject) -> Result<(), BoxError> {
+        sqlx::query(
+            r#"INSERT INTO doc_projects
+                (id, workspace, title, kind, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    workspace  = VALUES(workspace),
+                    title      = VALUES(title),
+                    kind       = VALUES(kind),
+                    updated_at = VALUES(updated_at)"#,
+        )
+        .bind(&project.id)
+        .bind(&project.workspace)
+        .bind(&project.title)
+        .bind(project.kind.as_wire())
+        .bind(&project.created_at)
+        .bind(&project.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(DocEvent::ProjectUpserted(project.clone()));
+        Ok(())
+    }
+
+    async fn delete_project(&self, id: &str) -> Result<bool, BoxError> {
+        let workspace: Option<String> =
+            sqlx::query_scalar("SELECT workspace FROM doc_projects WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        let Some(workspace) = workspace else {
+            return Ok(false);
+        };
+        sqlx::query("DELETE FROM doc_drafts WHERE project_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        let res = sqlx::query("DELETE FROM doc_projects WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(DocEvent::ProjectDeleted {
+                workspace,
+                id: id.to_string(),
+            });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn list_drafts(&self, project_id: &str) -> Result<Vec<DocDraft>, BoxError> {
+        let rows: Vec<DocDraftRow> = sqlx::query_as(
+            r#"SELECT id, project_id, format, content, created_at, updated_at
+                 FROM doc_drafts
+                 WHERE project_id = ?
+                 ORDER BY updated_at DESC"#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        Ok(rows.into_iter().map(DocDraftRow::into_draft).collect())
+    }
+
+    async fn latest_draft(&self, project_id: &str) -> Result<Option<DocDraft>, BoxError> {
+        let row: Option<DocDraftRow> = sqlx::query_as(
+            r#"SELECT id, project_id, format, content, created_at, updated_at
+                 FROM doc_drafts
+                 WHERE project_id = ?
+                 ORDER BY updated_at DESC
+                 LIMIT 1"#,
+        )
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        Ok(row.map(DocDraftRow::into_draft))
+    }
+
+    async fn upsert_draft(&self, draft: &DocDraft) -> Result<(), BoxError> {
+        sqlx::query(
+            r#"INSERT INTO doc_drafts
+                (id, project_id, format, content, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    project_id = VALUES(project_id),
+                    format     = VALUES(format),
+                    content    = VALUES(content),
+                    updated_at = VALUES(updated_at)"#,
+        )
+        .bind(&draft.id)
+        .bind(&draft.project_id)
+        .bind(&draft.format)
+        .bind(&draft.content)
+        .bind(&draft.created_at)
+        .bind(&draft.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(DocEvent::DraftUpserted(draft.clone()));
+        Ok(())
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<DocEvent> {
         self.tx.subscribe()
     }
 }

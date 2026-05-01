@@ -29,14 +29,14 @@ export function AppSidebar() {
   const openQuickSwitcher = () => setQuickOpen(true);
 
   return (
-    <aside id="sidebar" aria-label="Conversations">
+    <aside id="sidebar" aria-label={t("sidebarAriaConversations")}>
       <div className="sidebar-topbar">
         <button
           id="toggle-sidebar"
           type="button"
           className="ghost-icon"
-          title="Toggle sidebar"
-          aria-label="Toggle sidebar"
+          title={t("sidebarToggle")}
+          aria-label={t("sidebarToggle")}
           aria-expanded={sidebarOpen}
           aria-controls="sidebar"
           onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -50,8 +50,8 @@ export function AppSidebar() {
           id="open-quick-search"
           type="button"
           className="ghost-icon"
-          title="Search"
-          aria-label="Search"
+          title={t("sidebarSearch")}
+          aria-label={t("sidebarSearch")}
           onClick={openQuickSwitcher}
         >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -61,21 +61,21 @@ export function AppSidebar() {
         </button>
       </div>
 
-      <div className="mode-row" role="tablist" aria-label="Mode">
+      <div className="mode-row" role="tablist" aria-label={t("sidebarModeAria")}>
         <NavLink to="/" end className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h7" />
             <path d="M17 8h.01" />
             <path d="M21 8h.01" />
           </svg>
-          <span>Chat</span>
+          <span>{t("sidebarModeChat")}</span>
         </NavLink>
         <NavLink to="/projects" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m16 18 6-6-6-6" />
             <path d="m8 6-6 6 6 6" />
           </svg>
-          <span>Work</span>
+          <span>{t("sidebarModeWork")}</span>
         </NavLink>
         <NavLink to="/docs" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -84,7 +84,7 @@ export function AppSidebar() {
             <path d="M9 12h6" />
             <path d="M9 16h6" />
           </svg>
-          <span>Doc</span>
+          <span>{t("sidebarModeDoc")}</span>
         </NavLink>
       </div>
 
@@ -113,7 +113,7 @@ function ModeSidebarBody({ mode }: { mode: "chat" | "work" | "doc" }) {
 function ChatSidebarBody() {
   return (
     <>
-      <nav className="nav-list" aria-label="Chat">
+      <nav className="nav-list" aria-label={t("sidebarModeChat")}>
         <NewConvoButton />
       </nav>
       <ConvoList />
@@ -141,13 +141,13 @@ function WorkSidebarBody() {
 
   return (
     <>
-      <nav className="nav-list" aria-label="Work">
+      <nav className="nav-list" aria-label={t("sidebarModeWork")}>
         <button type="button" className="nav-item" onClick={openNewProject}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
           </svg>
-          <span>New project</span>
+          <span>{t("projectsNewBtn")}</span>
         </button>
         <NavLink to="/projects" className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -159,9 +159,9 @@ function WorkSidebarBody() {
       </nav>
 
       <div className="sidebar-section mode-sidebar-section">
-        <div className="section-label">Projects</div>
+        <div className="section-label">{t("projectsTitle")}</div>
         {projects.length === 0 ? (
-          <p className="mode-sidebar-empty">No projects yet.</p>
+          <p className="mode-sidebar-empty">{t("sidebarNoProjects")}</p>
         ) : (
           <ul className="mode-sidebar-list">
             {projects.map((p) => (
@@ -190,13 +190,13 @@ function DocSidebarBody() {
 
   return (
     <>
-      <nav className="nav-list" aria-label="Doc">
+      <nav className="nav-list" aria-label={t("sidebarModeDoc")}>
         <button type="button" className="nav-item" onClick={openNewPage}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
           </svg>
-          <span>New page</span>
+          <span>{t("sidebarNewPage")}</span>
         </button>
         <NavLink to="/docs" className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -205,13 +205,13 @@ function DocSidebarBody() {
             <path d="M9 12h6" />
             <path d="M9 16h6" />
           </svg>
-          <span>LLM Wiki</span>
+          <span>{t("sidebarLlmWiki")}</span>
         </NavLink>
       </nav>
 
       <div className="sidebar-section mode-sidebar-section">
-        <div className="section-label">Pages</div>
-        <p className="mode-sidebar-empty">No wiki pages yet.</p>
+        <div className="section-label">{t("sidebarPages")}</div>
+        <p className="mode-sidebar-empty">{t("sidebarNoWikiPages")}</p>
       </div>
     </>
   );

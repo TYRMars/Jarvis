@@ -14,9 +14,11 @@ compaction).
 
 ## Motivation
 
-For coding agents that send a 5-15 KB system prompt + a long tool
-catalogue on every turn, prompt caching cuts both latency and cost
-**dramatically**:
+For capability-heavy agent turns that send a 5-15 KB system prompt +
+a long tool catalogue, prompt caching cuts both latency and cost
+**dramatically**. Coding is the most obvious case today, but the same
+pressure will show up in Work runs, Doc research/drafting, and any
+Chat session with many enabled capability packs:
 
 - **Anthropic:** ~90% off cached input tokens, ~80%+ latency
   reduction on long prompts. Up to 4 cache breakpoints per request,
@@ -44,6 +46,21 @@ caching that we could avoid:
 So this proposal has two halves: **a hint API for explicit cache
 breakpoints (Anthropic)** and **stability hygiene for prefix caching
 (OpenAI / generally)**.
+
+## Product alignment
+
+Prompt caching is cross-product infrastructure:
+
+- **Chat:** keeps provider/model/tool prefixes stable across normal
+  conversations.
+- **Work:** makes fresh sessions per Work unit cheaper when they share
+  the same capability pack and tool catalogue.
+- **Doc:** benefits research and drafting flows that repeatedly use
+  source, citation, and export tools.
+
+Capability packs should avoid per-turn mutation of system prompts.
+Dynamic product context should be injected after the stable cached
+prefix, usually as a user/context message or manifest payload.
 
 ## Anthropic: explicit cache breakpoints
 

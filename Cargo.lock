@@ -952,6 +952,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-requirement"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "harness-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "harness-server"
 version = "0.1.0"
 dependencies = [
@@ -962,6 +978,7 @@ dependencies = [
  "harness-core",
  "harness-mcp",
  "harness-plugin",
+ "harness-requirement",
  "harness-skill",
  "harness-store",
  "include_dir",

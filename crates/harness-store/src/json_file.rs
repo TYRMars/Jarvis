@@ -42,8 +42,9 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Message,
-    Project, ProjectStore, TodoEvent, TodoItem, TodoStore,
+    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
+    DocEvent, DocProject, DocStore, Message, Project, ProjectStore, Requirement, RequirementEvent,
+    RequirementStore, TodoEvent, TodoItem, TodoStore,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -438,6 +439,297 @@ impl TodoStore for JsonFileTodoStore {
     }
 }
 
+// ---------- RequirementStore ----------------------------------------------
+
+/// One JSON file per requirement, partitioned by project under a
+/// `requirements/` subdirectory:
+/// `<base>/requirements/<encode_id(project_id)>/<encode_id(id)>.json`.
+/// Mirrors the [`JsonFileTodoStore`] layout.
+pub struct JsonFileRequirementStore {
+    base: PathBuf,
+    tx: broadcast::Sender<RequirementEvent>,
+}
+
+impl JsonFileRequirementStore {
+    /// Open or create a store at `<base>/requirements/`. The
+    /// `requirements/` subdirectory is created lazily on first
+    /// write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn project_dir(&self, project_id: &str) -> PathBuf {
+        self.base.join("requirements").join(encode_id(project_id))
+    }
+
+    fn path_for(&self, project_id: &str, id: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    /// Walk every project dir to find a requirement by id. Used by
+    /// `get` and `delete`, which take only the id (the row carries
+    /// the project_id inside).
+    async fn find_by_id(&self, id: &str) -> Result<Option<(PathBuf, Requirement)>, BoxError> {
+        let root = self.base.join("requirements");
+        let mut read_dir = match tokio::fs::read_dir(&root).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let target_filename = format!("{}.json", encode_id(id));
+        while let Some(entry) = read_dir.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let candidate = entry.path().join(&target_filename);
+            match tokio::fs::read(&candidate).await {
+                Ok(bytes) => match serde_json::from_slice::<Requirement>(&bytes) {
+                    Ok(item) => return Ok(Some((candidate, item))),
+                    Err(_) => continue,
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Box::new(e)),
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl RequirementStore for JsonFileRequirementStore {
+    async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
+        let dir = self.project_dir(project_id);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<Requirement> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(item) = serde_json::from_slice::<Requirement>(&bytes) {
+                rows.push(item);
+            }
+        }
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                project_id,
+                count = rows.len(),
+                "requirement list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
+        Ok(self.find_by_id(id).await?.map(|(_, item)| item))
+    }
+
+    async fn upsert(&self, item: &Requirement) -> Result<(), BoxError> {
+        let dir = self.project_dir(&item.project_id);
+        ensure_dir(&dir).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&item.project_id, &item.id);
+        let bytes = serde_json::to_vec_pretty(item)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(RequirementEvent::Upserted(item.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let Some((path, item)) = self.find_by_id(id).await? else {
+            return Ok(false);
+        };
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                let _ = self.tx.send(RequirementEvent::Deleted {
+                    project_id: item.project_id,
+                    id: item.id,
+                });
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- DocStore --------------------------------------------------
+
+/// On-disk JSON layout:
+///
+/// ```text
+/// <base>/docs/
+///   projects/<encode_id(id)>.json
+///   drafts/<encode_id(project_id)>/<encode_id(id)>.json
+/// ```
+pub struct JsonFileDocStore {
+    base: PathBuf,
+    tx: broadcast::Sender<DocEvent>,
+}
+
+impl JsonFileDocStore {
+    /// Open or create a store at `<base>/docs/`. The subdirectories
+    /// are created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn projects_dir(&self) -> PathBuf {
+        self.base.join("docs").join("projects")
+    }
+
+    fn drafts_dir(&self, project_id: &str) -> PathBuf {
+        self.base
+            .join("docs")
+            .join("drafts")
+            .join(encode_id(project_id))
+    }
+
+    fn project_path(&self, id: &str) -> PathBuf {
+        self.projects_dir().join(format!("{}.json", encode_id(id)))
+    }
+
+    fn draft_path(&self, project_id: &str, id: &str) -> PathBuf {
+        self.drafts_dir(project_id)
+            .join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl DocStore for JsonFileDocStore {
+    async fn list_projects(&self, workspace: &str) -> Result<Vec<DocProject>, BoxError> {
+        let dir = self.projects_dir();
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<DocProject> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(item) = serde_json::from_slice::<DocProject>(&bytes) {
+                if item.workspace == workspace {
+                    rows.push(item);
+                }
+            }
+        }
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        if rows.len() > 500 {
+            tracing::warn!(workspace, count = rows.len(), "doc project list exceeded 500-item soft cap");
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn get_project(&self, id: &str) -> Result<Option<DocProject>, BoxError> {
+        let path = self.project_path(id);
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let p: DocProject = serde_json::from_slice(&bytes).map_err(StoreError::from)?;
+        Ok(Some(p))
+    }
+
+    async fn upsert_project(&self, project: &DocProject) -> Result<(), BoxError> {
+        ensure_dir(&self.projects_dir()).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.project_path(&project.id);
+        let bytes = serde_json::to_vec_pretty(project).map_err(StoreError::from)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(DocEvent::ProjectUpserted(project.clone()));
+        Ok(())
+    }
+
+    async fn delete_project(&self, id: &str) -> Result<bool, BoxError> {
+        let project = match self.get_project(id).await? {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+        // Remove the project file.
+        let _ = tokio::fs::remove_file(self.project_path(id)).await;
+        // Cascade-remove the drafts subdir.
+        let drafts_dir = self.drafts_dir(id);
+        let _ = tokio::fs::remove_dir_all(&drafts_dir).await;
+        let _ = self.tx.send(DocEvent::ProjectDeleted {
+            workspace: project.workspace,
+            id: project.id,
+        });
+        Ok(true)
+    }
+
+    async fn list_drafts(&self, project_id: &str) -> Result<Vec<DocDraft>, BoxError> {
+        let dir = self.drafts_dir(project_id);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<DocDraft> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(item) = serde_json::from_slice::<DocDraft>(&bytes) {
+                rows.push(item);
+            }
+        }
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn upsert_draft(&self, draft: &DocDraft) -> Result<(), BoxError> {
+        ensure_dir(&self.drafts_dir(&draft.project_id)).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.draft_path(&draft.project_id, &draft.id);
+        let bytes = serde_json::to_vec_pretty(draft).map_err(StoreError::from)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(DocEvent::DraftUpserted(draft.clone()));
+        Ok(())
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<DocEvent> {
+        self.tx.subscribe()
+    }
+}
+
 // ---------- shared helpers -------------------------------------------------
 
 fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
@@ -828,5 +1120,110 @@ mod tests {
         let _ = rx.recv().await.unwrap();
         assert!(!store.delete(&t.id).await.unwrap());
         assert!(rx.try_recv().is_err());
+    }
+
+    // ---- RequirementStore -----------------------------------------------
+
+    use harness_core::RequirementStatus;
+
+    #[tokio::test]
+    async fn requirement_round_trip_persists_to_disk() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileRequirementStore::open(dir.path()).unwrap();
+        let mut r = Requirement::new("p-a", "ship the kanban");
+        r.description = Some("Build it".into());
+        r.status = RequirementStatus::Review;
+        r.conversation_ids = vec!["c1".into()];
+        store.upsert(&r).await.unwrap();
+
+        let listed = store.list("p-a").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], r);
+
+        // Reopen — must round-trip.
+        drop(store);
+        let store = JsonFileRequirementStore::open(dir.path()).unwrap();
+        let loaded = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(loaded, r);
+    }
+
+    #[tokio::test]
+    async fn requirement_list_isolates_projects() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileRequirementStore::open(dir.path()).unwrap();
+        let a = Requirement::new("p-a", "alpha");
+        let b = Requirement::new("p-b", "beta");
+        store.upsert(&a).await.unwrap();
+        store.upsert(&b).await.unwrap();
+        assert_eq!(store.list("p-a").await.unwrap().len(), 1);
+        assert_eq!(store.list("p-b").await.unwrap().len(), 1);
+        assert!(store.list("never").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn requirement_delete_idempotent_and_emits_once() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileRequirementStore::open(dir.path()).unwrap();
+        let mut rx = store.subscribe();
+        let r = Requirement::new("p", "x");
+        store.upsert(&r).await.unwrap();
+        let _ = rx.recv().await.unwrap();
+        assert!(store.delete(&r.id).await.unwrap());
+        let _ = rx.recv().await.unwrap();
+        assert!(!store.delete(&r.id).await.unwrap());
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ---- DocStore -------------------------------------------------------
+
+    #[tokio::test]
+    async fn doc_project_round_trip_persists_to_disk() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileDocStore::open(dir.path()).unwrap();
+        let mut p = DocProject::new("/r-a", "weekly review");
+        p.kind = harness_core::DocKind::Report;
+        store.upsert_project(&p).await.unwrap();
+
+        let listed = store.list_projects("/r-a").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], p);
+
+        // Reopen — must round-trip.
+        drop(store);
+        let store = JsonFileDocStore::open(dir.path()).unwrap();
+        let loaded = store.get_project(&p.id).await.unwrap().unwrap();
+        assert_eq!(loaded, p);
+    }
+
+    #[tokio::test]
+    async fn doc_draft_round_trip_and_cascade_delete() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileDocStore::open(dir.path()).unwrap();
+        let p = DocProject::new("/r", "x");
+        store.upsert_project(&p).await.unwrap();
+        let d = DocDraft::new(&p.id, "# hi\n");
+        store.upsert_draft(&d).await.unwrap();
+        assert_eq!(store.list_drafts(&p.id).await.unwrap().len(), 1);
+
+        // Delete cascades.
+        assert!(store.delete_project(&p.id).await.unwrap());
+        assert!(store.list_drafts(&p.id).await.unwrap().is_empty());
+        assert!(store.get_project(&p.id).await.unwrap().is_none());
+
+        // Idempotent.
+        assert!(!store.delete_project(&p.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn doc_list_isolates_workspaces() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileDocStore::open(dir.path()).unwrap();
+        let a = DocProject::new("/r-a", "alpha");
+        let b = DocProject::new("/r-b", "beta");
+        store.upsert_project(&a).await.unwrap();
+        store.upsert_project(&b).await.unwrap();
+        assert_eq!(store.list_projects("/r-a").await.unwrap().len(), 1);
+        assert_eq!(store.list_projects("/r-b").await.unwrap().len(), 1);
+        assert!(store.list_projects("/never").await.unwrap().is_empty());
     }
 }

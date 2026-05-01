@@ -1,4 +1,4 @@
-# AI coding-agent workflow
+# Coding capability pack and workflow
 
 **Status:** Proposed
 **Touches:** `harness-tools`, `harness-core` event surface,
@@ -6,11 +6,11 @@
 
 ## Motivation
 
-Jarvis already has the hard primitives for a coding assistant:
+Jarvis already has the hard primitives for the **Coding capability**:
 streaming agent loop, providers, file tools, regex search,
 `shell.exec`, approvals, memory, persistence, and a web client.
-The next useful increment is not "more chat". It is a coherent
-coding-agent workflow closer to Codex / Claude Code:
+The next useful increment is to package those primitives into a
+coherent coding workflow closer to Codex / Claude Code:
 
 - understand the current workspace before editing;
 - inspect Git state and diffs without opening arbitrary shell access;
@@ -21,9 +21,26 @@ coding-agent workflow closer to Codex / Claude Code:
 - summarise what changed at the end.
 
 This proposal turns the existing primitives into an opinionated
-AI-coding layer while preserving the core design rule:
+Coding capability pack while preserving the core design rule:
 `harness-core` owns the loop and traits, not Git, HTTP, storage, or UI
 policy.
+
+## Product alignment
+
+Coding is no longer treated as the product identity for Jarvis. It is
+a cross-product capability pack:
+
+- **Chat:** quick code questions, explanations, small patches, and
+  ad-hoc checks.
+- **Work:** structured coding tasks with `WorkContextManifest`,
+  fresh sessions, verification gates, review, and optional worktree
+  isolation.
+- **Doc:** technical designs, changelogs, API docs, postmortems, and
+  codebase explanations generated from Chat/Work artifacts.
+
+This proposal owns the shared Coding tools, prompts, and safety
+defaults. Work orchestration decides when a coding task becomes a
+durable Work unit.
 
 ## Goals
 

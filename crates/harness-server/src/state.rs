@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use harness_core::{
-    Agent, AgentConfig, ConversationStore, LlmProvider, PermissionMode, PermissionStore,
-    ProjectStore, TodoStore, ToolRegistry,
+    Agent, AgentConfig, ConversationStore, DocStore, LlmProvider, PermissionMode, PermissionStore,
+    ProjectStore, RequirementStore, TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
@@ -137,6 +137,17 @@ pub struct AppState {
     /// endpoints return 503 and the agent's `todo.*` tools are
     /// unregistered (set up in the binary's composition root).
     pub todos: Option<Arc<dyn TodoStore>>,
+    /// Optional persistent project Requirement store. When `Some(_)`,
+    /// the `/v1/projects/:project_id/requirements*` REST endpoints
+    /// work and WS sessions broadcast `requirement_upserted` /
+    /// `requirement_deleted` frames. `None` ⇒ those endpoints return
+    /// 503 (set up in the binary's composition root). The
+    /// per-project kanban Web UI (`/projects` route) reads via REST
+    /// and live-updates via the WS bridge.
+    pub requirements: Option<Arc<dyn RequirementStore>>,
+    /// Optional persistent Doc store — backs the `/docs` page.
+    /// Returns 503 from `/v1/doc-projects*` when `None`.
+    pub docs: Option<Arc<dyn DocStore>>,
     /// Inject the current pending/in_progress/blocked TODOs into
     /// the system prompt at the start of every turn? Defaults to
     /// `true` — gives the agent cheap awareness without an extra
@@ -167,6 +178,8 @@ impl AppState {
             plugins: None,
             workspaces: None,
             todos: None,
+            requirements: None,
+            docs: None,
             todos_in_prompt: true,
         }
     }
@@ -196,6 +209,8 @@ impl AppState {
             plugins: None,
             workspaces: None,
             todos: None,
+            requirements: None,
+            docs: None,
             todos_in_prompt: true,
         }
     }
@@ -296,6 +311,22 @@ impl AppState {
     /// `BuiltinsConfig::todo_store`).
     pub fn with_todo_store(mut self, store: Arc<dyn TodoStore>) -> Self {
         self.todos = Some(store);
+        self
+    }
+
+    /// Wire in the persistent Requirement store. Without one, the
+    /// `/v1/projects/:id/requirements*` endpoints return 503 and
+    /// the `/projects` kanban Web UI falls back to localStorage.
+    pub fn with_requirement_store(mut self, store: Arc<dyn RequirementStore>) -> Self {
+        self.requirements = Some(store);
+        self
+    }
+
+    /// Wire in the persistent Doc store. Without one, the
+    /// `/v1/doc-projects*` endpoints return 503 and the `/docs`
+    /// page renders the empty state.
+    pub fn with_doc_store(mut self, store: Arc<dyn DocStore>) -> Self {
+        self.docs = Some(store);
         self
     }
 

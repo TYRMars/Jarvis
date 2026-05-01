@@ -19,7 +19,8 @@ use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use harness_core::{
     canonicalize_workspace, AgentEvent, ApprovalDecision, Approver, ChannelApprover, Conversation,
-    ConversationMetadata, HitlResponse, HitlStatus, Message, PendingHitl, RunOutcome, TodoEvent,
+    ConversationMetadata, DocEvent, HitlResponse, HitlStatus, Message, PendingHitl,
+    RequirementEvent, RunOutcome, TodoEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -55,6 +56,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::plugin_routes::router())
         .merge(crate::workspaces_routes::router())
         .merge(crate::todos_routes::router())
+        .merge(crate::requirements_routes::router())
+        .merge(crate::docs_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .with_state(state)
@@ -737,6 +740,15 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // triggered it). Per-event we filter by the socket's pinned
     // workspace so multi-window UIs don't cross-contaminate.
     let mut todos_changed_rx = state.todos.as_ref().map(|s| s.subscribe());
+    // Subscribe to Requirement-store mutations. Same fanout pattern
+    // as TODOs but scoped by `project_id` (no socket-level filter
+    // today: the `/projects` kanban Web UI listens globally and
+    // routes events to the right project list itself).
+    let mut requirements_changed_rx = state.requirements.as_ref().map(|s| s.subscribe());
+    // Subscribe to Doc-store mutations. Same fanout pattern as
+    // requirements; the `/docs` page listens globally and routes
+    // events by project_id itself.
+    let mut docs_changed_rx = state.docs.as_ref().map(|s| s.subscribe());
     let (hitl_tx, mut pending_hitl_rx) = mpsc::channel::<PendingHitl>(8);
 
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -891,6 +903,57 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     };
                     let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
                 }
+            }
+            // ---- requirement store mutated (REST or tool) ----
+            // The store fans out a single `RequirementEvent` per
+            // change; we forward as `requirement_upserted` /
+            // `requirement_deleted` to every connected client
+            // unconditionally (no per-socket filter — the
+            // `/projects` kanban routes events to the right
+            // project list itself).
+            Ok(ev) = async {
+                match requirements_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<RequirementEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    RequirementEvent::Upserted(item) => {
+                        json!({ "type": "requirement_upserted", "requirement": item })
+                    }
+                    RequirementEvent::Deleted { project_id, id } => {
+                        json!({
+                            "type": "requirement_deleted",
+                            "id": id,
+                            "project_id": project_id
+                        })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- doc store mutated (REST or future tool) ----
+            Ok(ev) = async {
+                match docs_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<DocEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    DocEvent::ProjectUpserted(item) => {
+                        json!({ "type": "doc_project_upserted", "project": item })
+                    }
+                    DocEvent::ProjectDeleted { workspace, id } => {
+                        json!({
+                            "type": "doc_project_deleted",
+                            "id": id,
+                            "workspace": workspace
+                        })
+                    }
+                    DocEvent::DraftUpserted(item) => {
+                        json!({ "type": "doc_draft_upserted", "draft": item })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
             }
             // ---- native HITL tool → server ----
             Some(p) = pending_hitl_rx.recv() => {

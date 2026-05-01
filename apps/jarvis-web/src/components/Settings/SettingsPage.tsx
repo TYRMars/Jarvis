@@ -93,6 +93,7 @@ export function SettingsPage() {
 
   return (
     <div id="settings-page" className="settings-page">
+      <a className="skip-link" href="#settings-main">Skip to main content</a>
       <header className="settings-header">
         <Link to="/" className="settings-back" aria-label={tx("settingsBack", "Back to chat")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -118,7 +119,7 @@ export function SettingsPage() {
           ))}
         </nav>
 
-        <main className="settings-content">
+        <main id="settings-main" className="settings-content" tabIndex={-1}>
           <div className="settings-content-inner">
             <ActiveSection />
           </div>

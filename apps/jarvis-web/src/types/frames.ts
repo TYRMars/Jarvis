@@ -295,4 +295,26 @@ export interface Requirement {
   updated_at: string;
 }
 
+// ----------------- Doc workspace types -----------------------------
+
+export type DocKind = "note" | "research" | "report" | "design" | "guide";
+
+export interface DocProject {
+  id: string;
+  workspace: string;
+  title: string;
+  kind: DocKind;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocDraft {
+  id: string;
+  project_id: string;
+  format: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
