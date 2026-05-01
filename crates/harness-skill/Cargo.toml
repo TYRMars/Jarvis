@@ -8,6 +8,7 @@ description = "Anthropic-style Skills (markdown + YAML frontmatter) for the agen
 
 [dependencies]
 harness-core.workspace = true
+include_dir.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

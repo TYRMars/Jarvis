@@ -22,6 +22,9 @@ const SKILL_FILE: &str = "SKILL.md";
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum SkillSource {
+    /// Bundled with the binary via `include_dir!` — lowest precedence
+    /// so `User` / `Workspace` overrides (and `Plugin` installs) win.
+    Bundled,
     /// User-scope: `~/.config/jarvis/skills/...`.
     User,
     /// Project-scope: `<workspace>/.jarvis/skills/...`.
@@ -66,23 +69,68 @@ impl SkillCatalog {
     where
         I: IntoIterator<Item = (PathBuf, SkillSource)>,
     {
-        let mut by_name: BTreeMap<String, SkillEntry> = BTreeMap::new();
+        let mut cat = Self::new();
         for (root, source) in roots {
-            let entries = scan_root(&root, source);
-            for entry in entries {
-                let key = entry.manifest.name.clone();
-                let shadowed = by_name.insert(key.clone(), entry).is_some();
-                if shadowed {
-                    debug!(
-                        name = %key,
-                        root = %root.display(),
-                        source = ?source,
-                        "skill shadowed by later root",
-                    );
-                }
+            cat.merge_disk(&root, source);
+        }
+        cat
+    }
+
+    /// Scan one filesystem root and merge results into this catalog.
+    /// Later calls overwrite earlier entries with the same `name`,
+    /// so caller order encodes precedence (bundled → user → workspace
+    /// → plugin).
+    pub fn merge_disk(&mut self, root: &Path, source: SkillSource) {
+        for entry in scan_root(root, source) {
+            let key = entry.manifest.name.clone();
+            let shadowed = self.by_name.insert(key.clone(), entry).is_some();
+            if shadowed {
+                debug!(
+                    name = %key,
+                    root = %root.display(),
+                    source = ?source,
+                    "skill shadowed by later root",
+                );
             }
         }
-        Self { by_name }
+    }
+
+    /// Merge skills compiled into the binary via [`include_dir!`].
+    /// Each top-level subdirectory containing a `SKILL.md` becomes
+    /// one entry with [`SkillSource::Bundled`]. Bundled entries
+    /// **never overwrite** existing entries — they're the lowest-
+    /// precedence layer so user/workspace overrides always win.
+    /// Call this *before* the disk roots so subsequent
+    /// [`Self::merge_disk`] calls can shadow it.
+    pub fn merge_bundled(&mut self, dir: &'static include_dir::Dir<'static>) {
+        for sub in dir.dirs() {
+            let Some(file) = sub.get_file(format!(
+                "{}/{SKILL_FILE}",
+                sub.path().display()
+            )) else {
+                continue;
+            };
+            let Some(text) = file.contents_utf8() else {
+                warn!(path = %file.path().display(), "bundled SKILL.md is not utf-8; skipping");
+                continue;
+            };
+            let parsed = match parse_skill(text) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(path = %file.path().display(), error = %e, "bundled SKILL.md failed to parse");
+                    continue;
+                }
+            };
+            let key = parsed.manifest.name.clone();
+            // Bundled is the lowest precedence: don't overwrite anything
+            // already in the catalog.
+            self.by_name.entry(key).or_insert(SkillEntry {
+                manifest: parsed.manifest,
+                body: parsed.body,
+                path: PathBuf::from(format!("<bundled>/{}", file.path().display())),
+                source: SkillSource::Bundled,
+            });
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -228,5 +276,42 @@ mod tests {
             SkillSource::User,
         )]);
         assert!(cat.is_empty());
+    }
+
+    #[test]
+    fn merge_bundled_loads_shipped_defaults() {
+        // The crate ships `work` and `doc` defaults under
+        // `assets/defaults/`. Loading via `bundled_defaults()` must
+        // surface both with `SkillSource::Bundled`.
+        let mut cat = SkillCatalog::new();
+        cat.merge_bundled(crate::bundled_defaults());
+        let work = cat.get("work").expect("bundled `work` skill");
+        let doc = cat.get("doc").expect("bundled `doc` skill");
+        assert_eq!(work.source, SkillSource::Bundled);
+        assert_eq!(doc.source, SkillSource::Bundled);
+        assert!(!work.body.is_empty());
+        assert!(!doc.body.is_empty());
+    }
+
+    #[test]
+    fn merge_bundled_does_not_overwrite_existing() {
+        // If a user/workspace entry with the same name was added
+        // first, `merge_bundled` must NOT replace it — bundled is the
+        // lowest precedence layer.
+        let user = tempfile::tempdir().unwrap();
+        write(
+            user.path(),
+            "work",
+            "name: work\ndescription: user override\n",
+            "USER OVERRIDE",
+        );
+        let mut cat = SkillCatalog::new();
+        cat.merge_disk(user.path(), SkillSource::User);
+        cat.merge_bundled(crate::bundled_defaults());
+        let work = cat.get("work").unwrap();
+        assert_eq!(work.source, SkillSource::User);
+        assert_eq!(work.body, "USER OVERRIDE");
+        // The bundled `doc` still loads (no user override for it).
+        assert_eq!(cat.get("doc").unwrap().source, SkillSource::Bundled);
     }
 }

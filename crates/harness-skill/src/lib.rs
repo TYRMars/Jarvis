@@ -25,3 +25,13 @@ pub mod selector;
 pub use catalog::{SkillCatalog, SkillEntry, SkillSource};
 pub use manifest::{parse_skill, SkillActivation, SkillError, SkillManifest};
 pub use selector::{pick_auto_skills, query_token_set, score_skill};
+
+/// Default skills shipped with the binary (`assets/defaults/<name>/SKILL.md`).
+/// Embedded at compile time via [`include_dir!`]. Pass to
+/// [`SkillCatalog::merge_bundled`] before disk roots so user/workspace
+/// installations can shadow them.
+pub fn bundled_defaults() -> &'static include_dir::Dir<'static> {
+    static DEFAULTS: include_dir::Dir<'_> =
+        include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/defaults");
+    &DEFAULTS
+}
