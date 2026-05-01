@@ -6,6 +6,7 @@ import {
   createProject,
   restoreProject,
 } from "../../services/projects";
+import { EmptyState } from "../shared/EmptyState";
 import { chipColor } from "../Sidebar/ProjectsList";
 
 // Note: `t` is imported above (already used by `projects-row-count`).
@@ -89,47 +90,30 @@ export function ProjectEmptyState({
   onCreate: () => void;
 }) {
   return (
-    <section className="projects-empty" aria-live="polite">
-      <div className="projects-empty-icon" aria-hidden="true">
-        <svg
-          width="72"
-          height="72"
-          viewBox="0 0 72 72"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M18 18h16v16H18z" />
-          <path d="M38 18h16v16H38z" />
-          <path d="M18 38h16v16H38z" />
-          <path d="M42 40h13v13H42z" />
-          <path d="M50 52c2 1 4.4 1.2 6.4.4 2.3-.9 3.8-3.1 3.8-5.6V36.5" />
+    <EmptyState
+      icon={
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
+          <path d="M3 10h18" />
         </svg>
-      </div>
-      <h2>
-        {hasQuery ? t("projectListEmptyNoMatch") : t("projectListEmptyTitle")}
-      </h2>
-      {!hasQuery && <p>{t("projectListEmptyHint")}</p>}
-      <button type="button" className="projects-empty-btn" onClick={onCreate}>
-        <svg
-          width="17"
-          height="17"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M12 5v14" />
-          <path d="M5 12h14" />
-        </svg>
-        <span>{t("projectsNewBtn")}</span>
-      </button>
-    </section>
+      }
+      title={hasQuery ? t("projectListEmptyNoMatch") : t("projectListEmptyTitle")}
+      hint={hasQuery ? undefined : t("projectListEmptyHint")}
+      cta={
+        hasQuery
+          ? undefined
+          : {
+              label: t("projectsNewBtn"),
+              onClick: onCreate,
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
+                </svg>
+              ),
+            }
+      }
+    />
   );
 }
 

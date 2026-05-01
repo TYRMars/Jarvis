@@ -83,7 +83,14 @@ describe("AppSidebar search", () => {
 
     expect(screen.getByRole("link", { name: "Doc" })).toHaveClass("active");
     expect(screen.getByRole("button", { name: "New page" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "LLM Wiki" })).toHaveClass("active");
+    // Scope rail rows replace the old "LLM Wiki" placeholder link.
+    // "All docs" is always present and active by default.
+    expect(screen.getByRole("button", { name: /^All docs/ })).toHaveClass(
+      "is-active",
+    );
+    expect(screen.getByRole("button", { name: /^Pinned/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Research/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Archive/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "新建会话" })).not.toBeInTheDocument();
     expect(screen.queryByText("Alpha planning")).not.toBeInTheDocument();
   });

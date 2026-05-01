@@ -32,6 +32,24 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
         newConversation();
         return;
       }
+      // Cmd/Ctrl+N: route-aware "new item" — mirrors the primary
+      // create action of whichever surface the user is on. Lets a
+      // single muscle memory ("new thing") work across all three
+      // products. Page-level pages listen for the same event the
+      // sidebar's "+ New" button dispatches, so this stays in sync
+      // without each route having to wire its own handler.
+      if (meta && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        const path = window.location.pathname;
+        if (path.startsWith("/projects")) {
+          window.dispatchEvent(new Event("jarvis:new-project"));
+        } else if (path.startsWith("/docs")) {
+          window.dispatchEvent(new Event("jarvis:new-doc"));
+        } else {
+          newConversation();
+        }
+        return;
+      }
       if (meta && (e.key.toLowerCase() === "l" || e.key.toLowerCase() === "p")) {
         // Cmd+P (and the legacy Cmd+L) both open the QuickSwitcher
         // modal — unified surface for "find a chat" by title or by
@@ -83,6 +101,34 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
       if (!inEditable && !meta && !e.altKey && e.key === "?") {
         e.preventDefault();
         showHelp();
+        return;
+      }
+
+      // ---- Bare `/` outside editable surfaces: focus surface search ----
+      // Same muscle memory as GitHub / Linear / GitLab — `/` always
+      // means "search what I'm looking at". Picks the search affordance
+      // that belongs to the current surface:
+      //   /projects → focus the page-level project list-search
+      //   /docs     → focus the page-level doc list-search
+      //   /         → open the QuickSwitcher modal (chat has no inline
+      //                search input; the modal IS the search surface)
+      if (!inEditable && !meta && !e.altKey && e.key === "/") {
+        const path = window.location.pathname;
+        let input: HTMLInputElement | null = null;
+        if (path.startsWith("/projects")) {
+          input = document.querySelector(".projects-search input");
+        } else if (path.startsWith("/docs")) {
+          input = document.querySelector(".docs-list-search input");
+        }
+        if (input) {
+          e.preventDefault();
+          input.focus();
+          input.select();
+        } else {
+          // Chat (or any route with no inline search) → modal search.
+          e.preventDefault();
+          store.setQuickOpen(true);
+        }
         return;
       }
 

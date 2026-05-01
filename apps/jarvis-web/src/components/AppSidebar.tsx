@@ -6,6 +6,7 @@
 // action yet) — kept so the visual frame matches the design while we
 // land the rest of the app, not because they do anything.
 
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useAppStore } from "../store/appStore";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { ConvoList } from "./Sidebar/ConvoList";
@@ -14,6 +15,15 @@ import { AccountMenu } from "./Settings/AccountMenu";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { t } from "../utils/i18n";
 import { chipColor } from "./Sidebar/ProjectsList";
+import {
+  setDocScope,
+  useDocScope,
+  sameScope,
+  type DocScope,
+} from "../services/docScope";
+import { listDocProjects, subscribeDocs } from "../services/docs";
+import type { DocKind } from "../types/frames";
+import { kindLabel, KIND_ORDER, KindIcon } from "./Docs/KindIcon";
 
 export function AppSidebar() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
@@ -181,38 +191,200 @@ function WorkSidebarBody() {
 
 function DocSidebarBody() {
   const navigate = useNavigate();
-  const openNewPage = () => {
+  const location = useLocation();
+  const socketWorkspace = useAppStore((s) => s.socketWorkspace);
+  const scope = useDocScope();
+
+  // Subscribe to the docs cache so counts stay live as docs are
+  // created / deleted / pinned / archived from anywhere.
+  const cacheVersion = useSyncExternalStore(
+    (cb) => subscribeDocs(cb),
+    () => docsVersionTick(),
+    () => 0,
+  );
+  const projects = useMemo(
+    () => listDocProjects(socketWorkspace ?? ""),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [socketWorkspace, cacheVersion],
+  );
+  const counts = useMemo(() => computeCounts(projects), [projects]);
+  const tagsSorted = useMemo(
+    () => Array.from(counts.tags.entries()).sort((a, b) => b[1] - a[1]),
+    [counts.tags],
+  );
+
+  const onScope = (next: DocScope) => {
+    setDocScope(next);
+    if (!location.pathname.startsWith("/docs")) {
+      void navigate("/docs");
+    }
+  };
+
+  const openNew = () => {
     void navigate("/docs");
     window.setTimeout(() => {
-      window.dispatchEvent(new Event("jarvis:new-doc-page"));
+      window.dispatchEvent(new Event("jarvis:new-doc"));
     }, 0);
   };
 
   return (
     <>
       <nav className="nav-list" aria-label={t("sidebarModeDoc")}>
-        <button type="button" className="nav-item" onClick={openNewPage}>
+        <button type="button" className="nav-item" onClick={openNew}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
           </svg>
           <span>{t("sidebarNewPage")}</span>
         </button>
-        <NavLink to="/docs" className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M6 3h9l3 3v15H6z" />
-            <path d="M14 3v4h4" />
-            <path d="M9 12h6" />
-            <path d="M9 16h6" />
-          </svg>
-          <span>{t("sidebarLlmWiki")}</span>
-        </NavLink>
       </nav>
 
-      <div className="sidebar-section mode-sidebar-section">
-        <div className="section-label">{t("sidebarPages")}</div>
-        <p className="mode-sidebar-empty">{t("sidebarNoWikiPages")}</p>
+      <div className="sidebar-section mode-sidebar-section docs-rail-section">
+        <DocScopeRow
+          label={t("docsScopeAll") || "All docs"}
+          count={counts.all}
+          active={sameScope(scope, { type: "all" })}
+          onClick={() => onScope({ type: "all" })}
+        />
+        <DocScopeRow
+          label={t("docsScopePinned") || "Pinned"}
+          icon="★"
+          count={counts.pinned}
+          active={sameScope(scope, { type: "pinned" })}
+          onClick={() => onScope({ type: "pinned" })}
+        />
+      </div>
+
+      <div className="sidebar-section mode-sidebar-section docs-rail-section">
+        <div className="section-label">{t("docsScopeKindHeader") || "Kind"}</div>
+        {KIND_ORDER.map((k) => (
+          <DocScopeRow
+            key={k}
+            label={kindLabel(k)}
+            count={counts.kinds[k] ?? 0}
+            active={sameScope(scope, { type: "kind", kind: k })}
+            onClick={() => onScope({ type: "kind", kind: k })}
+            kind={k}
+          />
+        ))}
+      </div>
+
+      {tagsSorted.length > 0 ? (
+        <div className="sidebar-section mode-sidebar-section docs-rail-section">
+          <div className="section-label">{t("docsScopeTagsHeader") || "Tags"}</div>
+          {tagsSorted.slice(0, 24).map(([tag, n]) => (
+            <DocScopeRow
+              key={tag}
+              label={`#${tag}`}
+              count={n}
+              active={sameScope(scope, { type: "tag", tag })}
+              onClick={() => onScope({ type: "tag", tag })}
+              monospace
+            />
+          ))}
+        </div>
+      ) : null}
+
+      <div className="sidebar-section mode-sidebar-section docs-rail-section">
+        <DocScopeRow
+          label={t("docsScopeArchive") || "Archive"}
+          count={counts.archived}
+          active={sameScope(scope, { type: "archived" })}
+          onClick={() => onScope({ type: "archived" })}
+        />
       </div>
     </>
   );
 }
+
+interface DocScopeRowProps {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+  kind?: DocKind;
+  icon?: string;
+  monospace?: boolean;
+}
+
+function DocScopeRow({
+  label,
+  count,
+  active,
+  onClick,
+  kind,
+  icon,
+  monospace,
+}: DocScopeRowProps) {
+  return (
+    <button
+      type="button"
+      className={"docs-scope-row" + (active ? " is-active" : "")}
+      onClick={onClick}
+    >
+      <span className={"docs-scope-row-label" + (monospace ? " is-mono" : "")}>
+        {kind ? (
+          <span className="docs-scope-row-kind">
+            <KindIcon kind={kind} size={13} />
+          </span>
+        ) : icon ? (
+          <span aria-hidden>{icon}</span>
+        ) : null}
+        <span className="docs-scope-row-text">{label}</span>
+      </span>
+      <span className="docs-scope-row-count">{count}</span>
+    </button>
+  );
+}
+
+// `useSyncExternalStore` needs a stable "snapshot" that bumps on
+// every cache change. We don't surface the actual array — `projects`
+// is read separately — but a monotonic counter is enough to trigger
+// re-renders.
+let _docsTick = 0;
+let _docsTickWired = false;
+function docsVersionTick(): number {
+  if (!_docsTickWired) {
+    _docsTickWired = true;
+    subscribeDocs(() => {
+      _docsTick += 1;
+    });
+  }
+  return _docsTick;
+}
+
+interface DocCounts {
+  all: number;
+  pinned: number;
+  archived: number;
+  kinds: Record<DocKind, number>;
+  tags: Map<string, number>;
+}
+
+function computeCounts(projects: ReturnType<typeof listDocProjects>): DocCounts {
+  const counts: DocCounts = {
+    all: 0,
+    pinned: 0,
+    archived: 0,
+    kinds: { note: 0, research: 0, report: 0, design: 0, guide: 0 },
+    tags: new Map(),
+  };
+  for (const p of projects) {
+    if (p.archived) {
+      counts.archived += 1;
+      continue;
+    }
+    counts.all += 1;
+    if (p.pinned) counts.pinned += 1;
+    counts.kinds[p.kind] = (counts.kinds[p.kind] ?? 0) + 1;
+    for (const tag of p.tags ?? []) {
+      counts.tags.set(tag, (counts.tags.get(tag) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+// Suppress unused warnings for hooks pulled in for the docs body but
+// not always reached; React only invokes them in `doc` mode.
+void useState;
+void useEffect;

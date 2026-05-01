@@ -7,7 +7,7 @@
 
 import { apiUrl } from "./api";
 
-export type SkillSource = "user" | "workspace" | "plugin";
+export type SkillSource = "bundled" | "user" | "workspace" | "plugin";
 export type SkillActivation = "manual" | "auto" | "both";
 
 export interface SkillSummary {
