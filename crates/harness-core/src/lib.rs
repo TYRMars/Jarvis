@@ -5,6 +5,7 @@
 //! the `Agent` run loop that ties them together. Concrete LLM clients,
 //! transports, and storage live in sibling crates.
 
+pub mod activity;
 pub mod agent;
 pub mod agent_profile;
 pub mod approval;
@@ -20,11 +21,13 @@ pub mod plan;
 pub mod progress;
 pub mod project;
 pub mod requirement;
+pub mod requirement_run;
 pub mod store;
 pub mod todo;
 pub mod tool;
 pub mod workspace;
 
+pub use activity::{Activity, ActivityActor, ActivityEvent, ActivityKind};
 pub use agent::{Agent, AgentConfig, AgentEvent, AgentStream, RunOutcome};
 pub use agent_profile::{AgentProfile, AgentProfileEvent};
 pub use approval::{
@@ -55,9 +58,13 @@ pub use permission::{
 };
 pub use project::{derive_slug, validate_slug, Project};
 pub use requirement::{Requirement, RequirementEvent, RequirementStatus};
+pub use requirement_run::{
+    CommandResult, RequirementRun, RequirementRunEvent, RequirementRunStatus, VerificationPlan,
+    VerificationResult, VerificationStatus,
+};
 pub use store::{
-    AgentProfileStore, ConversationMetadata, ConversationRecord, ConversationStore, DocStore,
-    ProjectStore, RequirementStore, TodoStore,
+    ActivityStore, AgentProfileStore, ConversationMetadata, ConversationRecord, ConversationStore,
+    DocStore, ProjectStore, RequirementRunStore, RequirementStore, TodoStore,
 };
 pub use todo::{TodoEvent, TodoItem, TodoPriority, TodoStatus};
 pub use tool::{Tool, ToolCategory, ToolRegistry, ToolSpec};

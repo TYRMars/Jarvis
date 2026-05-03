@@ -158,6 +158,11 @@ const LEGACY_HASH_MAP: Record<string, { id: string; tab?: string }> = {
   skills: { id: "extensions", tab: "skills" },
   plugins: { id: "extensions", tab: "plugins" },
   soul: { id: "persona" },
+  // Mappings for sections introduced on main after the redesign:
+  // `agents` is the renamed AgentProfilesSection — same destination
+  // as `agent-profiles`. `diagnostics` lives under System.
+  agents: { id: "models", tab: "subagents" },
+  diagnostics: { id: "system", tab: "diagnostics" },
 };
 
 interface ParsedHash {

@@ -10,9 +10,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
-    ConversationMetadata, ConversationRecord, ConversationStore, DocDraft, DocEvent, DocProject,
-    DocStore, Project, ProjectStore, Requirement, RequirementEvent, RequirementStore, TodoEvent,
+    Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
+    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
+    DocEvent, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
+    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, TodoEvent,
     TodoItem, TodoStore,
 };
 use tokio::sync::{broadcast, RwLock};
@@ -330,8 +331,112 @@ impl RequirementStore for MemoryRequirementStore {
     }
 }
 
-/// In-process [`AgentProfileStore`]. Items keyed by id; broadcast
+/// In-process [`RequirementRunStore`]. Run rows keyed by id; broadcast
 /// fanout shared by every clone via `Arc`.
+#[derive(Clone)]
+pub struct MemoryRequirementRunStore {
+    inner: Arc<RwLock<HashMap<String, RequirementRun>>>,
+    tx: broadcast::Sender<RequirementRunEvent>,
+}
+
+impl Default for MemoryRequirementRunStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryRequirementRunStore {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            tx,
+        }
+    }
+}
+
+#[async_trait]
+impl RequirementRunStore for MemoryRequirementRunStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<RequirementRun>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<RequirementRun> = guard
+            .values()
+            .filter(|r| r.requirement_id == requirement_id)
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        if rows.len() > 200 {
+            tracing::warn!(
+                requirement_id,
+                count = rows.len(),
+                "requirement run list exceeded 200-item soft cap"
+            );
+            rows.truncate(200);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<RequirementRun>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn list_all(&self, limit: u32) -> Result<Vec<RequirementRun>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<RequirementRun> = guard.values().cloned().collect();
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        rows.truncate(limit as usize);
+        Ok(rows)
+    }
+
+    async fn upsert(&self, run: &RequirementRun) -> Result<(), BoxError> {
+        let event = {
+            let mut guard = self.inner.write().await;
+            let prior = guard.insert(run.id.clone(), run.clone());
+            classify_run_event(prior.as_ref(), run)
+        };
+        if let Some(ev) = event {
+            let _ = self.tx.send(ev);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&self, ev: RequirementRunEvent) {
+        let _ = self.tx.send(ev);
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RequirementRunEvent> {
+        self.tx.subscribe()
+    }
+}
+
+/// Decide which (if any) [`RequirementRunEvent`] to broadcast given
+/// the row already on disk and the incoming row.
+///
+/// - Absent → present with non-terminal status ⇒ `Started`.
+/// - Present (or absent) → terminal status that wasn't already
+///   terminal ⇒ `Finished`.
+/// - Otherwise ⇒ `None` (e.g. summary tweak on an in-flight run).
+pub(crate) fn classify_run_event(
+    prior: Option<&RequirementRun>,
+    next: &RequirementRun,
+) -> Option<RequirementRunEvent> {
+    let was_terminal = prior.map(|r| r.status.is_terminal()).unwrap_or(false);
+    let now_terminal = next.status.is_terminal();
+    if !was_terminal && now_terminal {
+        Some(RequirementRunEvent::Finished(next.clone()))
+    } else if prior.is_none() && !now_terminal {
+        Some(RequirementRunEvent::Started(next.clone()))
+    } else {
+        None
+    }
+}
+
+/// In-process [`AgentProfileStore`]. Profiles keyed by id;
+/// broadcast fanout shared by every clone via `Arc`.
 #[derive(Clone)]
 pub struct MemoryAgentProfileStore {
     inner: Arc<RwLock<HashMap<String, AgentProfile>>>,
@@ -359,13 +464,13 @@ impl AgentProfileStore for MemoryAgentProfileStore {
     async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
         let guard = self.inner.read().await;
         let mut rows: Vec<AgentProfile> = guard.values().cloned().collect();
-        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        if rows.len() > 500 {
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        if rows.len() > 200 {
             tracing::warn!(
                 count = rows.len(),
-                "agent profile list exceeded 500-item soft cap"
+                "agent profile list exceeded 200-item soft cap"
             );
-            rows.truncate(500);
+            rows.truncate(200);
         }
         Ok(rows)
     }
@@ -375,27 +480,95 @@ impl AgentProfileStore for MemoryAgentProfileStore {
         Ok(guard.get(id).cloned())
     }
 
-    async fn upsert(&self, item: &AgentProfile) -> Result<(), BoxError> {
+    async fn upsert(&self, profile: &AgentProfile) -> Result<(), BoxError> {
         {
             let mut guard = self.inner.write().await;
-            guard.insert(item.id.clone(), item.clone());
+            guard.insert(profile.id.clone(), profile.clone());
         }
-        let _ = self.tx.send(AgentProfileEvent::Upserted(item.clone()));
+        let _ = self.tx.send(AgentProfileEvent::Upserted(profile.clone()));
         Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<bool, BoxError> {
         let removed = {
             let mut guard = self.inner.write().await;
-            guard.remove(id).is_some()
+            guard.remove(id)
         };
-        if removed {
-            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+        match removed {
+            Some(_) => {
+                let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+                Ok(true)
+            }
+            None => Ok(false),
         }
-        Ok(removed)
     }
 
     fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
+        self.tx.subscribe()
+    }
+}
+
+/// In-process [`ActivityStore`]. Append-only timeline keyed by
+/// `requirement_id` with a single broadcast fanout shared across
+/// every clone via `Arc`.
+#[derive(Clone)]
+pub struct MemoryActivityStore {
+    inner: Arc<RwLock<HashMap<String, Vec<Activity>>>>,
+    tx: broadcast::Sender<ActivityEvent>,
+}
+
+impl Default for MemoryActivityStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryActivityStore {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            tx,
+        }
+    }
+}
+
+#[async_trait]
+impl ActivityStore for MemoryActivityStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<Activity>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows = guard
+            .get(requirement_id)
+            .cloned()
+            .unwrap_or_default();
+        rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                requirement_id,
+                count = rows.len(),
+                "activity list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn append(&self, activity: &Activity) -> Result<(), BoxError> {
+        {
+            let mut guard = self.inner.write().await;
+            let list = guard
+                .entry(activity.requirement_id.clone())
+                .or_default();
+            list.push(activity.clone());
+        }
+        let _ = self.tx.send(ActivityEvent::Appended(activity.clone()));
+        Ok(())
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<ActivityEvent> {
         self.tx.subscribe()
     }
 }
@@ -765,6 +938,182 @@ mod tests {
         let mut rx = store.subscribe();
         assert!(!store.delete("never-existed").await.unwrap());
         assert!(rx.try_recv().is_err());
+    }
+
+    // ---- RequirementRunStore --------------------------------------------
+
+    use harness_core::RequirementRunStatus;
+
+    #[tokio::test]
+    async fn requirement_run_round_trip_filters_and_sorts() {
+        let store = MemoryRequirementRunStore::new();
+        let r1 = RequirementRun::new("req-a", "conv-a-1");
+        // Sleep so started_at differs at second resolution if the
+        // platform clock is coarse — but mostly we rely on rfc3339
+        // string ordering with sub-second precision.
+        let mut r2 = RequirementRun::new("req-a", "conv-a-2");
+        r2.started_at = "2027-01-01T00:00:00+00:00".into();
+        let r3 = RequirementRun::new("req-b", "conv-b-1");
+
+        store.upsert(&r1).await.unwrap();
+        store.upsert(&r2).await.unwrap();
+        store.upsert(&r3).await.unwrap();
+
+        let only_a = store.list_for_requirement("req-a").await.unwrap();
+        assert_eq!(only_a.len(), 2);
+        // Newest first.
+        assert_eq!(only_a[0].id, r2.id);
+        assert_eq!(only_a[1].id, r1.id);
+
+        let only_b = store.list_for_requirement("req-b").await.unwrap();
+        assert_eq!(only_b.len(), 1);
+        assert_eq!(only_b[0].id, r3.id);
+    }
+
+    #[tokio::test]
+    async fn requirement_run_subscribe_emits_started_then_finished() {
+        let store = MemoryRequirementRunStore::new();
+        let mut rx = store.subscribe();
+        let mut r = RequirementRun::new("req", "conv");
+        store.upsert(&r).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RequirementRunEvent::Started(run) => assert_eq!(run.id, r.id),
+            other => panic!("expected Started, got {other:?}"),
+        }
+
+        // Flip terminal — should fire Finished.
+        r.finish(RequirementRunStatus::Completed);
+        store.upsert(&r).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RequirementRunEvent::Finished(run) => {
+                assert_eq!(run.id, r.id);
+                assert_eq!(run.status, RequirementRunStatus::Completed);
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+
+        // A no-op summary tweak on the now-terminal row should NOT
+        // emit anything.
+        r.summary = Some("cleaned up".into());
+        store.upsert(&r).await.unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn requirement_run_inserted_terminal_emits_finished_only() {
+        // If the first ever upsert is already terminal (e.g. the
+        // server records a Cancelled run that never made it past
+        // Pending), we should hear Finished, not Started.
+        let store = MemoryRequirementRunStore::new();
+        let mut rx = store.subscribe();
+        let mut r = RequirementRun::new("req", "conv");
+        r.finish(RequirementRunStatus::Cancelled);
+        store.upsert(&r).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RequirementRunEvent::Finished(run) => assert_eq!(run.id, r.id),
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    // ---- AgentProfileStore ----------------------------------------------
+
+    #[tokio::test]
+    async fn agent_profile_round_trip_sorted_by_name() {
+        let store = MemoryAgentProfileStore::new();
+        let alice = AgentProfile::new("Alice", "openai", "gpt-4o-mini");
+        let bob = AgentProfile::new("Bob", "anthropic", "claude-3-5-sonnet-latest");
+        store.upsert(&bob).await.unwrap();
+        store.upsert(&alice).await.unwrap();
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].name, "Alice", "sorted by name asc");
+        assert_eq!(listed[1].name, "Bob");
+    }
+
+    #[tokio::test]
+    async fn agent_profile_subscribe_fires_on_upsert_and_delete() {
+        let store = MemoryAgentProfileStore::new();
+        let mut rx = store.subscribe();
+        let p = AgentProfile::new("Alice", "openai", "gpt-4o-mini");
+        store.upsert(&p).await.unwrap();
+        match rx.recv().await.unwrap() {
+            AgentProfileEvent::Upserted(got) => assert_eq!(got.id, p.id),
+            other => panic!("expected Upserted, got {other:?}"),
+        }
+        store.delete(&p.id).await.unwrap();
+        match rx.recv().await.unwrap() {
+            AgentProfileEvent::Deleted { id } => assert_eq!(id, p.id),
+            other => panic!("expected Deleted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_profile_delete_no_op_does_not_emit() {
+        let store = MemoryAgentProfileStore::new();
+        let mut rx = store.subscribe();
+        assert!(!store.delete("never").await.unwrap());
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ---- ActivityStore --------------------------------------------------
+
+    use harness_core::{ActivityActor, ActivityKind};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn activity_append_and_list_filters_by_requirement() {
+        let store = MemoryActivityStore::new();
+        let a1 = Activity::new(
+            "req-a",
+            ActivityKind::StatusChange,
+            ActivityActor::Human,
+            json!({"from": "backlog", "to": "in_progress"}),
+        );
+        let mut a2 = Activity::new(
+            "req-a",
+            ActivityKind::RunStarted,
+            ActivityActor::System,
+            json!({"run_id": "r1"}),
+        );
+        a2.created_at = "2027-01-01T00:00:00+00:00".into();
+        let a3 = Activity::new(
+            "req-b",
+            ActivityKind::StatusChange,
+            ActivityActor::Human,
+            json!({}),
+        );
+
+        store.append(&a1).await.unwrap();
+        store.append(&a2).await.unwrap();
+        store.append(&a3).await.unwrap();
+
+        let only_a = store.list_for_requirement("req-a").await.unwrap();
+        assert_eq!(only_a.len(), 2);
+        // Newest first.
+        assert_eq!(only_a[0].id, a2.id);
+        assert_eq!(only_a[1].id, a1.id);
+
+        let only_b = store.list_for_requirement("req-b").await.unwrap();
+        assert_eq!(only_b.len(), 1);
+
+        // Empty for unknown.
+        assert!(store.list_for_requirement("never").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn activity_subscribe_emits_appended() {
+        let store = MemoryActivityStore::new();
+        let mut rx = store.subscribe();
+        let a = Activity::new(
+            "req",
+            ActivityKind::RunFinished,
+            ActivityActor::System,
+            json!({"run_id": "r1", "status": "completed"}),
+        );
+        store.append(&a).await.unwrap();
+        match rx.recv().await.unwrap() {
+            ActivityEvent::Appended(got) => assert_eq!(got.id, a.id),
+        }
     }
 
     // ---- DocStore -------------------------------------------------------

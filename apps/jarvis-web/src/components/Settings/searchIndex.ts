@@ -281,6 +281,23 @@ export const SEARCH_ENTRIES: SearchEntry[] = [
   },
   {
     sectionId: "system",
+    tabId: "diagnostics",
+    groupKey: "settingsNavGroupWorkspace",
+    groupFallback: "Workspace",
+    parentSectionKey: "settingsNavSystem",
+    parentSectionFallback: "System",
+    primaryKey: "settingsTabDiagnostics",
+    primaryFallback: "Diagnostics",
+    tokens: [
+      "diagnostics", "诊断",
+      "orphan", "orphan worktrees", "孤立",
+      "stuck runs", "卡住",
+      "failed runs", "失败",
+      "worktree", "工作树",
+    ],
+  },
+  {
+    sectionId: "system",
     tabId: "about",
     groupKey: "settingsNavGroupWorkspace",
     groupFallback: "Workspace",

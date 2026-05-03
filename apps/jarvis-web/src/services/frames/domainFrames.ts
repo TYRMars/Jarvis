@@ -5,7 +5,15 @@
 
 import { appStore } from "../../store/appStore";
 import {
+  applyAgentProfileDeleted,
+  applyAgentProfileUpserted,
+} from "../agentProfiles";
+import {
+  applyActivityAppended,
   applyRequirementDeleted,
+  applyRequirementRunFinished,
+  applyRequirementRunStarted,
+  applyRequirementRunVerified,
   applyRequirementUpserted,
 } from "../requirements";
 import {
@@ -13,12 +21,6 @@ import {
   applyDocProjectDeleted,
   applyDocProjectUpserted,
 } from "../docs";
-import {
-  applyAgentProfileDeleted,
-  applyAgentProfileUpserted,
-} from "../agentProfiles";
-import { loadProviders } from "../providers";
-import { apiUrl } from "../api";
 
 export const domainFrameHandlers: Record<string, (ev: any) => void> = {
   // ---- Persistent TODO board frames ----
@@ -37,6 +39,29 @@ export const domainFrameHandlers: Record<string, (ev: any) => void> = {
       applyRequirementDeleted(ev.id, ev.project_id);
     }
   },
+  // ---- RequirementRun lifecycle frames (Phase 3.5) ----
+  requirement_run_started: (ev) => {
+    if (ev.run) applyRequirementRunStarted(ev.run);
+  },
+  requirement_run_finished: (ev) => {
+    if (ev.run) applyRequirementRunFinished(ev.run);
+  },
+  requirement_run_verified: (ev) => {
+    if (typeof ev.run_id === "string" && ev.result) {
+      applyRequirementRunVerified(ev.run_id, ev.result);
+    }
+  },
+  // ---- Activity timeline frames (Phase 3.7) ----
+  activity_appended: (ev) => {
+    if (ev.activity) applyActivityAppended(ev.activity);
+  },
+  // ---- AgentProfile frames (Phase 3.6) ----
+  agent_profile_upserted: (ev) => {
+    if (ev.profile) applyAgentProfileUpserted(ev.profile);
+  },
+  agent_profile_deleted: (ev) => {
+    if (typeof ev.id === "string") applyAgentProfileDeleted(ev.id);
+  },
   // ---- Doc workspace frames ----
   doc_project_upserted: (ev) => {
     if (ev.project) applyDocProjectUpserted(ev.project);
@@ -46,20 +71,5 @@ export const domainFrameHandlers: Record<string, (ev: any) => void> = {
   },
   doc_draft_upserted: (ev) => {
     if (ev.draft) applyDocDraftUpserted(ev.draft);
-  },
-  // ---- Agent profile frames (server-global) ----
-  agent_profile_upserted: (ev) => {
-    if (ev.profile) applyAgentProfileUpserted(ev.profile);
-  },
-  agent_profile_deleted: (ev) => {
-    if (typeof ev.id === "string") applyAgentProfileDeleted(ev.id);
-  },
-  // ---- Provider registry mutated (Settings → Providers admin) ----
-  // Bare tick — the server doesn't ship a payload to avoid leaking
-  // api-key state. We refetch /v1/providers via the same loader the
-  // boot path uses; any subscribers (model picker, Subagents form)
-  // re-render off `appStore.providers`.
-  providers_changed: (_ev) => {
-    void loadProviders(apiUrl);
   },
 };

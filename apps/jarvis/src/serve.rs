@@ -71,8 +71,10 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         project_store,
         todo_store,
         requirement_store,
-        doc_store,
+        requirement_run_store,
+        activity_store,
         agent_profile_store,
+        doc_store,
     ) = match persistence_url.as_deref() {
         Some(url) => {
             let bundle = harness_store::connect_all(url)
@@ -80,23 +82,25 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
                 .with_context(|| format!("opening persistence url `{url}`"))?;
             info!(
                 url = %url,
-                "conversation + project + todo + requirement + doc + agent-profile store connected"
+                "conversation + project + todo + requirement + run + activity + agent_profile + doc store connected"
             );
             (
                 Some(bundle.conversations),
                 Some(bundle.projects),
                 Some(bundle.todos),
                 Some(bundle.requirements),
-                Some(bundle.docs),
+                Some(bundle.requirement_runs),
+                Some(bundle.activities),
                 Some(bundle.agent_profiles),
+                Some(bundle.docs),
             )
         }
         None => {
             info!(
                 "no persistence URL resolved (HOME unset?); running in-memory \
-                 (conversations / TODOs / requirements / docs / agent profiles will not survive restart)"
+                 (conversations / TODOs / requirements / runs / activities / profiles / docs will not survive restart)"
             );
-            (None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None)
         }
     };
     // `JARVIS_DISABLE_TODOS=1` opts out of the persistent TODO board
@@ -373,13 +377,38 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         "workspaces store ready",
     );
 
+    // Phase 5 — worktree isolation env-var parsing. The mode
+    // string defaults to "off" if absent / unrecognised; the root
+    // defaults to `<workspace>/.jarvis/worktrees`. Both kept
+    // available regardless of mode so a future runtime toggle
+    // (e.g. via /v1/server/info) doesn't have to re-parse.
+    let worktree_mode = std::env::var("JARVIS_WORKTREE_MODE")
+        .ok()
+        .as_deref()
+        .and_then(harness_server::WorktreeMode::from_wire)
+        .unwrap_or_default();
+    let worktree_root = std::env::var("JARVIS_WORKTREE_ROOT")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| Some(workspace_root.join(".jarvis").join("worktrees")));
+    let worktree_allow_dirty = std::env::var_os("JARVIS_WORKTREE_ALLOW_DIRTY").is_some();
+    if worktree_mode != harness_server::WorktreeMode::Off {
+        info!(
+            mode = ?worktree_mode,
+            root = %worktree_root.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
+            allow_dirty = worktree_allow_dirty,
+            "worktree isolation enabled (per-run worktrees will be minted)",
+        );
+    }
+
     let mut state = AppState::from_registry(registry, agent_cfg)
-        .with_workspace_root(workspace_root)
+        .with_workspace_root(workspace_root.clone())
         .with_tools(Arc::clone(&canonical_tools))
         .with_mcp(Arc::clone(&mcp_manager))
         .with_skills(Arc::clone(&skill_catalog))
         .with_plugins(Arc::clone(&plugin_manager))
-        .with_workspaces(Arc::clone(&workspaces));
+        .with_workspaces(Arc::clone(&workspaces))
+        .with_worktree_config(worktree_mode, worktree_root, worktree_allow_dirty);
     if let Some(s) = store {
         state = state.with_store(s);
     }
@@ -392,24 +421,18 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if let Some(rs) = requirement_store {
         state = state.with_requirement_store(rs);
     }
+    if let Some(runs) = requirement_run_store {
+        state = state.with_run_store(runs);
+    }
+    if let Some(acts) = activity_store {
+        state = state.with_activity_store(acts);
+    }
+    if let Some(profs) = agent_profile_store {
+        state = state.with_agent_profile_store(profs);
+    }
     if let Some(ds) = doc_store {
         state = state.with_doc_store(ds);
     }
-    if let Some(aps) = agent_profile_store {
-        state = state.with_agent_profile_store(aps);
-    }
-    // Wire the provider admin so the Web UI can add / edit / remove
-    // providers at runtime. The Provisioner shares `state.providers`
-    // (the live registry) and `state.providers_changed` (the
-    // broadcast that triggers WS clients to refetch); it owns its
-    // own `Arc<RwLock<Config>>` so mutations and disk writes go
-    // through one consistent point.
-    let provisioner = Arc::new(crate::provisioner::Provisioner::new(
-        cfg.clone(),
-        config_path.clone(),
-        Arc::clone(&state.providers),
-    ));
-    state = state.with_provider_admin(provisioner);
     // `JARVIS_NO_TODOS_IN_PROMPT=1` opts out of injecting the
     // current TODO list into the system prompt every turn. The
     // `todo.*` tools stay registered (the model can still query
@@ -464,6 +487,35 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
     state = state.with_server_info(server_info);
+
+    // Phase 6 — auto mode scheduler. Off by default; opt in via
+    // `JARVIS_WORK_MODE=auto`. The spawn() helper no-ops when
+    // mode is `Off`, so the call is unconditional.
+    let auto_cfg = harness_server::AutoModeConfig {
+        mode: std::env::var("JARVIS_WORK_MODE")
+            .ok()
+            .as_deref()
+            .and_then(harness_server::AutoMode::from_wire)
+            .unwrap_or_default(),
+        tick_seconds: std::env::var("JARVIS_WORK_TICK_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30),
+        max_units_per_tick: std::env::var("JARVIS_WORK_MAX_UNITS_PER_TICK")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1),
+        max_retries: std::env::var("JARVIS_WORK_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1),
+        run_timeout_ms: std::env::var("JARVIS_WORK_RUN_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5 * 60 * 1000),
+    };
+    harness_server::spawn_auto_mode(state.clone(), auto_cfg);
+
     info!(%addr, "jarvis listening");
     serve(addr, state).await?;
 
@@ -666,7 +718,7 @@ fn pick_shell_sandbox(cfg: &Config) -> Sandbox {
     }
 }
 
-pub(crate) async fn build_provider(
+async fn build_provider(
     name: &str,
     model_override: Option<String>,
     cfg: &Config,
@@ -1164,11 +1216,7 @@ fn spec_to_client_config(
 /// hasn't set their own prompt.
 const GENERAL_SYSTEM_PROMPT: &str = "You are Jarvis, a concise and capable assistant. \
 When you need a human decision, missing information, or a choice among acceptable options, \
-use ask.text instead of guessing. \
-If a `=== project todos ===` block appears in this prompt, those are the live persistent \
-follow-ups for this workspace — read them as part of the user's context, mark them \
-completed/blocked via todo.update as work lands, and add new ones via todo.add when the \
-user asks you to remember something for later.";
+use ask.text instead of guessing.";
 
 /// Coding-agent system prompt — used automatically when any of
 /// `fs.edit`, `fs.write`, or `shell.exec` is enabled (signal: the
@@ -1188,12 +1236,9 @@ Use fs.edit (uniqueness-checked single replace) or fs.patch (unified-diff multi-
 reviewable edits; reach for fs.write only to create new files. \
 When you run checks (tests, lints, builds), keep them focused on the change rather than the \
 whole repo. \
-The active project backlog is already injected into this prompt as a \
-`=== project todos ===` block (when there are any) — use it directly; only call todo.list \
-if you suspect it is stale (just-completed items, just-added by the user, or operating \
-across workspaces). Record NEW follow-ups via todo.add (use plan.update only for ephemeral \
-within-turn planning), and mark items completed/blocked via todo.update {id, status} as \
-soon as the underlying work lands. \
+At the start of a fresh session, call todo.list to see persistent project follow-ups; \
+record new follow-ups via todo.add (not plan.update — that's for the current turn only) \
+and mark them completed/blocked as you go. \
 End every coding turn with a short report: which files changed, which checks ran, which checks \
 were skipped and why, and any residual risk you couldn't verify.";
 

@@ -8,6 +8,7 @@ import { Tabs, type TabItem } from "../../ui/Tabs";
 import { WorkspaceSection } from "./WorkspaceSection";
 import { ServerSection } from "./ServerSection";
 import { ApiSection } from "./ApiSection";
+import { DiagnosticsSection } from "./DiagnosticsSection";
 import { AboutSection } from "./AboutSection";
 import { t } from "../../../utils/i18n";
 
@@ -16,7 +17,7 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export const SYSTEM_TABS = ["workspace", "server", "api", "about"] as const;
+export const SYSTEM_TABS = ["workspace", "server", "api", "diagnostics", "about"] as const;
 export type SystemTab = (typeof SYSTEM_TABS)[number];
 export const DEFAULT_SYSTEM_TAB: SystemTab = "workspace";
 
@@ -41,6 +42,11 @@ export function SystemSection({ tab, onTabChange }: Props = {}) {
       id: "api",
       label: tx("settingsTabApi", "Connection"),
       content: <ApiSection embedded />,
+    },
+    {
+      id: "diagnostics",
+      label: tx("settingsTabDiagnostics", "Diagnostics"),
+      content: <DiagnosticsSection embedded />,
     },
     {
       id: "about",

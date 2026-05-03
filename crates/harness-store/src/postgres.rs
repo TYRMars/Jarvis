@@ -9,9 +9,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
+    Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
     DocDraft, DocEvent, DocKind, DocProject, DocStore, ProjectStore, Requirement, RequirementEvent,
-    RequirementStatus, RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
-    AgentProfile, AgentProfileEvent, AgentProfileStore,
+    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStatus, RequirementStore,
+    TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -114,7 +115,6 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             description      TEXT,
             status           TEXT NOT NULL,
             conversation_ids TEXT NOT NULL,
-            assignee_id      TEXT,
             created_at       TEXT NOT NULL,
             updated_at       TEXT NOT NULL
         )
@@ -127,8 +127,11 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
-    // Idempotent migration for pre-existing tables.
+    // Phase 3.6: add `assignee_id` to existing tables.
     sqlx::query("ALTER TABLE requirements ADD COLUMN IF NOT EXISTS assignee_id TEXT")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE requirements ADD COLUMN IF NOT EXISTS verification_plan TEXT")
         .execute(pool)
         .await?;
 
@@ -137,14 +140,54 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         CREATE TABLE IF NOT EXISTS agent_profiles (
             id         TEXT PRIMARY KEY,
             payload    TEXT NOT NULL,
+            name       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
         "#,
     )
     .execute(pool)
     .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_agent_profiles_name ON agent_profiles(name)")
+        .execute(pool)
+        .await?;
+
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_agent_profiles_updated ON agent_profiles(updated_at DESC)",
+        r#"
+        CREATE TABLE IF NOT EXISTS requirement_runs (
+            id             TEXT PRIMARY KEY,
+            requirement_id TEXT NOT NULL,
+            payload        TEXT NOT NULL,
+            status         TEXT NOT NULL,
+            started_at     TEXT NOT NULL,
+            finished_at    TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_requirement_runs_req \
+         ON requirement_runs(requirement_id, started_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS activities (
+            id             TEXT PRIMARY KEY,
+            requirement_id TEXT NOT NULL,
+            payload        TEXT NOT NULL,
+            created_at     TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_activities_req \
+         ON activities(requirement_id, created_at DESC)",
     )
     .execute(pool)
     .await?;
@@ -638,6 +681,7 @@ struct RequirementRow {
     status: String,
     conversation_ids: String,
     assignee_id: Option<String>,
+    verification_plan: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -649,6 +693,10 @@ impl RequirementRow {
         })?;
         let conversation_ids: Vec<String> =
             serde_json::from_str(&self.conversation_ids).map_err(StoreError::from)?;
+        let verification_plan = match self.verification_plan {
+            Some(s) => Some(serde_json::from_str(&s).map_err(StoreError::from)?),
+            None => None,
+        };
         Ok(Requirement {
             id: self.id,
             project_id: self.project_id,
@@ -657,6 +705,7 @@ impl RequirementRow {
             status,
             conversation_ids,
             assignee_id: self.assignee_id,
+            verification_plan,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -668,7 +717,7 @@ impl RequirementStore for PostgresRequirementStore {
     async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
         let rows: Vec<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       assignee_id, created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements
                  WHERE project_id = $1
                  ORDER BY updated_at DESC
@@ -689,7 +738,7 @@ impl RequirementStore for PostgresRequirementStore {
     async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
         let row: Option<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       assignee_id, created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements WHERE id = $1"#,
         )
         .bind(id)
@@ -701,19 +750,24 @@ impl RequirementStore for PostgresRequirementStore {
 
     async fn upsert(&self, item: &Requirement) -> Result<(), BoxError> {
         let conv_ids = serde_json::to_string(&item.conversation_ids).map_err(StoreError::from)?;
+        let plan_json = match item.verification_plan.as_ref() {
+            Some(p) => Some(serde_json::to_string(p).map_err(StoreError::from)?),
+            None => None,
+        };
         sqlx::query(
             r#"INSERT INTO requirements
                 (id, project_id, title, description, status, conversation_ids,
-                 assignee_id, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 assignee_id, verification_plan, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (id) DO UPDATE SET
-                    project_id       = EXCLUDED.project_id,
-                    title            = EXCLUDED.title,
-                    description      = EXCLUDED.description,
-                    status           = EXCLUDED.status,
-                    conversation_ids = EXCLUDED.conversation_ids,
-                    assignee_id      = EXCLUDED.assignee_id,
-                    updated_at       = EXCLUDED.updated_at"#,
+                    project_id        = EXCLUDED.project_id,
+                    title             = EXCLUDED.title,
+                    description       = EXCLUDED.description,
+                    status            = EXCLUDED.status,
+                    conversation_ids  = EXCLUDED.conversation_ids,
+                    assignee_id       = EXCLUDED.assignee_id,
+                    verification_plan = EXCLUDED.verification_plan,
+                    updated_at        = EXCLUDED.updated_at"#,
         )
         .bind(&item.id)
         .bind(&item.project_id)
@@ -721,7 +775,8 @@ impl RequirementStore for PostgresRequirementStore {
         .bind(&item.description)
         .bind(item.status.as_wire())
         .bind(&conv_ids)
-        .bind(&item.assignee_id)
+        .bind(item.assignee_id.as_deref())
+        .bind(plan_json.as_deref())
         .bind(&item.created_at)
         .bind(&item.updated_at)
         .execute(&self.pool)
@@ -762,7 +817,124 @@ impl RequirementStore for PostgresRequirementStore {
     }
 }
 
-// ---------- AgentProfileStore -------------------------------------------
+// ---------- RequirementRunStore ------------------------------------------
+
+pub struct PostgresRequirementRunStore {
+    pool: PgPool,
+    tx: broadcast::Sender<RequirementRunEvent>,
+}
+
+impl PostgresRequirementRunStore {
+    pub fn from_pool(pool: PgPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl RequirementRunStore for PostgresRequirementRunStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<RequirementRun>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM requirement_runs
+                 WHERE requirement_id = $1
+                 ORDER BY started_at DESC
+                 LIMIT 200"#,
+        )
+        .bind(requirement_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 200 {
+            tracing::warn!(
+                requirement_id,
+                "requirement run list hit 200-item soft cap"
+            );
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<RequirementRun>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<RequirementRun>, BoxError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT payload FROM requirement_runs WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        match row {
+            Some((payload,)) => Ok(Some(
+                serde_json::from_str::<RequirementRun>(&payload).map_err(StoreError::from)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_all(&self, limit: u32) -> Result<Vec<RequirementRun>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM requirement_runs
+                 ORDER BY started_at DESC
+                 LIMIT $1"#,
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<RequirementRun>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn upsert(&self, run: &RequirementRun) -> Result<(), BoxError> {
+        let prior = self.get(&run.id).await?;
+        let payload = serde_json::to_string(run).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO requirement_runs
+                (id, requirement_id, payload, status, started_at, finished_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (id) DO UPDATE SET
+                    requirement_id = EXCLUDED.requirement_id,
+                    payload        = EXCLUDED.payload,
+                    status         = EXCLUDED.status,
+                    started_at     = EXCLUDED.started_at,
+                    finished_at    = EXCLUDED.finished_at"#,
+        )
+        .bind(&run.id)
+        .bind(&run.requirement_id)
+        .bind(&payload)
+        .bind(run.status.as_wire())
+        .bind(&run.started_at)
+        .bind(run.finished_at.as_deref())
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if let Some(ev) = crate::memory::classify_run_event(prior.as_ref(), run) {
+            let _ = self.tx.send(ev);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&self, ev: RequirementRunEvent) {
+        let _ = self.tx.send(ev);
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RequirementRunEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- AgentProfileStore --------------------------------------------
 
 pub struct PostgresAgentProfileStore {
     pool: PgPool,
@@ -779,14 +951,13 @@ impl PostgresAgentProfileStore {
 #[async_trait]
 impl AgentProfileStore for PostgresAgentProfileStore {
     async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            r#"SELECT payload FROM agent_profiles ORDER BY updated_at DESC LIMIT 500"#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StoreError::from)?;
-        if rows.len() == 500 {
-            tracing::warn!("agent profile list hit 500-item soft cap");
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT payload FROM agent_profiles ORDER BY name ASC LIMIT 200")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        if rows.len() == 200 {
+            tracing::warn!("agent profile list hit 200-item soft cap");
         }
         rows.into_iter()
             .map(|(payload,)| {
@@ -798,7 +969,7 @@ impl AgentProfileStore for PostgresAgentProfileStore {
 
     async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError> {
         let row: Option<(String,)> =
-            sqlx::query_as(r#"SELECT payload FROM agent_profiles WHERE id = $1"#)
+            sqlx::query_as("SELECT payload FROM agent_profiles WHERE id = $1")
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await
@@ -811,21 +982,25 @@ impl AgentProfileStore for PostgresAgentProfileStore {
         }
     }
 
-    async fn upsert(&self, item: &AgentProfile) -> Result<(), BoxError> {
-        let payload = serde_json::to_string(item).map_err(StoreError::from)?;
+    async fn upsert(&self, profile: &AgentProfile) -> Result<(), BoxError> {
+        let payload = serde_json::to_string(profile).map_err(StoreError::from)?;
         sqlx::query(
-            r#"INSERT INTO agent_profiles (id, payload, updated_at) VALUES ($1, $2, $3)
-               ON CONFLICT(id) DO UPDATE SET
-                   payload    = EXCLUDED.payload,
-                   updated_at = EXCLUDED.updated_at"#,
+            r#"INSERT INTO agent_profiles (id, payload, name, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (id) DO UPDATE SET
+                    payload    = EXCLUDED.payload,
+                    name       = EXCLUDED.name,
+                    updated_at = EXCLUDED.updated_at"#,
         )
-        .bind(&item.id)
+        .bind(&profile.id)
         .bind(&payload)
-        .bind(&item.updated_at)
+        .bind(&profile.name)
+        .bind(&profile.created_at)
+        .bind(&profile.updated_at)
         .execute(&self.pool)
         .await
         .map_err(StoreError::from)?;
-        let _ = self.tx.send(AgentProfileEvent::Upserted(item.clone()));
+        let _ = self.tx.send(AgentProfileEvent::Upserted(profile.clone()));
         Ok(())
     }
 
@@ -844,6 +1019,70 @@ impl AgentProfileStore for PostgresAgentProfileStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- ActivityStore ------------------------------------------------
+
+pub struct PostgresActivityStore {
+    pool: PgPool,
+    tx: broadcast::Sender<ActivityEvent>,
+}
+
+impl PostgresActivityStore {
+    pub fn from_pool(pool: PgPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl ActivityStore for PostgresActivityStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<Activity>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM activities
+                 WHERE requirement_id = $1
+                 ORDER BY created_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(requirement_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(requirement_id, "activity list hit 500-item soft cap");
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<Activity>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn append(&self, activity: &Activity) -> Result<(), BoxError> {
+        let payload = serde_json::to_string(activity).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO activities (id, requirement_id, payload, created_at)
+                VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(&activity.id)
+        .bind(&activity.requirement_id)
+        .bind(&payload)
+        .bind(&activity.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(ActivityEvent::Appended(activity.clone()));
+        Ok(())
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<ActivityEvent> {
         self.tx.subscribe()
     }
 }

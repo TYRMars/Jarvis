@@ -9666,6 +9666,507 @@ select.settings-input {
 }
 
 /* ================================================================
+ * RequirementRun history (Phase 3.5)
+ * Rendered inside the detail panel, below the description.
+ * ================================================================ */
+
+.requirement-detail-runs {
+  flex: 0 0 auto;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.requirement-detail-runs-heading {
+  margin: 0 0 8px;
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.requirement-detail-runs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.requirement-detail-run-row {
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.requirement-detail-run-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  text-align: left;
+  cursor: pointer;
+}
+
+.requirement-detail-run-summary:hover {
+  background: var(--bg-soft, rgba(0, 0, 0, 0.04));
+}
+
+.requirement-detail-run-num {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.requirement-detail-run-times {
+  color: var(--text-soft);
+  font-size: var(--fs-11);
+  margin-left: auto;
+}
+
+.requirement-run-pill {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  background: var(--bg-soft, rgba(0, 0, 0, 0.06));
+  color: var(--text);
+}
+
+.requirement-run-pill.run-status-pending {
+  background: rgba(150, 150, 150, 0.15);
+  color: var(--text-soft);
+}
+
+.requirement-run-pill.run-status-running {
+  background: rgba(56, 132, 255, 0.16);
+  color: rgb(56, 132, 255);
+}
+
+.requirement-run-pill.run-status-completed {
+  background: rgba(36, 168, 96, 0.16);
+  color: rgb(36, 144, 84);
+}
+
+.requirement-run-pill.run-status-failed {
+  background: rgba(220, 70, 70, 0.16);
+  color: rgb(200, 50, 50);
+}
+
+.requirement-run-pill.run-status-cancelled {
+  background: rgba(150, 150, 150, 0.16);
+  color: var(--text-soft);
+}
+
+.requirement-run-verify {
+  font-size: var(--fs-11);
+  color: var(--text-soft);
+}
+
+.requirement-run-verify.verify-passed {
+  color: rgb(36, 144, 84);
+}
+
+.requirement-run-verify.verify-failed {
+  color: rgb(200, 50, 50);
+}
+
+.requirement-detail-run-body {
+  padding: 6px 10px 10px;
+  border-top: 1px dashed var(--border-soft);
+  color: var(--text);
+  font-size: var(--fs-12);
+}
+
+.requirement-detail-run-text {
+  margin: 6px 0 0;
+}
+
+.requirement-detail-run-text.run-error {
+  color: rgb(200, 50, 50);
+}
+
+.requirement-detail-run-cmds {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.requirement-detail-run-cmd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+}
+
+.requirement-detail-run-cmd-exit {
+  color: var(--text-soft);
+}
+
+.requirement-detail-run-worktree {
+  margin: 4px 0;
+  font-size: var(--fs-11);
+  color: var(--text-soft);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  overflow-wrap: anywhere;
+}
+
+.requirement-detail-run-worktree code {
+  background: transparent;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+}
+
+.requirement-detail-run-verify {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.requirement-detail-run-verify-label {
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.requirement-detail-run-verify-input {
+  width: 100%;
+  padding: 6px 8px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.requirement-detail-run-verify-error {
+  margin: 0;
+  color: rgb(200, 50, 50);
+  font-size: var(--fs-11);
+}
+
+.requirement-detail-run-verify button {
+  align-self: flex-end;
+  font-size: var(--fs-12);
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.requirement-detail-run-verify button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ----- Activity timeline (Phase 3.7) ----- */
+
+.requirement-detail-activities {
+  flex: 0 0 auto;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.requirement-detail-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.requirement-detail-activity-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  column-gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: var(--fs-12);
+  color: var(--text);
+}
+
+.requirement-detail-activity-row:hover {
+  background: var(--bg-soft, rgba(0, 0, 0, 0.04));
+}
+
+.requirement-detail-activity-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  font-size: var(--fs-11);
+}
+
+.requirement-detail-activity-actor {
+  font-weight: 600;
+  color: var(--text-soft);
+  font-size: var(--fs-11);
+}
+
+.requirement-detail-activity-text {
+  color: var(--text);
+}
+
+.requirement-detail-activity-row.kind-run_finished {
+  color: rgb(36, 144, 84);
+}
+
+.requirement-detail-activity-row.kind-verification_finished {
+  color: rgb(36, 144, 84);
+}
+
+/* ----- Assignee picker (Phase 3.6) ----- */
+
+.requirement-detail-assignee {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+  flex-wrap: wrap;
+}
+
+.requirement-detail-assignee-label {
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.requirement-detail-assignee-select {
+  font-size: var(--fs-12);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.requirement-detail-assignee-prompt {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--fs-11);
+  font-style: italic;
+}
+
+/* ----- Settings → Agents (Phase 3.6) ----- */
+
+.settings-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.settings-agent-empty {
+  color: var(--text-soft);
+  font-style: italic;
+  font-size: var(--fs-13);
+}
+
+.settings-agent-row {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.settings-agent-row.editing {
+  border-color: var(--accent, #5183f5);
+}
+
+.settings-agent-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.settings-agent-avatar {
+  font-size: var(--fs-14);
+}
+
+.settings-agent-name {
+  font-weight: 700;
+  font-size: var(--fs-13);
+  color: var(--text);
+}
+
+.settings-agent-provider {
+  color: var(--text-soft);
+  font-size: var(--fs-11);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+}
+
+.settings-agent-prompt {
+  margin: 4px 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  white-space: pre-wrap;
+}
+
+.settings-agent-row-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.settings-agent-row-actions button {
+  font-size: var(--fs-12);
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.settings-agent-row-actions button.danger {
+  color: rgb(200, 50, 50);
+  border-color: rgba(200, 50, 50, 0.4);
+}
+
+.settings-agent-row-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-agent-create {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-soft, rgba(0, 0, 0, 0.02));
+}
+
+.settings-agent-create input,
+.settings-agent-create textarea,
+.settings-agent-row.editing input,
+.settings-agent-row.editing textarea {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: var(--fs-13);
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.settings-agent-error {
+  color: rgb(200, 50, 50);
+  font-size: var(--fs-12);
+}
+
+/* ----- Settings → Diagnostics (Phase 5b) ----- */
+
+.settings-diagnostics-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.settings-diagnostics-toolbar button {
+  font-size: var(--fs-12);
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.settings-diagnostics-toolbar button.danger {
+  color: rgb(200, 50, 50);
+  border-color: rgba(200, 50, 50, 0.4);
+}
+
+.settings-diagnostics-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-diagnostics-empty,
+.settings-diagnostics-report {
+  margin: 0 0 8px;
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+}
+
+.settings-diagnostics-error {
+  color: rgb(200, 50, 50);
+  font-size: var(--fs-12);
+}
+
+.settings-diagnostics-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-diagnostics-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.settings-diagnostics-path {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.settings-diagnostics-meta {
+  color: var(--text-soft);
+  font-size: var(--fs-11);
+  white-space: nowrap;
+}
+
+.settings-diagnostics-subhead {
+  margin: 18px 0 8px;
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-diagnostics-subhead:first-of-type {
+  margin-top: 0;
+}
+
+/* ================================================================
  * Drag-and-drop visual states (dnd-kit)
  * ================================================================
  * Both states are subtle on purpose: the card itself moves with the

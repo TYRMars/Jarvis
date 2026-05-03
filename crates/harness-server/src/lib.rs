@@ -23,15 +23,16 @@
 //! - `POST   /v1/conversations/:id/messages/stream` — append + run (SSE)
 
 mod agent_profiles_routes;
+mod auto_mode;
 mod conversations;
+mod diagnostics;
+mod diagnostics_routes;
 mod docs_routes;
 mod mcp_routes;
 mod permissions;
 mod plugin_routes;
 mod project_binder;
 mod projects;
-mod provider_admin;
-mod provider_admin_routes;
 mod provider_registry;
 mod requirements_routes;
 mod routes;
@@ -40,12 +41,13 @@ mod state;
 mod todo_binder;
 mod todos_routes;
 mod ui;
+mod verification;
 mod workspace_diff;
 mod workspaces_routes;
+mod worktree;
 
 pub use skill_routes::default_roots as default_skill_roots;
 
-pub use provider_admin::{ProviderAdmin, ProviderDef, ProviderSnapshot, ProvisionError};
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
 pub use routes::router;
 pub use state::{AppState, ServerInfo};
@@ -53,6 +55,8 @@ pub use state::{AppState, ServerInfo};
 // Re-export so binaries can construct stores / modes without depending
 // on harness-core directly when they only need the permission types.
 pub use harness_core::{PermissionMode, PermissionStore};
+pub use auto_mode::{spawn as spawn_auto_mode, AutoMode, AutoModeConfig};
+pub use worktree::WorktreeMode;
 
 use std::net::SocketAddr;
 

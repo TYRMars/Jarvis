@@ -1,16 +1,9 @@
-// Service layer for server-global Agent profiles.
+// Service layer for named agent profiles (Phase 3.6).
 //
-// REST + WS-driven; no localStorage fallback (these are admin-y
-// settings that don't make sense to "remember offline" the way the
-// kanban does).
-//
-// - `loadAgentProfiles()` populates the cache from
-//   `GET /v1/agent-profiles`. Returns the rows for callers that
-//   want them inline; subscribers also see the cache update.
-// - `listAgentProfiles()` reads synchronously from the cache.
-// - `subscribeAgentProfiles(cb)` returns an unsubscribe.
-// - WS frames `agent_profile_upserted` / `agent_profile_deleted`
-//   reconcile via `applyAgentProfileUpserted` / `_Deleted`.
+// Process-wide CRUD over `/v1/agent-profiles*`. Same in-memory cache
+// + subscriber + WS-frame-applier shape as `services/requirements.ts`,
+// scoped down to a single flat list (no per-project partitioning —
+// profiles are global).
 
 import type { AgentProfile } from "../types/frames";
 import { apiUrl } from "./api";
@@ -23,21 +16,27 @@ function notify(): void {
     try {
       s();
     } catch (e) {
-      console.warn("agent-profiles subscriber threw", e);
+      console.warn("agent profile subscriber threw", e);
     }
   }
 }
 
-function sortedRows(): AgentProfile[] {
-  return [...cache.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-}
-
-/// Synchronous cache read, newest-updated first.
+/// Synchronous read against the in-memory cache, sorted by name asc
+/// (matches the server's sort order).
 export function listAgentProfiles(): AgentProfile[] {
-  return sortedRows();
+  return Array.from(cache.values()).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
 }
 
-/// Subscribe to cache changes. Returns an unsubscribe.
+/// Convenience lookup by id. Returns `null` when the cache hasn't
+/// seen that id (caller can fall back to "use server default").
+export function getAgentProfileFromCache(id: string | null | undefined): AgentProfile | null {
+  if (!id) return null;
+  return cache.get(id) ?? null;
+}
+
+/// Subscribe to cache change notifications.
 export function subscribeAgentProfiles(cb: () => void): () => void {
   subscribers.add(cb);
   return () => {
@@ -49,113 +48,109 @@ interface ListResponse {
   items: AgentProfile[];
 }
 
-/// Refresh the cache from the server. Returns the rows for inline
-/// use. On 503 / network error the cache is cleared (these are
-/// never meaningfully stale-readable like recent workspaces).
-export async function loadAgentProfiles(): Promise<AgentProfile[]> {
+/// Refresh the cache from the server. Idempotent. 503 = no
+/// agent-profile store wired up; in that case we leave the cache
+/// empty and the UI renders the "no agents configured" state.
+export async function loadAgentProfiles(): Promise<void> {
   try {
     const r = await fetch(apiUrl("/v1/agent-profiles"));
     if (r.status === 503) {
       cache.clear();
       notify();
-      return [];
+      return;
     }
-    if (!r.ok) throw new Error(`agent-profiles list: ${r.status}`);
+    if (!r.ok) throw new Error(`agent profiles list: ${r.status}`);
     const body = (await r.json()) as ListResponse;
     cache.clear();
     for (const p of body.items) cache.set(p.id, p);
     notify();
-    return sortedRows();
   } catch (e) {
-    console.warn("agent-profiles fetch failed", e);
-    return sortedRows();
+    console.warn("agent profiles fetch failed", e);
   }
 }
 
-export interface CreateProfileInput {
+export interface CreateAgentProfileInput {
   name: string;
   provider: string;
   model: string;
-  avatar?: string | null;
-  system_prompt?: string | null;
-  default_workspace?: string | null;
+  avatar?: string;
+  system_prompt?: string;
+  default_workspace?: string;
   allowed_tools?: string[];
 }
 
-interface ItemResponse {
-  profile: AgentProfile;
-}
-
-/// Create a profile via `POST /v1/agent-profiles`. The WS broadcast
-/// reconciles the cache, but we also upsert locally on success so
-/// callers awaiting the returned promise see the new row.
+/// Create a new profile. Returns the created row (with the
+/// server-allocated id) or throws on failure.
 export async function createAgentProfile(
-  input: CreateProfileInput,
+  input: CreateAgentProfileInput,
 ): Promise<AgentProfile> {
   const r = await fetch(apiUrl("/v1/agent-profiles"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!r.ok) {
-    const body = await r.text();
-    throw new Error(`create agent profile: ${r.status} ${body}`);
-  }
-  const { profile } = (await r.json()) as ItemResponse;
-  applyAgentProfileUpserted(profile);
-  return profile;
+  if (!r.ok) throw new Error(`agent profile create: ${r.status}`);
+  const saved = (await r.json()) as AgentProfile;
+  cache.set(saved.id, saved);
+  notify();
+  return saved;
 }
 
-export interface UpdateProfileInput {
+export interface UpdateAgentProfileInput {
   name?: string;
   provider?: string;
   model?: string;
-  avatar?: string | null;
-  system_prompt?: string | null;
-  default_workspace?: string | null;
+  /// Pass empty string to clear; pass undefined to leave unchanged.
+  avatar?: string;
+  system_prompt?: string;
+  default_workspace?: string;
   allowed_tools?: string[];
 }
 
-/// Patch a profile. `null` on optional string fields clears them.
+/// Patch a profile. Server is source-of-truth; the WS frame
+/// reconciles. Returns the updated row, or null on 404.
 export async function updateAgentProfile(
   id: string,
-  patch: UpdateProfileInput,
-): Promise<AgentProfile> {
+  patch: UpdateAgentProfileInput,
+): Promise<AgentProfile | null> {
   const r = await fetch(apiUrl(`/v1/agent-profiles/${encodeURIComponent(id)}`), {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!r.ok) {
-    const body = await r.text();
-    throw new Error(`update agent profile: ${r.status} ${body}`);
-  }
-  const { profile } = (await r.json()) as ItemResponse;
-  applyAgentProfileUpserted(profile);
-  return profile;
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`agent profile patch: ${r.status}`);
+  const updated = (await r.json()) as AgentProfile;
+  cache.set(updated.id, updated);
+  notify();
+  return updated;
 }
 
-/// Delete a profile.
+/// Delete a profile. Returns true if a row was removed; false on
+/// idempotent "already gone".
 export async function deleteAgentProfile(id: string): Promise<boolean> {
   const r = await fetch(apiUrl(`/v1/agent-profiles/${encodeURIComponent(id)}`), {
     method: "DELETE",
   });
-  if (!r.ok) {
-    const body = await r.text();
-    throw new Error(`delete agent profile: ${r.status} ${body}`);
+  if (r.status === 404) {
+    cache.delete(id);
+    notify();
+    return false;
   }
-  const { deleted } = (await r.json()) as { deleted: boolean };
-  if (deleted) applyAgentProfileDeleted(id);
-  return deleted;
+  if (!r.ok) throw new Error(`agent profile delete: ${r.status}`);
+  cache.delete(id);
+  notify();
+  return true;
 }
 
-// ---------- WS frame appliers (called from frames dispatcher) -------
+// ---- WS frame appliers (called from frames.ts) ------------------
 
-export function applyAgentProfileUpserted(profile: AgentProfile): void {
-  cache.set(profile.id, profile);
+export function applyAgentProfileUpserted(p: AgentProfile): void {
+  cache.set(p.id, p);
   notify();
 }
 
 export function applyAgentProfileDeleted(id: string): void {
-  if (cache.delete(id)) notify();
+  cache.delete(id);
+  notify();
 }

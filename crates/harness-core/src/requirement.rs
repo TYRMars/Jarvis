@@ -30,6 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::requirement_run::VerificationPlan;
+
 /// One persistent requirement scoped to a single [`Project`](crate::Project).
 ///
 /// The wire shape matches the JSON serialisation of this struct.
@@ -62,13 +64,23 @@ pub struct Requirement {
     #[serde(default)]
     pub conversation_ids: Vec<String>,
     /// Optional [`AgentProfile`](crate::AgentProfile) id this
-    /// requirement is assigned to. `None` means "no specific
-    /// assignee" — runs spawned from the card use the binary's
-    /// global default provider/model. When set, `POST
-    /// /v1/requirements/:id/runs` reads the profile to override
-    /// provider / model / system_prompt for the new conversation.
+    /// requirement is assigned to. `None` = "anyone / use the
+    /// server default". `start_run` reads this when minting the
+    /// fresh conversation so the chosen profile's `system_prompt`
+    /// (and, in future phases, provider/model routing) applies.
+    /// Added in Phase 3.6 — older rows on disk without the field
+    /// deserialise as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee_id: Option<String>,
+    /// Phase 6 — optional pinned [`VerificationPlan`] that auto
+    /// mode (and the manual "Run verification" UI when filled
+    /// from a template) should fire after each
+    /// [`RequirementRun`](crate::RequirementRun) finishes. `None`
+    /// = "no per-requirement template; verify only when the
+    /// caller passes commands explicitly". Newer field so older
+    /// JSON rows without it deserialise as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan: Option<VerificationPlan>,
     /// RFC-3339 / ISO-8601 timestamp of creation.
     pub created_at: String,
     /// RFC-3339 / ISO-8601 timestamp; bumped on every mutation via
@@ -130,6 +142,7 @@ impl Requirement {
             status: RequirementStatus::Backlog,
             conversation_ids: Vec::new(),
             assignee_id: None,
+            verification_plan: None,
             created_at: now.clone(),
             updated_at: now,
         }

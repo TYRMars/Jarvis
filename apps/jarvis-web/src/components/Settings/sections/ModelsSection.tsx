@@ -7,7 +7,7 @@
 import { Section } from "./Section";
 import { Tabs, type TabItem } from "../../ui/Tabs";
 import { ProvidersSection } from "./ProvidersSection";
-import { AgentProfilesSection } from "./AgentProfilesSection";
+import { AgentsSection } from "./AgentsSection";
 import { t } from "../../../utils/i18n";
 
 function tx(key: string, fallback: string): string {
@@ -34,7 +34,7 @@ export function ModelsSection({ tab, onTabChange }: Props = {}) {
     {
       id: "subagents",
       label: tx("settingsTabSubagents", "Subagents"),
-      content: <AgentProfilesSection embedded />,
+      content: <AgentsSection embedded />,
     },
   ];
 

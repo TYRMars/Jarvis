@@ -291,18 +291,16 @@ export interface Requirement {
   description?: string | null;
   status: RequirementStatus;
   conversation_ids: string[];
-  /// Optional `AgentProfile.id` this requirement is assigned to.
-  /// `null` / absent means "no specific assignee" — runs use the
-  /// global default provider/model.
+  /** Phase 3.6: optional `AgentProfile.id` this requirement is
+   *  assigned to. `null` / absent ⇒ "anyone / use server default". */
   assignee_id?: string | null;
   created_at: string;
   updated_at: string;
 }
 
-// ----------------- AgentProfile -----------------------------------
+// ----------------- AgentProfile types ------------------------------
 
-/// Server-global named agent identity. See
-/// `crates/harness-core/src/agent_profile.rs` for the wire shape.
+/// Named agent identity. Mirrors `harness_core::AgentProfile`.
 export interface AgentProfile {
   id: string;
   name: string;
@@ -314,6 +312,91 @@ export interface AgentProfile {
   allowed_tools?: string[];
   created_at: string;
   updated_at: string;
+}
+
+// ----------------- RequirementRun types ----------------------------
+
+/// Lifecycle of a per-requirement execution run. Matches the wire
+/// form of `harness_core::RequirementRunStatus`.
+export type RequirementRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/// Aggregate verification outcome (matches
+/// `harness_core::VerificationStatus` wire form).
+export type VerificationStatus =
+  | "passed"
+  | "failed"
+  | "needs_review"
+  | "skipped";
+
+export interface CommandResult {
+  command: string;
+  exit_code?: number | null;
+  stdout?: string;
+  stderr?: string;
+  duration_ms: number;
+}
+
+export interface VerificationResult {
+  status: VerificationStatus;
+  command_results?: CommandResult[];
+  diff_summary?: string | null;
+  notes?: string | null;
+}
+
+/// One execution attempt against a Requirement. Mirrors
+/// `harness_core::RequirementRun`.
+export interface RequirementRun {
+  id: string;
+  requirement_id: string;
+  conversation_id: string;
+  status: RequirementRunStatus;
+  summary?: string | null;
+  error?: string | null;
+  verification?: VerificationResult | null;
+  /** Phase 5 — absolute path to the per-run git worktree, when
+   *  the server's `JARVIS_WORKTREE_MODE=per_run` is on and the
+   *  workspace was a clean git repo at start time. `null` /
+   *  absent ⇒ the run uses the main checkout. */
+  worktree_path?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+}
+
+// ----------------- Activity timeline types -------------------------
+
+/// What happened. Wire form mirrors `harness_core::ActivityKind`.
+export type ActivityKind =
+  | "status_change"
+  | "run_started"
+  | "run_finished"
+  | "verification_finished"
+  | "assignee_change"
+  | "comment"
+  | "blocked"
+  | "unblocked";
+
+/// Who triggered an activity. Externally-tagged enum on the wire
+/// (matches `harness_core::ActivityActor`).
+export type ActivityActor =
+  | { type: "human" }
+  | { type: "agent"; profile_id: string }
+  | { type: "system" };
+
+/// One audit-timeline row. `body` shape varies by `kind`; see
+/// `harness-core/src/activity.rs` for the canonical per-kind
+/// payload.
+export interface Activity {
+  id: string;
+  requirement_id: string;
+  kind: ActivityKind;
+  actor: ActivityActor;
+  body: Record<string, unknown>;
+  created_at: string;
 }
 
 // ----------------- Doc workspace types -----------------------------

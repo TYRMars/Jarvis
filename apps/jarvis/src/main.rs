@@ -30,7 +30,6 @@ mod login;
 mod mcp_cli;
 mod plugin_cli;
 mod project_cmd;
-mod provisioner;
 mod serve;
 mod skill_cli;
 mod status;
