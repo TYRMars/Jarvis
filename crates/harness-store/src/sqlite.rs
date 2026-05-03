@@ -18,9 +18,11 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
+    Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
     DocEvent, DocKind, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementStatus, RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
+    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStatus, RequirementStore,
+    TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -159,6 +161,90 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_requirements_project ON requirements(project_id)")
         .execute(pool)
         .await?;
+    // Phase 3.6: add `assignee_id` column to existing databases.
+    // SQLite has no `ADD COLUMN IF NOT EXISTS`; sniff via
+    // `pragma_table_info` first.
+    let has_assignee_id: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('requirements') WHERE name = 'assignee_id'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_assignee_id {
+        sqlx::query("ALTER TABLE requirements ADD COLUMN assignee_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    // Phase 6 — verification_plan stored as a JSON-encoded
+    // Option<VerificationPlan>. NULL ⇒ no plan.
+    let has_verification_plan: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('requirements') WHERE name = 'verification_plan'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_verification_plan {
+        sqlx::query("ALTER TABLE requirements ADD COLUMN verification_plan TEXT")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_profiles (
+            id         TEXT PRIMARY KEY,
+            payload    TEXT NOT NULL,
+            name       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_agent_profiles_name ON agent_profiles(name)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS requirement_runs (
+            id             TEXT PRIMARY KEY,
+            requirement_id TEXT NOT NULL,
+            payload        TEXT NOT NULL,
+            status         TEXT NOT NULL,
+            started_at     TEXT NOT NULL,
+            finished_at    TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_requirement_runs_req \
+         ON requirement_runs(requirement_id, started_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS activities (
+            id             TEXT PRIMARY KEY,
+            requirement_id TEXT NOT NULL,
+            payload        TEXT NOT NULL,
+            created_at     TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_activities_req \
+         ON activities(requirement_id, created_at DESC)",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"
@@ -677,6 +763,8 @@ struct RequirementRow {
     description: Option<String>,
     status: String,
     conversation_ids: String,
+    assignee_id: Option<String>,
+    verification_plan: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -688,6 +776,10 @@ impl RequirementRow {
         })?;
         let conversation_ids: Vec<String> =
             serde_json::from_str(&self.conversation_ids).map_err(StoreError::from)?;
+        let verification_plan = match self.verification_plan {
+            Some(s) => Some(serde_json::from_str(&s).map_err(StoreError::from)?),
+            None => None,
+        };
         Ok(Requirement {
             id: self.id,
             project_id: self.project_id,
@@ -695,6 +787,8 @@ impl RequirementRow {
             description: self.description,
             status,
             conversation_ids,
+            assignee_id: self.assignee_id,
+            verification_plan,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -706,7 +800,7 @@ impl RequirementStore for SqliteRequirementStore {
     async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
         let rows: Vec<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements
                  WHERE project_id = ?1
                  ORDER BY updated_at DESC
@@ -725,7 +819,7 @@ impl RequirementStore for SqliteRequirementStore {
     async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
         let row: Option<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements WHERE id = ?1"#,
         )
         .bind(id)
@@ -737,18 +831,24 @@ impl RequirementStore for SqliteRequirementStore {
 
     async fn upsert(&self, item: &Requirement) -> Result<(), BoxError> {
         let conv_ids = serde_json::to_string(&item.conversation_ids).map_err(StoreError::from)?;
+        let plan_json = match item.verification_plan.as_ref() {
+            Some(p) => Some(serde_json::to_string(p).map_err(StoreError::from)?),
+            None => None,
+        };
         sqlx::query(
             r#"INSERT INTO requirements
                 (id, project_id, title, description, status, conversation_ids,
-                 created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 assignee_id, verification_plan, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 ON CONFLICT(id) DO UPDATE SET
-                    project_id       = excluded.project_id,
-                    title            = excluded.title,
-                    description      = excluded.description,
-                    status           = excluded.status,
-                    conversation_ids = excluded.conversation_ids,
-                    updated_at       = excluded.updated_at"#,
+                    project_id        = excluded.project_id,
+                    title             = excluded.title,
+                    description       = excluded.description,
+                    status            = excluded.status,
+                    conversation_ids  = excluded.conversation_ids,
+                    assignee_id       = excluded.assignee_id,
+                    verification_plan = excluded.verification_plan,
+                    updated_at        = excluded.updated_at"#,
         )
         .bind(&item.id)
         .bind(&item.project_id)
@@ -756,6 +856,8 @@ impl RequirementStore for SqliteRequirementStore {
         .bind(&item.description)
         .bind(item.status.as_wire())
         .bind(&conv_ids)
+        .bind(item.assignee_id.as_deref())
+        .bind(plan_json.as_deref())
         .bind(&item.created_at)
         .bind(&item.updated_at)
         .execute(&self.pool)
@@ -792,6 +894,280 @@ impl RequirementStore for SqliteRequirementStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- RequirementRunStore ------------------------------------------
+
+pub struct SqliteRequirementRunStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<RequirementRunEvent>,
+}
+
+impl SqliteRequirementRunStore {
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl RequirementRunStore for SqliteRequirementRunStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<RequirementRun>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM requirement_runs
+                 WHERE requirement_id = ?1
+                 ORDER BY started_at DESC
+                 LIMIT 200"#,
+        )
+        .bind(requirement_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 200 {
+            tracing::warn!(
+                requirement_id,
+                "requirement run list hit 200-item soft cap"
+            );
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<RequirementRun>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<RequirementRun>, BoxError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT payload FROM requirement_runs WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        match row {
+            Some((payload,)) => Ok(Some(
+                serde_json::from_str::<RequirementRun>(&payload).map_err(StoreError::from)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_all(&self, limit: u32) -> Result<Vec<RequirementRun>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM requirement_runs
+                 ORDER BY started_at DESC
+                 LIMIT ?1"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<RequirementRun>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn upsert(&self, run: &RequirementRun) -> Result<(), BoxError> {
+        let prior = self.get(&run.id).await?;
+        let payload = serde_json::to_string(run).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO requirement_runs
+                (id, requirement_id, payload, status, started_at, finished_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(id) DO UPDATE SET
+                    requirement_id = excluded.requirement_id,
+                    payload        = excluded.payload,
+                    status         = excluded.status,
+                    started_at     = excluded.started_at,
+                    finished_at    = excluded.finished_at"#,
+        )
+        .bind(&run.id)
+        .bind(&run.requirement_id)
+        .bind(&payload)
+        .bind(run.status.as_wire())
+        .bind(&run.started_at)
+        .bind(run.finished_at.as_deref())
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if let Some(ev) = crate::memory::classify_run_event(prior.as_ref(), run) {
+            let _ = self.tx.send(ev);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&self, ev: RequirementRunEvent) {
+        let _ = self.tx.send(ev);
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RequirementRunEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- AgentProfileStore --------------------------------------------
+
+pub struct SqliteAgentProfileStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<AgentProfileEvent>,
+}
+
+impl SqliteAgentProfileStore {
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl AgentProfileStore for SqliteAgentProfileStore {
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload FROM agent_profiles ORDER BY name ASC LIMIT 200"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 200 {
+            tracing::warn!("agent profile list hit 200-item soft cap");
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<AgentProfile>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT payload FROM agent_profiles WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        match row {
+            Some((payload,)) => Ok(Some(
+                serde_json::from_str::<AgentProfile>(&payload).map_err(StoreError::from)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn upsert(&self, profile: &AgentProfile) -> Result<(), BoxError> {
+        let payload = serde_json::to_string(profile).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO agent_profiles (id, payload, name, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(id) DO UPDATE SET
+                    payload    = excluded.payload,
+                    name       = excluded.name,
+                    updated_at = excluded.updated_at"#,
+        )
+        .bind(&profile.id)
+        .bind(&payload)
+        .bind(&profile.name)
+        .bind(&profile.created_at)
+        .bind(&profile.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(AgentProfileEvent::Upserted(profile.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let res = sqlx::query("DELETE FROM agent_profiles WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+        if res.rows_affected() > 0 {
+            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- ActivityStore ------------------------------------------------
+
+pub struct SqliteActivityStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<ActivityEvent>,
+}
+
+impl SqliteActivityStore {
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl ActivityStore for SqliteActivityStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<Activity>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM activities
+                 WHERE requirement_id = ?1
+                 ORDER BY created_at DESC
+                 LIMIT 500"#,
+        )
+        .bind(requirement_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(
+                requirement_id,
+                "activity list hit 500-item soft cap"
+            );
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<Activity>(&payload)
+                    .map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn append(&self, activity: &Activity) -> Result<(), BoxError> {
+        let payload = serde_json::to_string(activity).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO activities (id, requirement_id, payload, created_at)
+                VALUES (?1, ?2, ?3, ?4)"#,
+        )
+        .bind(&activity.id)
+        .bind(&activity.requirement_id)
+        .bind(&payload)
+        .bind(&activity.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(ActivityEvent::Appended(activity.clone()));
+        Ok(())
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<ActivityEvent> {
         self.tx.subscribe()
     }
 }
@@ -1333,6 +1709,212 @@ mod tests {
 
         assert!(!store.delete(&r.id).await.unwrap());
         assert!(rx.try_recv().is_err());
+    }
+
+    // ---- RequirementRunStore --------------------------------------------
+
+    use harness_core::RequirementRunStatus;
+
+    async fn make_run_store() -> (SqliteConversationStore, SqliteRequirementRunStore) {
+        let conv = make().await;
+        let runs = SqliteRequirementRunStore::from_pool(conv.pool());
+        (conv, runs)
+    }
+
+    #[tokio::test]
+    async fn requirement_run_round_trip_through_sqlite() {
+        let (_, store) = make_run_store().await;
+        let mut r = RequirementRun::new("req-1", "conv-1");
+        r.summary = Some("done".into());
+        r.status = RequirementRunStatus::Completed;
+        r.finished_at = Some("2026-04-30T01:23:45+00:00".into());
+        store.upsert(&r).await.unwrap();
+
+        let loaded = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(loaded, r);
+
+        let listed = store.list_for_requirement("req-1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn requirement_run_list_filters_and_orders_via_sql() {
+        let (_, store) = make_run_store().await;
+        let a = RequirementRun::new("req-a", "c1");
+        store.upsert(&a).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let b = RequirementRun::new("req-a", "c2");
+        store.upsert(&b).await.unwrap();
+        let c = RequirementRun::new("req-b", "c3");
+        store.upsert(&c).await.unwrap();
+
+        let req_a = store.list_for_requirement("req-a").await.unwrap();
+        assert_eq!(req_a.len(), 2);
+        assert_eq!(req_a[0].id, b.id, "newest first");
+        let req_b = store.list_for_requirement("req-b").await.unwrap();
+        assert_eq!(req_b.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn requirement_run_emits_started_then_finished_via_sqlite() {
+        let (_, store) = make_run_store().await;
+        let mut rx = store.subscribe();
+        let mut r = RequirementRun::new("req", "conv");
+        store.upsert(&r).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RequirementRunEvent::Started(run) => assert_eq!(run.id, r.id),
+            other => panic!("expected Started, got {other:?}"),
+        }
+        r.finish(RequirementRunStatus::Completed);
+        store.upsert(&r).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RequirementRunEvent::Finished(run) => {
+                assert_eq!(run.status, RequirementRunStatus::Completed)
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    // ---- AgentProfileStore ----------------------------------------------
+
+    async fn make_profile_store() -> (SqliteConversationStore, SqliteAgentProfileStore) {
+        let conv = make().await;
+        let profs = SqliteAgentProfileStore::from_pool(conv.pool());
+        (conv, profs)
+    }
+
+    #[tokio::test]
+    async fn agent_profile_round_trip_through_sqlite() {
+        let (_, store) = make_profile_store().await;
+        let mut p = AgentProfile::new("Alice", "openai", "gpt-4o-mini");
+        p.system_prompt = Some("You are Alice. Be concise.".into());
+        p.allowed_tools = vec!["fs.read".into(), "fs.list".into()];
+        store.upsert(&p).await.unwrap();
+        let loaded = store.get(&p.id).await.unwrap().unwrap();
+        assert_eq!(loaded, p);
+    }
+
+    #[tokio::test]
+    async fn agent_profile_list_orders_by_name_via_sql() {
+        let (_, store) = make_profile_store().await;
+        store
+            .upsert(&AgentProfile::new("Charlie", "openai", "gpt-4o-mini"))
+            .await
+            .unwrap();
+        store
+            .upsert(&AgentProfile::new("Alice", "openai", "gpt-4o-mini"))
+            .await
+            .unwrap();
+        store
+            .upsert(&AgentProfile::new("Bob", "openai", "gpt-4o-mini"))
+            .await
+            .unwrap();
+        let listed = store.list().await.unwrap();
+        let names: Vec<&str> = listed.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Alice", "Bob", "Charlie"]);
+    }
+
+    #[tokio::test]
+    async fn agent_profile_delete_idempotent_and_emits_once_via_sqlite() {
+        let (_, store) = make_profile_store().await;
+        let mut rx = store.subscribe();
+        let p = AgentProfile::new("Alice", "openai", "gpt-4o-mini");
+        store.upsert(&p).await.unwrap();
+        let _ = rx.recv().await.unwrap();
+        assert!(store.delete(&p.id).await.unwrap());
+        let _ = rx.recv().await.unwrap();
+        assert!(!store.delete(&p.id).await.unwrap());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn requirement_persists_assignee_id_via_sqlite() {
+        let (_, store) = make_requirement_store().await;
+        let mut r = Requirement::new("p", "x");
+        r.assignee_id = Some("prof-123".into());
+        store.upsert(&r).await.unwrap();
+        let loaded = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(loaded.assignee_id.as_deref(), Some("prof-123"));
+    }
+
+    // ---- ActivityStore --------------------------------------------------
+
+    use harness_core::{ActivityActor, ActivityKind};
+    use serde_json::json;
+
+    async fn make_activity_store() -> (SqliteConversationStore, SqliteActivityStore) {
+        let conv = make().await;
+        let acts = SqliteActivityStore::from_pool(conv.pool());
+        (conv, acts)
+    }
+
+    #[tokio::test]
+    async fn activity_round_trip_through_sqlite() {
+        let (_, store) = make_activity_store().await;
+        let a = Activity::new(
+            "req-1",
+            ActivityKind::StatusChange,
+            ActivityActor::Human,
+            json!({"from": "backlog", "to": "in_progress"}),
+        );
+        store.append(&a).await.unwrap();
+
+        let listed = store.list_for_requirement("req-1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], a);
+    }
+
+    #[tokio::test]
+    async fn activity_list_filters_and_orders_via_sql() {
+        let (_, store) = make_activity_store().await;
+        store
+            .append(&Activity::new(
+                "req-a",
+                ActivityKind::RunStarted,
+                ActivityActor::System,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let later = Activity::new(
+            "req-a",
+            ActivityKind::RunFinished,
+            ActivityActor::System,
+            json!({}),
+        );
+        store.append(&later).await.unwrap();
+        store
+            .append(&Activity::new(
+                "req-b",
+                ActivityKind::StatusChange,
+                ActivityActor::Human,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let req_a = store.list_for_requirement("req-a").await.unwrap();
+        assert_eq!(req_a.len(), 2);
+        assert_eq!(req_a[0].id, later.id, "newest first");
+        let req_b = store.list_for_requirement("req-b").await.unwrap();
+        assert_eq!(req_b.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn activity_subscribe_emits_appended_via_sqlite() {
+        let (_, store) = make_activity_store().await;
+        let mut rx = store.subscribe();
+        let a = Activity::new(
+            "req",
+            ActivityKind::VerificationFinished,
+            ActivityActor::System,
+            json!({"run_id": "r1", "status": "passed"}),
+        );
+        store.append(&a).await.unwrap();
+        match rx.recv().await.unwrap() {
+            ActivityEvent::Appended(got) => assert_eq!(got.id, a.id),
+        }
     }
 
     // ---- DocStore -------------------------------------------------------

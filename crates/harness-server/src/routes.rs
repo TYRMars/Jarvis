@@ -18,9 +18,9 @@ use axum::{
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use harness_core::{
-    canonicalize_workspace, AgentEvent, ApprovalDecision, Approver, ChannelApprover, Conversation,
-    ConversationMetadata, DocEvent, HitlResponse, HitlStatus, Message, PendingHitl,
-    RequirementEvent, RunOutcome, TodoEvent,
+    canonicalize_workspace, ActivityEvent, AgentEvent, AgentProfileEvent, ApprovalDecision,
+    Approver, ChannelApprover, Conversation, ConversationMetadata, DocEvent, HitlResponse,
+    HitlStatus, Message, PendingHitl, RequirementEvent, RequirementRunEvent, RunOutcome, TodoEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -57,6 +57,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::workspaces_routes::router())
         .merge(crate::todos_routes::router())
         .merge(crate::requirements_routes::router())
+        .merge(crate::agent_profiles_routes::router())
+        .merge(crate::diagnostics_routes::router())
         .merge(crate::docs_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
@@ -812,6 +814,19 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // today: the `/projects` kanban Web UI listens globally and
     // routes events to the right project list itself).
     let mut requirements_changed_rx = state.requirements.as_ref().map(|s| s.subscribe());
+    // Subscribe to RequirementRun-store mutations — sibling fanout
+    // to `requirements_changed_rx`, but for typed run lifecycle
+    // events (`Started` / `Finished` / `Verified`). Drives the
+    // kanban card "Runs" drawer in the `/projects` Web UI.
+    let mut runs_changed_rx = state.requirement_runs.as_ref().map(|s| s.subscribe());
+    // Subscribe to Activity timeline appends — fan-out for the
+    // `activity_appended` WS frame the kanban-card detail panel
+    // listens on (see `RequirementDetail.tsx::ActivitySection`).
+    let mut activities_changed_rx = state.activities.as_ref().map(|s| s.subscribe());
+    // Subscribe to AgentProfile mutations — fan-out for the
+    // Settings page's Agents tab and the kanban card assignee
+    // picker.
+    let mut agent_profiles_changed_rx = state.agent_profiles.as_ref().map(|s| s.subscribe());
     // Subscribe to Doc-store mutations. Same fanout pattern as
     // requirements; the `/docs` page listens globally and routes
     // events by project_id itself.
@@ -994,6 +1009,76 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             "id": id,
                             "project_id": project_id
                         })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- requirement-run store mutated (start_run / patch /
+            // verification gate) ----
+            // The store classifies each `upsert` into a typed
+            // [`RequirementRunEvent`] (Started for first-insert
+            // non-terminal, Finished for the row crossing into a
+            // terminal status), and the verification handler fans
+            // out an extra `Verified` frame via `broadcast`. We
+            // forward all three to every connected client without
+            // a per-socket filter — the kanban UI routes events to
+            // the right card by `requirement_id`.
+            Ok(ev) = async {
+                match runs_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<RequirementRunEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    RequirementRunEvent::Started(run) => {
+                        json!({ "type": "requirement_run_started", "run": run })
+                    }
+                    RequirementRunEvent::Finished(run) => {
+                        json!({ "type": "requirement_run_finished", "run": run })
+                    }
+                    RequirementRunEvent::Verified { run_id, result } => {
+                        json!({
+                            "type": "requirement_run_verified",
+                            "run_id": run_id,
+                            "result": result
+                        })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- activity timeline appended ----
+            // Append-only audit log; one variant in the enum today
+            // (`Appended`). UI routes events to the matching
+            // requirement card by `requirement_id`.
+            Ok(ev) = async {
+                match activities_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<ActivityEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    ActivityEvent::Appended(item) => {
+                        json!({ "type": "activity_appended", "activity": item })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- agent profile store mutated ----
+            // Process-wide CRUD; both the Settings page's Agents
+            // tab and every card detail's assignee picker listen
+            // on these frames.
+            Ok(ev) = async {
+                match agent_profiles_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<AgentProfileEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    AgentProfileEvent::Upserted(p) => {
+                        json!({ "type": "agent_profile_upserted", "profile": p })
+                    }
+                    AgentProfileEvent::Deleted { id } => {
+                        json!({ "type": "agent_profile_deleted", "id": id })
                     }
                 };
                 let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;

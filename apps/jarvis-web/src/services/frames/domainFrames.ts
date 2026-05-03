@@ -5,7 +5,15 @@
 
 import { appStore } from "../../store/appStore";
 import {
+  applyAgentProfileDeleted,
+  applyAgentProfileUpserted,
+} from "../agentProfiles";
+import {
+  applyActivityAppended,
   applyRequirementDeleted,
+  applyRequirementRunFinished,
+  applyRequirementRunStarted,
+  applyRequirementRunVerified,
   applyRequirementUpserted,
 } from "../requirements";
 import {
@@ -30,6 +38,29 @@ export const domainFrameHandlers: Record<string, (ev: any) => void> = {
     if (typeof ev.id === "string" && typeof ev.project_id === "string") {
       applyRequirementDeleted(ev.id, ev.project_id);
     }
+  },
+  // ---- RequirementRun lifecycle frames (Phase 3.5) ----
+  requirement_run_started: (ev) => {
+    if (ev.run) applyRequirementRunStarted(ev.run);
+  },
+  requirement_run_finished: (ev) => {
+    if (ev.run) applyRequirementRunFinished(ev.run);
+  },
+  requirement_run_verified: (ev) => {
+    if (typeof ev.run_id === "string" && ev.result) {
+      applyRequirementRunVerified(ev.run_id, ev.result);
+    }
+  },
+  // ---- Activity timeline frames (Phase 3.7) ----
+  activity_appended: (ev) => {
+    if (ev.activity) applyActivityAppended(ev.activity);
+  },
+  // ---- AgentProfile frames (Phase 3.6) ----
+  agent_profile_upserted: (ev) => {
+    if (ev.profile) applyAgentProfileUpserted(ev.profile);
+  },
+  agent_profile_deleted: (ev) => {
+    if (typeof ev.id === "string") applyAgentProfileDeleted(ev.id);
   },
   // ---- Doc workspace frames ----
   doc_project_upserted: (ev) => {

@@ -16,8 +16,10 @@
 
 import { useEffect, useState, type ComponentType } from "react";
 import { Link } from "react-router-dom";
+import { AgentsSection } from "./sections/AgentsSection";
 import { AppearanceSection } from "./sections/AppearanceSection";
 import { ApiSection } from "./sections/ApiSection";
+import { DiagnosticsSection } from "./sections/DiagnosticsSection";
 import { WorkspaceSection } from "./sections/WorkspaceSection";
 import { ProvidersSection } from "./sections/ProvidersSection";
 import { ServerSection } from "./sections/ServerSection";
@@ -46,10 +48,12 @@ const NAV: NavItem[] = [
   { id: "workspace", labelKey: "settingsNavWorkspace", fallback: "Workspace" },
   { id: "projects", labelKey: "settingsNavProjects", fallback: "Projects" },
   { id: "providers", labelKey: "settingsNavProviders", fallback: "Providers" },
+  { id: "agents", labelKey: "settingsNavAgents", fallback: "Agents" },
   { id: "mcp", labelKey: "settingsNavMcp", fallback: "MCP" },
   { id: "skills", labelKey: "settingsNavSkills", fallback: "Skills" },
   { id: "plugins", labelKey: "settingsNavPlugins", fallback: "Plugins" },
   { id: "server", labelKey: "settingsNavServer", fallback: "Server" },
+  { id: "diagnostics", labelKey: "settingsNavDiagnostics", fallback: "Diagnostics" },
   { id: "about", labelKey: "settingsNavAbout", fallback: "About" },
 ];
 
@@ -62,10 +66,12 @@ const SECTIONS: Record<string, ComponentType> = {
   workspace: WorkspaceSection,
   projects: ProjectsSettingsSection,
   providers: ProvidersSection,
+  agents: AgentsSection,
   mcp: McpSection,
   skills: SkillsSection,
   plugins: PluginsSection,
   server: ServerSection,
+  diagnostics: DiagnosticsSection,
   about: AboutSection,
 };
 
