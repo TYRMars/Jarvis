@@ -7,7 +7,9 @@
 //!   plugin (registered into a shared [`harness_skill::SkillCatalog`]
 //!   on install, removed on uninstall).
 //! - **mcp_servers**: prefix → [`harness_mcp::McpClientConfig`] map
-//!   that the [`harness_mcp::McpManager`] adopts on install.
+//!   that the [`harness_mcp::McpManager`] adopts on install. Each
+//!   entry's `prefix` field is optional in JSON — it's filled in
+//!   from the map key during parsing.
 //!
 //! Future Phase-4 work will add slash commands and hooks; the
 //! manifest schema reserves the field names but the manager skips
