@@ -229,6 +229,41 @@ binary uses. The individual tools are also pub so callers can register selective
   shallow top-level directory listing. Read-only, always on. The
   intended "first call" before the model picks where to grep or
   edit. No source-file contents — use `fs.read` for those.
+- `requirement.list` / `requirement.get` / `requirement.create` /
+  `requirement.update` / `requirement.link_conversation` — kanban-row
+  CRUD over [`RequirementStore`](crates/harness-core/src/store.rs).
+  `list` returns `{items, count, by_status: {backlog,
+  in_progress, review, done}}` so the model can answer "what's
+  pending?" without re-counting. `update` accepts any subset of
+  `{title, description, status}`; pass `description: null` to clear.
+  `link_conversation` is idempotent (a second call with the same id
+  is a no-op). Read tools are always-on / no-approval; the three
+  write tools are approval-gated. Registered only when
+  `BuiltinsConfig::requirement_store` is set (same opt-in as
+  `todo_store` / `project_store`).
+- `roadmap.import` — bootstrap the workspace's roadmap into Work.
+  Scans `docs/proposals/`, `docs/roadmap/`, `roadmap/`, or
+  `ROADMAP.md` (in that order), parses each file's `**Status:**` /
+  `**状态：**` line, and creates / updates one Requirement per
+  proposal under a workspace-derived Project (default slug
+  `<workspace-basename>-roadmap`, e.g. `jarvis-roadmap`,
+  `acme-roadmap`). zh-CN translations are merged into their English
+  peer (`foo.md` + `foo.zh-CN.md` → one Requirement with the
+  translation linked in `description`); a standalone zh-CN file
+  becomes the main entry. Idempotent — a hidden
+  `<!-- roadmap-source: <path> -->` marker on the first line of each
+  Requirement's `description` lets re-runs skip / update existing
+  rows. Status keywords map: `Adopted`/`Done`/`Shipped`/`已落地` →
+  `done`; `Adopted partial`/`In progress`/`WIP`/`部分`/`进行中` →
+  `in_progress`; `Review`/`Verifying`/`审核` → `review`;
+  `Proposed`/`Planned`/`Backlog`/`提议`/`待办` → `backlog`. Returns
+  `{project_id, slug, name, source, created, updated, unchanged,
+  removed, total, items}`. Off by default; registered only when
+  **both** `project_store` and `requirement_store` are set.
+  Approval-gated. Optional args: `slug`, `name`, `source_subdir`,
+  `prune` (default false — orphan-marker Requirements are kept).
+  Manually-added Requirements without the marker are never touched
+  by import.
 - `fs.patch` — apply a unified diff across one or more files.
   Accepts standard `--- a/<path>` / `+++ b/<path>` headers, with or
   without a `diff --git` preamble. Splits multi-file diffs on the
@@ -548,6 +583,27 @@ configured" from "really broken"):
   and the failure is logged at WARN.
 - `POST   /v1/conversations/:id/messages/stream` — same plumbing, but
   emits SSE `AgentEvent`s; saves on the terminal `Done` event.
+
+**Roadmap → Work bootstrap** — `POST /v1/roadmap/import`:
+
+Scan the workspace for proposal-style markdown
+(`docs/proposals/` → `docs/roadmap/` → `roadmap/` → `ROADMAP.md`)
+and create / update one Requirement per proposal under a
+workspace-derived Project (default slug
+`<workspace-basename>-roadmap`). Body is optional and accepts the
+same overrides as the [`roadmap.import`](#built-in-tools) tool:
+`{ slug?, name?, source_subdir?, prune? }`. Returns the
+[`ImportSummary`](crates/harness-requirement/src/roadmap.rs)
+shape: `{project_id, slug, name, source, created, updated,
+unchanged, removed, total, items, note?}`. Idempotent — re-runs
+update only changed Requirements. Returns
+`503 Service Unavailable` when any of `ProjectStore`,
+`RequirementStore`, or the pinned workspace root isn't configured.
+
+Once imported, the Web UI's `/projects` kanban renders the
+roadmap automatically — no UI code change needed. The agent can
+also call `roadmap.import` directly from chat to bootstrap any
+new workspace.
 
 SSE and WS both call `Agent::run_stream` and just serialise events — keep new transports
 on that same path rather than reimplementing the loop.

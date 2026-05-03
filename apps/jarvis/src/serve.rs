@@ -118,6 +118,12 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if project_store.is_some() {
         info!("persistent project store active (project.* tools registered)");
     }
+    bcfg.requirement_store = requirement_store.clone();
+    if requirement_store.is_some() {
+        info!(
+            "persistent requirement store active (requirement.* + roadmap.import tools registered)"
+        );
+    }
     bcfg.doc_store = doc_store.clone();
     if doc_store.is_some() {
         info!("persistent doc store active (doc.* tools registered)");
@@ -1239,6 +1245,10 @@ whole repo. \
 At the start of a fresh session, call todo.list to see persistent project follow-ups; \
 record new follow-ups via todo.add (not plan.update — that's for the current turn only) \
 and mark them completed/blocked as you go. \
+If the user asks about project progress or 'what's still pending', use project.list to find a \
+roadmap project for the current workspace (typically slug ending in `-roadmap`), then \
+requirement.list and group by status. If no such project exists, suggest running roadmap.import \
+to bootstrap one from docs/proposals/ or ROADMAP.md. \
 End every coding turn with a short report: which files changed, which checks ran, which checks \
 were skipped and why, and any residual risk you couldn't verify.";
 

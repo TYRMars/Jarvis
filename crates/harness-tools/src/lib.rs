@@ -22,6 +22,8 @@ pub mod http;
 pub mod patch;
 pub mod plan;
 pub mod project;
+pub mod requirement;
+pub mod roadmap;
 mod sandbox;
 pub mod shell;
 pub mod time;
@@ -48,12 +50,17 @@ pub use project::{
     ProjectArchiveTool, ProjectCreateTool, ProjectDeleteTool, ProjectGetTool, ProjectListTool,
     ProjectRestoreTool, ProjectUpdateTool,
 };
+pub use requirement::{
+    RequirementCreateTool, RequirementGetTool, RequirementLinkConversationTool,
+    RequirementListTool, RequirementUpdateTool,
+};
+pub use roadmap::RoadmapImportTool;
 pub use shell::{Sandbox, ShellExecTool, ShellLimits};
 pub use time::TimeNowTool;
 pub use todo::{TodoAddTool, TodoDeleteTool, TodoListTool, TodoUpdateTool};
 pub use workspace::WorkspaceContextTool;
 
-use harness_core::{DocStore, ProjectStore, TodoStore, ToolRegistry};
+use harness_core::{DocStore, ProjectStore, RequirementStore, TodoStore, ToolRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -122,6 +129,13 @@ pub struct BuiltinsConfig {
     /// `update`, `archive`, `restore`, `delete`) are
     /// approval-gated.
     pub project_store: Option<Arc<dyn ProjectStore>>,
+    /// Backing store for [`Requirement`](harness_core::Requirement) CRUD.
+    /// When `Some(_)`, the five `requirement.*` tools are registered;
+    /// when both `project_store` and `requirement_store` are set,
+    /// `roadmap.import` is also registered. Same opt-in pattern as the
+    /// other stores. Write operations (`create`, `update`,
+    /// `link_conversation`, plus `roadmap.import`) are approval-gated.
+    pub requirement_store: Option<Arc<dyn RequirementStore>>,
     /// Backing store for [`DocProject`](harness_core::DocProject) +
     /// [`DocDraft`](harness_core::DocDraft) CRUD. When `Some(_)`,
     /// the seven `doc.*` / `doc.draft.*` tools are registered. When
@@ -147,6 +161,7 @@ impl Default for BuiltinsConfig {
             enable_git_write: false,
             todo_store: None,
             project_store: None,
+            requirement_store: None,
             doc_store: None,
         }
     }
@@ -206,6 +221,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
         registry.register(TodoUpdateTool::new(store.clone()));
         registry.register(TodoDeleteTool::new(store));
     }
+    let project_store_for_roadmap = cfg.project_store.clone();
     if let Some(store) = cfg.project_store {
         registry.register(ProjectListTool::new(store.clone()));
         registry.register(ProjectGetTool::new(store.clone()));
@@ -214,6 +230,16 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
         registry.register(ProjectArchiveTool::new(store.clone()));
         registry.register(ProjectRestoreTool::new(store.clone()));
         registry.register(ProjectDeleteTool::new(store));
+    }
+    if let Some(store) = cfg.requirement_store {
+        registry.register(RequirementListTool::new(store.clone()));
+        registry.register(RequirementGetTool::new(store.clone()));
+        registry.register(RequirementCreateTool::new(store.clone()));
+        registry.register(RequirementUpdateTool::new(store.clone()));
+        registry.register(RequirementLinkConversationTool::new(store.clone()));
+        if let Some(projects) = project_store_for_roadmap {
+            registry.register(RoadmapImportTool::new(projects, store, root.clone()));
+        }
     }
     if let Some(store) = cfg.doc_store {
         registry.register(DocListTool::new(store.clone(), root.clone()));

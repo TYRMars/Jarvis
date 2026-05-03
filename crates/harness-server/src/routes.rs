@@ -57,6 +57,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::workspaces_routes::router())
         .merge(crate::todos_routes::router())
         .merge(crate::requirements_routes::router())
+        .merge(crate::roadmap_routes::router())
         .merge(crate::agent_profiles_routes::router())
         .merge(crate::diagnostics_routes::router())
         .merge(crate::docs_routes::router())

@@ -35,6 +35,7 @@ mod project_binder;
 mod projects;
 mod provider_registry;
 mod requirements_routes;
+mod roadmap_routes;
 mod routes;
 mod skill_routes;
 mod state;

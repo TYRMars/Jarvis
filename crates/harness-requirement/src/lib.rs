@@ -22,6 +22,7 @@
 pub mod events;
 pub mod manifest;
 pub mod model;
+pub mod roadmap;
 
 pub use events::RequirementRunEvent;
 pub use harness_core::requirement_run::{
@@ -29,3 +30,4 @@ pub use harness_core::requirement_run::{
 };
 pub use manifest::{build_default_manifest, render_manifest_summary};
 pub use model::{ContextKind, ContextRef, RequirementContextManifest, VerificationPlan};
+pub use roadmap::{import_proposals, ImportItemReport, ImportOptions, ImportSummary};
