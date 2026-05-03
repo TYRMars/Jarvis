@@ -16,6 +16,12 @@ pub enum Message {
     },
     User {
         content: String,
+        /// Mid-conversation prompt-cache breakpoint. Anthropic
+        /// translates `Some(_)` into a `cache_control` block on the
+        /// emitted user content; other providers ignore it. Default
+        /// `None` keeps the historical wire shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache: Option<CacheHint>,
     },
     Assistant {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,10 +36,19 @@ pub enum Message {
         /// back unchanged on subsequent turns.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
+        /// Mid-conversation prompt-cache breakpoint, attached to the
+        /// last content block of this message on the Anthropic wire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache: Option<CacheHint>,
     },
     Tool {
         tool_call_id: String,
         content: String,
+        /// Mid-conversation prompt-cache breakpoint, attached to this
+        /// `tool_result` block on the Anthropic wire. Other providers
+        /// ignore it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache: Option<CacheHint>,
     },
 }
 
@@ -73,6 +88,7 @@ impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self::User {
             content: content.into(),
+            cache: None,
         }
     }
 
@@ -81,6 +97,7 @@ impl Message {
             content: Some(content.into()),
             tool_calls: Vec::new(),
             reasoning_content: None,
+            cache: None,
         }
     }
 
@@ -88,15 +105,22 @@ impl Message {
         Self::Tool {
             tool_call_id: tool_call_id.into(),
             content: content.into(),
+            cache: None,
         }
     }
 
-    /// Attach a cache hint to a message (only takes effect on
-    /// variants that carry a `cache` field — currently `System`).
-    /// No-op on other variants so callers can chain without matching.
+    /// Attach a cache hint to a message. Takes effect on every variant
+    /// (`System`, `User`, `Assistant`, `Tool`); the Anthropic provider
+    /// translates the hint into a `cache_control` block on the right
+    /// boundary, other providers ignore it.
     pub fn with_cache(mut self, hint: CacheHint) -> Self {
-        if let Self::System { cache, .. } = &mut self {
-            *cache = Some(hint);
+        match &mut self {
+            Self::System { cache, .. }
+            | Self::User { cache, .. }
+            | Self::Assistant { cache, .. }
+            | Self::Tool { cache, .. } => {
+                *cache = Some(hint);
+            }
         }
         self
     }
@@ -163,10 +187,162 @@ mod tests {
     }
 
     #[test]
-    fn with_cache_only_affects_system() {
+    fn with_cache_now_marks_user() {
         let m = Message::user("hi").with_cache(CacheHint::Ephemeral);
-        // No-op on user, must still serialise as a plain user.
         let v = serde_json::to_value(&m).unwrap();
-        assert_eq!(v, json!({ "role": "user", "content": "hi" }));
+        assert_eq!(
+            v,
+            json!({ "role": "user", "content": "hi", "cache": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn user_without_hint_omits_cache_field_on_wire() {
+        let m = Message::user("plain");
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v, json!({ "role": "user", "content": "plain" }));
+    }
+
+    #[test]
+    fn user_with_hint_serialises_cache_field() {
+        let m = Message::user("rules").with_cache(CacheHint::Ephemeral);
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            v,
+            json!({ "role": "user", "content": "rules", "cache": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn user_cache_round_trips_through_serde() {
+        let original = Message::user("rules").with_cache(CacheHint::Persistent);
+        let s = serde_json::to_string(&original).unwrap();
+        let back: Message = serde_json::from_str(&s).unwrap();
+        match back {
+            Message::User { content, cache } => {
+                assert_eq!(content, "rules");
+                assert_eq!(cache, Some(CacheHint::Persistent));
+            }
+            _ => panic!("expected user"),
+        }
+    }
+
+    #[test]
+    fn legacy_user_without_cache_field_decodes() {
+        let raw = json!({ "role": "user", "content": "old" });
+        let m: Message = serde_json::from_value(raw).unwrap();
+        match m {
+            Message::User { content, cache } => {
+                assert_eq!(content, "old");
+                assert!(cache.is_none());
+            }
+            _ => panic!("expected user"),
+        }
+    }
+
+    #[test]
+    fn assistant_without_hint_omits_cache_field_on_wire() {
+        let m = Message::assistant_text("plain");
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v, json!({ "role": "assistant", "content": "plain" }));
+    }
+
+    #[test]
+    fn assistant_with_hint_serialises_cache_field() {
+        let m = Message::assistant_text("done").with_cache(CacheHint::Ephemeral);
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            v,
+            json!({ "role": "assistant", "content": "done", "cache": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn assistant_cache_round_trips_through_serde() {
+        let original = Message::assistant_text("done").with_cache(CacheHint::Persistent);
+        let s = serde_json::to_string(&original).unwrap();
+        let back: Message = serde_json::from_str(&s).unwrap();
+        match back {
+            Message::Assistant { content, cache, .. } => {
+                assert_eq!(content.as_deref(), Some("done"));
+                assert_eq!(cache, Some(CacheHint::Persistent));
+            }
+            _ => panic!("expected assistant"),
+        }
+    }
+
+    #[test]
+    fn legacy_assistant_without_cache_field_decodes() {
+        let raw = json!({ "role": "assistant", "content": "old" });
+        let m: Message = serde_json::from_value(raw).unwrap();
+        match m {
+            Message::Assistant { content, cache, .. } => {
+                assert_eq!(content.as_deref(), Some("old"));
+                assert!(cache.is_none());
+            }
+            _ => panic!("expected assistant"),
+        }
+    }
+
+    #[test]
+    fn tool_without_hint_omits_cache_field_on_wire() {
+        let m = Message::tool_result("call_42", "ok");
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            v,
+            json!({ "role": "tool", "tool_call_id": "call_42", "content": "ok" })
+        );
+    }
+
+    #[test]
+    fn tool_with_hint_serialises_cache_field() {
+        let m = Message::tool_result("call_42", "ok").with_cache(CacheHint::Ephemeral);
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "role": "tool",
+                "tool_call_id": "call_42",
+                "content": "ok",
+                "cache": "ephemeral"
+            })
+        );
+    }
+
+    #[test]
+    fn tool_cache_round_trips_through_serde() {
+        let original = Message::tool_result("call_42", "ok").with_cache(CacheHint::Persistent);
+        let s = serde_json::to_string(&original).unwrap();
+        let back: Message = serde_json::from_str(&s).unwrap();
+        match back {
+            Message::Tool {
+                tool_call_id,
+                content,
+                cache,
+            } => {
+                assert_eq!(tool_call_id, "call_42");
+                assert_eq!(content, "ok");
+                assert_eq!(cache, Some(CacheHint::Persistent));
+            }
+            _ => panic!("expected tool"),
+        }
+    }
+
+    #[test]
+    fn legacy_tool_without_cache_field_decodes() {
+        let raw = json!({ "role": "tool", "tool_call_id": "call_42", "content": "old" });
+        let m: Message = serde_json::from_value(raw).unwrap();
+        match m {
+            Message::Tool {
+                tool_call_id,
+                content,
+                cache,
+            } => {
+                assert_eq!(tool_call_id, "call_42");
+                assert_eq!(content, "old");
+                assert!(cache.is_none());
+            }
+            _ => panic!("expected tool"),
+        }
     }
 }

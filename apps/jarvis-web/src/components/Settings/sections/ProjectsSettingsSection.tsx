@@ -17,13 +17,14 @@ import {
   updateProject,
 } from "../../../services/projects";
 import { chipColor } from "../../../utils/chipColor";
+import { confirm } from "../../ui";
 
 function tx(key: string, fallback: string): string {
   const v = t(key);
   return v === key ? fallback : v;
 }
 
-export function ProjectsSettingsSection() {
+export function ProjectsSettingsSection({ embedded }: { embedded?: boolean } = {}) {
   const available = useAppStore((s) => s.projectsAvailable);
   const projects = useAppStore((s) => s.projects);
   const [showArchived, setShowArchived] = useState(false);
@@ -42,6 +43,7 @@ export function ProjectsSettingsSection() {
         titleFallback="Projects"
         descKey="settingsServerDesc"
         descFallback="Server has no project store configured."
+        embedded={embedded}
       >
         <p className="settings-empty">
           {tx(
@@ -60,6 +62,7 @@ export function ProjectsSettingsSection() {
       titleFallback="Projects"
       descKey="settingsProjectsDesc"
       descFallback="Reusable context containers."
+      embedded={embedded}
     >
       <div className="settings-row">
         <div className="settings-row-label">
@@ -175,10 +178,14 @@ function ProjectRow({
               <button
                 type="button"
                 className="settings-btn settings-btn-danger"
-                onClick={() => {
-                  if (confirm(`Archive "${project.name}"? Bound conversations keep working.`)) {
-                    void archiveProject(project.id);
-                  }
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: `Archive "${project.name}"?`,
+                    detail: "Bound conversations keep working.",
+                    danger: true,
+                    confirmLabel: t("uiConfirmArchiveOk"),
+                  });
+                  if (ok) void archiveProject(project.id);
                 }}
               >
                 {tx("delete", "Archive")}

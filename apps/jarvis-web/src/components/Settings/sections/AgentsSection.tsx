@@ -27,7 +27,7 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export function AgentsSection() {
+export function AgentsSection({ embedded }: { embedded?: boolean } = {}) {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   useEffect(() => {
     void loadAgentProfiles();
@@ -43,6 +43,7 @@ export function AgentsSection() {
       titleFallback="Agents"
       descKey="settingsAgentsDesc"
       descFallback="Named agent profiles requirements can be assigned to. Each profile picks a provider + model and an optional system prompt prepended to the run manifest."
+      embedded={embedded}
     >
       <CreateAgentForm />
       <div className="settings-agent-list" role="list">

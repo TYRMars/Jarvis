@@ -30,7 +30,7 @@ type MarketState =
   | { kind: "ready"; entries: MarketplaceEntry[] }
   | { kind: "error"; message: string };
 
-export function PluginsSection() {
+export function PluginsSection({ embedded }: { embedded?: boolean } = {}) {
   const [installed, setInstalled] = useState<InstalledState>({ kind: "loading" });
   const [market, setMarket] = useState<MarketState>({ kind: "loading" });
   const [pathValue, setPathValue] = useState("");
@@ -86,6 +86,7 @@ export function PluginsSection() {
       titleFallback="Plugins"
       descKey="settingsPluginsDesc"
       descFallback="Bundles of skills + MCP servers. Install from a local path or pick from the marketplace; uninstall pulls everything the plugin shipped."
+      embedded={embedded}
     >
       {renderInstalled(installed, doRemove)}
 

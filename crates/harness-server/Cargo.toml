@@ -13,6 +13,7 @@ harness-plugin.workspace = true
 harness-requirement.workspace = true
 harness-skill.workspace = true
 harness-store.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
 tokio.workspace = true

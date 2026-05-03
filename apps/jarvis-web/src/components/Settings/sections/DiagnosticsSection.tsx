@@ -50,7 +50,7 @@ function formatAge(seconds: number): string {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-export function DiagnosticsSection() {
+export function DiagnosticsSection({ embedded }: { embedded?: boolean } = {}) {
   const [orphans, setOrphans] = useState<OrphanWorktree[] | null>(null);
   const [stuck, setStuck] = useState<StuckRun[] | null>(null);
   const [failed, setFailed] = useState<RequirementRun[] | null>(null);
@@ -112,6 +112,7 @@ export function DiagnosticsSection() {
       titleFallback="Diagnostics"
       descKey="settingsDiagnosticsDesc"
       descFallback="Lists worktree directories whose run id no longer exists. These pile up after crashes or after a run was deleted without DELETE /v1/runs/:id/worktree being called first."
+      embedded={embedded}
     >
       <h3 className="settings-diagnostics-subhead">{t("diagnosticsOrphansHeading")}</h3>
       {unavailable ? (

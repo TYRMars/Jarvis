@@ -308,7 +308,7 @@ async fn collect_project_names(
 fn first_user_title(conv: &harness_core::Conversation) -> Option<String> {
     const TITLE_MAX_CHARS: usize = 60;
     for m in &conv.messages {
-        if let harness_core::Message::User { content } = m {
+        if let harness_core::Message::User { content, .. } = m {
             let line = content.lines().next().unwrap_or("").trim();
             if line.is_empty() {
                 continue;
@@ -432,7 +432,7 @@ async fn search(State(state): State<AppState>, Query(q): Query<SearchQuery>) -> 
         let mut snippets: Vec<serde_json::Value> = Vec::new();
         for (ord, msg) in conv.messages.iter().enumerate() {
             let (role, body): (&str, &str) = match msg {
-                harness_core::Message::User { content } => ("user", content.as_str()),
+                harness_core::Message::User { content, .. } => ("user", content.as_str()),
                 harness_core::Message::Assistant {
                     content: Some(text),
                     ..

@@ -640,7 +640,7 @@ fn convert_messages(messages: Vec<Message>) -> (Option<String>, Vec<InputItem>) 
                 }
                 systems.push_str(&content);
             }
-            Message::User { content } => {
+            Message::User { content, .. } => {
                 input.push(InputItem::Message {
                     role: "user",
                     content: vec![MessagePart::InputText { text: content }],
@@ -650,6 +650,7 @@ fn convert_messages(messages: Vec<Message>) -> (Option<String>, Vec<InputItem>) 
                 content,
                 tool_calls,
                 reasoning_content: _,
+                ..
             } => {
                 if let Some(text) = content {
                     if !text.is_empty() {
@@ -673,6 +674,7 @@ fn convert_messages(messages: Vec<Message>) -> (Option<String>, Vec<InputItem>) 
             Message::Tool {
                 tool_call_id,
                 content,
+                ..
             } => {
                 input.push(InputItem::FunctionCallOutput {
                     call_id: tool_call_id,
@@ -838,6 +840,7 @@ impl ResponsesResponseBody {
                 content,
                 tool_calls,
                 reasoning_content: None,
+                cache: None,
             },
             finish_reason,
         })
@@ -1017,6 +1020,7 @@ impl StreamAccumulator {
                 content,
                 tool_calls,
                 reasoning_content: None,
+                cache: None,
             },
             finish_reason,
         }
@@ -1096,6 +1100,7 @@ mod tests {
                         arguments: json!({"text": "hi"}),
                     }],
                     reasoning_content: None,
+                cache: None,
                 },
             ]),
             &default_codex_cfg(),
@@ -1127,6 +1132,7 @@ mod tests {
                         arguments: json!({}),
                     }],
                     reasoning_content: None,
+                cache: None,
                 },
             ]),
             &default_codex_cfg(),
@@ -1152,6 +1158,7 @@ mod tests {
                         arguments: json!({}),
                     }],
                     reasoning_content: None,
+                cache: None,
                 },
                 Message::tool_result("fc_1", "the output"),
             ]),
@@ -1213,6 +1220,7 @@ mod tests {
                             arguments: json!({"path": "x"}),
                         }],
                         reasoning_content: None,
+                    cache: None,
                     },
                 ],
                 tools: vec![
@@ -1438,6 +1446,7 @@ mod tests {
                 content,
                 tool_calls,
                 reasoning_content: _,
+            cache: None,
             } => {
                 assert_eq!(content.as_deref(), Some("hello world"));
                 assert_eq!(tool_calls.len(), 1);
@@ -1537,6 +1546,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
+                    cache: None,
                     } => {
                         assert_eq!(content.as_deref(), Some("Hello"));
                         assert!(tool_calls.is_empty());
@@ -1652,6 +1662,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
+                    cache: None,
                     } => {
                         assert!(content.is_none());
                         assert!(tool_calls.is_empty());

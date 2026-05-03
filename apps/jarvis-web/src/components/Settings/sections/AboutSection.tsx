@@ -23,13 +23,14 @@ const DOCS = [
   { href: "https://github.com/zjn-tech/Jarvis/blob/main/docs/user-guide-web.md", labelKey: "settingsAboutDocsWeb", fallback: "Web UI guide" },
 ];
 
-export function AboutSection() {
+export function AboutSection({ embedded }: { embedded?: boolean } = {}) {
   const version = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "dev";
   return (
     <Section
       id="about"
       titleKey="settingsAboutTitle"
       titleFallback="About"
+      embedded={embedded}
     >
       <div className="settings-about-grid">
         <div>

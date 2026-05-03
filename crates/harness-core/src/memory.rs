@@ -88,11 +88,12 @@ pub fn estimate_tokens(message: &Message) -> usize {
     const PER_MESSAGE_OVERHEAD: usize = 4;
 
     let chars: usize = match message {
-        Message::System { content, .. } | Message::User { content } => content.chars().count(),
+        Message::System { content, .. } | Message::User { content, .. } => content.chars().count(),
         Message::Assistant {
             content,
             tool_calls,
             reasoning_content,
+            ..
         } => {
             let body = content.as_deref().map(|s| s.chars().count()).unwrap_or(0);
             let reasoning = reasoning_content
@@ -112,6 +113,7 @@ pub fn estimate_tokens(message: &Message) -> usize {
         Message::Tool {
             tool_call_id,
             content,
+            ..
         } => tool_call_id.chars().count() + content.chars().count(),
     };
     chars.div_ceil(4) + PER_MESSAGE_OVERHEAD
@@ -163,6 +165,7 @@ mod tests {
                 arguments: json!({ "text": "hi" }),
             }],
             reasoning_content: None,
+            cache: None,
         };
         // Same number you'd get from the free helper.
         assert_eq!(est.estimate_message(&m), estimate_tokens(&m));

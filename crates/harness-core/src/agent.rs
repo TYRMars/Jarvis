@@ -726,6 +726,7 @@ mod tests {
                             arguments: json!({"x": 1}),
                         }],
                         reasoning_content: None,
+                        cache: None,
                     },
                     finish_reason: FinishReason::ToolCalls,
                 })
