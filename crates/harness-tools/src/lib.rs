@@ -23,6 +23,7 @@ pub mod patch;
 pub mod plan;
 pub mod project;
 pub mod requirement;
+pub mod roadmap;
 mod sandbox;
 pub mod shell;
 pub mod time;
@@ -52,6 +53,7 @@ pub use project::{
 pub use requirement::{
     RequirementBlockTool, RequirementCompleteTool, RequirementListTool, RequirementStartTool,
 };
+pub use roadmap::RoadmapImportTool;
 pub use shell::{Sandbox, ShellExecTool, ShellLimits};
 pub use time::TimeNowTool;
 pub use todo::{TodoAddTool, TodoDeleteTool, TodoListTool, TodoUpdateTool};
@@ -175,6 +177,11 @@ impl Default for BuiltinsConfig {
 /// still be registered one-by-one if you want finer control.
 pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     let root = cfg.fs_root;
+    // `roadmap.import` needs both the project + requirement stores
+    // and is registered after the per-store blocks consume `cfg`.
+    // Clone now so the borrow checker doesn't trip up on that.
+    let roadmap_projects = cfg.project_store.clone();
+    let roadmap_requirements = cfg.requirement_store.clone();
     registry.register(EchoTool);
     registry.register(TimeNowTool);
     registry.register(HttpFetchTool::new(cfg.http_max_bytes));
@@ -252,5 +259,12 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
         registry.register(RequirementStartTool::new(req_store.clone(), act_store.clone()));
         registry.register(RequirementBlockTool::new(req_store.clone(), act_store.clone()));
         registry.register(RequirementCompleteTool::new(req_store, act_store));
+    }
+    // `roadmap.import` is one of the writes the model can make on its
+    // own without a kanban audit row (it creates fresh Requirements
+    // rather than mutating one's status). Approval-gated; off unless
+    // both stores are configured.
+    if let (Some(projects), Some(requirements)) = (roadmap_projects, roadmap_requirements) {
+        registry.register(RoadmapImportTool::new(projects, requirements, root.clone()));
     }
 }
