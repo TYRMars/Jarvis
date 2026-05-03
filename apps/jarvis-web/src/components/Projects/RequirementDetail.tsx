@@ -303,15 +303,13 @@ function RunsSection({ runs }: { runs: RequirementRun[] }) {
 }
 
 function RunStatusPill({ status }: { status: RequirementRunStatus }) {
-  const labelKey = (
-    {
-      pending: "runStatusPending",
-      running: "runStatusRunning",
-      completed: "runStatusCompleted",
-      failed: "runStatusFailed",
-      cancelled: "runStatusCancelled",
-    } as Record<RequirementRunStatus, string>
-  )[status];
+  const labelKey = {
+    pending: "runStatusPending",
+    running: "runStatusRunning",
+    completed: "runStatusCompleted",
+    failed: "runStatusFailed",
+    cancelled: "runStatusCancelled",
+  }[status];
   return (
     <span className={"requirement-run-pill run-status-" + status}>
       {t(labelKey)}
@@ -320,14 +318,12 @@ function RunStatusPill({ status }: { status: RequirementRunStatus }) {
 }
 
 function VerificationBadge({ status }: { status: VerificationStatus }) {
-  const labelKey = (
-    {
-      passed: "runVerifyPassed",
-      failed: "runVerifyFailed",
-      needs_review: "runVerifyNeedsReview",
-      skipped: "runVerifySkipped",
-    } as Record<VerificationStatus, string>
-  )[status];
+  const labelKey = {
+    passed: "runVerifyPassed",
+    failed: "runVerifyFailed",
+    needs_review: "runVerifyNeedsReview",
+    skipped: "runVerifySkipped",
+  }[status];
   const glyph = status === "passed" ? "✓" : status === "failed" ? "✗" : "·";
   return (
     <span
@@ -581,8 +577,8 @@ function AssigneePicker({
           </option>
         ))}
         {hasUnknownAssignee && (
-          <option value={assigneeId!}>{`(unknown ${shortenId(
-            assigneeId!,
+          <option value={assigneeId}>{`(unknown ${shortenId(
+            assigneeId,
           )})`}</option>
         )}
       </select>
