@@ -20,6 +20,11 @@
 //! }
 //! ```
 //!
+//! Note that under `mcp_servers`, each entry's `prefix` field is
+//! omitted in the manifest — it's filled in from the map key during
+//! parsing. Supplying it anyway is harmless: the value is overridden
+//! to match the key.
+//!
 //! Unknown fields are kept (forward-compat with future Phase-4
 //! `slash_commands` / `hooks` keys) so older binaries don't reject
 //! manifests that use them; the manager just won't act on them.
@@ -27,7 +32,7 @@
 use std::collections::BTreeMap;
 
 use harness_mcp::McpClientConfig;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -63,10 +68,18 @@ pub struct PluginManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
     /// Prefix → MCP server config. The PluginManager calls
-    /// `McpManager::add` for each one on install. The `prefix`
-    /// field on each value is overridden to match the map key so
-    /// callers don't have to repeat it.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// `McpManager::add` for each one on install.
+    ///
+    /// On the wire the entry's `prefix` field is **optional**:
+    /// during parsing, a missing `prefix` is filled in from the map
+    /// key, so authors don't have to repeat it. An explicitly-set
+    /// `prefix` is overridden to match the key (the map key always
+    /// wins).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_mcp_servers"
+    )]
     pub mcp_servers: BTreeMap<String, McpClientConfig>,
     // ---- forward-compat (Phase 4) ----
     /// Slash-command files. Today the manager records them as
@@ -91,6 +104,32 @@ pub struct HookSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matcher: Option<String>,
     pub command: String,
+}
+
+/// Make `McpClientConfig.prefix` optional in the manifest path: when
+/// missing on a given entry, fill it in from the map key before
+/// handing the value to `McpClientConfig::deserialize`. An
+/// explicitly-set `prefix` is also rewritten to the key — the
+/// post-parse pass in `parse_plugin_manifest` does the same as a
+/// defence-in-depth measure for callers that build a manifest in
+/// code rather than parsing JSON.
+fn deserialize_mcp_servers<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, McpClientConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw: BTreeMap<String, serde_json::Value> = BTreeMap::deserialize(deserializer)?;
+    let mut out = BTreeMap::new();
+    for (key, mut value) in raw {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("prefix".to_string(), serde_json::Value::String(key.clone()));
+        }
+        let cfg: McpClientConfig =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        out.insert(key, cfg);
+    }
+    Ok(out)
 }
 
 pub fn parse_plugin_manifest(text: &str) -> Result<PluginManifest, PluginManifestError> {
@@ -156,6 +195,8 @@ mod tests {
 
     #[test]
     fn parses_full_manifest() {
+        // Documents the canonical wire shape: `prefix` is omitted on
+        // each `mcp_servers` entry — the map key supplies it.
         let raw = r#"{
             "name": "github-tools",
             "version": "0.2.0",
@@ -166,7 +207,6 @@ mod tests {
             "skills": ["skills/triage", "skills/release"],
             "mcp_servers": {
                 "github": {
-                    "prefix": "ignored-overridden",
                     "transport": { "type": "stdio", "command": "uvx", "args": ["mcp-server-github"] }
                 }
             }
@@ -175,6 +215,28 @@ mod tests {
         assert_eq!(m.skills.len(), 2);
         let entry = m.mcp_servers.get("github").unwrap();
         assert_eq!(entry.prefix, "github", "prefix should match map key");
+    }
+
+    #[test]
+    fn explicit_prefix_in_manifest_is_overridden_by_map_key() {
+        // Tolerated for back-compat: an author who repeats `prefix`
+        // (or copy-pastes from an in-code config) gets a sensible
+        // result rather than a deserialize error or a mismatched
+        // prefix at runtime. The map key is authoritative.
+        let raw = r#"{
+            "name": "github-tools",
+            "version": "0.2.0",
+            "description": "x",
+            "mcp_servers": {
+                "github": {
+                    "prefix": "ignored-overridden",
+                    "transport": { "type": "stdio", "command": "uvx", "args": ["mcp-server-github"] }
+                }
+            }
+        }"#;
+        let m = parse_plugin_manifest(raw).unwrap();
+        let entry = m.mcp_servers.get("github").unwrap();
+        assert_eq!(entry.prefix, "github");
     }
 
     #[test]
