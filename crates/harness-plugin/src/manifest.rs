@@ -192,6 +192,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_in_tree_gitnexus_plugin() {
+        // Pin the on-disk example to the schema so renames / typos in
+        // examples/plugins/gitnexus/plugin.json fail in CI rather than
+        // silently breaking `jarvis plugin install`.
+        let raw = include_str!("../../../examples/plugins/gitnexus/plugin.json");
+        let m = parse_plugin_manifest(raw).unwrap();
+        assert_eq!(m.name, "gitnexus");
+        assert_eq!(m.skills, vec!["skills/gitnexus-workflow"]);
+        let entry = m.mcp_servers.get("gitnexus").expect("gitnexus mcp entry");
+        assert_eq!(entry.prefix, "gitnexus");
+        match &entry.transport {
+            harness_mcp::McpTransport::Stdio { command, args, .. } => {
+                assert_eq!(command, "npx");
+                assert_eq!(args, &vec!["-y".to_string(), "gitnexus".to_string(), "mcp".to_string()]);
+            }
+            other => panic!("expected stdio transport, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn allows_unknown_fields_for_forward_compat() {
         let raw = r#"{
             "name": "x",

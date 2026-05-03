@@ -117,6 +117,13 @@ async fn marketplace(State(_state): State<AppState>) -> Response {
             "value": "examples/plugins/code-review-pack",
             "tags": ["skills"],
         }),
+        json!({
+            "name": "gitnexus",
+            "description": "Bridges GitNexus (knowledge-graph code intelligence) as an MCP server, plus a workflow skill.",
+            "source": "path",
+            "value": "examples/plugins/gitnexus",
+            "tags": ["mcp", "skills", "code-intelligence"],
+        }),
     ];
     (StatusCode::OK, Json(json!({ "plugins": entries }))).into_response()
 }
@@ -131,4 +138,80 @@ fn map_error(e: PluginManagerError) -> Response {
         _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     (status, Json(json!({ "error": msg }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::router as full_router;
+    use async_trait::async_trait;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use harness_core::{
+        Agent, AgentConfig, ChatRequest, ChatResponse, FinishReason, LlmProvider, Message,
+        Result as CoreResult,
+    };
+    use tower::ServiceExt;
+
+    struct NoopLlm;
+    #[async_trait]
+    impl LlmProvider for NoopLlm {
+        async fn complete(&self, _req: ChatRequest) -> CoreResult<ChatResponse> {
+            Ok(ChatResponse {
+                message: Message::assistant_text("ok"),
+                finish_reason: FinishReason::Stop,
+                response_id: None,
+            })
+        }
+    }
+
+    fn make_state() -> AppState {
+        let agent = Agent::new(Arc::new(NoopLlm), AgentConfig::new("test-model"));
+        AppState::new(Arc::new(agent))
+    }
+
+    /// The marketplace stub is the entry point users hit via
+    /// `jarvis plugin marketplace`. Pin both built-in entries so a
+    /// careless edit to the hard-coded list shows up as a CI failure
+    /// instead of a silently-disappeared install path.
+    #[tokio::test]
+    async fn marketplace_lists_builtin_entries() {
+        let app = full_router(make_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/plugins/marketplace")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let plugins = body["plugins"].as_array().expect("plugins array");
+        let names: Vec<&str> = plugins
+            .iter()
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+        assert!(names.contains(&"code-review-pack"), "names={names:?}");
+        assert!(names.contains(&"gitnexus"), "names={names:?}");
+
+        // Each entry must carry the fields `jarvis plugin install`
+        // depends on: `source` ("path") and `value` (relative path).
+        for p in plugins {
+            assert_eq!(p["source"].as_str(), Some("path"), "entry={p}");
+            assert!(p["value"].as_str().is_some(), "entry={p}");
+        }
+
+        // Spot-check the gitnexus entry routes to the on-disk plugin.
+        let gitnexus = plugins
+            .iter()
+            .find(|p| p["name"].as_str() == Some("gitnexus"))
+            .unwrap();
+        assert_eq!(
+            gitnexus["value"].as_str(),
+            Some("examples/plugins/gitnexus")
+        );
+    }
 }

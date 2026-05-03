@@ -1,0 +1,19 @@
+{
+  "name": "gitnexus",
+  "version": "0.1.0",
+  "description": "Code-intelligence plugin: bridges GitNexus (https://github.com/abhigyanpatwari/GitNexus) as an MCP server so the agent can query call chains, blast radius, and hybrid search across an indexed repo.",
+  "author": "Jarvis Project",
+  "license": "MIT",
+  "homepage": "https://github.com/abhigyanpatwari/GitNexus",
+  "skills": ["skills/gitnexus-workflow"],
+  "mcp_servers": {
+    "gitnexus": {
+      "prefix": "gitnexus",
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "gitnexus", "mcp"]
+      }
+    }
+  }
+}
