@@ -42,6 +42,7 @@ mod todo_binder;
 mod todos_routes;
 mod ui;
 mod verification;
+mod work_overview_routes;
 mod workspace_diff;
 mod workspaces_routes;
 mod worktree;
