@@ -17,10 +17,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_core::{default_estimator, BoxError, Memory, Message, TokenEstimator};
+use harness_core::{
+    cache_breakpoint_indices, default_estimator, BoxError, Memory, Message, TokenEstimator,
+};
 use tracing::debug;
 
-use crate::turns::{select_recent_turns, split_into_turns};
+use crate::turns::{select_recent_turns, select_recent_turns_with_breakpoint, split_into_turns};
 
 /// Drop oldest turns until the estimated token count fits `max_tokens`.
 pub struct SlidingWindowMemory {
@@ -82,11 +84,27 @@ fn compact(
         .sum();
     let budget = max_tokens.saturating_sub(system_tokens);
 
-    let kept = select_recent_turns(&turns, budget, |turn| {
-        turn.iter()
-            .map(|&i| estimator.estimate_message(&messages[i]))
-            .sum()
-    });
+    // Cache-aware path: if any message carries an explicit cache
+    // breakpoint, prefer to keep the cached prefix intact. The
+    // highest-indexed breakpoint marks the end of what's cached on the
+    // server side; dropping turns before it busts the cache for every
+    // message that follows. Falls back to the plain newest-first
+    // selector when no breakpoint is set, preserving the historical
+    // behaviour for callers that don't use caching.
+    let breakpoints = cache_breakpoint_indices(messages);
+    let kept = if let Some(&bp) = breakpoints.iter().max() {
+        select_recent_turns_with_breakpoint(&turns, bp, budget, |turn| {
+            turn.iter()
+                .map(|&i| estimator.estimate_message(&messages[i]))
+                .sum()
+        })
+    } else {
+        select_recent_turns(&turns, budget, |turn| {
+            turn.iter()
+                .map(|&i| estimator.estimate_message(&messages[i]))
+                .sum()
+        })
+    };
 
     let dropped_turns = turns.len() - kept.len();
     debug!(
@@ -123,7 +141,7 @@ fn compact(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::{estimate_tokens, CharRatioEstimator, ToolCall};
+    use harness_core::{estimate_tokens, CacheHint, CharRatioEstimator, ToolCall};
     use serde_json::json;
 
     fn user(s: &str) -> Message {
@@ -344,6 +362,105 @@ mod tests {
             })
             .collect();
         assert_eq!(positions, vec!["u2", "u3"]);
+    }
+
+    #[test]
+    fn cache_breakpoint_protects_pre_breakpoint_turns() {
+        // Conversation: sys + 3 turns, with a CacheHint on the
+        // assistant of turn 2. With a budget that fits only TWO turns
+        // total, the default heuristic would drop turns 1 and 2 (keep
+        // 2 newest). Cache-aware should instead keep turns 1 + 2
+        // (the cached prefix) and the recent turn (recency invariant).
+        let mut turn2_assistant = Message::assistant_text("turn 2 reply");
+        turn2_assistant = turn2_assistant.with_cache(CacheHint::Ephemeral);
+        let msgs = vec![
+            system("sys"),
+            user("turn 1 user"),
+            assistant("turn 1 reply"),
+            user("turn 2 user"),
+            turn2_assistant,
+            user("turn 3 user"),
+            assistant("turn 3 reply"),
+            user("turn 4 user"),
+            assistant("turn 4 reply"),
+        ];
+        // Budget that fits sys + only TWO of the four turns at once.
+        let budget = tokens(&msgs[0..1]) + tokens(&msgs[1..3]) + tokens(&msgs[7..9]);
+        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+
+        // Turn 1 (cached prefix) survives even though it's the oldest.
+        assert!(
+            out.iter()
+                .any(|m| matches!(m, Message::User { content, .. } if content == "turn 1 user")),
+            "cached-prefix turn 1 should survive over budget pressure"
+        );
+        // Turn 2 (cached prefix end) survives.
+        assert!(out
+            .iter()
+            .any(|m| matches!(m, Message::User { content, .. } if content == "turn 2 user")));
+        // Turn 4 (recency invariant) survives.
+        assert!(out
+            .iter()
+            .any(|m| matches!(m, Message::User { content, .. } if content == "turn 4 user")));
+        // Turn 3 (the middle) is the one that got dropped.
+        assert!(!out
+            .iter()
+            .any(|m| matches!(m, Message::User { content, .. } if content == "turn 3 user")));
+    }
+
+    #[test]
+    fn cache_breakpoint_inside_tool_exchange_keeps_atomicity() {
+        // Breakpoint sits on a Tool reply inside the recent turn. The
+        // tool exchange must still be atomic — the assistant tool-call
+        // and the matching tool-result must both survive (or both drop).
+        let tool_reply_with_hint = Message::tool_result("call_1", "file contents")
+            .with_cache(CacheHint::Ephemeral);
+        let msgs = vec![
+            system("sys"),
+            user("old"),
+            assistant("old reply"),
+            user("recent"),
+            assistant_with_call("call_1", "fs.read"),
+            tool_reply_with_hint,
+            assistant("done"),
+        ];
+        let budget = tokens(&msgs[0..1]) + tokens(&msgs[3..7]);
+        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+
+        let has_call = out
+            .iter()
+            .any(|m| matches!(m, Message::Assistant { tool_calls, .. } if !tool_calls.is_empty()));
+        let has_reply = out
+            .iter()
+            .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id == "call_1"));
+        assert_eq!(
+            has_call, has_reply,
+            "tool exchange must stay atomic under cache-aware compaction"
+        );
+        assert!(has_call, "the recent tool exchange should survive");
+    }
+
+    #[test]
+    fn cache_breakpoint_overflow_falls_back_to_recent_first() {
+        // Cache prefix way bigger than budget — fall back to plain
+        // newest-first behavior so we don't regress recency.
+        let big = "x".repeat(2_000);
+        let mut hinted = Message::assistant_text(&big);
+        hinted = hinted.with_cache(CacheHint::Ephemeral);
+        let msgs = vec![
+            system("sys"),
+            user(&big),
+            hinted,
+            user("recent"),
+            assistant("r"),
+        ];
+        // Budget too tight to fit the cached prefix.
+        let budget = 50;
+        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+        // Recent turn should still be there.
+        assert!(out
+            .iter()
+            .any(|m| matches!(m, Message::User { content, .. } if content == "recent")));
     }
 
     /// A pluggable estimator that doubles every count. Useful to prove

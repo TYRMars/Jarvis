@@ -43,8 +43,8 @@ pub use hitl::{
 };
 pub use llm::{ChatRequest, ChatResponse, FinishReason, LlmChunk, LlmProvider, LlmStream, Usage};
 pub use memory::{
-    default_estimator, estimate_tokens, estimate_total_tokens, CharRatioEstimator, Memory,
-    TokenEstimator,
+    cache_breakpoint_indices, default_estimator, estimate_tokens, estimate_total_tokens,
+    CharRatioEstimator, Memory, TokenEstimator,
 };
 pub use message::{CacheHint, Message, ToolCall};
 pub use plan::{emit as emit_plan, is_active as plan_active, with_plan, PlanItem, PlanStatus};

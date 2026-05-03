@@ -125,6 +125,29 @@ pub fn estimate_total_tokens(messages: &[Message]) -> usize {
     messages.iter().map(estimate_tokens).sum()
 }
 
+/// Indices of every message carrying an explicit `CacheHint`.
+///
+/// Memory backends consult this to keep cache-anchored prefixes intact
+/// during compaction: the highest-indexed breakpoint marks the end of
+/// the cached prefix, and dropping turns *before* that point would bust
+/// the LLM's prompt cache. See `harness-memory` for the actual
+/// preference logic — this helper just exposes the indices.
+pub fn cache_breakpoint_indices(messages: &[Message]) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let hit = match m {
+                Message::System { cache, .. }
+                | Message::User { cache, .. }
+                | Message::Assistant { cache, .. }
+                | Message::Tool { cache, .. } => cache.is_some(),
+            };
+            hit.then_some(i)
+        })
+        .collect()
+}
+
 /// Default `Arc<dyn TokenEstimator>` returned by [`crate::LlmProvider::estimator`]
 /// and used as the fallback by memory backends. The same instance is
 /// safe to share — `CharRatioEstimator` carries no state.
@@ -177,5 +200,25 @@ mod tests {
         let msgs = vec![Message::user("a"), Message::assistant_text("b")];
         let summed: usize = msgs.iter().map(|m| est.estimate_message(m)).sum();
         assert_eq!(est.estimate_messages(&msgs), summed);
+    }
+
+    #[test]
+    fn cache_breakpoint_indices_finds_hinted_messages() {
+        use crate::CacheHint;
+        let msgs = vec![
+            Message::system("sys"),
+            Message::user("a"),
+            Message::user("b").with_cache(CacheHint::Ephemeral),
+            Message::user("c"),
+            Message::user("d").with_cache(CacheHint::Persistent),
+        ];
+        let idxs = cache_breakpoint_indices(&msgs);
+        assert_eq!(idxs, vec![2, 4]);
+    }
+
+    #[test]
+    fn cache_breakpoint_indices_empty_when_no_hints() {
+        let msgs = vec![Message::system("sys"), Message::user("hi")];
+        assert!(cache_breakpoint_indices(&msgs).is_empty());
     }
 }

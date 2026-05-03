@@ -109,7 +109,10 @@ pub(crate) async fn materialise(
     let pos = leading_system_count(&messages);
     messages.insert(pos, Message::system(block));
     Ok(PreparedConversation {
-        conversation: Conversation { messages },
+        conversation: Conversation {
+            messages,
+            ..Default::default()
+        },
         injected_at: Some(pos),
     })
 }

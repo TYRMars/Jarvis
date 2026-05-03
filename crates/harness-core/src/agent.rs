@@ -289,6 +289,13 @@ impl Agent {
             debug!(iteration = iter, "calling llm");
             let resp = self.llm.complete(req).await?;
             conversation.messages.push(resp.message.clone());
+            // Mirror the streaming path: capture the Responses-API
+            // chain anchor so subsequent iterations can use
+            // `previous_response_id` + delta-mode.
+            if let Some(rid) = resp.response_id.clone() {
+                conversation.last_response_id = Some(rid);
+                conversation.last_response_chain_origin = Some(conversation.messages.len());
+            }
 
             match (&resp.message, &resp.finish_reason) {
                 (Message::Assistant { tool_calls, .. }, FinishReason::ToolCalls)
@@ -355,7 +362,7 @@ impl Agent {
                     }
                 };
 
-                let mut finish: Option<(Message, FinishReason)> = None;
+                let mut finish: Option<(Message, FinishReason, Option<String>)> = None;
                 while let Some(chunk) = llm_stream.next().await {
                     match chunk {
                         Ok(LlmChunk::ContentDelta(content)) => {
@@ -369,8 +376,8 @@ impl Agent {
                         Ok(LlmChunk::Usage(usage)) => {
                             yield AgentEvent::Usage { usage };
                         }
-                        Ok(LlmChunk::Finish { message, finish_reason }) => {
-                            finish = Some((message, finish_reason));
+                        Ok(LlmChunk::Finish { message, finish_reason, response_id }) => {
+                            finish = Some((message, finish_reason, response_id));
                             break;
                         }
                         Err(e) => {
@@ -380,7 +387,7 @@ impl Agent {
                     }
                 }
 
-                let (message, finish_reason) = match finish {
+                let (message, finish_reason, response_id) = match finish {
                     Some(x) => x,
                     None => {
                         yield AgentEvent::Error {
@@ -391,6 +398,17 @@ impl Agent {
                 };
 
                 conversation.messages.push(message.clone());
+                // Update Responses-API chain anchor so the next request
+                // can send `previous_response_id` + only the post-anchor
+                // delta. Other providers leave `response_id` as None and
+                // this is a no-op. The chain origin points to the slot
+                // *after* this newly-appended assistant — tool replies
+                // landing later in this iteration become the delta for
+                // the next request.
+                if let Some(rid) = response_id {
+                    conversation.last_response_id = Some(rid);
+                    conversation.last_response_chain_origin = Some(conversation.messages.len());
+                }
                 yield AgentEvent::AssistantMessage {
                     message: message.clone(),
                     finish_reason: finish_reason.clone(),
@@ -606,12 +624,22 @@ impl Agent {
     }
 
     async fn build_request(&self, conv: &Conversation) -> Result<ChatRequest> {
-        let messages = match &self.config.memory {
-            Some(mem) => mem
+        // When the conversation has a Responses-API chain anchor,
+        // compaction would shift `chain_origin` out of alignment with
+        // the messages slice we hand the provider. The provider has a
+        // bounds-check fallback (it drops chaining when the index is
+        // off), but we can do better here: skip compaction entirely so
+        // the chain stays alive request-after-request. The pre-anchor
+        // history is on the server side anyway — the local
+        // conversation only contributes the post-anchor delta to the
+        // wire, so context-window pressure isn't a concern.
+        let chained = conv.last_response_id.is_some() && conv.last_response_chain_origin.is_some();
+        let messages = match (&self.config.memory, chained) {
+            (Some(mem), false) => mem
                 .compact(&conv.messages)
                 .await
                 .map_err(|e| Error::Memory(e.to_string()))?,
-            None => conv.messages.clone(),
+            _ => conv.messages.clone(),
         };
         let tools = match &self.config.tool_filter {
             Some(filter) => self.config.tools.specs_filtered(|t| filter(t)),
@@ -623,6 +651,8 @@ impl Agent {
             tools,
             temperature: self.config.temperature,
             max_tokens: None,
+            previous_response_id: conv.last_response_id.clone(),
+            chain_origin: conv.last_response_chain_origin,
         })
     }
 
@@ -729,11 +759,13 @@ mod tests {
                         cache: None,
                     },
                     finish_reason: FinishReason::ToolCalls,
+                    response_id: None,
                 })
             } else {
                 Ok(ChatResponse {
                     message: Message::assistant_text("done"),
                     finish_reason: FinishReason::Stop,
+                    response_id: None,
                 })
             }
         }

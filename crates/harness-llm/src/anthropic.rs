@@ -571,6 +571,7 @@ impl AnthropicResponse {
                 cache: None,
             },
             finish_reason,
+            response_id: None,
         })
     }
 }
@@ -903,6 +904,7 @@ impl StreamAccumulator {
                 cache: None,
             },
             finish_reason,
+            response_id: None,
         }
     }
 }
@@ -1090,6 +1092,7 @@ mod tests {
             [LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             }] => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {
@@ -1144,6 +1147,7 @@ mod tests {
             [LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             }] => {
                 assert!(matches!(finish_reason, FinishReason::ToolCalls));
                 match message {
@@ -1180,6 +1184,8 @@ mod tests {
                 tools: vec![],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             false,
         );
@@ -1199,6 +1205,8 @@ mod tests {
                 tools: vec![],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             false,
         );
@@ -1219,6 +1227,8 @@ mod tests {
                 tools: vec![],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             false,
         );
@@ -1242,6 +1252,8 @@ mod tests {
                 tools: vec![],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             false,
         );
@@ -1269,6 +1281,8 @@ mod tests {
                 }],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             false,
         );
@@ -1300,6 +1314,8 @@ mod tests {
                 ],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             false,
         );

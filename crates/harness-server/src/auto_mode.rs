@@ -527,6 +527,7 @@ mod tests {
             Ok(ChatResponse {
                 message: Message::assistant_text(&self.reply),
                 finish_reason: FinishReason::Stop,
+                response_id: None,
             })
         }
     }

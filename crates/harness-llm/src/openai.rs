@@ -71,6 +71,13 @@ pub struct OpenAiConfig {
     /// otherwise). The chat loop still passes `model` per request, so
     /// this is a hint only — leave `None` to fall back to `cl100k`.
     pub default_model: Option<String>,
+    /// Optional override for the per-request `prompt_cache_key`. When
+    /// `None` (the default) we auto-derive a stable
+    /// `jarvis-<hash>` key from the model + system instructions +
+    /// tools JSON so distinct configurations don't share a server-side
+    /// cache slot. Set explicitly to override (e.g. when sharing a
+    /// cache across two different system prompts deliberately).
+    pub prompt_cache_key: Option<String>,
 }
 
 impl OpenAiConfig {
@@ -80,6 +87,7 @@ impl OpenAiConfig {
             base_url: DEFAULT_BASE_URL.to_string(),
             include_empty_reasoning_content_for_tool_calls: false,
             default_model: None,
+            prompt_cache_key: None,
         }
     }
 
@@ -102,6 +110,14 @@ impl OpenAiConfig {
     /// [`OpenAiConfig::default_model`].
     pub fn with_default_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = Some(model.into());
+        self
+    }
+
+    /// Pin a specific `prompt_cache_key` value. When unset (the
+    /// default), the request layer auto-derives one from
+    /// `(model, system, tools)`.
+    pub fn with_prompt_cache_key(mut self, key: impl Into<String>) -> Self {
+        self.prompt_cache_key = Some(key.into());
         self
     }
 }
@@ -142,6 +158,7 @@ impl LlmProvider for OpenAiProvider {
             req,
             false,
             self.cfg.include_empty_reasoning_content_for_tool_calls,
+            self.cfg.prompt_cache_key.as_deref(),
         );
         let url = format!("{}/chat/completions", self.cfg.base_url);
         debug!(%url, model = %body.model, "openai request");
@@ -179,6 +196,7 @@ impl LlmProvider for OpenAiProvider {
             req,
             true,
             self.cfg.include_empty_reasoning_content_for_tool_calls,
+            self.cfg.prompt_cache_key.as_deref(),
         );
         let url = format!("{}/chat/completions", self.cfg.base_url);
         debug!(%url, model = %body.model, "openai stream request");
@@ -267,6 +285,13 @@ struct OpenAiRequest {
     /// without this we never get token counts on the streaming path.
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OaStreamOptions>,
+    /// Per-request namespace for OpenAI's automatic prefix cache. When
+    /// set, requests sharing the same key share a cache slot; distinct
+    /// keys are isolated. We auto-derive from `(model, system, tools)`
+    /// in [`OpenAiRequest::from_request`] when the config doesn't pin
+    /// one explicitly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -328,6 +353,7 @@ impl OpenAiRequest {
         r: ChatRequest,
         stream: bool,
         include_empty_reasoning_content_for_tool_calls: bool,
+        prompt_cache_key_override: Option<&str>,
     ) -> Outbound {
         // Build the sanitize→original map from the tool catalogue.
         // Both the `tools` array and any inline assistant
@@ -339,23 +365,56 @@ impl OpenAiRequest {
             .map(|t| (sanitize_tool_name(&t.name), t.name.clone()))
             .collect();
 
+        let model = r.model;
+        let messages: Vec<OaMessage> = r
+            .messages
+            .into_iter()
+            .map(|m| OaMessage::from_message(m, include_empty_reasoning_content_for_tool_calls))
+            .collect();
+        let tools: Vec<OaTool> = r.tools.into_iter().map(OaTool::from).collect();
+
+        // Derive the cache key from the wire-shape inputs *after* the
+        // tool sanitisation step so the hash matches what we actually
+        // send. ToolRegistry::specs already sorted alphabetically;
+        // sanitisation is deterministic.
+        let prompt_cache_key = prompt_cache_key_override
+            .map(str::to_string)
+            .or_else(|| Some(derive_cache_key(&model, &messages, &tools)));
+
         let request = OpenAiRequest {
-            model: r.model,
-            messages: r
-                .messages
-                .into_iter()
-                .map(|m| OaMessage::from_message(m, include_empty_reasoning_content_for_tool_calls))
-                .collect(),
-            tools: r.tools.into_iter().map(OaTool::from).collect(),
+            model,
+            messages,
+            tools,
             temperature: r.temperature,
             max_tokens: r.max_tokens,
             stream,
             stream_options: stream.then_some(OaStreamOptions {
                 include_usage: true,
             }),
+            prompt_cache_key,
         };
         Outbound { request, name_map }
     }
+}
+
+/// Build the canonical hash input from already-sanitised wire shapes.
+/// Joins all `system` message bodies with `\n\n` (matching how callers
+/// concatenate multi-system prompts), serialises the post-sanitise
+/// tools list as JSON, and hashes via [`crate::cache_key::auto_cache_key`].
+fn derive_cache_key(model: &str, messages: &[OaMessage], tools: &[OaTool]) -> String {
+    let mut systems = String::new();
+    for m in messages {
+        if m.role == "system" {
+            if let Some(c) = &m.content {
+                if !systems.is_empty() {
+                    systems.push_str("\n\n");
+                }
+                systems.push_str(c);
+            }
+        }
+    }
+    let tools_json = serde_json::to_string(tools).unwrap_or_default();
+    crate::cache_key::auto_cache_key(model, &systems, &tools_json)
 }
 
 impl OaMessage {
@@ -513,6 +572,7 @@ impl OpenAiResponse {
                 cache: None,
             },
             finish_reason,
+            response_id: None,
         })
     }
 }
@@ -770,6 +830,7 @@ impl StreamAccumulator {
                 cache: None,
             },
             finish_reason,
+            response_id: None,
         }
     }
 }
@@ -808,6 +869,7 @@ mod tests {
             [LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             }] => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {
@@ -862,6 +924,7 @@ mod tests {
             [LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             }] => {
                 assert!(matches!(finish_reason, FinishReason::ToolCalls));
                 match message {
@@ -885,6 +948,74 @@ mod tests {
         assert_eq!(sanitize_tool_name("echo"), "echo");
         // Leading non-letter — strict dialects (Kimi Code) reject it.
         assert_eq!(sanitize_tool_name("9foo"), "_9foo");
+    }
+
+    fn cache_key_req(systems: &[&str], tool_names: &[&str], model: &str) -> ChatRequest {
+        let mut messages: Vec<Message> = systems.iter().map(|s| Message::system(*s)).collect();
+        messages.push(Message::user("hi"));
+        ChatRequest {
+            model: model.into(),
+            messages,
+            tools: tool_names
+                .iter()
+                .map(|n| ToolSpec {
+                    name: (*n).into(),
+                    description: "t".into(),
+                    parameters: json!({"type":"object"}),
+                    cacheable: false,
+                })
+                .collect(),
+            temperature: None,
+            max_tokens: None,
+            previous_response_id: None,
+            chain_origin: None,
+        }
+    }
+
+    fn body(req: ChatRequest) -> serde_json::Value {
+        let outbound = OpenAiRequest::from_request(req, false, false, None);
+        serde_json::to_value(&outbound.request).unwrap()
+    }
+
+    #[test]
+    fn prompt_cache_key_auto_emitted_with_namespaced_format() {
+        let v = body(cache_key_req(&["sys"], &[], "gpt-4o-mini"));
+        let key = v["prompt_cache_key"].as_str().unwrap();
+        assert!(key.starts_with("jarvis-"));
+        assert_eq!(key.len(), 23);
+    }
+
+    #[test]
+    fn prompt_cache_key_stable_across_two_identical_requests() {
+        let a = body(cache_key_req(&["sys"], &["fs.read"], "gpt-4o-mini"));
+        let b = body(cache_key_req(&["sys"], &["fs.read"], "gpt-4o-mini"));
+        assert_eq!(a["prompt_cache_key"], b["prompt_cache_key"]);
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_when_tools_added_or_removed() {
+        let a = body(cache_key_req(&["sys"], &["fs.read"], "gpt-4o-mini"));
+        let b = body(cache_key_req(
+            &["sys"],
+            &["fs.read", "fs.write"],
+            "gpt-4o-mini",
+        ));
+        assert_ne!(a["prompt_cache_key"], b["prompt_cache_key"]);
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_when_model_changes() {
+        let a = body(cache_key_req(&["sys"], &[], "gpt-4o-mini"));
+        let b = body(cache_key_req(&["sys"], &[], "gpt-4o"));
+        assert_ne!(a["prompt_cache_key"], b["prompt_cache_key"]);
+    }
+
+    #[test]
+    fn prompt_cache_key_override_wins_over_auto_derive() {
+        let outbound =
+            OpenAiRequest::from_request(cache_key_req(&[], &[], "x"), false, false, Some("custom"));
+        let v = serde_json::to_value(&outbound.request).unwrap();
+        assert_eq!(v["prompt_cache_key"], "custom");
     }
 
     #[test]
@@ -912,8 +1043,10 @@ mod tests {
             }],
             temperature: None,
             max_tokens: None,
+            previous_response_id: None,
+            chain_origin: None,
         };
-        let outbound = OpenAiRequest::from_request(req, false, false);
+        let outbound = OpenAiRequest::from_request(req, false, false, None);
         let body = serde_json::to_value(&outbound.request).unwrap();
         // Tool catalogue rewritten.
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
@@ -949,8 +1082,10 @@ mod tests {
             tools: Vec::new(),
             temperature: None,
             max_tokens: None,
+            previous_response_id: None,
+            chain_origin: None,
         };
-        let outbound = OpenAiRequest::from_request(req, false, true);
+        let outbound = OpenAiRequest::from_request(req, false, true, None);
         let body = serde_json::to_value(&outbound.request).unwrap();
         let asst = body["messages"]
             .as_array()

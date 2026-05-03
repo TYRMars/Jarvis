@@ -1,6 +1,7 @@
 //! Concrete `LlmProvider` implementations.
 
 pub mod anthropic;
+pub mod cache_key;
 pub mod codex_auth;
 pub mod google;
 pub mod openai;

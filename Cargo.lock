@@ -893,6 +893,7 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
+ "blake3",
  "bytes",
  "futures",
  "harness-core",

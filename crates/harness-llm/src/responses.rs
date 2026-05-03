@@ -196,6 +196,24 @@ pub struct ResponsesConfig {
     /// `cl100k_base` (everything else). Optional — `None` falls back
     /// to `cl100k`.
     pub default_model: Option<String>,
+    /// Optional override for the per-request `prompt_cache_key`. When
+    /// `None` (the default) we auto-derive a stable
+    /// `jarvis-<hash>` key from the model + system instructions +
+    /// tools JSON so distinct configurations don't share a server-side
+    /// cache slot. Set explicitly to override.
+    pub prompt_cache_key: Option<String>,
+    /// Enable `previous_response_id` chaining when the caller supplies
+    /// one through [`ChatRequest::previous_response_id`]. When on, the
+    /// provider sends only the *new* messages since
+    /// [`ChatRequest::chain_origin`] and references the prior response
+    /// id; the server reuses its cached state. Implies `store=true`
+    /// for the chained request even if the config-level `store` flag
+    /// is false.
+    ///
+    /// Default: `true` for the `codex` flavour (where the
+    /// flat-rate ChatGPT subscription benefits most), `false` for
+    /// `openai_responses` so existing behaviour is preserved.
+    pub chain_responses: bool,
 }
 
 impl ResponsesConfig {
@@ -214,6 +232,8 @@ impl ResponsesConfig {
             reasoning_summary: None,
             reasoning_effort: None,
             default_model: None,
+            prompt_cache_key: None,
+            chain_responses: true,
         }
     }
 
@@ -233,6 +253,8 @@ impl ResponsesConfig {
             reasoning_summary: None,
             reasoning_effort: None,
             default_model: None,
+            prompt_cache_key: None,
+            chain_responses: false,
         }
     }
 
@@ -283,6 +305,23 @@ impl ResponsesConfig {
 
     pub fn with_default_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = Some(model.into());
+        self
+    }
+
+    /// Pin a specific `prompt_cache_key` value. When unset (the
+    /// default), the request layer auto-derives one from
+    /// `(model, instructions, tools)`.
+    pub fn with_prompt_cache_key(mut self, key: impl Into<String>) -> Self {
+        self.prompt_cache_key = Some(key.into());
+        self
+    }
+
+    /// Toggle `previous_response_id` chaining. When `true`, requests
+    /// that arrive with a `previous_response_id` send only the
+    /// post-anchor delta and force `store=true`. When `false`, the
+    /// chain fields are ignored and the provider sends full history.
+    pub fn with_chain_responses(mut self, chain: bool) -> Self {
+        self.chain_responses = chain;
         self
     }
 }
@@ -369,7 +408,7 @@ impl LlmProvider for ResponsesProvider {
         // `ChatResponse`. Callers (e.g. `SummarizingMemory`) get the
         // shape they expect; the wire stays stream-only.
         let mut stream = self.complete_stream(req).await?;
-        let mut last_finish: Option<(Message, FinishReason)> = None;
+        let mut last_finish: Option<(Message, FinishReason, Option<String>)> = None;
         while let Some(chunk) = stream.next().await {
             match chunk? {
                 LlmChunk::ContentDelta(_) | LlmChunk::ToolCallDelta { .. } | LlmChunk::Usage(_) => {
@@ -379,17 +418,19 @@ impl LlmProvider for ResponsesProvider {
                 LlmChunk::Finish {
                     message,
                     finish_reason,
+                    response_id,
                 } => {
-                    last_finish = Some((message, finish_reason));
+                    last_finish = Some((message, finish_reason, response_id));
                 }
             }
         }
-        let (message, finish_reason) = last_finish.ok_or_else(|| {
+        let (message, finish_reason, response_id) = last_finish.ok_or_else(|| {
             Error::Provider("responses stream ended without a Finish chunk".into())
         })?;
         Ok(ChatResponse {
             message,
             finish_reason,
+            response_id,
         })
     }
 
@@ -488,6 +529,18 @@ struct ResponsesRequest {
     include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+    /// Per-request namespace for the Responses API's automatic prefix
+    /// cache. Auto-derived from `(model, instructions, tools)` in
+    /// [`ResponsesRequest::from_chat_request`] when the config doesn't
+    /// pin one explicitly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    /// When chaining is active, references the id of the previous
+    /// completed response. The server reuses its cached state for the
+    /// referenced response and only consumes the new `input` items as
+    /// the delta. Omitted when not chaining.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -558,9 +611,46 @@ impl ResponsesRequest {
             .map(|t| (sanitize_tool_name(&t.name), t.name.clone()))
             .collect();
 
-        let (instructions, input) = convert_messages(r.messages);
+        // Decide whether to send only the post-anchor delta. Chain is
+        // active iff: (a) the config opts in, (b) the caller supplied
+        // a `previous_response_id`, (c) `chain_origin` is in bounds.
+        // (c) is a paranoia guard against stale conversation state
+        // (e.g., a partially-truncated history); we'd rather send full
+        // history than out-of-bounds-slice into messages.
+        let chaining_active = cfg.chain_responses
+            && r.previous_response_id.is_some()
+            && matches!(r.chain_origin, Some(o) if o <= r.messages.len());
+
+        let messages = if chaining_active {
+            // Safe: the matches! arm above proved chain_origin is Some
+            // and in bounds.
+            let origin = r.chain_origin.unwrap();
+            // Instructions still ride every turn (they participate in
+            // the prefix cache, not in `previous_response_id` state),
+            // so retain System messages from the full history and only
+            // drop non-system messages before the chain anchor.
+            r.messages
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, m)| {
+                    if matches!(m, Message::System { .. }) || i >= origin {
+                        Some(m)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            r.messages
+        };
+
+        let (instructions, input) = convert_messages(messages);
         let mut include = Vec::new();
-        if cfg.include_encrypted_reasoning {
+        // When chaining, the server already has the encrypted reasoning
+        // from the prior response in its cached state — sending it back
+        // is wasteful and on some flavours triggers a 400. Skip the
+        // include directive whenever the chain is active.
+        if cfg.include_encrypted_reasoning && !chaining_active {
             include.push("reasoning.encrypted_content".to_string());
         }
         // Emit the `reasoning` block when EITHER summary or effort
@@ -569,18 +659,45 @@ impl ResponsesRequest {
             (None, None) => None,
             (summary, effort) => Some(ReasoningConfig { summary, effort }),
         };
+        let model = r.model;
+        let tools: Vec<ResponsesTool> = r.tools.into_iter().map(ResponsesTool::from).collect();
+
+        // Auto-derive a stable `prompt_cache_key` from the
+        // post-sanitisation wire shape so byte-identical requests
+        // share a server-side cache slot. Config override wins.
+        let prompt_cache_key = cfg.prompt_cache_key.clone().or_else(|| {
+            let systems = instructions.as_deref().unwrap_or("");
+            let tools_json = serde_json::to_string(&tools).unwrap_or_default();
+            Some(crate::cache_key::auto_cache_key(
+                &model,
+                systems,
+                &tools_json,
+            ))
+        });
+
+        let (previous_response_id, store) = if chaining_active {
+            // store=true is required for the server to keep the chain
+            // alive across requests; override the config-level setting
+            // for chained requests only.
+            (r.previous_response_id, true)
+        } else {
+            (None, cfg.store)
+        };
+
         let request = Self {
-            model: r.model,
+            model,
             instructions,
             input,
-            tools: r.tools.into_iter().map(ResponsesTool::from).collect(),
+            tools,
             tool_choice: "auto",
             parallel_tool_calls: false,
-            store: cfg.store,
+            store,
             stream,
             service_tier: cfg.service_tier.clone(),
             include,
             reasoning,
+            prompt_cache_key,
+            previous_response_id,
         };
         Outbound { request, name_map }
     }
@@ -704,6 +821,13 @@ fn convert_messages(messages: Vec<Message>) -> (Option<String>, Vec<InputItem>) 
 #[derive(Debug, Deserialize, Default)]
 #[allow(dead_code)]
 struct ResponsesResponseBody {
+    /// Provider-issued response id (`resp_...`). Surfaced through
+    /// `LlmChunk::Finish::response_id` so the agent loop can chain
+    /// it into the next request as `previous_response_id` and reuse
+    /// the server's cached state. Optional because not every
+    /// flavour / status combination ships one.
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     output: Vec<OutputItem>,
     #[serde(default)]
@@ -843,6 +967,7 @@ impl ResponsesResponseBody {
                 cache: None,
             },
             finish_reason,
+            response_id: self.id.clone(),
         })
     }
 }
@@ -922,6 +1047,11 @@ struct StreamAccumulator {
     status: Option<String>,
     incomplete_reason: Option<String>,
     finished: bool,
+    /// Provider-issued response id captured from `response.completed`.
+    /// Populated only when the upstream surface ships an `id` in the
+    /// terminal event; otherwise the resulting `LlmChunk::Finish`
+    /// gets `response_id: None`.
+    response_id: Option<String>,
     /// Sanitized→original tool-name map. Empty when no tools were
     /// registered for this turn.
     name_map: HashMap<String, String>,
@@ -991,6 +1121,9 @@ impl StreamAccumulator {
                 if let Some(d) = response.incomplete_details {
                     self.incomplete_reason = d.reason;
                 }
+                if response.id.is_some() {
+                    self.response_id = response.id;
+                }
                 if let Some(u) = response.usage {
                     out.push(LlmChunk::Usage(u.into_core()));
                 }
@@ -1023,6 +1156,7 @@ impl StreamAccumulator {
                 cache: None,
             },
             finish_reason,
+            response_id: self.response_id.take(),
         }
     }
 }
@@ -1039,6 +1173,8 @@ mod tests {
             tools: Vec::new(),
             temperature: None,
             max_tokens: None,
+            previous_response_id: None,
+            chain_origin: None,
         }
     }
 
@@ -1187,6 +1323,8 @@ mod tests {
                 }],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             &default_codex_cfg(),
             false,
@@ -1239,6 +1377,8 @@ mod tests {
                 ],
                 temperature: None,
                 max_tokens: None,
+                previous_response_id: None,
+                chain_origin: None,
             },
             &default_codex_cfg(),
             false,
@@ -1340,6 +1480,224 @@ mod tests {
         assert!(v.get("service_tier").is_none());
         assert!(v.get("include").is_none());
         assert!(v.get("reasoning").is_none());
+    }
+
+    // ---- prompt_cache_key ----
+
+    #[test]
+    fn prompt_cache_key_auto_derived_when_unset() {
+        let body = build(
+            req_with(vec![Message::system("be terse"), Message::user("hi")]),
+            &default_codex_cfg(),
+            false,
+        );
+        let v = body_value(&body);
+        let key = v["prompt_cache_key"].as_str().unwrap();
+        assert!(key.starts_with("jarvis-"));
+        assert_eq!(key.len(), 23);
+    }
+
+    #[test]
+    fn prompt_cache_key_stable_across_two_identical_requests() {
+        let make = || {
+            build(
+                req_with(vec![Message::system("be terse"), Message::user("hi")]),
+                &default_codex_cfg(),
+                false,
+            )
+        };
+        let a = body_value(&make());
+        let b = body_value(&make());
+        assert_eq!(a["prompt_cache_key"], b["prompt_cache_key"]);
+    }
+
+    #[test]
+    fn prompt_cache_key_differs_when_system_differs() {
+        let a = body_value(&build(
+            req_with(vec![Message::system("be terse"), Message::user("hi")]),
+            &default_codex_cfg(),
+            false,
+        ));
+        let b = body_value(&build(
+            req_with(vec![Message::system("be verbose"), Message::user("hi")]),
+            &default_codex_cfg(),
+            false,
+        ));
+        assert_ne!(a["prompt_cache_key"], b["prompt_cache_key"]);
+    }
+
+    #[test]
+    fn prompt_cache_key_differs_when_tools_differ() {
+        let with_tool = |name: &str| -> ChatRequest {
+            let mut r = req_with(vec![Message::user("hi")]);
+            r.tools.push(ToolSpec {
+                name: name.to_string(),
+                description: "t".into(),
+                parameters: json!({"type":"object"}),
+                cacheable: false,
+            });
+            r
+        };
+        let a = body_value(&build(with_tool("fs.read"), &default_codex_cfg(), false));
+        let b = body_value(&build(with_tool("fs.write"), &default_codex_cfg(), false));
+        assert_ne!(a["prompt_cache_key"], b["prompt_cache_key"]);
+    }
+
+    #[test]
+    fn prompt_cache_key_override_wins_over_auto() {
+        let cfg = default_codex_cfg().with_prompt_cache_key("custom-key");
+        let body = build(req_with(vec![Message::user("hi")]), &cfg, false);
+        let v = body_value(&body);
+        assert_eq!(v["prompt_cache_key"], "custom-key");
+    }
+
+    // ---- previous_response_id chaining ----
+
+    fn chained_req(messages: Vec<Message>, prev_id: &str, origin: usize) -> ChatRequest {
+        ChatRequest {
+            model: "gpt-5-codex-mini".into(),
+            messages,
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            previous_response_id: Some(prev_id.into()),
+            chain_origin: Some(origin),
+        }
+    }
+
+    #[test]
+    fn chaining_off_by_default_for_openai_responses_flavour() {
+        // openai_responses defaults `chain_responses=false`. Even with
+        // the agent supplying `previous_response_id` + chain_origin,
+        // the wire should NOT carry the chained shape.
+        let cfg = ResponsesConfig::openai_responses("sk-abc");
+        let body = build(
+            chained_req(
+                vec![Message::system("sys"), Message::user("u1"), Message::user("u2")],
+                "resp_prior",
+                2,
+            ),
+            &cfg,
+            false,
+        );
+        let v = body_value(&body);
+        assert!(v.get("previous_response_id").is_none());
+        assert_eq!(v["store"], false);
+        // Full history sent (3 messages → 1 instructions + 2 inputs).
+        assert_eq!(v["instructions"], "sys");
+        assert_eq!(v["input"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn chaining_on_for_codex_emits_previous_response_id_and_delta() {
+        // Codex flavour defaults `chain_responses=true`. With the
+        // agent supplying chain anchor + post-anchor delta of 1 message,
+        // the wire should carry the chained shape: `previous_response_id`
+        // present, `store=true`, and only the post-anchor message in input.
+        let cfg = default_codex_cfg();
+        let body = build(
+            chained_req(
+                vec![
+                    Message::system("sys"),
+                    Message::user("first turn"),
+                    Message::assistant_text("first reply"),
+                    Message::user("second turn"),
+                ],
+                "resp_prior",
+                3,
+            ),
+            &cfg,
+            false,
+        );
+        let v = body_value(&body);
+        assert_eq!(v["previous_response_id"], "resp_prior");
+        assert_eq!(v["store"], true);
+        // Only the post-anchor user message in input.
+        let input = v["input"].as_array().unwrap();
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"][0]["text"], "second turn");
+        // Instructions still sent (they participate in prefix cache).
+        assert_eq!(v["instructions"], "sys");
+    }
+
+    #[test]
+    fn chaining_inactive_when_origin_out_of_bounds() {
+        // Stale conversation state: chain_origin claims index 99 but
+        // messages.len() == 2. Provider must NOT slice out of bounds —
+        // it should fall back to full-history mode (no chain fields).
+        let cfg = default_codex_cfg();
+        let body = build(
+            chained_req(
+                vec![Message::system("sys"), Message::user("u")],
+                "resp_stale",
+                99,
+            ),
+            &cfg,
+            false,
+        );
+        let v = body_value(&body);
+        assert!(v.get("previous_response_id").is_none());
+        assert_eq!(v["store"], false);
+        // Full history sent.
+        assert_eq!(v["input"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn chaining_can_be_toggled_off_via_with_chain_responses() {
+        // Even on the codex flavour, `with_chain_responses(false)`
+        // disables chaining and the provider sends full history.
+        let cfg = default_codex_cfg().with_chain_responses(false);
+        let body = build(
+            chained_req(
+                vec![Message::system("sys"), Message::user("u1"), Message::user("u2")],
+                "resp_prior",
+                2,
+            ),
+            &cfg,
+            false,
+        );
+        let v = body_value(&body);
+        assert!(v.get("previous_response_id").is_none());
+        assert_eq!(v["store"], false);
+    }
+
+    #[test]
+    fn chaining_skips_include_encrypted_reasoning_when_active() {
+        // When chaining is active the server already has the prior
+        // reasoning in its cached state; we must not echo it back via
+        // the `include` directive.
+        let cfg = default_codex_cfg().with_encrypted_reasoning(true);
+        let body = build(
+            chained_req(
+                vec![
+                    Message::system("sys"),
+                    Message::user("u1"),
+                    Message::assistant_text("a1"),
+                    Message::user("u2"),
+                ],
+                "resp_prior",
+                3,
+            ),
+            &cfg,
+            false,
+        );
+        let v = body_value(&body);
+        // Chain active confirms.
+        assert_eq!(v["previous_response_id"], "resp_prior");
+        // include should NOT contain the encrypted-reasoning directive.
+        assert!(v.get("include").is_none() || v["include"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn chaining_still_emits_include_encrypted_reasoning_when_inactive() {
+        // Sanity-check the inverse: with chaining off, the include
+        // directive still rides every request (preserves the historical
+        // behaviour).
+        let cfg = ResponsesConfig::openai_responses("sk-abc").with_encrypted_reasoning(true);
+        let body = build(req_with(vec![Message::user("hi")]), &cfg, false);
+        let v = body_value(&body);
+        assert_eq!(v["include"], json!(["reasoning.encrypted_content"]));
     }
 
     #[test]
@@ -1539,6 +1897,7 @@ mod tests {
             [LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             }] => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {
@@ -1618,6 +1977,7 @@ mod tests {
             [LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             }] => {
                 assert!(matches!(finish_reason, FinishReason::ToolCalls));
                 match message {
@@ -1648,6 +2008,44 @@ mod tests {
     }
 
     #[test]
+    fn stream_captures_response_id_from_completed() {
+        let mut acc = StreamAccumulator::default();
+        let r = acc
+            .ingest(parse(json!({
+                "type": "response.completed",
+                "response": {"id": "resp_abc123", "status": "completed"}
+            })))
+            .unwrap();
+        let finish = r
+            .into_iter()
+            .find_map(|c| match c {
+                LlmChunk::Finish { response_id, .. } => Some(response_id),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(finish.as_deref(), Some("resp_abc123"));
+    }
+
+    #[test]
+    fn stream_finish_response_id_is_none_when_completed_omits_id() {
+        let mut acc = StreamAccumulator::default();
+        let r = acc
+            .ingest(parse(json!({
+                "type": "response.completed",
+                "response": {"status": "completed"}
+            })))
+            .unwrap();
+        let response_id = r
+            .into_iter()
+            .find_map(|c| match c {
+                LlmChunk::Finish { response_id, .. } => Some(response_id),
+                _ => None,
+            })
+            .unwrap();
+        assert!(response_id.is_none());
+    }
+
+    #[test]
     fn stream_empty_finalises_to_stop() {
         let mut acc = StreamAccumulator::default();
         let f = acc.finalise();
@@ -1655,6 +2053,7 @@ mod tests {
             LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             } => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {
