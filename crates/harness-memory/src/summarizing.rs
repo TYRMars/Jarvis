@@ -44,12 +44,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use harness_core::{
-    default_estimator, BoxError, ChatRequest, Conversation, ConversationStore, Error as CoreError,
-    LlmProvider, Memory, Message, TokenEstimator,
+    cache_breakpoint_indices, default_estimator, BoxError, ChatRequest, Conversation,
+    ConversationStore, Error as CoreError, LlmProvider, Memory, Message, TokenEstimator,
 };
 use tracing::{debug, warn};
 
-use crate::turns::{select_recent_turns, split_into_turns};
+use crate::turns::{select_recent_turns, select_recent_turns_with_breakpoint, split_into_turns};
 
 /// Reserved namespace for memory's persisted rows. Keys live under
 /// `__memory__.summary:<hash>` so the HTTP server can filter them out
@@ -150,11 +150,25 @@ impl Memory for SummarizingMemory {
             .saturating_sub(system_tokens)
             .saturating_sub(SUMMARY_RESERVE_TOKENS);
 
-        let kept = select_recent_turns(&turns, budget, |turn| {
-            turn.iter()
-                .map(|&i| estimator.estimate_message(&messages[i]))
-                .sum()
-        });
+        // Cache-aware path mirrors `SlidingWindowMemory`: when an
+        // explicit breakpoint exists, prefer summarising turns that
+        // fall *between* the cached prefix and the recent tail rather
+        // than summarising the cached prefix itself (which would bust
+        // the LLM's prompt cache for everything past it).
+        let breakpoints = cache_breakpoint_indices(messages);
+        let kept = if let Some(&bp) = breakpoints.iter().max() {
+            select_recent_turns_with_breakpoint(&turns, bp, budget, |turn| {
+                turn.iter()
+                    .map(|&i| estimator.estimate_message(&messages[i]))
+                    .sum()
+            })
+        } else {
+            select_recent_turns(&turns, budget, |turn| {
+                turn.iter()
+                    .map(|&i| estimator.estimate_message(&messages[i]))
+                    .sum()
+            })
+        };
 
         let dropped_count = turns.len() - kept.len();
         debug!(
@@ -165,11 +179,14 @@ impl Memory for SummarizingMemory {
         );
 
         // Build the dropped slice for summarisation, preserving original
-        // order. Only the prefix [0..dropped_count) of `turns` is dropped
-        // because `select_recent_turns` keeps from the tail.
+        // order. The cache-aware selector may produce a non-contiguous
+        // kept set (cached prefix + recent tail with a hole in the
+        // middle), so we identify dropped turns by pointer-equality
+        // against the kept references rather than assuming a contiguous
+        // prefix [0..dropped_count).
         let dropped_msgs: Vec<Message> = turns
             .iter()
-            .take(dropped_count)
+            .filter(|t| !kept.iter().any(|k| std::ptr::eq(*k, *t)))
             .flat_map(|t| t.iter().map(|&i| messages[i].clone()))
             .collect();
 
@@ -266,6 +283,8 @@ impl SummarizingMemory {
             tools: Vec::new(),
             temperature: Some(0.0),
             max_tokens: Some(self.summary_max_tokens),
+            previous_response_id: None,
+            chain_origin: None,
         };
 
         // One retry on transient transport errors — the summariser
@@ -443,6 +462,7 @@ mod tests {
             Ok(ChatResponse {
                 message: Message::assistant_text(&self.reply),
                 finish_reason: FinishReason::Stop,
+                response_id: None,
             })
         }
 
@@ -633,6 +653,7 @@ mod tests {
                 Ok(ChatResponse {
                     message: Message::assistant_text("EVENTUAL SUMMARY"),
                     finish_reason: FinishReason::Stop,
+                    response_id: None,
                 })
             }
         }

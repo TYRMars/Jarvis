@@ -836,6 +836,7 @@ mod tests {
             Ok(ChatResponse {
                 message: Message::assistant_text("ok"),
                 finish_reason: FinishReason::Stop,
+                response_id: None,
             })
         }
     }
@@ -1129,6 +1130,7 @@ mod tests {
             Ok(ChatResponse {
                 message: Message::assistant_text("ok"),
                 finish_reason: FinishReason::Stop,
+                response_id: None,
             })
         }
     }

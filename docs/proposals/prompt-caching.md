@@ -1,21 +1,53 @@
 # Prompt caching
 
-**Status:** Adopted. Hygiene subset (sorted `ToolRegistry::specs()`,
-byte-stable `SlidingWindowMemory` marker), `CacheHint` field on
-**every `Message` variant** (`System` / `User` / `Assistant` /
-`Tool`), `Tool::cacheable()` flag, the Anthropic `cache_control`
-emission for `system` and the tools list, and **mid-conversation
-breakpoints** on `User` / `Assistant` / `Tool` (the `Anthropic`
-converter promotes the user `content` to a block array,
-attaches `cache_control` to the last block of an assistant
-message, and to the targeted `tool_result` block) have all
-landed. The `LlmChunk::Usage` event is also live, exposed via
-`AgentEvent::Usage`. The cache-aware compaction hook on
-`Memory::compact` remains a follow-up.
-**Touches:** `harness-core` (new field on `ChatRequest`),
-`harness-llm::anthropic` (consume the field), `harness-llm::openai`
-(prefix discipline, no field needed), `harness-memory` (cache-aware
-compaction).
+**Status:** Adopted. Beyond the original Anthropic-focused scope,
+the OpenAI / Codex follow-up has also landed:
+
+- Hygiene subset (sorted `ToolRegistry::specs()`, byte-stable
+  `SlidingWindowMemory` marker).
+- `CacheHint` field on **every `Message` variant** (`System` /
+  `User` / `Assistant` / `Tool`); `Tool::cacheable()` flag.
+- Anthropic `cache_control` emission for `system`, the tools list,
+  and **mid-conversation breakpoints** on `User` / `Assistant` /
+  `Tool` (the converter promotes user `content` to a block array,
+  attaches `cache_control` to the last block of an assistant
+  message, and to the targeted `tool_result` block).
+- `LlmChunk::Usage` / `AgentEvent::Usage` event live; OpenAI Chat
+  Completions and Responses extract `cached_tokens` into
+  `Usage::cached_prompt_tokens`. `UsageBadge` renders cached count +
+  hit-rate %.
+- **`prompt_cache_key`** auto-derived from `(model, system, tools)`
+  on every OpenAI / Responses / Codex request (override via
+  `OpenAiConfig::with_prompt_cache_key` /
+  `ResponsesConfig::with_prompt_cache_key` /
+  `OPENAI_PROMPT_CACHE_KEY` env). Stable across processes by
+  hashing the post-sort, post-sanitise wire shape.
+- **Cache-aware compaction**: `SlidingWindowMemory` and
+  `SummarizingMemory` consult `cache_breakpoint_indices()` when any
+  message carries an explicit `CacheHint`; turns at-or-before the
+  highest breakpoint are kept unconditionally so cache anchors
+  survive eviction.
+- **`response_id` / `previous_response_id` chaining** for the
+  Responses API: `LlmChunk::Finish` and `ChatResponse` carry
+  `response_id`; the agent loop captures it onto
+  `Conversation::last_response_id` + `last_response_chain_origin`.
+  When `ResponsesConfig::chain_responses` is on (default for `codex`,
+  off for `openai_responses`), the next request sends only the
+  post-anchor delta + `previous_response_id` and forces `store=true`.
+  Chain breakers handled: WS Reset (via `Conversation::default()`),
+  resume from store (id explicitly cleared), out-of-bounds
+  `chain_origin` (provider falls back to full history). Compaction
+  is skipped when chaining is active so the chain stays aligned.
+
+**Touches:** `harness-core` (new fields on `ChatRequest`,
+`ChatResponse`, `LlmChunk::Finish`, `Conversation`;
+`cache_breakpoint_indices` helper), `harness-llm::anthropic`
+(consume the cache field), `harness-llm::openai` (prefix discipline +
+`prompt_cache_key`), `harness-llm::responses` (`prompt_cache_key`,
+`response_id` capture, chaining + delta-mode),
+`harness-llm::cache_key` (new), `harness-memory` (cache-aware
+compaction in `sliding` / `summarizing`), `harness-server::routes`
+(resume chain breaker), `apps/jarvis::serve` (env override).
 
 ## Motivation
 

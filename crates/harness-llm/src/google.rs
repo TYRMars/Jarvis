@@ -532,6 +532,7 @@ impl GoogleResponse {
                 cache: None,
             },
             finish_reason,
+            response_id: None,
         })
     }
 }
@@ -639,6 +640,7 @@ impl StreamAccumulator {
                 cache: None,
             },
             finish_reason,
+            response_id: None,
         });
         out
     }
@@ -656,6 +658,8 @@ mod tests {
             tools: Vec::new(),
             temperature: None,
             max_tokens: None,
+            previous_response_id: None,
+            chain_origin: None,
         }
     }
 
@@ -879,6 +883,7 @@ mod tests {
             LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             } => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {
@@ -933,6 +938,7 @@ mod tests {
             LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             } => {
                 assert!(matches!(finish_reason, FinishReason::ToolCalls));
                 match message {
@@ -973,6 +979,7 @@ mod tests {
             LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             } => {
                 // STOP is preserved verbatim — the agent loop dispatches
                 // off `tool_calls` regardless of finish_reason for
@@ -1003,6 +1010,7 @@ mod tests {
             LlmChunk::Finish {
                 message,
                 finish_reason,
+                response_id: _,
             } => {
                 assert!(matches!(finish_reason, FinishReason::Stop));
                 match message {

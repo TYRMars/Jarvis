@@ -739,6 +739,11 @@ async fn build_provider(
             if let Some(base) = pick_string_opt("OPENAI_BASE_URL", section.base_url.as_deref()) {
                 oacfg = oacfg.with_base_url(base);
             }
+            if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
+                if !key.is_empty() {
+                    oacfg = oacfg.with_prompt_cache_key(key);
+                }
+            }
             Ok((Arc::new(OpenAiProvider::new(oacfg)), model))
         }
         "anthropic" => {
@@ -835,6 +840,14 @@ async fn build_provider(
             {
                 rcfg = rcfg.with_service_tier(tier);
             }
+            // Codex inherits the same OpenAI cache-key namespace —
+            // if a user set `OPENAI_PROMPT_CACHE_KEY` they likely
+            // want it across both flavours.
+            if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
+                if !key.is_empty() {
+                    rcfg = rcfg.with_prompt_cache_key(key);
+                }
+            }
             let provider = ResponsesProvider::new(rcfg);
             info!(
                 endpoint = %provider.endpoint(),
@@ -874,6 +887,11 @@ async fn build_provider(
                 pick_string_opt("OPENAI_SERVICE_TIER", section.service_tier.as_deref())
             {
                 rcfg = rcfg.with_service_tier(tier);
+            }
+            if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
+                if !key.is_empty() {
+                    rcfg = rcfg.with_prompt_cache_key(key);
+                }
             }
             let provider = ResponsesProvider::new(rcfg);
             info!(endpoint = %provider.endpoint(), "openai responses provider enabled");

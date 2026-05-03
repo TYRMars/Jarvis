@@ -133,6 +133,7 @@ impl ConversationStore for JsonFileConversationStore {
             serde_json::from_slice(&bytes).map_err(StoreError::from)?;
         let conv = Conversation {
             messages: stored.messages,
+            ..Default::default()
         };
         let meta = ConversationMetadata {
             project_id: stored.project_id,

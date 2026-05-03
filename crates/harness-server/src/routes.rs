@@ -386,6 +386,7 @@ async fn chat_completions(
 ) -> Response {
     let mut conv = Conversation {
         messages: req.messages,
+        ..Default::default()
     };
     let agent = match state.build_agent(req.provider.as_deref(), req.model.as_deref()) {
         Ok(a) => a,
@@ -434,6 +435,7 @@ async fn chat_completions_stream(
 ) -> Response {
     let conv = Conversation {
         messages: req.messages,
+        ..Default::default()
     };
     let agent = match state.build_agent(req.provider.as_deref(), req.model.as_deref()) {
         Ok(a) => a,
@@ -645,7 +647,13 @@ fn inject_soul_prompt(
         pos,
         Message::system(format!("=== Jarvis soul ===\n{prompt}")),
     );
-    (Conversation { messages }, Some(pos))
+    (
+        Conversation {
+            messages,
+            ..Default::default()
+        },
+        Some(pos),
+    )
 }
 
 fn strip_turn_injections(conv: Conversation, prepared: &TurnInjection) -> Conversation {
@@ -1459,9 +1467,17 @@ async fn handle_client_frame(
                 return true;
             };
             match store.load_envelope(&id).await {
-                Ok(Some((loaded, meta))) => {
+                Ok(Some((mut loaded, meta))) => {
                     let count = loaded.messages.len();
                     let bound_project = meta.project_id.clone();
+                    // Chain breaker: server-side state behind
+                    // `last_response_id` may have aged out of the
+                    // provider's retention window while we were down.
+                    // Treat the persisted id as a hint at most — clear
+                    // it on resume so the next request rebuilds the
+                    // chain from scratch.
+                    loaded.last_response_id = None;
+                    loaded.last_response_chain_origin = None;
                     *conv = loaded;
                     *persisted_id = Some(id.clone());
                     *persisted_project_id = bound_project.clone();

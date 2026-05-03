@@ -80,3 +80,71 @@ where
     kept.reverse();
     kept
 }
+
+/// Cache-aware variant of [`select_recent_turns`]. `breakpoint` is the
+/// highest-indexed message that carries an explicit `CacheHint` — the
+/// cached prefix runs through (and includes) that index. We try to keep
+/// every turn whose messages all fall at-or-before the breakpoint plus
+/// the most recent turn (recency invariant), then top up newest-first
+/// with the remaining budget.
+///
+/// If preserving the cached prefix would push us over budget, falls
+/// back to plain [`select_recent_turns`] so we never regress recency.
+pub(crate) fn select_recent_turns_with_breakpoint<F>(
+    turns: &[TurnIndices],
+    breakpoint: usize,
+    budget: usize,
+    cost: F,
+) -> Vec<&TurnIndices>
+where
+    F: Fn(&TurnIndices) -> usize,
+{
+    if turns.is_empty() {
+        return Vec::new();
+    }
+
+    // A turn is "cached" iff every one of its message indices is
+    // at-or-before the breakpoint. A turn that straddles the breakpoint
+    // is treated as post-breakpoint — splitting it would break the
+    // tool-call atomicity invariant.
+    let cached_count = turns
+        .iter()
+        .take_while(|t| t.iter().max().map_or(true, |&i| i <= breakpoint))
+        .count();
+    let (cached, rest) = turns.split_at(cached_count);
+
+    let cached_cost: usize = cached.iter().map(&cost).sum();
+    if cached_cost > budget {
+        // Cached prefix alone overflows — fall back to the plain
+        // newest-first heuristic. Recency still beats caching when we
+        // can't have both.
+        return select_recent_turns(turns, budget, cost);
+    }
+
+    // Keep the cached prefix unconditionally, then accumulate the
+    // post-breakpoint slice newest-first under the remaining budget.
+    let remaining = budget - cached_cost;
+    let mut kept: Vec<&TurnIndices> = Vec::with_capacity(turns.len());
+    let mut tail_kept: Vec<&TurnIndices> = Vec::new();
+    let mut tail_budget = remaining;
+    for turn in rest.iter().rev() {
+        let c = cost(turn);
+        if tail_kept.is_empty() {
+            // Recency invariant: keep the very latest turn even if it
+            // alone exceeds `remaining`.
+            tail_kept.push(turn);
+            tail_budget = tail_budget.saturating_sub(c);
+        } else if c <= tail_budget {
+            tail_kept.push(turn);
+            tail_budget -= c;
+        } else {
+            break;
+        }
+    }
+    tail_kept.reverse();
+    for t in cached {
+        kept.push(t);
+    }
+    kept.extend(tail_kept);
+    kept
+}

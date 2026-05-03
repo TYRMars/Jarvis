@@ -12,7 +12,7 @@ use crate::tool::ToolSpec;
 
 /// A request to a chat-style LLM. Provider crates translate this into their
 /// native wire format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -22,6 +22,20 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Provider-issued response id from the previous turn in the same
+    /// conversation. The Responses API uses this to reuse server-side
+    /// cached state; when paired with `chain_origin` the provider sends
+    /// only the *new* messages since the chain anchor and references
+    /// the prior response. Other providers (OpenAI Chat Completions,
+    /// Anthropic, Google) ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    /// Index in `messages` where the chain anchored at
+    /// `previous_response_id` begins. The provider sends
+    /// `messages[chain_origin..]` as the request input when chaining.
+    /// `None` means "send full history" (the historical default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_origin: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +43,12 @@ pub struct ChatResponse {
     /// The assistant message returned by the provider. May contain tool_calls.
     pub message: Message,
     pub finish_reason: FinishReason,
+    /// Provider-issued response id, when the upstream surface ships
+    /// one. Currently populated only by the Responses providers
+    /// (OpenAI Responses + Codex) so the caller can chain into the
+    /// next request via [`ChatRequest::previous_response_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +109,14 @@ pub enum LlmChunk {
     Finish {
         message: Message,
         finish_reason: FinishReason,
+        /// Provider-issued identifier for this completion, when the
+        /// upstream surface returns one. The Responses API ships an
+        /// `id` (e.g. `resp_abc...`) on `response.completed` that can
+        /// be threaded into the next request as
+        /// `previous_response_id` for server-side state reuse;
+        /// non-Responses providers currently leave this `None`.
+        #[allow(dead_code)]
+        response_id: Option<String>,
     },
 }
 
@@ -108,6 +136,7 @@ pub trait LlmProvider: Send + Sync {
         let chunk = LlmChunk::Finish {
             message: resp.message,
             finish_reason: resp.finish_reason,
+            response_id: None,
         };
         Ok(Box::pin(stream::once(async move { Ok(chunk) })))
     }
