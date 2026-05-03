@@ -573,6 +573,41 @@ git=uvx mcp-server-git'
 
 > Jarvis 自己也能反过来当 MCP server 给别人用 —— 见上文 `--mcp-serve`。
 
+### 用插件一键装一组工具 + skill
+
+`JARVIS_MCP_SERVERS` 是手动挂单个 MCP server 的方式;**插件**则是把"
+一组 MCP server + 一组 skill"打成一个目录,一条命令装上、一条命令卸,
+免去逐个写环境变量。Jarvis 自带一个最小内置 marketplace。
+
+```bash
+# 1. 启动服务器(插件命令通过 HTTP 跟它讲)
+jarvis serve --workspace .
+
+# 另开一个终端:
+# 2. 浏览自带的 marketplace
+jarvis plugin marketplace
+# - code-review-pack          —— 内置 code-review skill
+# - gitnexus                  —— GitNexus 知识图谱 MCP + 工作流 skill
+
+# 3. 装上 GitNexus(把代码库当成图来查:调用链 / 影响面 / 跨文件搜索)
+jarvis plugin install examples/plugins/gitnexus
+# ✓ installed `gitnexus` (1 skills, 1 mcp)
+
+# 4. 已装的列表 / 详情 / 卸载
+jarvis plugin list
+jarvis plugin info gitnexus
+jarvis plugin remove gitnexus
+```
+
+插件本质是一个含 `plugin.json` 的目录,manifest 里同时列 `skills` 和
+`mcp_servers`(参考 [`examples/plugins/`](../examples/plugins/) 里的两个示例)。
+装完后 MCP 工具自动以前缀注册(GitNexus 的工具会变成
+`gitnexus.context` / `gitnexus.impact` / `gitnexus.query` 等),
+skill 进 catalog 参与自动激活。
+
+> 限制:插件目前只在 `jarvis serve` 模式下生效,`jarvis-cli`
+> 终端 agent 还没接 PluginManager。
+
 ---
 
 ## 记忆(Memory)
