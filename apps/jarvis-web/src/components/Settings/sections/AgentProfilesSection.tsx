@@ -32,10 +32,11 @@ import {
 import type { AgentProfile } from "../../../types/frames";
 import type { ProviderInfo } from "../../../store/types";
 import { Section } from "./Section";
+import { confirm, Select } from "../../ui";
 
 const CUSTOM_MODEL_SENTINEL = "__custom__";
 
-export function AgentProfilesSection() {
+export function AgentProfilesSection({ embedded }: { embedded?: boolean } = {}) {
   const providers = useAppStore((s) => s.providers);
   const [profiles, setProfiles] = useState<AgentProfile[]>(() => listAgentProfiles());
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +60,7 @@ export function AgentProfilesSection() {
       titleFallback="Subagents"
       descKey="settingsSubagentsDesc"
       descFallback="Named specialists Jarvis can summon. Each subagent is a saved provider + model + system prompt preset — assign one as a Requirement's owner, mention it by name in chat, or hand off control during a long task. Server-global; deleting one leaves any Requirement assigned to it as 'unknown agent' until reassigned."
+      embedded={embedded}
     >
       {noProviders ? (
         <div className="settings-inline-error" role="status">
@@ -240,7 +242,12 @@ function ProfileCard({
   };
 
   const remove = async () => {
-    if (!confirm(`Delete subagent "${profile.name}"?`)) return;
+    const ok = await confirm({
+      title: `Delete subagent "${profile.name}"?`,
+      danger: true,
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
     setBusy(true);
     onError(null);
     try {
@@ -401,21 +408,21 @@ function ProviderSelect({
   return (
     <label className="agent-profile-field">
       <span>Provider</span>
-      <select
+      <Select
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={onChange}
         disabled={disabled}
-      >
-        {providers.map((p) => (
-          <option key={p.name} value={p.name}>
-            {p.name}
-            {p.is_default ? " (default)" : ""}
-          </option>
-        ))}
-        {showOrphan ? (
-          <option value={value}>{value} (missing)</option>
-        ) : null}
-      </select>
+        ariaLabel="Provider"
+        options={[
+          ...providers.map((p) => ({
+            value: p.name,
+            label: p.name + (p.is_default ? " (default)" : ""),
+          })),
+          ...(showOrphan
+            ? [{ value, label: `${value} (missing)` }]
+            : []),
+        ]}
+      />
     </label>
   );
 }
@@ -472,28 +479,28 @@ function ModelSelect({
   return (
     <div className="agent-profile-field agent-profile-model-field">
       <span>Model</span>
-      <select
+      <Select
         value={selectValue}
-        onChange={(e) => {
-          const v = e.target.value;
+        onChange={(v) => {
           if (v === CUSTOM_MODEL_SENTINEL) {
-            // Pivot to free-text by clearing the value; the input below
-            // takes over.
+            // Pivot to free-text by clearing the value; the input
+            // below takes over.
             onChange("");
           } else {
             onChange(v);
           }
         }}
         disabled={disabled}
-      >
-        {options.map((m) => (
-          <option key={m} value={m}>
-            {m}
-            {m === provider.default_model ? " (default)" : ""}
-          </option>
-        ))}
-        <option value={CUSTOM_MODEL_SENTINEL}>Custom…</option>
-      </select>
+        ariaLabel="Model"
+        searchable={options.length > 8}
+        options={[
+          ...options.map((m) => ({
+            value: m,
+            label: m + (m === provider.default_model ? " (default)" : ""),
+          })),
+          { value: CUSTOM_MODEL_SENTINEL, label: "Custom…" },
+        ]}
+      />
       {isCustom ? (
         <input
           className="agent-profile-model-custom"

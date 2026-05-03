@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { useAppStore } from "../../../store/appStore";
 import { Row, Section } from "./Section";
 import { t } from "../../../utils/i18n";
+import { confirm, Select } from "../../ui";
 import {
   appendRule,
   deleteRule,
@@ -50,7 +51,7 @@ const SCOPES: Array<{ scope: Scope; key: string; fallback: string }> = [
   { scope: "user", key: "scopeUser", fallback: "User (private)" },
 ];
 
-export function PermissionsSection() {
+export function PermissionsSection({ embedded }: { embedded?: boolean } = {}) {
   const version = useAppStore((s) => s.permissionRulesVersion);
   const [table, setTable] = useState<PermissionTable | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -85,6 +86,7 @@ export function PermissionsSection() {
       titleFallback="Permissions"
       descKey="settingsPermsDesc"
       descFallback="Five modes set the default decision; rules are an override list. Eval order: deny → ask → allow → mode default."
+      embedded={embedded}
     >
       {unavailable ? (
         <div className="settings-empty">
@@ -105,15 +107,19 @@ export function PermissionsSection() {
 function PermissionsBody({ table }: { table: PermissionTable }) {
   return (
     <>
-      <Row
-        label={tx("settingsPermsCurrentMode", "Default mode")}
-        hint={tx(
-          "settingsPermsCurrentModeHint",
-          "What happens when no rule matches a tool call.",
-        )}
-      >
-        <ModePicker current={table.default_mode} />
-      </Row>
+      <PermissionsAnchors />
+
+      <div id="perm-default-mode">
+        <Row
+          label={tx("settingsPermsCurrentMode", "Default mode")}
+          hint={tx(
+            "settingsPermsCurrentModeHint",
+            "What happens when no rule matches a tool call.",
+          )}
+        >
+          <ModePicker current={table.default_mode} />
+        </Row>
+      </div>
 
       <div className="settings-row settings-row-stack">
         <div className="settings-row-label">
@@ -132,6 +138,43 @@ function PermissionsBody({ table }: { table: PermissionTable }) {
         </div>
       </div>
     </>
+  );
+}
+
+/// Sticky sub-nav for the long Permissions section. Five jump
+/// targets: Default mode + the three rule buckets + Add rule.
+/// Uses `scrollIntoView` instead of href anchors so we don't
+/// collide with SettingsPage's hash routing.
+const ANCHORS: Array<{ id: string; key: string; fallback: string }> = [
+  { id: "perm-default-mode", key: "settingsPermsCurrentMode", fallback: "Default mode" },
+  { id: "perm-bucket-deny", key: "settingsPermsBucketDeny", fallback: "Deny" },
+  { id: "perm-bucket-ask", key: "settingsPermsBucketAsk", fallback: "Ask" },
+  { id: "perm-bucket-allow", key: "settingsPermsBucketAllow", fallback: "Allow" },
+  { id: "perm-add-rule", key: "settingsPermsAddRule", fallback: "Add rule" },
+];
+
+function PermissionsAnchors() {
+  const jump = (id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  return (
+    <nav
+      className="perm-anchors"
+      aria-label={tx("settingsPermsAnchorsLabel", "Jump to section")}
+    >
+      {ANCHORS.map((a) => (
+        <button
+          key={a.id}
+          type="button"
+          className="perm-anchor"
+          onClick={() => jump(a.id)}
+        >
+          {tx(a.key, a.fallback)}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -175,7 +218,10 @@ function ModePicker({ current }: { current: PermissionMode }) {
               onClick={async () => {
                 if (selected) return;
                 if (opt.mode === "bypass") {
-                  const ok = window.confirm(tx("permModeBypassConfirm", ""));
+                  const ok = await confirm({
+                    title: tx("permModeBypassConfirm", ""),
+                    danger: true,
+                  });
                   if (!ok) return;
                 }
                 setBusy(opt.mode);
@@ -190,17 +236,16 @@ function ModePicker({ current }: { current: PermissionMode }) {
       </div>
       <label className="settings-toggle">
         <span className="settings-toggle-label">{tx("settingsPermsRuleScope", "Scope")}</span>
-        <select
+        <Select<Scope>
           className="settings-input"
           value={scope}
-          onChange={(e) => setScope(e.target.value as Scope)}
-        >
-          {SCOPES.map((s) => (
-            <option key={s.scope} value={s.scope}>
-              {tx(s.key, s.fallback)}
-            </option>
-          ))}
-        </select>
+          onChange={setScope}
+          ariaLabel={tx("settingsPermsRuleScope", "Scope")}
+          options={SCOPES.map((s) => ({
+            value: s.scope,
+            label: tx(s.key, s.fallback),
+          }))}
+        />
       </label>
     </div>
   );
@@ -217,14 +262,14 @@ function RuleBucket({
 }) {
   if (rules.length === 0) {
     return (
-      <div className="perm-bucket">
+      <div id={`perm-bucket-${bucket}`} className="perm-bucket">
         <div className="perm-bucket-title">{label}</div>
         <div className="perm-bucket-empty">—</div>
       </div>
     );
   }
   return (
-    <div className="perm-bucket">
+    <div id={`perm-bucket-${bucket}`} className="perm-bucket">
       <div className="perm-bucket-title">{label}</div>
       <ul className="perm-rule-list">
         {rules.map((r, idx) => (
@@ -311,18 +356,20 @@ function AddRuleForm() {
 
   if (!open) {
     return (
-      <button
-        type="button"
-        className="settings-btn settings-btn-secondary perm-add-btn"
-        onClick={() => setOpen(true)}
-      >
-        {tx("settingsPermsAddRule", "Add rule")}
-      </button>
+      <div id="perm-add-rule">
+        <button
+          type="button"
+          className="settings-btn settings-btn-secondary perm-add-btn"
+          onClick={() => setOpen(true)}
+        >
+          {tx("settingsPermsAddRule", "Add rule")}
+        </button>
+      </div>
     );
   }
 
   return (
-    <div className="perm-add-form">
+    <div id="perm-add-rule" className="perm-add-form">
       <Row
         label={tx("settingsPermsRuleTool", "Tool")}
         hint={tx(
@@ -356,17 +403,16 @@ function AddRuleForm() {
       </Row>
 
       <Row label={tx("settingsPermsRuleScope", "Scope")}>
-        <select
+        <Select<Scope>
           className="settings-input"
           value={scope}
-          onChange={(e) => setScope(e.target.value as Scope)}
-        >
-          {SCOPES.map((s) => (
-            <option key={s.scope} value={s.scope}>
-              {tx(s.key, s.fallback)}
-            </option>
-          ))}
-        </select>
+          onChange={setScope}
+          ariaLabel={tx("settingsPermsRuleScope", "Scope")}
+          options={SCOPES.map((s) => ({
+            value: s.scope,
+            label: tx(s.key, s.fallback),
+          }))}
+        />
       </Row>
 
       <Row

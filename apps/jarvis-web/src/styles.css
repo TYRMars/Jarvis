@@ -1538,49 +1538,44 @@ body.sidebar-closed #input-area {
  * brand accent + elapsed wall-clock + cumulative token count.
  * Self-removes when `inFlight` flips false.
  *
- * Left-padded by 46px (= 34px avatar column + 12px gap declared
- * by `.msg-row`) so the sparkle sits flush under the spot where
- * Jarvis's avatar would otherwise be — visually anchors the row
- * to the assistant column instead of floating at the page edge. */
+ * Centered to the same content column as `.msg-row` so it sits
+ * directly under the most recent assistant bubble instead of
+ * floating at the page edge. The 46px left-pad inside that column
+ * (= 34px avatar + 12px gap from `.msg-row`'s grid) keeps the
+ * sparkle aligned with assistant content, not the avatar slot. */
 .agent-loading {
+  width: min(var(--content-width), 100%);
+  margin-left: auto;
+  margin-right: auto;
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 8px 0 6px;
+  margin-top: 8px;
+  margin-bottom: 6px;
   padding: 4px 8px 4px 46px;
   color: var(--text-soft);
   font-size: var(--fs-13);
   line-height: 1.5;
 }
 
-/* Sparkle SVG — orange/red brand accent, gently rotating + pulsing
- * so the user has a continuous "still working" signal even when
- * elapsed-second / token counters happen to tick at the same time. */
+/* Lottie player container. The animation itself is in
+ * `loadingDots.lottie.json` (3-dot pulse, brand orange, eased
+ * keyframes) — the wrapper is a passive box that just sizes and
+ * vertically centers it next to the elapsed-time label. Reduced-
+ * motion users get a static SVG with the same dimensions so layout
+ * doesn't shift when the renderer swaps. */
 .agent-loading-spark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--accent);
-  animation: agent-loading-spin 2.4s linear infinite,
-    agent-loading-spark-pulse 1.6s ease-in-out infinite;
-  transform-origin: center;
+  width: 30px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
-@keyframes agent-loading-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes agent-loading-spark-pulse {
-  0%, 100% { opacity: 0.7; }
-  50% { opacity: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .agent-loading-spark {
-    animation: agent-loading-spark-pulse 2s ease-in-out infinite;
-  }
+.agent-loading-spark > svg {
+  display: block;
 }
 
 .agent-loading-text {
@@ -5079,8 +5074,146 @@ body.approvals-open #panel {
   padding: 18px 12px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 14px;
   overflow-y: auto;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-group-title {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  user-select: none;
+}
+
+/* Search input above the nav. Sticky so it stays put while scrolling
+   long result lists; matches the input styling used elsewhere in
+   settings (var(--input-*) tokens). */
+.settings-nav-search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin: -2px 2px 4px;
+  background: var(--input);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.settings-nav-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 25%, transparent);
+}
+.settings-nav-search-icon {
+  flex: 0 0 auto;
+  color: var(--text-soft);
+}
+.settings-nav-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-13);
+  color: var(--text);
+  outline: none;
+  padding: 2px 0;
+}
+.settings-nav-search-input::placeholder {
+  color: var(--text-placeholder);
+}
+/* Hide the native search clear button (Safari/Chrome) — Escape works. */
+.settings-nav-search-input::-webkit-search-cancel-button { display: none; }
+.settings-nav-search-kbd {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-active);
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+}
+.settings-nav-search:focus-within .settings-nav-search-kbd {
+  display: none;
+}
+
+/* Filtered hit list — replaces the grouped nav while a query is
+   active. Each row shows the destination label + a breadcrumb
+   trail (Group · Section) so the IA stays legible under search. */
+.settings-nav-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-nav-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--text);
+  transition: background 0.15s ease;
+}
+.settings-nav-result:hover { background: var(--panel-hover); }
+.settings-nav-result.active {
+  background: var(--panel-active);
+}
+.settings-nav-result-label {
+  font-size: var(--fs-13);
+  font-weight: 600;
+}
+.settings-nav-result-breadcrumb {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+.settings-nav-empty {
+  padding: 16px 12px;
+  font-size: var(--fs-13);
+  color: var(--text-soft);
+  text-align: center;
+}
+
+/* Mobile dropdown — only shown at <720px (see media query below).
+   Native <select> gives us a real iOS / Android picker, which is
+   easier to target on a phone than custom horizontal-scroll chips. */
+.settings-nav-select {
+  display: none;
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 8px 32px 8px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background-color: var(--input);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-13);
+  font-weight: 600;
+}
+.settings-nav-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .settings-nav-link {
@@ -5133,6 +5266,86 @@ body.approvals-open #panel {
 }
 
 .settings-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Embedded section: rendered inside a Tab inside a super-section.
+   Drops the outer chrome (h2 + section wrapper) since the parent
+   already provides them; preserves any load-bearing description. */
+.settings-section-embedded {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-section-embedded .settings-section-desc {
+  margin: 0;
+}
+
+/* Tabs primitive — used by the redesigned super-sections
+   (AppearanceLayout / Models / Extensions / System) to switch
+   between subviews. */
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.settings-tabs-list {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: -1px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.settings-tabs-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  color: var(--text-soft);
+  font-size: var(--fs-13);
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.settings-tabs-tab:hover {
+  color: var(--text);
+  background: var(--panel-hover);
+}
+.settings-tabs-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 650;
+}
+.settings-tabs-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.settings-tabs-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--panel-active);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 650;
+}
+.settings-tabs-tab.active .settings-tabs-badge {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.settings-tabs-panel {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -5608,11 +5821,28 @@ body.approvals-open #panel {
     grid-template-columns: 1fr;
   }
   .settings-nav {
-    flex-direction: row;
-    overflow-x: auto;
-    padding: 8px 12px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    overflow-x: visible;
+    padding: 10px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--border-soft);
+  }
+  .settings-nav-search {
+    margin: 0;
+    position: static;
+  }
+  /* Hide the desktop chip groups on mobile — we use the native
+     dropdown instead. */
+  .settings-nav-group {
+    display: none;
+  }
+  .settings-nav-select {
+    display: block;
+  }
+  .settings-nav-results {
+    width: 100%;
   }
   .settings-content {
     padding: 18px 18px 60px;
@@ -5993,11 +6223,20 @@ body.approvals-open #panel {
 
 .project-board-columns {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  /* Track count is `--kanban-col-count` — set by ProjectBoard to
+     `project.columns?.length ?? 4`. Defaults to 4 if the inline
+     style is missing so the legacy non-customised look keeps
+     working. The `minmax(180px, 1fr)` floor stops cards from getting
+     too cramped; horizontal scroll inside `.project-board-columns`
+     kicks in once the total minimum width exceeds the available
+     space. */
+  grid-template-columns:
+    repeat(var(--kanban-col-count, 4), minmax(180px, 1fr));
   gap: 12px;
   align-items: stretch; /* let every column grow to row height */
   flex: 1 1 auto;       /* fill the remaining vertical space in .project-board */
   min-height: 0;        /* required so child columns can shrink + scroll */
+  overflow-x: auto;     /* lets a 6+ column board pan horizontally */
 }
 
 .project-board-column {
@@ -6979,6 +7218,21 @@ body.approvals-open #panel {
 }
 .settings-btn-danger:hover:not(:disabled) {
   background: color-mix(in srgb, #dc2626 14%, transparent);
+}
+
+/* Filled-accent variant for the primary button in modal footers
+ * (`<ConfirmDialog>`'s OK button, future modal action surfaces). The
+ * legacy `.projects-new-btn` already paints a filled accent button
+ * but its name is wrong for non-projects contexts; this shares the
+ * styling under a domain-neutral class. */
+.settings-btn-primary {
+  border-color: var(--accent, #d87948);
+  background: var(--accent, #d87948);
+  color: var(--accent-fg, #fff);
+}
+.settings-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #d87948) 88%, black);
+  border-color: color-mix(in srgb, var(--accent, #d87948) 88%, black);
 }
 
 /* ---- Projects settings list ---- */
@@ -8687,6 +8941,44 @@ select.settings-input {
   font-size: var(--fs-11);
 }
 
+/* PermissionsSection — sub-anchor TOC strip. Sticky so users can
+   jump between Default mode / Deny / Ask / Allow / Add rule
+   without scrolling back to the top of a long rule list. */
+.perm-anchors {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  padding: 6px 0;
+  margin-bottom: 4px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-soft);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.perm-anchor {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.perm-anchor:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+.perm-anchor:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* PermissionsSection — bucket lists + add form */
 .perm-bucket {
   display: flex;
@@ -10133,6 +10425,330 @@ select.settings-input {
   gap: 8px;
 }
 
+/* Shared shell from `components/ui/Modal.tsx`. Styles are intentionally
+ * thin — the existing `docs-modal-overlay/dialog` rules above carry the
+ * scrim, frame, padding, and shadow. The `ui-modal-*` classes below
+ * just give the optional title slot and footer a consistent rhythm. */
+.ui-modal-header {
+  margin-bottom: 12px;
+}
+.ui-modal-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ui-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+/* Body paragraph used by `<ConfirmDialog>` between title and actions. */
+.ui-confirm-detail {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* ===== Select (custom dropdown from components/ui/Select.tsx) ===== */
+.ui-select {
+  position: relative;
+  display: inline-block;
+  min-width: 0;
+}
+
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-13, 13px);
+  cursor: pointer;
+  text-align: start;
+}
+.ui-select-trigger:hover:not(:disabled) {
+  border-color: var(--input-focus);
+}
+.ui-select.open .ui-select-trigger {
+  border-color: var(--input-focus);
+}
+.ui-select-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.ui-select-trigger-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-chevron {
+  flex: 0 0 auto;
+  color: var(--text-soft);
+  transition: transform 0.12s ease;
+}
+.ui-select.open .ui-select-chevron {
+  transform: rotate(180deg);
+}
+
+.ui-select-popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  /* Match the trigger width by default; consumer can override via
+   * `popupMinWidth` for narrow triggers + long labels. */
+  min-width: 100%;
+  max-width: min(360px, 90vw);
+  max-height: min(60vh, 320px);
+  z-index: 50;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-select-search {
+  border-bottom: 1px solid var(--border-soft);
+  padding: 6px 6px 4px;
+}
+.ui-select-search input {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-12, 12px);
+  outline: none;
+}
+.ui-select-search input:focus {
+  border-color: var(--input-focus);
+}
+
+.ui-select-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ui-select-group {
+  padding: 6px 12px 2px;
+  font-size: var(--fs-11, 11px);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.ui-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: var(--fs-13, 13px);
+  color: var(--text);
+  cursor: pointer;
+}
+.ui-select-option.active {
+  background: var(--panel-hover);
+}
+.ui-select-option.selected {
+  font-weight: 600;
+}
+.ui-select-option.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ui-select-option-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-check {
+  flex: 0 0 auto;
+  color: var(--accent, #d87948);
+}
+
+.ui-select-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-13, 13px);
+}
+
+/* ===== Button — sm size variant ===== */
+/* The default `.settings-btn` height is 32px (md). `.ui-btn-sm`
+ * overrides it for dense rows. Variant colours come from the
+ * legacy `.settings-btn-{ghost,primary,danger}` rules. */
+.ui-btn-sm.settings-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: var(--fs-12, 12px);
+}
+
+/* ===== TextField + Textarea (shared chrome) ===== */
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ui-field-label {
+  font-size: var(--fs-12, 12px);
+  font-weight: 600;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ui-field-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md);
+  padding: 0 10px;
+  min-width: 0;
+}
+.ui-field-control:focus-within {
+  border-color: var(--input-focus);
+}
+.ui-field.is-error .ui-field-control {
+  border-color: #dc2626;
+}
+.ui-field-control input,
+.ui-field-control textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-13, 13px);
+}
+.ui-field-control input { height: 30px; }
+.ui-field-control textarea {
+  padding: 8px 0;
+  line-height: 1.5;
+  resize: vertical;
+  /* Auto-grow respects line-height; keep this in sync if you
+   * tweak line-height tokens. */
+}
+.ui-field-control input::placeholder,
+.ui-field-control textarea::placeholder {
+  color: var(--placeholder);
+}
+.ui-field-prefix,
+.ui-field-suffix {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.ui-field-hint {
+  margin: 0;
+  font-size: var(--fs-12, 12px);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.ui-field.is-error .ui-field-hint { color: #b91c1c; }
+
+/* ===== Checkbox ===== */
+.ui-checkbox {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  line-height: 1.4;
+  user-select: none;
+}
+.ui-checkbox.disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* Hide the native widget (still in the DOM for click + form data
+ * + a11y), draw our own. */
+.ui-checkbox-input {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.ui-checkbox-box {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  background: var(--input-bg);
+  border: 1.5px solid var(--input-border);
+  border-radius: 4px;
+  color: var(--accent-fg, #fff);
+  transition: background 0.12s, border-color 0.12s;
+}
+.ui-checkbox-input:focus-visible + .ui-checkbox-box {
+  border-color: var(--input-focus);
+  outline: 2px solid color-mix(in srgb, var(--accent, #d87948) 35%, transparent);
+  outline-offset: 1px;
+}
+.ui-checkbox-input:checked + .ui-checkbox-box,
+.ui-checkbox-input:indeterminate + .ui-checkbox-box {
+  background: var(--accent, #d87948);
+  border-color: var(--accent, #d87948);
+}
+.ui-checkbox-check, .ui-checkbox-dash {
+  display: none;
+}
+.ui-checkbox-input:checked + .ui-checkbox-box .ui-checkbox-check {
+  display: block;
+}
+.ui-checkbox-input:indeterminate + .ui-checkbox-box .ui-checkbox-dash {
+  display: block;
+}
+/* When indeterminate AND checked, show only the dash (the spec). */
+.ui-checkbox-input:indeterminate + .ui-checkbox-box .ui-checkbox-check {
+  display: none;
+}
+
+.ui-checkbox-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ui-checkbox-label {
+  font-size: var(--fs-13, 13px);
+  color: var(--text);
+}
+.ui-checkbox-hint {
+  font-size: var(--fs-12, 12px);
+  color: var(--text-muted);
+}
+
 /* Spinner keyframes for saving pill */
 
 @keyframes docs-spin {
@@ -10157,6 +10773,73 @@ select.settings-input {
     border-bottom: 1px solid var(--border-soft);
     max-height: 40vh;
   }
+}
+
+/* ---------- Projects page · Single-pane workspace ----------
+ *
+ * The AppSidebar already lists projects (and owns "+ 新建项目"),
+ * so the page itself is just the workspace: kanban / create panel
+ * / unavailable banner / empty hint. The `.projects-page-flat`
+ * variant strips the legacy `.projects-page` 72px / 12vw padding
+ * so kanban gets the full available width.
+ *
+ * Why not three panes (list inside the page) like docs? Docs have
+ * short titles and need an editor right next to the list — you scan,
+ * click, edit. Projects open into a kanban that wants every horizontal
+ * pixel for columns + cards; an in-page list duplicates the
+ * AppSidebar and cuts kanban width without earning anything back.
+ */
+.projects-page-flat {
+  padding: 16px 24px 24px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 12px;
+}
+
+.projects-page-flat.is-empty {
+  align-items: center;
+  justify-content: center;
+}
+
+/* Tiny topbar — only paints the OpenSidebarButton when the user has
+ * collapsed the sidebar. When sidebar is open, the bar collapses to
+ * 0px tall and the kanban / empty state floats up. */
+.projects-page-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+}
+.projects-page-topbar:empty {
+  display: none;
+}
+
+/* Empty hint shown when no project is selected and the user hasn't
+ * started creating one. Centred via the wrapper's `.is-empty` class. */
+.projects-detail-empty {
+  text-align: center;
+  color: var(--text-soft);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px;
+}
+.projects-detail-empty h2 {
+  margin: 0;
+  font-size: var(--fs-18, 18px);
+  font-weight: 600;
+  color: var(--text);
+}
+.projects-detail-empty p {
+  margin: 0;
+  font-size: var(--fs-14, 14px);
+  max-width: 360px;
+}
+.projects-detail-empty .projects-new-btn {
+  margin-top: 4px;
 }
 
 /* Sidebar docs scope rows (live in AppSidebar.DocSidebarBody) */
@@ -10218,4 +10901,172 @@ select.settings-input {
 }
 .docs-scope-row.is-active .docs-scope-row-count {
   color: var(--text-muted);
+}
+
+/* ---------- Kanban column editor (per-project) ----------
+ *
+ * Reuses the docs `.confirm-delete-backdrop` / `.confirm-delete-dialog`
+ * shell for the modal frame so we get the same scrim, border, and
+ * shadow tokens. The rest of the rules below are specific to the
+ * row-grid editor. Selectors are flat (no `.column-editor-dialog`
+ * prefix on every child) because the dialog only renders one
+ * instance at a time — collisions with the docs delete dialog are
+ * impossible.
+ */
+.column-editor-dialog {
+  width: min(720px, 92vw);
+  max-height: min(86vh, 760px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.column-editor-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.column-editor-head h2 {
+  margin: 0;
+  font-size: var(--fs-18, 18px);
+  font-weight: 700;
+  color: var(--text);
+}
+.column-editor-hint {
+  margin: 0;
+  font-size: var(--fs-13, 13px);
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.column-editor-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  /* Cap the row list so the modal stays scrollable but the action
+     footer remains visible. The dialog itself flexes; this just
+     stops a 30-row board from dwarfing the buttons. */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.column-editor-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 2fr) minmax(0, 1.4fr) minmax(0, 1.2fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 6px 4px;
+  border-bottom: 1px dashed var(--border-soft);
+}
+.column-editor-row:last-child {
+  border-bottom: 0;
+}
+
+.column-editor-handle {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
+.column-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-12, 12px);
+  color: var(--text-soft);
+  min-width: 0;
+}
+.column-editor-field > span {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.column-editor-field input,
+.column-editor-field select {
+  height: 30px;
+  padding: 0 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-13, 13px);
+  min-width: 0;
+}
+.column-editor-field input:focus,
+.column-editor-field select:focus {
+  outline: none;
+  border-color: var(--input-focus);
+}
+.column-editor-field-id input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-12, 12px);
+}
+
+.column-editor-tools {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.column-editor-error {
+  padding: 8px 10px;
+  background: rgba(216, 121, 72, 0.08);
+  border: 1px solid rgba(216, 121, 72, 0.4);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--accent, #d87948);
+  font-size: var(--fs-13, 13px);
+  line-height: 1.4;
+}
+
+.column-editor-actions {
+  margin-top: 4px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Header actions row in `.project-board-head` — when the kanban has
+ * both an "Edit columns" button and a "+ 新建需求" button we want them
+ * grouped to the right edge with the same gap. */
+.project-board-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Banner shown above the kanban when one or more requirements are
+ * stuck on a column id that no longer exists (column was renamed or
+ * deleted). Subtle accent border so the user notices but doesn't
+ * panic. */
+.project-board-orphaned {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: rgba(216, 121, 72, 0.08);
+  border: 1px dashed var(--accent, #d87948);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-soft);
+  font-size: var(--fs-13, 13px);
+}
+.project-board-orphaned-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent, #d87948);
+  color: var(--accent-fg, #fff);
+  font-weight: 700;
+  font-size: 12px;
+  flex: 0 0 auto;
 }

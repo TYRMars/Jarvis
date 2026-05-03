@@ -3,6 +3,14 @@
 // title is the visible heading. Description renders smaller in
 // muted text under the title — use it to explain what the section
 // controls when that's not obvious from the field labels alone.
+//
+// Embedded mode: when a section is rendered inside a super-section
+// Tab (Models / Extensions / System / AppearanceLayout), the parent
+// already provides the page-level h2 + description, so the leaf
+// section drops its own outer chrome and renders only its body —
+// optionally prefixed by a small muted intro paragraph for
+// load-bearing descriptions (e.g. "Reload after saving" on the API
+// section). Pass `embedded` through from the leaf section's prop.
 
 import { ReactNode } from "react";
 import { t } from "../../../utils/i18n";
@@ -19,9 +27,32 @@ interface Props {
   descKey?: string;
   descFallback?: string;
   children: ReactNode;
+  /// Render without the outer `<section>` / h2 chrome, for use
+  /// inside a Tab. Description (if present) is preserved as a
+  /// muted intro paragraph so important hints aren't lost.
+  embedded?: boolean;
 }
 
-export function Section({ id, titleKey, titleFallback, descKey, descFallback, children }: Props) {
+export function Section({
+  id,
+  titleKey,
+  titleFallback,
+  descKey,
+  descFallback,
+  children,
+  embedded,
+}: Props) {
+  if (embedded) {
+    return (
+      <div className="settings-section-embedded">
+        {descKey && descFallback && (
+          <p className="settings-section-desc">{tx(descKey, descFallback)}</p>
+        )}
+        <div className="settings-section-body">{children}</div>
+      </div>
+    );
+  }
+
   return (
     <section id={id} className="settings-section">
       <header className="settings-section-header">

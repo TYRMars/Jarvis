@@ -22,6 +22,7 @@ import {
 import type { ProviderInfo } from "../../../store/types";
 import { Section } from "./Section";
 import { t } from "../../../utils/i18n";
+import { confirm, Select } from "../../ui";
 
 function tx(key: string, fallback: string): string {
   const v = t(key);
@@ -71,7 +72,7 @@ const KIND_OPTIONS: ReadonlyArray<{ value: string; label: string; hint: string }
   },
 ];
 
-export function ProvidersSection() {
+export function ProvidersSection({ embedded }: { embedded?: boolean } = {}) {
   const providers = useAppStore((s) => s.providers);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null); // provider name
@@ -85,6 +86,7 @@ export function ProvidersSection() {
       titleFallback="Providers"
       descKey="settingsProvidersEditableDesc"
       descFallback="Add, edit, delete, or set the default. Changes apply immediately and persist to ~/.config/jarvis/config.json. API keys land in ~/.config/jarvis/auth/<name>.json (chmod 0600). Codex's OAuth flow still needs `jarvis login --provider codex` from the CLI."
+      embedded={embedded}
     >
       {error ? (
         <div className="settings-inline-error" role="alert">
@@ -161,12 +163,14 @@ export function ProvidersSection() {
                     }
                   }}
                   onDelete={async () => {
-                    if (
-                      !confirm(
-                        `Delete provider "${p.name}"? This removes it from config.json and deletes the api-key file.`,
-                      )
-                    )
-                      return;
+                    const ok = await confirm({
+                      title: `Delete provider "${p.name}"?`,
+                      detail:
+                        "This removes it from config.json and deletes the api-key file.",
+                      danger: true,
+                      confirmLabel: t("uiConfirmDeleteOk"),
+                    });
+                    if (!ok) return;
                     setBusy(p.name);
                     setError(null);
                     try {
@@ -367,17 +371,16 @@ function ProviderForm({ mode, initialName, onCancel, onSaved, onError }: FormPro
         </label>
         <label className="agent-profile-field">
           <span>Kind</span>
-          <select
+          <Select
             value={kind}
-            onChange={(e) => setKind(e.target.value)}
+            onChange={setKind}
             disabled={busy}
-          >
-            {KIND_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            ariaLabel="Kind"
+            options={KIND_OPTIONS.map((o) => ({
+              value: o.value,
+              label: o.label,
+            }))}
+          />
         </label>
       </div>
       {kindMeta ? <p className="provider-form-hint">{kindMeta.hint}</p> : null}
@@ -465,44 +468,50 @@ function ProviderForm({ mode, initialName, onCancel, onSaved, onError }: FormPro
               <div className="provider-form-row">
                 <label className="agent-profile-field">
                   <span>reasoning.summary</span>
-                  <select
+                  <Select
                     value={reasoningSummary}
-                    onChange={(e) => setReasoningSummary(e.target.value)}
+                    onChange={setReasoningSummary}
                     disabled={busy}
-                  >
-                    <option value="">(unset)</option>
-                    <option value="auto">auto</option>
-                    <option value="concise">concise</option>
-                    <option value="detailed">detailed</option>
-                  </select>
+                    ariaLabel="reasoning.summary"
+                    options={[
+                      { value: "", label: "(unset)" },
+                      { value: "auto", label: "auto" },
+                      { value: "concise", label: "concise" },
+                      { value: "detailed", label: "detailed" },
+                    ]}
+                  />
                 </label>
                 <label className="agent-profile-field">
                   <span>reasoning.effort</span>
-                  <select
+                  <Select
                     value={reasoningEffort}
-                    onChange={(e) => setReasoningEffort(e.target.value)}
+                    onChange={setReasoningEffort}
                     disabled={busy}
-                  >
-                    <option value="">(unset)</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="max">max</option>
-                  </select>
+                    ariaLabel="reasoning.effort"
+                    options={[
+                      { value: "", label: "(unset)" },
+                      { value: "low", label: "low" },
+                      { value: "medium", label: "medium" },
+                      { value: "high", label: "high" },
+                      { value: "max", label: "max" },
+                    ]}
+                  />
                 </label>
               </div>
               <label className="agent-profile-field">
                 <span>service_tier</span>
-                <select
+                <Select
                   value={serviceTier}
-                  onChange={(e) => setServiceTier(e.target.value)}
+                  onChange={setServiceTier}
                   disabled={busy}
-                >
-                  <option value="">(unset)</option>
-                  <option value="auto">auto</option>
-                  <option value="priority">priority</option>
-                  <option value="flex">flex</option>
-                </select>
+                  ariaLabel="service_tier"
+                  options={[
+                    { value: "", label: "(unset)" },
+                    { value: "auto", label: "auto" },
+                    { value: "priority", label: "priority" },
+                    { value: "flex", label: "flex" },
+                  ]}
+                />
               </label>
               <label className="provider-form-checkbox">
                 <input

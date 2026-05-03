@@ -14,7 +14,7 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export function WorkspaceSection() {
+export function WorkspaceSection({ embedded }: { embedded?: boolean } = {}) {
   const [state, setState] = useState<WorkspaceState>({ kind: "loading" });
   const refresh = () => {
     setState({ kind: "loading" });
@@ -32,6 +32,7 @@ export function WorkspaceSection() {
       titleFallback="Workspace"
       descKey="settingsWorkspaceDesc"
       descFallback="The directory all fs.* / git.* / shell.exec tools are scoped to. Set at server startup via --workspace, JARVIS_FS_ROOT, or [tools].fs_root."
+      embedded={embedded}
     >
       <Row label={tx("settingsWorkspaceRoot", "Root")}>
         <Body state={state} field="root" />

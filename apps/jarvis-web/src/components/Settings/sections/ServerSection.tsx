@@ -15,7 +15,7 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export function ServerSection() {
+export function ServerSection({ embedded }: { embedded?: boolean } = {}) {
   const [state, setState] = useState<ServerInfoState>({ kind: "loading" });
   const refresh = () => {
     setState({ kind: "loading" });
@@ -34,6 +34,7 @@ export function ServerSection() {
         titleFallback="Server"
         descKey="settingsServerDesc"
         descFallback="Live snapshot of the running jarvis serve process."
+        embedded={embedded}
       >
         <p className="settings-empty">…</p>
       </Section>
@@ -47,6 +48,7 @@ export function ServerSection() {
         titleFallback="Server"
         descKey="settingsServerDesc"
         descFallback="Live snapshot of the running jarvis serve process."
+        embedded={embedded}
       >
         <p className="settings-empty error">
           {tx("settingsServerLoadFailed", `failed to load: ${state.message}`)
@@ -68,6 +70,7 @@ export function ServerSection() {
       titleFallback="Server"
       descKey="settingsServerDesc"
       descFallback="Live snapshot of the running jarvis serve process."
+      embedded={embedded}
     >
       <Row label={tx("settingsServerListenAddr", "Listen address")}>
         <span className="settings-value mono">{info.listen_addr ?? noneTxt}</span>

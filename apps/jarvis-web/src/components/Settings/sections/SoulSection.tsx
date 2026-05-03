@@ -13,7 +13,7 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export function SoulSection() {
+export function SoulSection({ embedded }: { embedded?: boolean } = {}) {
   const [saved, setSaved] = useState<JarvisSoulConfig>(() => loadJarvisSoul());
   const [draft, setDraft] = useState<JarvisSoulConfig>(() => loadJarvisSoul());
   const [justSaved, setJustSaved] = useState(false);
@@ -40,6 +40,7 @@ export function SoulSection() {
       titleFallback="Jarvis Soul"
       descKey="settingsSoulDesc"
       descFallback="Jarvis's product-level identity and style. Sent as extra instructions with each new turn; not written into conversation history."
+      embedded={embedded}
     >
       <Row
         label={tx("settingsSoulEnabled", "Enabled")}

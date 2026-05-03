@@ -20,31 +20,46 @@ afterEach(() => {
 });
 
 describe("SettingsPage", () => {
-  it("renders the active settings tab as a single page", () => {
+  it("renders the active settings section as a single page", () => {
     render(
       <MemoryRouter>
         <SettingsPage />
       </MemoryRouter>,
     );
+    // h1 page title
     expect(screen.getByRole("heading", { name: "Settings", level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Appearance", level: 2 })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Preferences", level: 2 })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Appearance" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "Soul" })).toHaveAttribute("href", "#soul");
+    // Default landing section is the first nav item — "Appearance & Layout".
+    // The leaf section ("Appearance") renders embedded (no h2 of its own);
+    // the super-section h2 is what the user sees.
+    expect(
+      screen.getByRole("heading", { name: "Appearance & Layout", level: 2 }),
+    ).toBeInTheDocument();
+    // No other top-level section's h2 should be rendered.
+    expect(screen.queryByRole("heading", { name: "Models", level: 2 })).not.toBeInTheDocument();
+    // The active nav link should be marked.
+    expect(
+      screen.getByRole("link", { name: "Appearance & Layout" }),
+    ).toHaveAttribute("aria-current", "page");
+    // The Persona nav link points at the persona section.
+    expect(screen.getByRole("link", { name: "Persona" })).toHaveAttribute("href", "#persona");
   });
 
-  it("switches settings tabs without rendering every section", () => {
+  it("switches settings sections without rendering every section", () => {
     render(
       <MemoryRouter>
         <SettingsPage />
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByRole("link", { name: "Soul" }));
+    fireEvent.click(screen.getByRole("link", { name: "Persona" }));
 
+    // Persona is a standalone (non-embedded) leaf — its own h2 is shown.
     expect(screen.getByRole("heading", { name: "Jarvis Soul", level: 2 })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Appearance", level: 2 })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Soul" })).toHaveAttribute("aria-current", "page");
+    // The previous super-section's h2 is gone.
+    expect(
+      screen.queryByRole("heading", { name: "Appearance & Layout", level: 2 }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Persona" })).toHaveAttribute("aria-current", "page");
   });
 
   it("theme pill click flips appStore.theme", () => {
@@ -70,7 +85,8 @@ describe("SettingsPage", () => {
   });
 
   it("saves Jarvis soul settings to localStorage", () => {
-    window.history.replaceState(null, "", "/settings#soul");
+    // Persona section uses the standalone Soul section.
+    window.history.replaceState(null, "", "/settings#persona");
     render(
       <MemoryRouter>
         <SettingsPage />
@@ -87,5 +103,18 @@ describe("SettingsPage", () => {
       name: "Javvis",
       enabled: true,
     });
+  });
+
+  it("legacy hashes are remapped to the new IA", () => {
+    // Old #soul should land on persona. Drive the page through the
+    // hashchange event so we exercise the same code path bookmarks hit.
+    window.history.replaceState(null, "", "/settings#soul");
+    render(
+      <MemoryRouter>
+        <SettingsPage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("heading", { name: "Jarvis Soul", level: 2 })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#persona");
   });
 });

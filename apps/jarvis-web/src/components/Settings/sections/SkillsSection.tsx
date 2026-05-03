@@ -22,7 +22,7 @@ type LoadState =
   | { kind: "ready"; skills: SkillSummary[] }
   | { kind: "error"; message: string };
 
-export function SkillsSection() {
+export function SkillsSection({ embedded }: { embedded?: boolean } = {}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const active = useAppStore((s) => s.activeSkills);
   const [opened, setOpened] = useState<string | null>(null);
@@ -49,6 +49,7 @@ export function SkillsSection() {
       titleFallback="Skills"
       descKey="settingsSkillsDesc"
       descFallback="Markdown + frontmatter packs from ~/.config/jarvis/skills and <workspace>/.jarvis/skills. Toggling a skill prepends its body to this session's system prompt."
+      embedded={embedded}
     >
       {renderList(state, active, toggle, opened, setOpened)}
 
