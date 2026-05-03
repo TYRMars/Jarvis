@@ -12,6 +12,8 @@
 
 pub mod ask;
 pub mod checks;
+pub mod claude_code;
+pub mod codex;
 pub mod doc;
 pub mod echo;
 pub mod exit_plan;
@@ -31,6 +33,8 @@ pub mod workspace;
 
 pub use ask::AskTextTool;
 pub use checks::ProjectChecksTool;
+pub use claude_code::{ClaudeCodeRunTool, PermissionMode as ClaudeCodePermissionMode};
+pub use codex::{CodexRunTool, SandboxMode as CodexSandboxMode};
 pub use doc::{
     DocCreateTool, DocDeleteTool, DocDraftGetTool, DocDraftSaveTool, DocGetTool, DocListTool,
     DocUpdateTool,
@@ -146,6 +150,16 @@ pub struct BuiltinsConfig {
     /// alongside [`Self::requirement_store`] for the
     /// `requirement.*` tools — see that field's doc for rationale.
     pub activity_store: Option<Arc<dyn ActivityStore>>,
+    /// Whether to register `codex.run`. Defaults to `false` — spawning
+    /// the Codex CLI as a sub-agent is a powerful primitive that
+    /// touches the host filesystem under Codex's own sandbox; opt in
+    /// only when the operator has actually decided that delegation
+    /// makes sense. See [`docs/proposals/codex-subagent.zh-CN.md`].
+    pub enable_codex_run: bool,
+    /// Whether to register `claude_code.run`. Same opt-in rationale as
+    /// [`Self::enable_codex_run`]; see
+    /// [`docs/proposals/claude-code-subagent.zh-CN.md`].
+    pub enable_claude_code_run: bool,
 }
 
 impl Default for BuiltinsConfig {
@@ -167,6 +181,8 @@ impl Default for BuiltinsConfig {
             doc_store: None,
             requirement_store: None,
             activity_store: None,
+            enable_codex_run: false,
+            enable_claude_code_run: false,
         }
     }
 }
@@ -218,6 +234,12 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
                 .with_sandbox(cfg.shell_sandbox)
                 .with_limits(cfg.shell_limits),
         );
+    }
+    if cfg.enable_codex_run {
+        registry.register(CodexRunTool::new(root.clone()));
+    }
+    if cfg.enable_claude_code_run {
+        registry.register(ClaudeCodeRunTool::new(root.clone()));
     }
     if let Some(store) = cfg.todo_store {
         registry.register(TodoListTool::new(store.clone(), root.clone()));
