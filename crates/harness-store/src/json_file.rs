@@ -42,9 +42,11 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
+    Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
     BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
     DocEvent, DocProject, DocStore, Message, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementStore, TodoEvent, TodoItem, TodoStore,
+    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, TodoEvent,
+    TodoItem, TodoStore,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -568,6 +570,361 @@ impl RequirementStore for JsonFileRequirementStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- RequirementRunStore -------------------------------------------
+
+/// One JSON file per run, partitioned by requirement under a
+/// `requirement_runs/` subdirectory:
+/// `<base>/requirement_runs/<encode_id(requirement_id)>/<encode_id(id)>.json`.
+/// Mirrors [`JsonFileRequirementStore`] layout.
+pub struct JsonFileRequirementRunStore {
+    base: PathBuf,
+    tx: broadcast::Sender<RequirementRunEvent>,
+}
+
+impl JsonFileRequirementRunStore {
+    /// Open or create a store at `<base>/requirement_runs/`. The
+    /// subdirectory is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn requirement_dir(&self, requirement_id: &str) -> PathBuf {
+        self.base
+            .join("requirement_runs")
+            .join(encode_id(requirement_id))
+    }
+
+    fn path_for(&self, requirement_id: &str, id: &str) -> PathBuf {
+        self.requirement_dir(requirement_id)
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    /// Walk every requirement dir to find a run by id. Used by
+    /// `get` (which only knows the id; the row carries the
+    /// requirement_id inside).
+    async fn find_by_id(&self, id: &str) -> Result<Option<(PathBuf, RequirementRun)>, BoxError> {
+        let root = self.base.join("requirement_runs");
+        let mut read_dir = match tokio::fs::read_dir(&root).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let target_filename = format!("{}.json", encode_id(id));
+        while let Some(entry) = read_dir.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let candidate = entry.path().join(&target_filename);
+            match tokio::fs::read(&candidate).await {
+                Ok(bytes) => match serde_json::from_slice::<RequirementRun>(&bytes) {
+                    Ok(run) => return Ok(Some((candidate, run))),
+                    Err(_) => continue,
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Box::new(e)),
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl RequirementRunStore for JsonFileRequirementRunStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<RequirementRun>, BoxError> {
+        let dir = self.requirement_dir(requirement_id);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<RequirementRun> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(run) = serde_json::from_slice::<RequirementRun>(&bytes) {
+                rows.push(run);
+            }
+        }
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        if rows.len() > 200 {
+            tracing::warn!(
+                requirement_id,
+                count = rows.len(),
+                "requirement run list exceeded 200-item soft cap"
+            );
+            rows.truncate(200);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<RequirementRun>, BoxError> {
+        Ok(self.find_by_id(id).await?.map(|(_, run)| run))
+    }
+
+    async fn list_all(&self, limit: u32) -> Result<Vec<RequirementRun>, BoxError> {
+        // Walk every requirement subdir and read its run rows.
+        // O(N) over the on-disk count — acceptable at our scale
+        // (json backend caps below SQL anyway).
+        let root = self.base.join("requirement_runs");
+        let mut req_dir = match tokio::fs::read_dir(&root).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<RequirementRun> = Vec::new();
+        while let Some(entry) = req_dir.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let mut run_dir = match tokio::fs::read_dir(entry.path()).await {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            while let Some(run_entry) = run_dir.next_entry().await? {
+                let path = run_entry.path();
+                let name = run_entry.file_name();
+                let name_str = name.to_string_lossy();
+                if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                    continue;
+                }
+                let bytes = match tokio::fs::read(&path).await {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                if let Ok(run) = serde_json::from_slice::<RequirementRun>(&bytes) {
+                    rows.push(run);
+                }
+            }
+        }
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        rows.truncate(limit as usize);
+        Ok(rows)
+    }
+
+    async fn upsert(&self, run: &RequirementRun) -> Result<(), BoxError> {
+        let prior = self.find_by_id(&run.id).await?.map(|(_, r)| r);
+        let dir = self.requirement_dir(&run.requirement_id);
+        ensure_dir(&dir).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&run.requirement_id, &run.id);
+        let bytes = serde_json::to_vec_pretty(run)?;
+        atomic_write(&path, &bytes).await?;
+        if let Some(ev) = crate::memory::classify_run_event(prior.as_ref(), run) {
+            let _ = self.tx.send(ev);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&self, ev: RequirementRunEvent) {
+        let _ = self.tx.send(ev);
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RequirementRunEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- AgentProfileStore ---------------------------------------------
+
+/// One JSON file per agent profile under `<base>/agent_profiles/`.
+/// The set is small (dozens) so a flat directory is fine.
+pub struct JsonFileAgentProfileStore {
+    base: PathBuf,
+    tx: broadcast::Sender<AgentProfileEvent>,
+}
+
+impl JsonFileAgentProfileStore {
+    /// Open or create a store at `<base>/agent_profiles/`. The
+    /// subdirectory is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.base.join("agent_profiles")
+    }
+
+    fn path_for(&self, id: &str) -> PathBuf {
+        self.dir().join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl AgentProfileStore for JsonFileAgentProfileStore {
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
+        let dir = self.dir();
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<AgentProfile> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(p) = serde_json::from_slice::<AgentProfile>(&bytes) {
+                rows.push(p);
+            }
+        }
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        if rows.len() > 200 {
+            tracing::warn!(
+                count = rows.len(),
+                "agent profile list exceeded 200-item soft cap"
+            );
+            rows.truncate(200);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => Ok(Some(
+                serde_json::from_slice::<AgentProfile>(&bytes).map_err(StoreError::from)?,
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    async fn upsert(&self, profile: &AgentProfile) -> Result<(), BoxError> {
+        ensure_dir(&self.dir()).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&profile.id);
+        let bytes = serde_json::to_vec_pretty(profile)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(AgentProfileEvent::Upserted(profile.clone()));
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- ActivityStore -------------------------------------------------
+
+/// One JSON file per activity, partitioned by requirement under
+/// `activities/`:
+/// `<base>/activities/<encode_id(requirement_id)>/<encode_id(id)>.json`.
+/// Append-only — `delete` is intentionally not implemented (the
+/// trait offers no such method).
+pub struct JsonFileActivityStore {
+    base: PathBuf,
+    tx: broadcast::Sender<ActivityEvent>,
+}
+
+impl JsonFileActivityStore {
+    /// Open or create a store at `<base>/activities/`. The
+    /// subdirectory is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn requirement_dir(&self, requirement_id: &str) -> PathBuf {
+        self.base.join("activities").join(encode_id(requirement_id))
+    }
+
+    fn path_for(&self, requirement_id: &str, id: &str) -> PathBuf {
+        self.requirement_dir(requirement_id)
+            .join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl ActivityStore for JsonFileActivityStore {
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<Activity>, BoxError> {
+        let dir = self.requirement_dir(requirement_id);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<Activity> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(a) = serde_json::from_slice::<Activity>(&bytes) {
+                rows.push(a);
+            }
+        }
+        rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                requirement_id,
+                count = rows.len(),
+                "activity list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn append(&self, activity: &Activity) -> Result<(), BoxError> {
+        let dir = self.requirement_dir(&activity.requirement_id);
+        ensure_dir(&dir).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&activity.requirement_id, &activity.id);
+        let bytes = serde_json::to_vec_pretty(activity)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(ActivityEvent::Appended(activity.clone()));
+        Ok(())
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<ActivityEvent> {
         self.tx.subscribe()
     }
 }
@@ -1172,6 +1529,152 @@ mod tests {
         let _ = rx.recv().await.unwrap();
         assert!(!store.delete(&r.id).await.unwrap());
         assert!(rx.try_recv().is_err());
+    }
+
+    // ---- RequirementRunStore --------------------------------------------
+
+    use harness_core::RequirementRunStatus;
+
+    #[tokio::test]
+    async fn requirement_run_round_trip_persists_to_disk() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileRequirementRunStore::open(dir.path()).unwrap();
+        let mut r = RequirementRun::new("req-1", "conv-1");
+        r.summary = Some("changed serializer".into());
+        r.status = RequirementRunStatus::Completed;
+        r.finished_at = Some("2026-04-30T01:23:45+00:00".into());
+        store.upsert(&r).await.unwrap();
+
+        let listed = store.list_for_requirement("req-1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], r);
+
+        // Reopen — must round-trip.
+        drop(store);
+        let store = JsonFileRequirementRunStore::open(dir.path()).unwrap();
+        let loaded = store.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(loaded, r);
+    }
+
+    #[tokio::test]
+    async fn requirement_run_list_isolates_requirements() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileRequirementRunStore::open(dir.path()).unwrap();
+        let a = RequirementRun::new("req-a", "conv-a");
+        let b = RequirementRun::new("req-b", "conv-b");
+        store.upsert(&a).await.unwrap();
+        store.upsert(&b).await.unwrap();
+        assert_eq!(store.list_for_requirement("req-a").await.unwrap().len(), 1);
+        assert_eq!(store.list_for_requirement("req-b").await.unwrap().len(), 1);
+        assert!(store
+            .list_for_requirement("never")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn requirement_run_emits_started_then_finished() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileRequirementRunStore::open(dir.path()).unwrap();
+        let mut rx = store.subscribe();
+        let mut r = RequirementRun::new("req", "conv");
+        store.upsert(&r).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RequirementRunEvent::Started(run) => assert_eq!(run.id, r.id),
+            other => panic!("expected Started, got {other:?}"),
+        }
+        r.finish(RequirementRunStatus::Completed);
+        store.upsert(&r).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RequirementRunEvent::Finished(run) => {
+                assert_eq!(run.status, RequirementRunStatus::Completed)
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+        // Quiet on subsequent no-op upserts.
+        store.upsert(&r).await.unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ---- AgentProfileStore ----------------------------------------------
+
+    #[tokio::test]
+    async fn agent_profile_round_trip_persists_to_disk() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileAgentProfileStore::open(dir.path()).unwrap();
+        let mut p = AgentProfile::new("Alice", "openai", "gpt-4o-mini");
+        p.system_prompt = Some("You are Alice. Be concise.".into());
+        store.upsert(&p).await.unwrap();
+
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], p);
+
+        // Reopen — must round-trip.
+        drop(store);
+        let store = JsonFileAgentProfileStore::open(dir.path()).unwrap();
+        let loaded = store.get(&p.id).await.unwrap().unwrap();
+        assert_eq!(loaded, p);
+    }
+
+    #[tokio::test]
+    async fn agent_profile_delete_idempotent_and_emits_once() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileAgentProfileStore::open(dir.path()).unwrap();
+        let mut rx = store.subscribe();
+        let p = AgentProfile::new("Alice", "openai", "gpt-4o-mini");
+        store.upsert(&p).await.unwrap();
+        let _ = rx.recv().await.unwrap();
+        assert!(store.delete(&p.id).await.unwrap());
+        let _ = rx.recv().await.unwrap();
+        assert!(!store.delete(&p.id).await.unwrap());
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ---- ActivityStore --------------------------------------------------
+
+    use harness_core::{ActivityActor, ActivityKind};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn activity_append_round_trip_persists_to_disk() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileActivityStore::open(dir.path()).unwrap();
+        let a = Activity::new(
+            "req-1",
+            ActivityKind::StatusChange,
+            ActivityActor::Human,
+            json!({"from": "backlog", "to": "in_progress"}),
+        );
+        store.append(&a).await.unwrap();
+
+        let listed = store.list_for_requirement("req-1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], a);
+
+        // Reopen — must round-trip from disk.
+        drop(store);
+        let store = JsonFileActivityStore::open(dir.path()).unwrap();
+        let listed = store.list_for_requirement("req-1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn activity_emits_appended_on_write() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileActivityStore::open(dir.path()).unwrap();
+        let mut rx = store.subscribe();
+        let a = Activity::new(
+            "req",
+            ActivityKind::RunStarted,
+            ActivityActor::System,
+            json!({"run_id": "r1"}),
+        );
+        store.append(&a).await.unwrap();
+        match rx.recv().await.unwrap() {
+            ActivityEvent::Appended(got) => assert_eq!(got.id, a.id),
+        }
     }
 
     // ---- DocStore -------------------------------------------------------
