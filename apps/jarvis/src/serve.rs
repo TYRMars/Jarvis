@@ -487,6 +487,35 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
     state = state.with_server_info(server_info);
+
+    // Phase 6 — auto mode scheduler. Off by default; opt in via
+    // `JARVIS_WORK_MODE=auto`. The spawn() helper no-ops when
+    // mode is `Off`, so the call is unconditional.
+    let auto_cfg = harness_server::AutoModeConfig {
+        mode: std::env::var("JARVIS_WORK_MODE")
+            .ok()
+            .as_deref()
+            .and_then(harness_server::AutoMode::from_wire)
+            .unwrap_or_default(),
+        tick_seconds: std::env::var("JARVIS_WORK_TICK_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30),
+        max_units_per_tick: std::env::var("JARVIS_WORK_MAX_UNITS_PER_TICK")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1),
+        max_retries: std::env::var("JARVIS_WORK_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1),
+        run_timeout_ms: std::env::var("JARVIS_WORK_RUN_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5 * 60 * 1000),
+    };
+    harness_server::spawn_auto_mode(state.clone(), auto_cfg);
+
     info!(%addr, "jarvis listening");
     serve(addr, state).await?;
 

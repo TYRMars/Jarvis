@@ -252,6 +252,34 @@ struct UpdateBody {
     /// to clear, or simply omit the key to leave as-is.
     #[serde(default, deserialize_with = "deserialize_optional_optional_string")]
     assignee_id: OptionalAssignee,
+    /// Phase 6 — set / clear the per-requirement verification
+    /// plan template that auto mode (and a future "Verify with
+    /// pinned plan" UI button) reaches for. Same three-state
+    /// semantics as `assignee_id`: omit ⇒ leave as-is, `null` ⇒
+    /// clear, object ⇒ set.
+    #[serde(default, deserialize_with = "deserialize_optional_plan")]
+    verification_plan: OptionalPlan,
+}
+
+/// Three-state value for `verification_plan` in PATCH —
+/// mirror of [`OptionalAssignee`].
+#[derive(Debug, Default)]
+enum OptionalPlan {
+    #[default]
+    Missing,
+    Clear,
+    Set(VerificationPlan),
+}
+
+fn deserialize_optional_plan<'de, D>(de: D) -> Result<OptionalPlan, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<VerificationPlan> = Option::deserialize(de)?;
+    Ok(match opt {
+        Some(p) => OptionalPlan::Set(p),
+        None => OptionalPlan::Clear,
+    })
 }
 
 /// Three-state value for `assignee_id` in PATCH:
@@ -336,6 +364,11 @@ async fn update_requirement(
                 Some(trimmed)
             };
         }
+    }
+    match body.verification_plan {
+        OptionalPlan::Missing => {}
+        OptionalPlan::Clear => item.verification_plan = None,
+        OptionalPlan::Set(p) => item.verification_plan = Some(p),
     }
     item.touch();
     match store.upsert(&item).await {

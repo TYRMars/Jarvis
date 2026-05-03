@@ -202,6 +202,20 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
             .execute(pool)
             .await?;
     }
+    let has_verification_plan: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'requirements'
+             AND COLUMN_NAME = 'verification_plan'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_verification_plan {
+        sqlx::query("ALTER TABLE requirements ADD COLUMN verification_plan TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     sqlx::query(
         r#"
@@ -831,6 +845,7 @@ struct RequirementRow {
     status: String,
     conversation_ids: String,
     assignee_id: Option<String>,
+    verification_plan: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -842,6 +857,10 @@ impl RequirementRow {
         })?;
         let conversation_ids: Vec<String> =
             serde_json::from_str(&self.conversation_ids).map_err(StoreError::from)?;
+        let verification_plan = match self.verification_plan {
+            Some(s) => Some(serde_json::from_str(&s).map_err(StoreError::from)?),
+            None => None,
+        };
         Ok(Requirement {
             id: self.id,
             project_id: self.project_id,
@@ -850,6 +869,7 @@ impl RequirementRow {
             status,
             conversation_ids,
             assignee_id: self.assignee_id,
+            verification_plan,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -861,7 +881,7 @@ impl RequirementStore for MysqlRequirementStore {
     async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
         let rows: Vec<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       assignee_id, created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements
                  WHERE project_id = ?
                  ORDER BY updated_at DESC
@@ -882,7 +902,7 @@ impl RequirementStore for MysqlRequirementStore {
     async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
         let row: Option<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       assignee_id, created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements WHERE id = ?"#,
         )
         .bind(id)
@@ -894,19 +914,24 @@ impl RequirementStore for MysqlRequirementStore {
 
     async fn upsert(&self, item: &Requirement) -> Result<(), BoxError> {
         let conv_ids = serde_json::to_string(&item.conversation_ids).map_err(StoreError::from)?;
+        let plan_json = match item.verification_plan.as_ref() {
+            Some(p) => Some(serde_json::to_string(p).map_err(StoreError::from)?),
+            None => None,
+        };
         sqlx::query(
             r#"INSERT INTO requirements
                 (id, project_id, title, description, status, conversation_ids,
-                 assignee_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 assignee_id, verification_plan, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
-                    project_id       = VALUES(project_id),
-                    title            = VALUES(title),
-                    description      = VALUES(description),
-                    status           = VALUES(status),
-                    conversation_ids = VALUES(conversation_ids),
-                    assignee_id      = VALUES(assignee_id),
-                    updated_at       = VALUES(updated_at)"#,
+                    project_id        = VALUES(project_id),
+                    title             = VALUES(title),
+                    description       = VALUES(description),
+                    status            = VALUES(status),
+                    conversation_ids  = VALUES(conversation_ids),
+                    assignee_id       = VALUES(assignee_id),
+                    verification_plan = VALUES(verification_plan),
+                    updated_at        = VALUES(updated_at)"#,
         )
         .bind(&item.id)
         .bind(&item.project_id)
@@ -915,6 +940,7 @@ impl RequirementStore for MysqlRequirementStore {
         .bind(item.status.as_wire())
         .bind(&conv_ids)
         .bind(item.assignee_id.as_deref())
+        .bind(plan_json.as_deref())
         .bind(&item.created_at)
         .bind(&item.updated_at)
         .execute(&self.pool)

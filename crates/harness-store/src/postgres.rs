@@ -131,6 +131,9 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     sqlx::query("ALTER TABLE requirements ADD COLUMN IF NOT EXISTS assignee_id TEXT")
         .execute(pool)
         .await?;
+    sqlx::query("ALTER TABLE requirements ADD COLUMN IF NOT EXISTS verification_plan TEXT")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"
@@ -678,6 +681,7 @@ struct RequirementRow {
     status: String,
     conversation_ids: String,
     assignee_id: Option<String>,
+    verification_plan: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -689,6 +693,10 @@ impl RequirementRow {
         })?;
         let conversation_ids: Vec<String> =
             serde_json::from_str(&self.conversation_ids).map_err(StoreError::from)?;
+        let verification_plan = match self.verification_plan {
+            Some(s) => Some(serde_json::from_str(&s).map_err(StoreError::from)?),
+            None => None,
+        };
         Ok(Requirement {
             id: self.id,
             project_id: self.project_id,
@@ -697,6 +705,7 @@ impl RequirementRow {
             status,
             conversation_ids,
             assignee_id: self.assignee_id,
+            verification_plan,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -708,7 +717,7 @@ impl RequirementStore for PostgresRequirementStore {
     async fn list(&self, project_id: &str) -> Result<Vec<Requirement>, BoxError> {
         let rows: Vec<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       assignee_id, created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements
                  WHERE project_id = $1
                  ORDER BY updated_at DESC
@@ -729,7 +738,7 @@ impl RequirementStore for PostgresRequirementStore {
     async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
         let row: Option<RequirementRow> = sqlx::query_as(
             r#"SELECT id, project_id, title, description, status, conversation_ids,
-                       assignee_id, created_at, updated_at
+                       assignee_id, verification_plan, created_at, updated_at
                  FROM requirements WHERE id = $1"#,
         )
         .bind(id)
@@ -741,19 +750,24 @@ impl RequirementStore for PostgresRequirementStore {
 
     async fn upsert(&self, item: &Requirement) -> Result<(), BoxError> {
         let conv_ids = serde_json::to_string(&item.conversation_ids).map_err(StoreError::from)?;
+        let plan_json = match item.verification_plan.as_ref() {
+            Some(p) => Some(serde_json::to_string(p).map_err(StoreError::from)?),
+            None => None,
+        };
         sqlx::query(
             r#"INSERT INTO requirements
                 (id, project_id, title, description, status, conversation_ids,
-                 assignee_id, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 assignee_id, verification_plan, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (id) DO UPDATE SET
-                    project_id       = EXCLUDED.project_id,
-                    title            = EXCLUDED.title,
-                    description      = EXCLUDED.description,
-                    status           = EXCLUDED.status,
-                    conversation_ids = EXCLUDED.conversation_ids,
-                    assignee_id      = EXCLUDED.assignee_id,
-                    updated_at       = EXCLUDED.updated_at"#,
+                    project_id        = EXCLUDED.project_id,
+                    title             = EXCLUDED.title,
+                    description       = EXCLUDED.description,
+                    status            = EXCLUDED.status,
+                    conversation_ids  = EXCLUDED.conversation_ids,
+                    assignee_id       = EXCLUDED.assignee_id,
+                    verification_plan = EXCLUDED.verification_plan,
+                    updated_at        = EXCLUDED.updated_at"#,
         )
         .bind(&item.id)
         .bind(&item.project_id)
@@ -762,6 +776,7 @@ impl RequirementStore for PostgresRequirementStore {
         .bind(item.status.as_wire())
         .bind(&conv_ids)
         .bind(item.assignee_id.as_deref())
+        .bind(plan_json.as_deref())
         .bind(&item.created_at)
         .bind(&item.updated_at)
         .execute(&self.pool)
