@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Built-in `Tool` implementations: echo, time, http.fetch, fs.{read,list,write,edit}, code.grep, shell.exec."
+description = "Built-in `Tool` implementations: echo, time, http.fetch, fs.{read,list,write,edit}, code.grep, shell.exec, codex.run, claude_code.run."
 
 [dependencies]
 harness-core.workspace = true
