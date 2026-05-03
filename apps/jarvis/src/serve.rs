@@ -129,6 +129,13 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if requirement_store.is_some() && activity_store.is_some() {
         info!("persistent requirement + activity stores active (requirement.* tools registered)");
     }
+    // `roadmap.import` is gated separately — it needs the project +
+    // requirement stores but doesn't write Activity rows. Logging the
+    // two registration paths separately so operators can tell which
+    // tools the model actually got.
+    if project_store.is_some() && requirement_store.is_some() {
+        info!("project + requirement stores both active (roadmap.import tool registered)");
+    }
 
     register_builtins(&mut tools, bcfg);
     info!(workspace = %workspace_root.display(), "workspace root resolved");
@@ -1264,6 +1271,11 @@ whole repo. \
 At the start of a fresh session, call todo.list to see persistent project follow-ups; \
 record new follow-ups via todo.add (not plan.update — that's for the current turn only) \
 and mark them completed/blocked as you go. \
+If the user asks about project progress or 'what's still pending', use project.list to find a \
+roadmap project for the current workspace (look for tags including \"roadmap\" — the slug usually \
+ends in `-roadmap`), then requirement.list and group by status. If no such project exists and \
+roadmap.import is available, suggest running it to bootstrap one from docs/proposals/ or \
+ROADMAP.md. \
 End every coding turn with a short report: which files changed, which checks ran, which checks \
 were skipped and why, and any residual risk you couldn't verify.";
 

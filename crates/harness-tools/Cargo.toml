@@ -8,6 +8,7 @@ description = "Built-in `Tool` implementations: echo, time, http.fetch, fs.{read
 
 [dependencies]
 harness-core.workspace = true
+harness-requirement.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -25,3 +26,4 @@ libc.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "fs"] }
+harness-store.workspace = true
