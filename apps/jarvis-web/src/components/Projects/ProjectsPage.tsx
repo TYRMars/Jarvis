@@ -13,9 +13,9 @@ import { ProjectBoard } from "./ProjectBoard";
 import {
   ProjectCreatePanel,
   ProjectEmptyState,
-  ProjectListRow,
   ProjectUnavailable,
 } from "./ProjectList";
+import { WorkOverviewPage } from "./WorkOverview/WorkOverviewPage";
 import { OpenSidebarButton } from "../Workspace/WorkspaceToggles";
 
 // Top-level Projects route: search + list + create + open. Three view
@@ -250,15 +250,7 @@ export function ProjectsPage() {
           onCreate={() => setCreating(true)}
         />
       ) : (
-        <ul className="projects-page-list">
-          {visibleProjects.map((project) => (
-            <ProjectListRow
-              key={project.id}
-              project={project}
-              onOpen={() => setSelectedProjectId(project.id)}
-            />
-          ))}
-        </ul>
+        <WorkOverviewPage />
       )}
     </main>
   );

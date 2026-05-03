@@ -60,6 +60,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::agent_profiles_routes::router())
         .merge(crate::diagnostics_routes::router())
         .merge(crate::docs_routes::router())
+        .merge(crate::work_overview_routes::router())
         .merge(ui::router())
         .fallback(ui::spa_fallback)
         .layer(axum::middleware::from_fn(loopback_cors))
