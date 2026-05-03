@@ -11,7 +11,7 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export function AppearanceSection() {
+export function AppearanceSection({ embedded }: { embedded?: boolean } = {}) {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const lang = useAppStore((s) => s.lang);
@@ -24,6 +24,7 @@ export function AppearanceSection() {
       titleFallback="Appearance"
       descKey="settingsAppearanceDesc"
       descFallback="Theme and interface language. Saved to localStorage; takes effect immediately."
+      embedded={embedded}
     >
       <Row label={tx("theme", "Theme")}>
         <div className="settings-pill-group" role="radiogroup" aria-label={tx("theme", "Theme")}>

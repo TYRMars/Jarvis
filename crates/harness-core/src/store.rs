@@ -8,11 +8,14 @@
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
+use crate::activity::{Activity, ActivityEvent};
+use crate::agent_profile::{AgentProfile, AgentProfileEvent};
 use crate::conversation::Conversation;
 use crate::doc::{DocDraft, DocEvent, DocProject};
 use crate::error::BoxError;
 use crate::project::Project;
 use crate::requirement::{Requirement, RequirementEvent};
+use crate::requirement_run::{RequirementRun, RequirementRunEvent};
 use crate::todo::{TodoEvent, TodoItem};
 
 /// Summary record returned by [`ConversationStore::list`].
@@ -259,6 +262,162 @@ pub trait RequirementStore: Send + Sync {
     /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
     /// and should refetch via `list`.
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent>;
+}
+
+/// Persistence operations on per-requirement [`RequirementRun`]s — one
+/// row per execution attempt against a kanban [`Requirement`].
+///
+/// Mirrors [`RequirementStore`]: a single `subscribe()` fanout for
+/// every status change, `list_for_requirement` returns the run history
+/// for one card, `get` / `upsert` operate by globally-unique id; each
+/// row carries its own `requirement_id`. WS sessions don't currently
+/// filter by run id — every connected client sees every event — but
+/// the broadcast shape leaves room for that later.
+///
+/// [`upsert`](Self::upsert) is the only mutating verb; it must
+/// broadcast a [`RequirementRunEvent`] derived from the diff between
+/// the row already on disk (if any) and the incoming row:
+///
+/// - Absent → present with non-terminal status ⇒
+///   [`RequirementRunEvent::Started`] (pending or running).
+/// - Present → terminal status (per [`crate::RequirementRunStatus::is_terminal`])
+///   ⇒ [`RequirementRunEvent::Finished`].
+/// - Otherwise no event (e.g. summary tweak on an in-flight run); a
+///   client wanting fine-grained progress reads `AgentEvent` from the
+///   conversation socket instead.
+///
+/// `Verified` events are emitted explicitly by the caller (typically
+/// the verification gate handler) via the `subscribe()` channel — not
+/// by `upsert`, because verification can be re-run against a row
+/// whose terminal status is already set without changing the row's
+/// shape.
+///
+/// There is intentionally no `delete` — runs are append-only history;
+/// a run row's lifecycle ends at a terminal status. Cleaning up old
+/// runs is a Phase 5 doctor concern.
+#[async_trait]
+pub trait RequirementRunStore: Send + Sync {
+    /// Return up to ~200 runs for `requirement_id`, sorted by
+    /// `started_at` descending (newest first). Implementations should
+    /// `tracing::warn!` when the cap is hit so operators notice
+    /// runaway run history.
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<RequirementRun>, BoxError>;
+
+    /// Look up by id. Returns `None` if absent. Note that this is
+    /// NOT requirement-scoped — id is globally unique (UUID v4) and
+    /// the row carries its own `requirement_id`.
+    async fn get(&self, id: &str) -> Result<Option<RequirementRun>, BoxError>;
+
+    /// Phase 5c — return up to `limit` runs across **all**
+    /// requirements, sorted by `started_at` descending. Used by
+    /// the doctor / `/v1/diagnostics/runs/*` endpoints to surface
+    /// stuck / failed runs without enumerating every requirement
+    /// id first. Default impl returns an empty list so existing
+    /// backends keep compiling — every shipped backend overrides it.
+    async fn list_all(&self, _limit: u32) -> Result<Vec<RequirementRun>, BoxError> {
+        Ok(Vec::new())
+    }
+
+    /// Insert or overwrite a run row. Implementations must
+    /// broadcast a [`RequirementRunEvent`] reflecting the
+    /// transition, per the trait-level rules.
+    async fn upsert(&self, run: &RequirementRun) -> Result<(), BoxError>;
+
+    /// Send an event into the broadcast channel without writing to
+    /// disk. Used by callers (specifically the verification gate
+    /// handler) that need to fan out a
+    /// [`RequirementRunEvent::Verified`] frame separately from the
+    /// upsert that wrote the verification result. Implementations
+    /// must publish on the same channel that backs
+    /// [`subscribe`](Self::subscribe).
+    fn broadcast(&self, ev: RequirementRunEvent);
+
+    /// Subscribe to mutation events. Each call returns a fresh
+    /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
+    /// and should refetch via `list_for_requirement`.
+    fn subscribe(&self) -> broadcast::Receiver<RequirementRunEvent>;
+}
+
+/// Persistence operations on named [`AgentProfile`] rows.
+///
+/// Process-wide (not project- or workspace-scoped) — a profile is
+/// just a named bundle of provider / model / system_prompt that
+/// any [`Requirement`] can be assigned to. The set is small (think
+/// dozens, not thousands) so the trait stays plain CRUD with no
+/// pagination.
+///
+/// Mutations broadcast [`AgentProfileEvent`] on a shared channel
+/// so WS sessions can render `agent_profile_upserted` /
+/// `agent_profile_deleted` frames without polling.
+#[async_trait]
+pub trait AgentProfileStore: Send + Sync {
+    /// Return all profiles, sorted by `name` ascending. Soft-cap
+    /// at ~200 — operators with that many named agents probably
+    /// want filtering, which is a v2 concern.
+    async fn list(&self) -> Result<Vec<AgentProfile>, BoxError>;
+
+    /// Look up by id. Returns `None` if absent.
+    async fn get(&self, id: &str) -> Result<Option<AgentProfile>, BoxError>;
+
+    /// Insert or overwrite. Implementations must broadcast
+    /// `AgentProfileEvent::Upserted(profile.clone())` after a
+    /// successful write.
+    async fn upsert(&self, profile: &AgentProfile) -> Result<(), BoxError>;
+
+    /// Delete by id. Returns `true` if a row was removed; `false`
+    /// if it was already absent (idempotent). Implementations
+    /// must broadcast `AgentProfileEvent::Deleted { id }` after
+    /// a successful delete (skip the broadcast on the no-op
+    /// `false` path so listeners don't see ghost events).
+    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
+
+    /// Subscribe to mutation events. Each call returns a fresh
+    /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
+    /// and should refetch via `list`.
+    fn subscribe(&self) -> broadcast::Receiver<AgentProfileEvent>;
+}
+
+/// Persistence operations on per-requirement [`Activity`] rows — the
+/// audit timeline surfaced under each kanban card.
+///
+/// Append-only by design: there is no `upsert` / `delete` /
+/// `update`. Once a row is written it is immutable forever; the
+/// only mutating verb is `append`. This matches the trail's
+/// purpose — "what happened, in order" — and keeps every backend
+/// trivial (insert + broadcast, no diff classification).
+///
+/// `append` must broadcast [`ActivityEvent::Appended`] after a
+/// successful write. Per-requirement filtering happens at the WS
+/// layer; the broadcast itself fans every event to every
+/// subscriber.
+///
+/// `list_for_requirement` returns rows newest-first with a soft
+/// cap (~500) so a runaway audit log doesn't OOM the request
+/// handler. Older rows are still on disk; future paging /
+/// truncation is a Phase-5 doctor concern.
+#[async_trait]
+pub trait ActivityStore: Send + Sync {
+    /// Return up to ~500 activities for `requirement_id`, sorted
+    /// by `created_at` descending (newest first). Implementations
+    /// should `tracing::warn!` when the cap is hit so operators
+    /// notice runaway audit logs.
+    async fn list_for_requirement(
+        &self,
+        requirement_id: &str,
+    ) -> Result<Vec<Activity>, BoxError>;
+
+    /// Append a single activity row. Implementations must
+    /// broadcast [`ActivityEvent::Appended`] after a successful
+    /// write.
+    async fn append(&self, activity: &Activity) -> Result<(), BoxError>;
+
+    /// Subscribe to mutation events. Each call returns a fresh
+    /// receiver; lagged receivers will see [`broadcast::error::RecvError::Lagged`]
+    /// and should refetch via `list_for_requirement`.
+    fn subscribe(&self) -> broadcast::Receiver<ActivityEvent>;
 }
 
 /// Persistence operations on [`DocProject`] + [`DocDraft`] rows.

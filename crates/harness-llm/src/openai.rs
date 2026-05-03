@@ -368,7 +368,7 @@ impl OaMessage {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
             },
-            Message::User { content } => OaMessage {
+            Message::User { content, .. } => OaMessage {
                 role: "user",
                 content: Some(content),
                 reasoning_content: None,
@@ -379,6 +379,7 @@ impl OaMessage {
                 content,
                 tool_calls,
                 reasoning_content: captured_reasoning,
+                ..
             } => {
                 let tool_calls: Vec<OaToolCallOut> = tool_calls
                     .into_iter()
@@ -418,6 +419,7 @@ impl OaMessage {
             Message::Tool {
                 tool_call_id,
                 content,
+                ..
             } => OaMessage {
                 role: "tool",
                 content: Some(content),
@@ -508,6 +510,7 @@ impl OpenAiResponse {
                 content: choice.message.content,
                 tool_calls,
                 reasoning_content: choice.message.reasoning_content,
+                cache: None,
             },
             finish_reason,
         })
@@ -764,6 +767,7 @@ impl StreamAccumulator {
                 content,
                 tool_calls,
                 reasoning_content: reasoning,
+                cache: None,
             },
             finish_reason,
         }
@@ -897,6 +901,7 @@ mod tests {
                         arguments: json!({"path": "x"}),
                     }],
                     reasoning_content: None,
+                cache: None,
                 },
             ],
             tools: vec![ToolSpec {
@@ -938,6 +943,7 @@ mod tests {
                         arguments: json!({"path": "x"}),
                     }],
                     reasoning_content: None,
+                cache: None,
                 },
             ],
             tools: Vec::new(),

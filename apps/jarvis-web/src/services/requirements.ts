@@ -29,7 +29,13 @@
 // Wire types mirror `crates/harness-core/src/requirement.rs` and
 // `apps/jarvis-web/src/types/frames.ts`.
 
-import type { Requirement, RequirementStatus } from "../types/frames";
+import type {
+  Activity,
+  Requirement,
+  RequirementRun,
+  RequirementStatus,
+  VerificationResult,
+} from "../types/frames";
 import { apiUrl } from "./api";
 
 const REQUIREMENTS_KEY = "jarvis.productRequirements.v1";
@@ -225,6 +231,12 @@ export interface UpdateRequirementInput {
   description?: string | null;
   status?: RequirementStatus;
   conversation_ids?: string[];
+  /// Phase 3.6: pass `null` to clear, a string id to assign, or
+  /// omit the key to leave unchanged. The wire shape mirrors —
+  /// `JSON.stringify` on `{assignee_id: null}` correctly emits
+  /// the `null` literal so the server's three-state deserializer
+  /// (Missing / Clear / Set) sees "Clear".
+  assignee_id?: string | null;
 }
 
 /// Patch a Requirement. Optimistic — applies immediately to cache,
@@ -246,6 +258,7 @@ export function updateRequirement(
     ...(patch.conversation_ids !== undefined
       ? { conversation_ids: patch.conversation_ids }
       : {}),
+    ...("assignee_id" in patch ? { assignee_id: patch.assignee_id ?? null } : {}),
     updated_at: new Date().toISOString(),
   };
   upsertLocal(next);
@@ -377,4 +390,244 @@ function randomId(): string {
     return crypto.randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// =============================================================
+// RequirementRun history (Phase 3.5)
+// =============================================================
+//
+// Companion cache for the per-requirement run history surfaced in
+// the kanban card detail's "Runs" drawer. Same shape as the
+// requirement cache above (in-memory map + subscriber set + REST
+// loader + WS frame appliers) but keyed by `requirement_id` rather
+// than `project_id`.
+//
+// localStorage is intentionally NOT used here — runs are
+// server-of-record telemetry; no point persisting "last seen" rows
+// when the next page load will refetch from the source. If the
+// server's run store is missing, we just show an empty drawer.
+
+const runsByRequirement: Map<string, RequirementRun[]> = new Map();
+const runsSubscribers = new Set<() => void>();
+
+function notifyRuns(): void {
+  for (const s of runsSubscribers) {
+    try {
+      s();
+    } catch (e) {
+      console.warn("requirement-runs subscriber threw", e);
+    }
+  }
+}
+
+function sortRunsForRequirement(requirementId: string): void {
+  const list = runsByRequirement.get(requirementId);
+  if (!list) return;
+  list.sort((a, b) => b.started_at.localeCompare(a.started_at));
+}
+
+function upsertRunLocal(run: RequirementRun): void {
+  const list = runsByRequirement.get(run.requirement_id) ?? [];
+  const i = list.findIndex((r) => r.id === run.id);
+  if (i >= 0) list[i] = run;
+  else list.unshift(run);
+  runsByRequirement.set(run.requirement_id, list);
+  sortRunsForRequirement(run.requirement_id);
+  notifyRuns();
+}
+
+/// Synchronous read against the in-memory run cache. Pair with
+/// [`loadRunsForRequirement`] to populate from the server, and
+/// [`subscribeRequirementRuns`] to re-render on cache changes.
+export function listRunsForRequirement(requirementId: string): RequirementRun[] {
+  return runsByRequirement.get(requirementId)?.slice() ?? [];
+}
+
+/// Subscribe to run-cache change notifications. Returns an
+/// unsubscribe function. The callback fires after each REST load,
+/// or WS frame (Started / Finished / Verified).
+export function subscribeRequirementRuns(cb: () => void): () => void {
+  runsSubscribers.add(cb);
+  return () => {
+    runsSubscribers.delete(cb);
+  };
+}
+
+interface ListRunsResponse {
+  requirement_id: string;
+  items: RequirementRun[];
+}
+
+/// Refresh the run cache for `requirementId` from the server.
+/// Idempotent. Silently no-ops on 503 (no run store wired up); other
+/// failures degrade to "stay with whatever's cached" with a warn.
+export async function loadRunsForRequirement(
+  requirementId: string,
+): Promise<void> {
+  try {
+    const r = await fetch(
+      apiUrl(`/v1/requirements/${encodeURIComponent(requirementId)}/runs`),
+    );
+    if (r.status === 503) {
+      // Run store absent — leave the cache alone (it'll just be
+      // empty). The detail drawer renders accordingly.
+      runsByRequirement.set(requirementId, []);
+      notifyRuns();
+      return;
+    }
+    if (!r.ok) throw new Error(`runs list: ${r.status}`);
+    const body = (await r.json()) as ListRunsResponse;
+    runsByRequirement.set(requirementId, body.items.slice());
+    sortRunsForRequirement(requirementId);
+    notifyRuns();
+  } catch (e) {
+    console.warn("requirement-runs fetch failed", e);
+  }
+}
+
+// ---- WS frame appliers (called from frames.ts) -------------------
+
+/// Apply a server-side `requirement_run_started` frame.
+export function applyRequirementRunStarted(run: RequirementRun): void {
+  upsertRunLocal(run);
+}
+
+/// Apply a server-side `requirement_run_finished` frame.
+export function applyRequirementRunFinished(run: RequirementRun): void {
+  upsertRunLocal(run);
+}
+
+/// Apply a server-side `requirement_run_verified` frame. Looks up the
+/// run by id across all cached requirements, attaches the
+/// verification result, and re-broadcasts. No-op when the run isn't
+/// in cache (the next `loadRunsForRequirement` will pick it up).
+export function applyRequirementRunVerified(
+  runId: string,
+  result: VerificationResult,
+): void {
+  for (const list of runsByRequirement.values()) {
+    const i = list.findIndex((r) => r.id === runId);
+    if (i >= 0) {
+      list[i] = { ...list[i], verification: result };
+      notifyRuns();
+      return;
+    }
+  }
+}
+
+/// Phase 4 — auto-execute a verification plan via
+/// `POST /v1/runs/:id/verify`. The server runs the commands,
+/// writes the result, broadcasts the `requirement_run_verified`
+/// frame (which `applyRequirementRunVerified` picks up), and
+/// returns the run with the freshly-attached `verification`.
+///
+/// Errors throw; the caller is expected to surface them via
+/// component-local state.
+export async function verifyRunByCommands(
+  runId: string,
+  commands: string[],
+  opts?: { requireHumanReview?: boolean; timeoutMs?: number },
+): Promise<RequirementRun> {
+  const r = await fetch(apiUrl(`/v1/runs/${encodeURIComponent(runId)}/verify`), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      commands,
+      require_human_review: opts?.requireHumanReview ?? false,
+      timeout_ms: opts?.timeoutMs,
+    }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`verify ${r.status}: ${text}`);
+  }
+  return (await r.json()) as RequirementRun;
+}
+
+// =============================================================
+// Activity timeline (Phase 3.7)
+// =============================================================
+//
+// Append-only audit log surfaced under each kanban card. Same
+// cache + subscribe + apply shape as the run cache above; the
+// only mutating WS frame is `activity_appended` (matches the
+// trait — no upsert, no delete).
+
+const activitiesByRequirement: Map<string, Activity[]> = new Map();
+const activitiesSubscribers = new Set<() => void>();
+
+function notifyActivities(): void {
+  for (const s of activitiesSubscribers) {
+    try {
+      s();
+    } catch (e) {
+      console.warn("activity subscriber threw", e);
+    }
+  }
+}
+
+function sortActivitiesForRequirement(requirementId: string): void {
+  const list = activitiesByRequirement.get(requirementId);
+  if (!list) return;
+  list.sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+/// Synchronous read against the in-memory activity cache. Pair with
+/// [`loadActivitiesForRequirement`] to populate from the server,
+/// and [`subscribeRequirementActivities`] to re-render on cache
+/// changes.
+export function listActivitiesForRequirement(requirementId: string): Activity[] {
+  return activitiesByRequirement.get(requirementId)?.slice() ?? [];
+}
+
+/// Subscribe to activity-cache change notifications.
+export function subscribeRequirementActivities(cb: () => void): () => void {
+  activitiesSubscribers.add(cb);
+  return () => {
+    activitiesSubscribers.delete(cb);
+  };
+}
+
+interface ListActivitiesResponse {
+  requirement_id: string;
+  items: Activity[];
+}
+
+/// Refresh the activity cache for `requirementId` from the server.
+/// Idempotent. 503 means the server has no activity store wired up;
+/// in that case we drop to an empty list and let the section render
+/// the "no activity" empty state.
+export async function loadActivitiesForRequirement(
+  requirementId: string,
+): Promise<void> {
+  try {
+    const r = await fetch(
+      apiUrl(
+        `/v1/requirements/${encodeURIComponent(requirementId)}/activities`,
+      ),
+    );
+    if (r.status === 503) {
+      activitiesByRequirement.set(requirementId, []);
+      notifyActivities();
+      return;
+    }
+    if (!r.ok) throw new Error(`activities list: ${r.status}`);
+    const body = (await r.json()) as ListActivitiesResponse;
+    activitiesByRequirement.set(requirementId, body.items.slice());
+    sortActivitiesForRequirement(requirementId);
+    notifyActivities();
+  } catch (e) {
+    console.warn("activities fetch failed", e);
+  }
+}
+
+/// Apply a server-side `activity_appended` frame.
+export function applyActivityAppended(activity: Activity): void {
+  const list = activitiesByRequirement.get(activity.requirement_id) ?? [];
+  // Server is source-of-truth on uniqueness (UUID), but a safety
+  // dedupe against double-deliver.
+  if (list.some((a) => a.id === activity.id)) return;
+  list.unshift(activity);
+  activitiesByRequirement.set(activity.requirement_id, list);
+  notifyActivities();
 }

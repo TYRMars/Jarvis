@@ -22,7 +22,7 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export function ApiSection() {
+export function ApiSection({ embedded }: { embedded?: boolean } = {}) {
   const [origin, setOrigin] = useState("");
   const [savedOrigin, setSavedOrigin] = useState("");
   // Read once on mount. localStorage doesn't fire `storage` events
@@ -58,6 +58,7 @@ export function ApiSection() {
       titleFallback="API"
       descKey="settingsApiDesc"
       descFallback="Backend origin override. Empty means same-origin (the server this page was loaded from). Reload after saving."
+      embedded={embedded}
     >
       <Row
         label={tx("settingsApiOrigin", "API origin")}

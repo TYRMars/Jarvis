@@ -122,12 +122,13 @@ impl TokenEstimator for TiktokenEstimator {
     fn estimate_message(&self, message: &Message) -> usize {
         let body = match message {
             Message::System { content, .. }
-            | Message::User { content }
+            | Message::User { content, .. }
             | Message::Tool { content, .. } => self.estimate_text(content),
             Message::Assistant {
                 content,
                 tool_calls,
                 reasoning_content,
+                ..
             } => {
                 let mut n = 0;
                 if let Some(c) = content {
@@ -203,6 +204,7 @@ mod tests {
                 arguments: json!({ "text": "hello world" }),
             }],
             reasoning_content: None,
+            cache: None,
         };
         let n = est.estimate_message(&m);
         // Strictly more than just the overhead — the tool-call id /

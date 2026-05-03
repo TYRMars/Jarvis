@@ -2,11 +2,16 @@
 
 **Status:** Adopted. Hygiene subset (sorted `ToolRegistry::specs()`,
 byte-stable `SlidingWindowMemory` marker), `CacheHint` field on
-`Message::System`, `Tool::cacheable()` flag, and the Anthropic
-`cache_control` emission for both `system` and the tools list have
-all landed. Mid-conversation breakpoints on `User` / `Assistant` /
-`Tool` variants and a `LlmChunk::Usage` event for cost reporting
-remain follow-ups (see "Out of scope" / "Risks" below).
+**every `Message` variant** (`System` / `User` / `Assistant` /
+`Tool`), `Tool::cacheable()` flag, the Anthropic `cache_control`
+emission for `system` and the tools list, and **mid-conversation
+breakpoints** on `User` / `Assistant` / `Tool` (the `Anthropic`
+converter promotes the user `content` to a block array,
+attaches `cache_control` to the last block of an assistant
+message, and to the targeted `tool_result` block) have all
+landed. The `LlmChunk::Usage` event is also live, exposed via
+`AgentEvent::Usage`. The cache-aware compaction hook on
+`Memory::compact` remains a follow-up.
 **Touches:** `harness-core` (new field on `ChatRequest`),
 `harness-llm::anthropic` (consume the field), `harness-llm::openai`
 (prefix discipline, no field needed), `harness-memory` (cache-aware

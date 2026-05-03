@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use harness_core::{
-    Agent, AgentConfig, ConversationStore, DocStore, LlmProvider, PermissionMode, PermissionStore,
-    ProjectStore, RequirementStore, TodoStore, ToolRegistry,
+    Agent, AgentConfig, ActivityStore, AgentProfileStore, ConversationStore, DocStore,
+    LlmProvider, PermissionMode, PermissionStore, ProjectStore, RequirementRunStore,
+    RequirementStore, TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
@@ -11,6 +12,7 @@ use harness_skill::SkillCatalog;
 use harness_store::WorkspaceStore;
 
 use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
+use crate::worktree::WorktreeMode;
 
 /// Runtime metadata the binary populates at startup so the
 /// `GET /v1/server/info` endpoint (and the Settings page that reads
@@ -145,6 +147,34 @@ pub struct AppState {
     /// per-project kanban Web UI (`/projects` route) reads via REST
     /// and live-updates via the WS bridge.
     pub requirements: Option<Arc<dyn RequirementStore>>,
+    /// Optional persistent Requirement-run store. When `Some(_)`,
+    /// `POST /v1/requirements/:id/runs` writes a typed
+    /// [`RequirementRun`](harness_core::RequirementRun) row at run
+    /// start, the new `/v1/requirements/:id/runs` (list) /
+    /// `/v1/runs/:id` (get/patch) / `/v1/runs/:id/verification`
+    /// endpoints work, and WS sessions broadcast
+    /// `requirement_run_started` / `_finished` / `_verified` frames.
+    /// `None` ⇒ run history is ephemeral (the typed `RequirementRun`
+    /// in the start-run response is the only place it shows up) and
+    /// the new endpoints return 503.
+    pub requirement_runs: Option<Arc<dyn RequirementRunStore>>,
+    /// Optional persistent per-Requirement audit timeline store.
+    /// When `Some(_)`, the requirement / run REST handlers append
+    /// rows on every state-changing mutation, the new
+    /// `GET /v1/requirements/:id/activities` endpoint returns the
+    /// timeline, and WS sessions broadcast `activity_appended`
+    /// frames. `None` ⇒ no audit trail recorded; the GET endpoint
+    /// returns 503.
+    pub activities: Option<Arc<dyn ActivityStore>>,
+    /// Optional persistent named-agent-profile store. When
+    /// `Some(_)`, the Settings page's Agents tab and the kanban
+    /// card assignee picker work; `start_run` looks up the
+    /// requirement's `assignee_id` and prepends the matching
+    /// profile's `system_prompt` to the manifest summary so the
+    /// model sees the assignee's instructions before turn 1.
+    /// `None` ⇒ `/v1/agent-profiles*` returns 503 and `start_run`
+    /// behaves as before (no per-assignee prompt enrichment).
+    pub agent_profiles: Option<Arc<dyn AgentProfileStore>>,
     /// Optional persistent Doc store — backs the `/docs` page.
     /// Returns 503 from `/v1/doc-projects*` when `None`.
     pub docs: Option<Arc<dyn DocStore>>,
@@ -155,6 +185,21 @@ pub struct AppState {
     /// `JARVIS_NO_TODOS_IN_PROMPT` is set. No-op when `todos` is
     /// `None`.
     pub todos_in_prompt: bool,
+    /// Phase 5 — worktree isolation mode (`Off` / `PerRun`).
+    /// Sourced from `JARVIS_WORKTREE_MODE`. When `PerRun` and the
+    /// workspace is a git repo, `start_run` mints a fresh worktree
+    /// at `<worktree_root>/<run_id>` and stamps the path onto the
+    /// run; verification routes its cwd through it.
+    pub worktree_mode: WorktreeMode,
+    /// Phase 5 — base directory for per-run worktrees. Defaults
+    /// to `<workspace_root>/.jarvis/worktrees` (resolved at
+    /// startup). `None` here when `worktree_mode == Off` —
+    /// callers should treat absence as "feature off".
+    pub worktree_root: Option<PathBuf>,
+    /// Phase 5 — when true, allow worktree creation off a dirty
+    /// main checkout. Sourced from `JARVIS_WORKTREE_ALLOW_DIRTY`.
+    /// Default false (refuse).
+    pub worktree_allow_dirty: bool,
 }
 
 impl AppState {
@@ -179,8 +224,14 @@ impl AppState {
             workspaces: None,
             todos: None,
             requirements: None,
+            requirement_runs: None,
+            activities: None,
+            agent_profiles: None,
             docs: None,
             todos_in_prompt: true,
+            worktree_mode: WorktreeMode::Off,
+            worktree_root: None,
+            worktree_allow_dirty: false,
         }
     }
 
@@ -210,8 +261,14 @@ impl AppState {
             workspaces: None,
             todos: None,
             requirements: None,
+            requirement_runs: None,
+            activities: None,
+            agent_profiles: None,
             docs: None,
             todos_in_prompt: true,
+            worktree_mode: WorktreeMode::Off,
+            worktree_root: None,
+            worktree_allow_dirty: false,
         }
     }
 
@@ -322,6 +379,33 @@ impl AppState {
         self
     }
 
+    /// Wire in the persistent Requirement-run store. Without one,
+    /// `start_run` still mints + returns a typed Pending row but
+    /// does not persist it; the new `/v1/requirements/:id/runs`
+    /// list and `/v1/runs/:id*` mutation endpoints return 503.
+    pub fn with_run_store(mut self, store: Arc<dyn RequirementRunStore>) -> Self {
+        self.requirement_runs = Some(store);
+        self
+    }
+
+    /// Wire in the persistent Activity timeline store. Without
+    /// one, requirement / run mutations skip the audit append (no
+    /// error — the operation succeeds and the `activity_appended`
+    /// WS frame just doesn't fire) and the new
+    /// `GET /v1/requirements/:id/activities` endpoint returns 503.
+    pub fn with_activity_store(mut self, store: Arc<dyn ActivityStore>) -> Self {
+        self.activities = Some(store);
+        self
+    }
+
+    /// Wire in the persistent named-agent-profile store. Without
+    /// one, `/v1/agent-profiles*` returns 503 and the kanban
+    /// card's assignee picker renders disabled.
+    pub fn with_agent_profile_store(mut self, store: Arc<dyn AgentProfileStore>) -> Self {
+        self.agent_profiles = Some(store);
+        self
+    }
+
     /// Wire in the persistent Doc store. Without one, the
     /// `/v1/doc-projects*` endpoints return 503 and the `/docs`
     /// page renders the empty state.
@@ -335,6 +419,22 @@ impl AppState {
     /// `JARVIS_NO_TODOS_IN_PROMPT` is set.
     pub fn with_todos_in_prompt(mut self, enabled: bool) -> Self {
         self.todos_in_prompt = enabled;
+        self
+    }
+
+    /// Phase 5 — set the worktree mode + root + dirty-allow flag
+    /// in one call. The binary calls this after parsing
+    /// `JARVIS_WORKTREE_MODE` / `JARVIS_WORKTREE_ROOT` /
+    /// `JARVIS_WORKTREE_ALLOW_DIRTY`.
+    pub fn with_worktree_config(
+        mut self,
+        mode: WorktreeMode,
+        root: Option<PathBuf>,
+        allow_dirty: bool,
+    ) -> Self {
+        self.worktree_mode = mode;
+        self.worktree_root = root;
+        self.worktree_allow_dirty = allow_dirty;
         self
     }
 

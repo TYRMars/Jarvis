@@ -127,19 +127,25 @@ fn leading_system_count(messages: &[Message]) -> usize {
 fn format_block(items: &[harness_core::TodoItem]) -> String {
     let total = items.len();
     let shown = total.min(MAX_INJECTED_ITEMS);
-    let mut out = String::with_capacity(64 * shown);
+    let mut out = String::with_capacity(96 * shown);
     out.push_str("=== project todos ===\n");
     out.push_str(
-        "(persistent backlog for this workspace; mark completed via todo.update as you finish)\n",
+        "(Persistent backlog for this workspace — survives across turns, sessions, and restarts. \
+         The id at the start of each line is the handle for todo.update / todo.delete. \
+         Use todo.add to record NEW follow-ups you discover this turn. \
+         Do NOT use plan.update for these — that is the ephemeral, in-turn channel.)\n",
     );
-    for (i, item) in items.iter().take(shown).enumerate() {
-        let n = i + 1;
+    for item in items.iter().take(shown) {
         let status = item.status.as_wire();
         let priority = match item.priority {
             Some(p) => format!(" ({})", p.as_wire()),
             None => String::new(),
         };
-        out.push_str(&format!("[{n}] [{status}]{priority} {}", item.title));
+        out.push_str(&format!(
+            "- {id}  [{status}]{priority} {title}",
+            id = item.id,
+            title = item.title,
+        ));
         if let Some(notes) = item.notes.as_deref().filter(|n| !n.is_empty()) {
             out.push_str(&format!(" — {notes}"));
         }
@@ -266,11 +272,13 @@ mod tests {
     #[tokio::test]
     async fn injects_after_leading_systems_with_filter() {
         let store = FakeTodoStore::new();
-        store.put(item("/r", "alive-1", TodoStatus::Pending)).await;
-        store
-            .put(item("/r", "alive-2", TodoStatus::InProgress))
-            .await;
-        store.put(item("/r", "alive-3", TodoStatus::Blocked)).await;
+        let alive1 = item("/r", "alive-1", TodoStatus::Pending);
+        let alive2 = item("/r", "alive-2", TodoStatus::InProgress);
+        let alive3 = item("/r", "alive-3", TodoStatus::Blocked);
+        let alive_ids = [alive1.id.clone(), alive2.id.clone(), alive3.id.clone()];
+        store.put(alive1).await;
+        store.put(alive2).await;
+        store.put(alive3).await;
         store
             .put(item("/r", "ignore-1", TodoStatus::Completed))
             .await;
@@ -299,6 +307,12 @@ mod tests {
                 assert!(content.contains("alive-3"));
                 assert!(!content.contains("ignore-"));
                 assert!(!content.contains("wrong-workspace"));
+                for id in &alive_ids {
+                    assert!(
+                        content.contains(id),
+                        "expected injected block to contain id {id}, got:\n{content}"
+                    );
+                }
             }
             other => panic!("expected injected System, got {other:?}"),
         }

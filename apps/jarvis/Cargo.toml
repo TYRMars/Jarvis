@@ -21,6 +21,7 @@ harness-skill.workspace = true
 harness-store.workspace = true
 harness-tools.workspace = true
 
+async-trait.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

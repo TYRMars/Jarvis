@@ -29,7 +29,7 @@ type LoadState =
   | { kind: "ready"; servers: McpServerInfo[] }
   | { kind: "error"; message: string };
 
-export function McpSection() {
+export function McpSection({ embedded }: { embedded?: boolean } = {}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [adding, setAdding] = useState(false);
   const [healthByPrefix, setHealthByPrefix] = useState<Record<string, McpHealth | "checking">>({});
@@ -99,6 +99,7 @@ export function McpSection() {
       titleFallback="MCP servers"
       descKey="settingsMcpDesc"
       descFallback="Add or remove external MCP servers at runtime. Tools register as <prefix>.<remote-name>."
+      embedded={embedded}
     >
       {renderList(state, handleRemove, handleHealth, healthByPrefix, errorByPrefix)}
 

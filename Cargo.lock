@@ -974,6 +974,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "chrono",
  "futures",
  "harness-core",
  "harness-mcp",
@@ -984,6 +985,7 @@ dependencies = [
  "include_dir",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
@@ -1449,6 +1451,7 @@ name = "jarvis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "clap",

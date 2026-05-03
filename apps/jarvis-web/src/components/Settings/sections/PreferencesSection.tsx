@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import { useAppStore, type EffortLevel } from "../../../store/appStore";
 import { Row, Section } from "./Section";
 import { t } from "../../../utils/i18n";
+import { confirm, Select } from "../../ui";
 import {
   clearAllJarvisPrefs,
   initialDefaultRouting,
@@ -34,7 +35,7 @@ const EFFORT_LABEL: Record<EffortLevel, { key: string; fallback: string }> = {
   max: { key: "effortMax", fallback: "Max" },
 };
 
-export function PreferencesSection() {
+export function PreferencesSection({ embedded }: { embedded?: boolean } = {}) {
   const providers = useAppStore((s) => s.providers);
   const effort = useAppStore((s) => s.effort);
   const setEffort = useAppStore((s) => s.setEffort);
@@ -90,10 +91,15 @@ export function PreferencesSection() {
     setSavedDefault("");
   };
 
-  const onClearAll = () => {
-    if (!confirm(tx("settingsPrefsClearConfirm", "Remove all Jarvis preferences from this browser?"))) {
-      return;
-    }
+  const onClearAll = async () => {
+    const ok = await confirm({
+      title: tx(
+        "settingsPrefsClearConfirm",
+        "Remove all Jarvis preferences from this browser?",
+      ),
+      danger: true,
+    });
+    if (!ok) return;
     const removed = clearAllJarvisPrefs();
     setJustCleared(removed);
     window.setTimeout(() => setJustCleared(null), 2400);
@@ -106,6 +112,7 @@ export function PreferencesSection() {
       titleFallback="Preferences"
       descKey="settingsPrefsDesc"
       descFallback="Per-browser defaults. All values are saved to localStorage; clearing removes them."
+      embedded={embedded}
     >
       <Row
         label={tx("settingsPrefsDefaultRouting", "Default model")}
@@ -115,17 +122,14 @@ export function PreferencesSection() {
         )}
       >
         <div className="settings-input-row">
-          <select
+          <Select
             className="settings-input"
             value={draftDefault}
-            onChange={(e) => setDraftDefault(e.target.value)}
-          >
-            {options.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setDraftDefault(v)}
+            ariaLabel={tx("settingsPrefsDefaultRouting", "Default model")}
+            searchable={options.length > 12}
+            options={options.map((o) => ({ value: o.value, label: o.label }))}
+          />
           <button
             type="button"
             className="settings-btn"

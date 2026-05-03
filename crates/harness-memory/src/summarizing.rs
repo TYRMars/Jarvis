@@ -368,7 +368,7 @@ fn render_for_summary(messages: &[Message]) -> String {
                 s.push_str(content);
                 s.push('\n');
             }
-            Message::User { content } => {
+            Message::User { content, .. } => {
                 s.push_str("[user] ");
                 s.push_str(content);
                 s.push('\n');
@@ -377,6 +377,7 @@ fn render_for_summary(messages: &[Message]) -> String {
                 content,
                 tool_calls,
                 reasoning_content: _,
+                ..
             } => {
                 s.push_str("[assistant] ");
                 if let Some(c) = content {
@@ -394,6 +395,7 @@ fn render_for_summary(messages: &[Message]) -> String {
             Message::Tool {
                 tool_call_id,
                 content,
+                ..
             } => {
                 s.push_str(&format!("[tool {tool_call_id}] "));
                 s.push_str(content);
@@ -501,7 +503,7 @@ mod tests {
             Message::System { content, .. } if content.contains("ALPHA AND BETA HAPPENED")
         )));
         assert!(out.iter().any(|m| matches!(m,
-            Message::User { content } if content == "turn 3 most recent"
+            Message::User { content, .. } if content == "turn 3 most recent"
         )));
     }
 
@@ -613,7 +615,7 @@ mod tests {
         // Recent turn must still be there — that's the whole point
         // of falling back instead of erroring.
         assert!(out.iter().any(|m| matches!(m,
-            Message::User { content } if content == "recent"
+            Message::User { content, .. } if content == "recent"
         )));
     }
 

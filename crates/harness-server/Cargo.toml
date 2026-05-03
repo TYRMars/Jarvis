@@ -13,7 +13,9 @@ harness-plugin.workspace = true
 harness-requirement.workspace = true
 harness-skill.workspace = true
 harness-store.workspace = true
+async-trait.workspace = true
 axum.workspace = true
+chrono.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,6 +28,7 @@ include_dir.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 async-trait.workspace = true

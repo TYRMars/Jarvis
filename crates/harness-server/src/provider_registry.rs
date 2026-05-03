@@ -118,6 +118,27 @@ impl ProviderRegistry {
         );
     }
 
+    /// Remove a provider by name. Returns `true` if a row was
+    /// removed; `false` when the name wasn't there. Used by the
+    /// `DELETE /v1/providers/:name` runtime admin route.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.by_name.remove(name).is_some()
+    }
+
+    /// Whether a provider with this name is registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    /// Swap the registry-wide default provider name. Used by the
+    /// `PUT /v1/providers/default` admin route. The caller is
+    /// expected to have verified `contains(name)` first; if the new
+    /// default isn't registered, `pick(None, None)` will return
+    /// `UnknownProvider` until one is added.
+    pub fn set_default(&mut self, name: impl Into<String>) {
+        self.default_name = name.into();
+    }
+
     /// Add a model-prefix routing rule. Rules are checked in
     /// insertion order; first match wins. The mapped provider must
     /// also be in `by_name` for the rule to take effect — unknown
