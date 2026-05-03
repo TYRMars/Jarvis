@@ -122,6 +122,13 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if doc_store.is_some() {
         info!("persistent doc store active (doc.* tools registered)");
     }
+    // `requirement.*` tools require both the requirement and
+    // activity stores — see `BuiltinsConfig::requirement_store` doc.
+    bcfg.requirement_store = requirement_store.clone();
+    bcfg.activity_store = activity_store.clone();
+    if requirement_store.is_some() && activity_store.is_some() {
+        info!("persistent requirement + activity stores active (requirement.* tools registered)");
+    }
 
     register_builtins(&mut tools, bcfg);
     info!(workspace = %workspace_root.display(), "workspace root resolved");

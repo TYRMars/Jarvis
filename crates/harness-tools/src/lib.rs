@@ -22,6 +22,7 @@ pub mod http;
 pub mod patch;
 pub mod plan;
 pub mod project;
+pub mod requirement;
 mod sandbox;
 pub mod shell;
 pub mod time;
@@ -48,12 +49,15 @@ pub use project::{
     ProjectArchiveTool, ProjectCreateTool, ProjectDeleteTool, ProjectGetTool, ProjectListTool,
     ProjectRestoreTool, ProjectUpdateTool,
 };
+pub use requirement::{
+    RequirementBlockTool, RequirementCompleteTool, RequirementListTool, RequirementStartTool,
+};
 pub use shell::{Sandbox, ShellExecTool, ShellLimits};
 pub use time::TimeNowTool;
 pub use todo::{TodoAddTool, TodoDeleteTool, TodoListTool, TodoUpdateTool};
 pub use workspace::WorkspaceContextTool;
 
-use harness_core::{DocStore, ProjectStore, TodoStore, ToolRegistry};
+use harness_core::{ActivityStore, DocStore, ProjectStore, RequirementStore, TodoStore, ToolRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -129,6 +133,19 @@ pub struct BuiltinsConfig {
     /// (`create`, `update`, `delete`, `draft.save`) are
     /// approval-gated.
     pub doc_store: Option<Arc<dyn DocStore>>,
+    /// Backing store for [`Requirement`](harness_core::Requirement)
+    /// kanban rows. Paired with [`Self::activity_store`] — both
+    /// must be `Some(_)` for the four `requirement.*` tools to
+    /// register. A half-enabled set (mutations land but the audit
+    /// row goes nowhere) is strictly worse than off, so the
+    /// registration block requires both. Write operations
+    /// (`start`, `block`, `complete`) are approval-gated.
+    pub requirement_store: Option<Arc<dyn RequirementStore>>,
+    /// Backing store for per-requirement
+    /// [`Activity`](harness_core::Activity) audit rows. Required
+    /// alongside [`Self::requirement_store`] for the
+    /// `requirement.*` tools — see that field's doc for rationale.
+    pub activity_store: Option<Arc<dyn ActivityStore>>,
 }
 
 impl Default for BuiltinsConfig {
@@ -148,6 +165,8 @@ impl Default for BuiltinsConfig {
             todo_store: None,
             project_store: None,
             doc_store: None,
+            requirement_store: None,
+            activity_store: None,
         }
     }
 }
@@ -223,5 +242,15 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
         registry.register(DocDeleteTool::new(store.clone()));
         registry.register(DocDraftGetTool::new(store.clone()));
         registry.register(DocDraftSaveTool::new(store));
+    }
+    // `requirement.*` tools mutate kanban state AND need to write
+    // audit rows. Both stores must be available — registering only
+    // the mutation half would silently drop the activity timeline,
+    // which is strictly worse than not exposing the tools at all.
+    if let (Some(req_store), Some(act_store)) = (cfg.requirement_store, cfg.activity_store) {
+        registry.register(RequirementListTool::new(req_store.clone()));
+        registry.register(RequirementStartTool::new(req_store.clone(), act_store.clone()));
+        registry.register(RequirementBlockTool::new(req_store.clone(), act_store.clone()));
+        registry.register(RequirementCompleteTool::new(req_store, act_store));
     }
 }
