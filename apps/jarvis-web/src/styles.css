@@ -6204,7 +6204,11 @@ body.approvals-open #panel {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 24px 32px 48px;
+  /* Outer padding lives on each child surface (`.projects-page-header`,
+   * `.project-board`, etc.) so per-page chrome can pick its own
+   * vertical rhythm. Aligns with PR #22's "panels own their padding"
+   * pattern; also lets the kanban / Work Overview reach the rail edge. */
+  padding: 0;
   color: var(--text);
   background: var(--bg);
   overflow-y: auto;
@@ -6312,7 +6316,9 @@ body.approvals-open #panel {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin: 0 0 24px;
+  width: 100%;
+  margin: 0;
+  padding: 16px 28px 12px;
 }
 
 /* Title — Inter to match the rest of the IDE chrome (the previous
@@ -6901,6 +6907,8 @@ body.approvals-open #panel {
   flex: 1 1 auto;
   width: 100%;
   min-height: 0; /* lets columns row consume the rest without leaking */
+  margin: 0;
+  padding: 20px 28px 28px;
 }
 
 .project-board-head {
@@ -6908,7 +6916,7 @@ body.approvals-open #panel {
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .project-board-kicker {
@@ -6922,6 +6930,7 @@ body.approvals-open #panel {
   margin: 4px 0 0;
   color: var(--text);
   font-size: 22px;
+  font-weight: 600;
   line-height: 1.2;
 }
 
@@ -12523,6 +12532,9 @@ select.settings-input {
   flex-direction: column;
   gap: 24px;
   width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 28px 40px;
 }
 
 .work-overview-header {
