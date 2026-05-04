@@ -285,6 +285,95 @@ export function updateRequirement(
   return next;
 }
 
+/// Mint a fresh-session run on the server. POST /v1/requirements/:id/runs
+/// creates a new Conversation, links it back to the Requirement, flips
+/// the Requirement to `in_progress`, persists the row in the run store
+/// (when configured), and emits the `requirement_run_started` /
+/// `requirement_upserted` / `activity_appended` WS frames the cache
+/// reconciliation already handles.
+///
+/// Returns the freshly-allocated `RequirementRun`. Throws (with the
+/// server's status text) on non-2xx so the caller can surface a toast
+/// rather than swallowing the failure silently. Skipped for purely-
+/// local optimistic Requirement rows (`req-local-*`) because there's
+/// no server-side row to mint a run against yet.
+export async function startRequirementRun(
+  id: string,
+): Promise<{ run: RequirementRun; conversation_id: string }> {
+  if (id.startsWith("req-local-")) {
+    throw new Error("requirement is still optimistic; wait for server reconcile");
+  }
+  const r = await fetch(apiUrl(`/v1/requirements/${encodeURIComponent(id)}/runs`), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`start run ${r.status}: ${text || r.statusText}`);
+  }
+  const body = (await r.json()) as {
+    run: RequirementRun;
+    conversation_id: string;
+  };
+  // Optimistically push the new run into the cache so the
+  // RunsSection updates immediately, before the WS frame arrives.
+  upsertRunLocal(body.run);
+  return body;
+}
+
+/// v1.0 — approve a triage candidate. Flips `triage_state` to
+/// `approved` server-side and writes an Activity row. Optimistically
+/// updates the local cache so the Triage drawer empties immediately;
+/// the WS broadcast reconciles. Returns true iff the server accepted
+/// (200/2xx); 404 / 503 / network error → false (caller may want to
+/// retry or surface a toast).
+export async function approveRequirement(id: string): Promise<boolean> {
+  const existing = findById(id);
+  if (existing) {
+    upsertLocal({ ...existing, triage_state: "approved", updated_at: new Date().toISOString() });
+  }
+  if (id.startsWith("req-local-")) return true;
+  try {
+    const r = await fetch(apiUrl(`/v1/requirements/${encodeURIComponent(id)}/approve`), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    return r.ok;
+  } catch (e) {
+    console.warn("requirement approve fetch error", e);
+    return false;
+  }
+}
+
+/// v1.0 — reject a triage candidate. The server soft-deletes the row
+/// after recording the rejection reason on the activity timeline.
+/// Optimistically removes from the local cache.
+/// Throws if the reason is blank — that mirrors the server's 400.
+export async function rejectRequirement(
+  id: string,
+  reason: string,
+): Promise<boolean> {
+  const trimmed = reason.trim();
+  if (!trimmed) {
+    throw new Error("reject requires a non-blank reason");
+  }
+  removeLocal(id);
+  if (id.startsWith("req-local-")) return true;
+  try {
+    const r = await fetch(apiUrl(`/v1/requirements/${encodeURIComponent(id)}/reject`), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: trimmed }),
+    });
+    return r.ok;
+  } catch (e) {
+    console.warn("requirement reject fetch error", e);
+    return false;
+  }
+}
+
 /// Append a conversation id to the Requirement's `conversation_ids`.
 /// Idempotent: if the id is already linked, returns the existing row
 /// untouched. Otherwise applies optimistically and fires the link

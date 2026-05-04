@@ -30,7 +30,10 @@ Status legend in each doc's header:
 | [persistent-todos.md](persistent-todos.md) | Persistent TODO board as the lightweight Work backlog | Adopted |
 | [cloud-capabilities.zh-CN.md](cloud-capabilities.zh-CN.md) | 云端能力包、端云协同与多云厂商适配 | Proposed |
 | [work-orchestration.zh-CN.md](work-orchestration.zh-CN.md) | Work 编排、自动执行、验证门禁、GSD 2 + Multica 参考吸收 | Adopted partial — Phase 0/1/2/3 落地; Multica 启发的 AgentProfile / Activity / Run 持久化是新 Phase 3.5/3.6/3.7 |
+| [cloud-blueprint.zh-CN.md](cloud-blueprint.zh-CN.md) | Cloud / Edge 落地蓝图：看板 10 条 Requirement 的 PR 拆分、验收与依赖图 | In progress — Phase 0/1 文档化 |
 | [permission-modes.md](permission-modes.md) | Five permission modes (`ask` / `accept-edits` / `plan` / `auto` / `bypass`) + rule engine | Adopted (backend); Web UI follow-up |
+| [new-session-resource-manager.zh-CN.md](new-session-resource-manager.zh-CN.md) | 新建会话资源管理弹框：选择项目/文件夹、自动创建项目、多工作区绑定 | Proposed |
+| [session-execution-context.zh-CN.md](session-execution-context.zh-CN.md) | 会话执行上下文条：输入区上方展示当前需求、执行状态、验证与详情入口 | Proposed |
 
 ## Product Alignment Audit
 
@@ -51,6 +54,7 @@ lasting documentation.
 | [web-ui.md](web-ui.md) | Updated as historical MVP; future UI follows Chat / Work / Doc navigation. |
 | [client-sdks.md](client-sdks.md) | Updated: SDK namespaces should be `chat`, `work`, `doc`, and `capabilities`, not coding-only. |
 | [cloud-capabilities.zh-CN.md](cloud-capabilities.zh-CN.md) | Updated: cloud is deployment/execution infrastructure for Chat / Work / Doc, not a product surface. |
+| [cloud-blueprint.zh-CN.md](cloud-blueprint.zh-CN.md) | In progress: execution blueprint for Phase 0/1; mirrors the 10 kanban requirements with PR breakdown, acceptance criteria, and dependency graph. |
 | [onboarding.md](onboarding.md) | Updated: first-run setup should communicate Chat / Work / Doc and initial capability choices. |
 | [prompt-caching.md](prompt-caching.md) | Updated: prompt caching is cross-product infrastructure for capability-heavy turns. |
 | [permission-modes.md](permission-modes.md) | Already aligned: cross-product safety/policy layer. |

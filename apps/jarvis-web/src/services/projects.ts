@@ -10,9 +10,24 @@
 // own error state.
 
 import { appStore } from "../store/appStore";
-import type { Project } from "../types/frames";
+import type { Project, ProjectWorkspace } from "../types/frames";
 import { apiUrl } from "./api";
 import { showError } from "./status";
+
+/// Per-workspace Git status returned by
+/// `GET /v1/projects/:id/workspaces/status`. Mirrors the server-side
+/// row shape — `branch` / `head` / `dirty` are present only when
+/// `vcs == "git"` succeeded; `error` is present only on probe
+/// failures (e.g. the path was deleted, or the total budget elapsed).
+export interface ProjectWorkspaceStatus {
+  path: string;
+  name?: string | null;
+  vcs: "git" | "none" | "unknown";
+  branch?: string | null;
+  head?: string | null;
+  dirty?: boolean;
+  error?: string | null;
+}
 
 let projectsListSeq = 0;
 const LOCAL_PROJECTS_KEY = "jarvis.productProjects.v1";
@@ -49,6 +64,7 @@ export interface CreateProjectInput {
   slug?: string;
   description?: string;
   tags?: string[];
+  workspaces?: ProjectWorkspace[];
 }
 
 export async function createProject(input: CreateProjectInput): Promise<Project | null> {
@@ -76,6 +92,7 @@ export async function createProject(input: CreateProjectInput): Promise<Project 
     }
     const p: Project = await r.json();
     appStore.getState().upsertProject(p);
+    invalidateWorkspaceStatusCache(p.id);
     return p;
   } catch (e: any) {
     console.warn("project create failed; using local product project", e);
@@ -91,6 +108,8 @@ export interface UpdateProjectInput {
   description?: string;
   instructions?: string;
   tags?: string[];
+  /// `undefined` leaves the list untouched. `[]` clears it.
+  workspaces?: ProjectWorkspace[];
   archived?: boolean;
 }
 
@@ -115,6 +134,7 @@ export async function updateProject(
     }
     const p: Project = await r.json();
     appStore.getState().upsertProject(p);
+    invalidateWorkspaceStatusCache(p.id);
     return p;
   } catch (e: any) {
     showError(`Update project: ${e.message ?? e}`);
@@ -213,6 +233,7 @@ function createLocalProject(input: CreateProjectInput): Project {
     description: input.description?.trim() || null,
     instructions: input.instructions?.trim() || "",
     tags: input.tags || [],
+    workspaces: input.workspaces ? [...input.workspaces] : [],
     archived: false,
     created_at: now,
     updated_at: now,
@@ -231,12 +252,78 @@ function updateLocalProject(id: string, patch: UpdateProjectInput): Project | nu
       ...patch,
       description: patch.description === undefined ? p.description : patch.description,
       tags: patch.tags === undefined ? p.tags : patch.tags,
+      workspaces: patch.workspaces === undefined ? p.workspaces : patch.workspaces,
       updated_at: new Date().toISOString(),
     };
     return found;
   });
   if (found) writeLocalProjects(rows);
   return found;
+}
+
+// ----------------------- workspace status -----------------------
+
+/// `GET /v1/projects/:id/workspaces/status` — agg git probe for each
+/// of a project's `workspaces`. Cached in-process for 5 seconds so a
+/// repeatedly-opened picker popover doesn't re-shell out to git.
+///
+/// Returns `[]` for:
+/// - local-only projects (the project never reached the server)
+/// - servers that pre-date the endpoint (404 → graceful degrade)
+const STATUS_CACHE_TTL_MS = 5_000;
+const statusCache: Map<string, { at: number; rows: ProjectWorkspaceStatus[] }> =
+  new Map();
+
+export async function fetchProjectWorkspaceStatuses(
+  idOrSlug: string,
+): Promise<ProjectWorkspaceStatus[]> {
+  if (isLocalProjectId(idOrSlug)) {
+    // Local projects never had their workspaces probed — return the
+    // recorded paths with `vcs: "unknown"` so the UI can still render
+    // them without lying about Git state.
+    const local = readLocalProjects().find(
+      (p) => p.id === idOrSlug || p.slug === idOrSlug,
+    );
+    return (local?.workspaces ?? []).map((w) => ({
+      path: w.path,
+      name: w.name ?? null,
+      vcs: "unknown" as const,
+    }));
+  }
+  const cached = statusCache.get(idOrSlug);
+  if (cached && Date.now() - cached.at < STATUS_CACHE_TTL_MS) {
+    return cached.rows;
+  }
+  try {
+    const r = await fetch(
+      apiUrl(`/v1/projects/${encodeURIComponent(idOrSlug)}/workspaces/status`),
+    );
+    if (r.status === 404 || r.status === 503) {
+      // Either: project doesn't exist, or server pre-dates the endpoint.
+      // Either way the UI degrades to "no live status".
+      const rows: ProjectWorkspaceStatus[] = [];
+      statusCache.set(idOrSlug, { at: Date.now(), rows });
+      return rows;
+    }
+    if (!r.ok) throw new Error(`workspaces/status: ${r.status}`);
+    const rows: ProjectWorkspaceStatus[] = await r.json();
+    statusCache.set(idOrSlug, { at: Date.now(), rows });
+    return rows;
+  } catch (e: any) {
+    console.warn("workspaces/status fetch failed", e);
+    return [];
+  }
+}
+
+/// Drop the cached status for a project (or all projects) — call
+/// after the project's workspaces list mutates so the next popover
+/// open re-probes.
+export function invalidateWorkspaceStatusCache(idOrSlug?: string): void {
+  if (idOrSlug) {
+    statusCache.delete(idOrSlug);
+  } else {
+    statusCache.clear();
+  }
 }
 
 function readLocalProjects(): Project[] {

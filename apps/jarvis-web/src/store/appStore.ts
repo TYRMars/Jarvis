@@ -24,6 +24,7 @@ import { createCoreSlice, type CoreSlice } from "./slices/coreSlice";
 import { createHitlSlice, type HitlSlice } from "./slices/hitlSlice";
 import { createLifecycleSlice, type LifecycleSlice } from "./slices/lifecycleSlice";
 import { createPlanSlice, type PlanSlice } from "./slices/planSlice";
+import { createSubAgentSlice, type SubAgentSlice } from "./slices/subAgentSlice";
 import { createToolSlice, type ToolSlice } from "./slices/toolSlice";
 
 /// Full unified store shape. Every slice's `StateCreator` is typed
@@ -35,6 +36,7 @@ export type FullState = ChatSlice
   & ApprovalSlice
   & HitlSlice
   & PlanSlice
+  & SubAgentSlice
   & LifecycleSlice
   & CoreSlice;
 
@@ -44,6 +46,7 @@ export const useAppStore = create<FullState>()((...a) => ({
   ...createApprovalSlice(...a),
   ...createHitlSlice(...a),
   ...createPlanSlice(...a),
+  ...createSubAgentSlice(...a),
   ...createLifecycleSlice(...a),
   ...createCoreSlice(...a),
 }));

@@ -55,7 +55,8 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
   clearMessages: () =>
     // Reset every per-conversation slice so switching to a fresh /
     // empty thread doesn't leak the previous conversation's tasks
-    // rail, plan card, change report, or pending HITL prompts.
+    // rail, plan card, change report, pending HITL prompts, or
+    // subagent runs.
     set({
       messages: [],
       emptyHintIdShort: null,
@@ -64,6 +65,7 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
       tasks: [],
       plan: [],
       proposedPlan: null,
+      subAgentRuns: {},
     }),
 
   showEmptyHint: (idShort) =>

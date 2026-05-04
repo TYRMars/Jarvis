@@ -1027,6 +1027,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-subagents"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "harness-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "harness-tools"
 version = "0.1.0"
 dependencies = [
@@ -1468,6 +1482,7 @@ dependencies = [
  "harness-server",
  "harness-skill",
  "harness-store",
+ "harness-subagents",
  "harness-tools",
  "open",
  "rand 0.8.6",

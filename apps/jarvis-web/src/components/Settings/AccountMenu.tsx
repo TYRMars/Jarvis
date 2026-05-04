@@ -1,7 +1,6 @@
-// Account chip in the sidebar footer + the dropdown it pops open.
-// Hosts the Theme + Language switchers and a Settings link to the
-// full /settings page. All three pieces of state live in the store;
-// the chip-click and click-outside both flow through
+// Sidebar footer settings menu. Hosts quick Theme + Language
+// switchers and a Settings link to the full /settings page. All
+// state lives in the store; click and click-outside both flow through
 // `accountMenuOpen`.
 
 import { useEffect, useRef } from "react";
@@ -36,7 +35,7 @@ export function AccountMenu() {
         className={"account-menu" + (open ? "" : " hidden")}
         role="menu"
       >
-        <div className="account-menu-email">zhangjianan1996@icloud.com</div>
+        <div className="account-menu-title">{tx("settingsTitle", "Settings")}</div>
         <ThemeRow />
         <LangRow />
         <Link
@@ -59,11 +58,8 @@ export function AccountMenu() {
         aria-expanded={open}
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M20 21a8 8 0 1 0-16 0" />
-          <circle cx="12" cy="7" r="4" />
-        </svg>
-        <span>zhangjianan</span>
+        <SettingsIcon />
+        <span>{tx("settingsTitle", "Settings")}</span>
       </button>
     </div>
   );
@@ -90,6 +86,15 @@ function ThemeRow() {
         ))}
       </div>
     </div>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+    </svg>
   );
 }
 

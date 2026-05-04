@@ -1,6 +1,8 @@
-// Compact new-session context row above the composer. Workspace is a
-// real binding; Project is intentionally a soft reminder that only
-// applies when a brand-new persisted session is created.
+// Compact new-session context row above the composer. Project AND
+// workspace are bound at session start (the `new` WS frame ships
+// both); after the server's `started` echo we treat the session as
+// locked and the chips become read-only "info" cards. The escape
+// hatch is "New chat" — same flow as Claude Code desktop.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../store/appStore";
@@ -12,8 +14,14 @@ import {
   touchWorkspace,
   type RecentWorkspace,
 } from "../services/workspaces";
-import { isLocalProjectId } from "../services/projects";
+import {
+  fetchProjectWorkspaceStatuses,
+  isLocalProjectId,
+  type ProjectWorkspaceStatus,
+} from "../services/projects";
+import { newConversation } from "../services/conversations";
 import { chipColor } from "../utils/chipColor";
+import { t } from "../utils/i18n";
 
 type MenuKind = "workspace" | "project" | "context-add" | null;
 
@@ -43,8 +51,19 @@ export function ComposerSessionContext() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [highlight, setHighlight] = useState(0);
+  // Live Git status for the currently-selected project's workspaces.
+  // Fetched lazily when the workspace popover opens; null while
+  // unsuspended or while no project is selected.
+  const [projectWorkspaces, setProjectWorkspaces] =
+    useState<ProjectWorkspaceStatus[] | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Once the session has started (the WS handler populates `activeId`
+  // from the `started` frame), project + workspace are locked. The
+  // chips remain visible and can be opened to inspect the binding,
+  // but switching is only possible via "New chat".
+  const sessionLocked = !!activeId;
 
   useEffect(() => {
     void fetchWorkspace().then((state) => {
@@ -80,6 +99,28 @@ export function ComposerSessionContext() {
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [menu]);
+
+  // Fetch live Git status for the currently-bound project when the
+  // workspace popover opens. The service caches for 5s, so re-opening
+  // the popover quickly doesn't re-shell out to git.
+  useEffect(() => {
+    if (menu !== "workspace" || sessionLocked) {
+      setProjectWorkspaces(null);
+      return;
+    }
+    const projectId = draftProjectId;
+    if (!projectId || isLocalProjectId(projectId)) {
+      setProjectWorkspaces(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchProjectWorkspaceStatuses(projectId).then((rows) => {
+      if (!cancelled) setProjectWorkspaces(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [menu, draftProjectId, sessionLocked]);
 
   const workspaceInfo = draftWorkspaceInfo ?? socketWorkspaceInfo ?? baseline;
   const workspacePath = draftWorkspacePath ?? socketWorkspace ?? baseline?.root ?? null;
@@ -132,14 +173,58 @@ export function ComposerSessionContext() {
   const showOpenRow =
     looksLikePath && !filteredRows.some((r) => r.path === trimmedFilter);
 
+  // The "Project workspaces" group sits at the top of the popover
+  // when a non-local project is selected and has at least one
+  // workspace. We render the project's own list (so users see paths
+  // even before the live status fetch resolves) and overlay
+  // branch/dirty info from `projectWorkspaces` when available.
+  const projectWorkspaceRows = useMemo(() => {
+    if (!project || !project.workspaces?.length) return [];
+    const liveByPath = new Map(
+      (projectWorkspaces ?? []).map((r) => [r.path, r]),
+    );
+    const q = filter.trim().toLowerCase();
+    return project.workspaces
+      .map((w) => {
+        const live = liveByPath.get(w.path);
+        return {
+          path: w.path,
+          name: w.name ?? lastPathSegment(w.path),
+          status: live ?? null,
+        };
+      })
+      .filter((r) => {
+        if (!q) return true;
+        return (
+          r.name.toLowerCase().includes(q) ||
+          r.path.toLowerCase().includes(q)
+        );
+      });
+  }, [project, projectWorkspaces, filter]);
+
+  // De-duplicate recents that already appear in the project group
+  // (path-based) so the same folder doesn't render twice.
+  const filteredRowsDeduped = useMemo(() => {
+    if (projectWorkspaceRows.length === 0) return filteredRows;
+    const projectPaths = new Set(projectWorkspaceRows.map((r) => r.path));
+    return filteredRows.filter(
+      (r) => r.kind !== "recent" || !projectPaths.has(r.path ?? ""),
+    );
+  }, [filteredRows, projectWorkspaceRows]);
+
+  type NavRow =
+    | { kind: "open"; value: string }
+    | { kind: "row"; row: WorkspaceRow }
+    | { kind: "project-row"; row: typeof projectWorkspaceRows[number] };
+
   // Pick rows that the keyboard cursor can land on, in render order.
-  const navRows: Array<{ kind: "open"; value: string } | { kind: "row"; row: WorkspaceRow }> =
-    useMemo(() => {
-      const out: Array<{ kind: "open"; value: string } | { kind: "row"; row: WorkspaceRow }> = [];
-      if (showOpenRow) out.push({ kind: "open", value: trimmedFilter });
-      for (const row of filteredRows) out.push({ kind: "row", row });
-      return out;
-    }, [showOpenRow, trimmedFilter, filteredRows]);
+  const navRows: NavRow[] = useMemo(() => {
+    const out: NavRow[] = [];
+    if (showOpenRow) out.push({ kind: "open", value: trimmedFilter });
+    for (const row of projectWorkspaceRows) out.push({ kind: "project-row", row });
+    for (const row of filteredRowsDeduped) out.push({ kind: "row", row });
+    return out;
+  }, [showOpenRow, trimmedFilter, projectWorkspaceRows, filteredRowsDeduped]);
 
   // Clamp highlight to navRows bounds whenever the list changes.
   useEffect(() => {
@@ -158,12 +243,16 @@ export function ComposerSessionContext() {
   };
 
   const pickWorkspace = async (path: string | null) => {
+    // Hard-stop once the session is locked. The chip's popover is
+    // information-only at that point — switching workspace
+    // mid-conversation would silently re-root tools, which is
+    // exactly the foot-gun this refactor removes.
+    if (sessionLocked) return;
     setBusy(true);
     setError(null);
     try {
       if (!path) {
         setDraftWorkspace?.(null, null);
-        if (activeId) sendFrame({ type: "set_workspace", path: null });
         setMenu(null);
         return;
       }
@@ -171,7 +260,6 @@ export function ComposerSessionContext() {
       const info = await probeWorkspace(canonical);
       setDraftWorkspace?.(canonical, info);
       setRecent((rows) => promoteRecent(rows, canonical));
-      if (activeId) sendFrame({ type: "set_workspace", path: canonical });
       setMenu(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -205,23 +293,37 @@ export function ComposerSessionContext() {
       e.preventDefault();
       const target = navRows[highlight];
       if (!target) return;
-      if (target.kind === "open") void pickWorkspace(target.value);
-      else void pickWorkspace(target.row.path);
+      if (target.kind === "open") {
+        void pickWorkspace(target.value);
+      } else if (target.kind === "project-row") {
+        void pickWorkspace(target.row.path);
+      } else {
+        void pickWorkspace(target.row.path);
+      }
     }
   };
 
   const pickProject = (id: string | null) => {
+    if (sessionLocked) return;
     setDraftProjectId?.(id);
     setMenu(null);
+    // Auto-pick the first workspace of the chosen project, but ONLY
+    // when the user hasn't already settled on one — switching
+    // projects shouldn't yank a workspace the user explicitly chose.
+    if (!id) return;
+    const next = projects.find((p) => p.id === id);
+    const first = next?.workspaces?.[0]?.path;
+    if (
+      first &&
+      !draftWorkspacePath &&
+      !socketWorkspace
+    ) {
+      void pickWorkspace(first);
+    }
   };
 
   return (
     <div className="session-context" ref={wrapRef}>
-      <button type="button" className="session-chip session-chip-static" title="Local runtime">
-        <LaptopIcon />
-        <span>Local</span>
-      </button>
-
       <button
         type="button"
         className="session-chip"
@@ -270,7 +372,17 @@ export function ComposerSessionContext() {
         <PlusIcon />
       </button>
 
-      {menu === "workspace" ? (
+      {menu === "workspace" && sessionLocked ? (
+        <LockedSessionPopover
+          kind="workspace"
+          workspacePath={workspacePath}
+          workspaceInfo={workspaceInfo ?? null}
+          project={project ?? null}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+
+      {menu === "workspace" && !sessionLocked ? (
         <div className="session-popover session-popover-workspace" role="menu">
           <div className="session-popover-search">
             <input
@@ -282,13 +394,21 @@ export function ComposerSessionContext() {
                 setHighlight(0);
               }}
               onKeyDown={onInputKey}
-              placeholder="Filter or type /path/to/project"
+              placeholder={t("sessionWorkspaceFilterPlaceholder")}
               disabled={busy}
             />
           </div>
           <div className="session-popover-list">
             {navRows.length === 0 ? (
-              <div className="session-menu-empty">No matches</div>
+              <div className="session-menu-empty">{t("sessionWorkspaceNoMatches")}</div>
+            ) : null}
+            {projectWorkspaceRows.length > 0 ? (
+              <div
+                className="session-popover-section-label"
+                title={project?.name}
+              >
+                {t("sessionWorkspaceProjectGroup")}
+              </div>
             ) : null}
             {navRows.map((row, i) => {
               if (row.kind === "open") {
@@ -305,47 +425,104 @@ export function ComposerSessionContext() {
                   >
                     <PlusIcon />
                     <span>
-                      <strong>Open <code>{row.value}</code></strong>
-                      <em>Add as workspace</em>
+                      <strong>{t("sessionWorkspaceOpenLiteral", row.value)}</strong>
+                      <em>{t("sessionWorkspaceAddAs")}</em>
+                    </span>
+                  </button>
+                );
+              }
+              if (row.kind === "project-row") {
+                const pr = row.row;
+                const active = pr.path === workspacePath;
+                const status = pr.status;
+                const branchLabel =
+                  status?.vcs === "git"
+                    ? status.branch ?? "(detached)"
+                    : status?.vcs === "none"
+                      ? t("projectWorkspaceNoVcs")
+                      : status?.error
+                        ? t("sessionWorkspaceUnreachable")
+                        : null;
+                // Insert a divider+label right before the first
+                // recent/default row, only after the last project row.
+                return (
+                  <button
+                    key={`__pw__${pr.path}`}
+                    type="button"
+                    className="session-menu-row session-menu-row-project"
+                    data-highlighted={i === highlight ? "true" : undefined}
+                    data-active={active ? "true" : undefined}
+                    onMouseEnter={() => setHighlight(i)}
+                    onClick={() => void pickWorkspace(pr.path)}
+                    title={pr.path}
+                    disabled={busy}
+                  >
+                    <FolderIcon />
+                    <span>
+                      <strong>{pr.name}</strong>
+                      <em>{shortenPath(pr.path)}</em>
+                    </span>
+                    <span className="row-status" aria-hidden="true">
+                      {branchLabel ? (
+                        <span className="row-status-branch">{branchLabel}</span>
+                      ) : null}
+                      {status?.vcs === "git" && status.dirty ? (
+                        <span
+                          className="session-dirty-dot"
+                          title="dirty worktree"
+                        />
+                      ) : null}
+                      {active ? <CheckIcon /> : null}
                     </span>
                   </button>
                 );
               }
               const r = row.row;
               const active = isActiveRow(r);
+              const isFirstNonProject =
+                projectWorkspaceRows.length > 0 &&
+                navRows.findIndex((n) => n.kind === "row") === i;
               return (
-                <button
+                <span
                   key={r.kind === "default" ? "__default__" : r.path!}
-                  type="button"
-                  className="session-menu-row"
-                  data-highlighted={i === highlight ? "true" : undefined}
-                  data-active={active ? "true" : undefined}
-                  onMouseEnter={() => setHighlight(i)}
-                  onClick={() => void pickWorkspace(r.path)}
-                  title={r.path ?? r.hint}
-                  disabled={busy}
                 >
-                  <FolderIcon />
-                  <span>
-                    <strong>{r.name}</strong>
-                    <em>{r.hint}</em>
-                  </span>
-                  <span className="row-actions" aria-hidden="true">
-                    {active ? <CheckIcon /> : null}
-                    {r.kind === "recent" ? (
-                      <span
-                        role="button"
-                        tabIndex={-1}
-                        aria-label={`Remove ${r.name} from recent`}
-                        title="Remove from recent"
-                        className="row-remove"
-                        onClick={(e) => void handleRemove(e, r.path!)}
-                      >
-                        <CloseIcon />
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
+                  {isFirstNonProject ? (
+                    <div className="session-popover-section-label">
+                      {t("sessionWorkspaceOtherGroup")}
+                    </div>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="session-menu-row"
+                    data-highlighted={i === highlight ? "true" : undefined}
+                    data-active={active ? "true" : undefined}
+                    onMouseEnter={() => setHighlight(i)}
+                    onClick={() => void pickWorkspace(r.path)}
+                    title={r.path ?? r.hint}
+                    disabled={busy}
+                  >
+                    <FolderIcon />
+                    <span>
+                      <strong>{r.name}</strong>
+                      <em>{r.hint}</em>
+                    </span>
+                    <span className="row-actions" aria-hidden="true">
+                      {active ? <CheckIcon /> : null}
+                      {r.kind === "recent" ? (
+                        <span
+                          role="button"
+                          tabIndex={-1}
+                          aria-label={`Remove ${r.name} from recent`}
+                          title="Remove from recent"
+                          className="row-remove"
+                          onClick={(e) => void handleRemove(e, r.path!)}
+                        >
+                          <CloseIcon />
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                </span>
               );
             })}
           </div>
@@ -353,13 +530,23 @@ export function ComposerSessionContext() {
         </div>
       ) : null}
 
-      {menu === "project" ? (
+      {menu === "project" && sessionLocked ? (
+        <LockedSessionPopover
+          kind="project"
+          workspacePath={workspacePath}
+          workspaceInfo={workspaceInfo ?? null}
+          project={project ?? null}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+
+      {menu === "project" && !sessionLocked ? (
         <div className="session-popover session-popover-project" role="menu">
           <button type="button" className="session-menu-row" onClick={() => pickProject(null)}>
             <span className="session-muted-square" aria-hidden="true" />
             <span>
-              <strong>Free chat</strong>
-              <em>No project instructions</em>
+              <strong>{t("sessionProjectFreeChat")}</strong>
+              <em>{t("sessionProjectFreeChatHint")}</em>
             </span>
           </button>
           {projectsAvailable && projects.length > 0 ? (
@@ -376,10 +563,17 @@ export function ComposerSessionContext() {
                   <strong>{p.name}</strong>
                   <em>{p.description || p.slug}</em>
                 </span>
+                {p.workspaces && p.workspaces.length > 0 ? (
+                  <span className="row-status" aria-hidden="true">
+                    <span className="row-status-count" title={t("sessionProjectWorkspaceCount", p.workspaces.length)}>
+                      {p.workspaces.length}
+                    </span>
+                  </span>
+                ) : null}
               </button>
             ))
           ) : (
-            <div className="session-menu-empty">No projects yet</div>
+            <div className="session-menu-empty">{t("sessionProjectNoProjects")}</div>
           )}
         </div>
       ) : null}
@@ -414,6 +608,89 @@ export function ComposerSessionContext() {
   );
 }
 
+// Read-only "info" popover used after the session has started.
+// Both the workspace and project chips render this rather than a
+// picker — switching mid-conversation would silently re-root tools,
+// so the only way out is "New chat".
+function LockedSessionPopover({
+  kind,
+  workspacePath,
+  workspaceInfo,
+  project,
+  onClose,
+}: {
+  kind: "workspace" | "project";
+  workspacePath: string | null;
+  workspaceInfo: WorkspaceInfo | null;
+  project: { id: string; slug: string; name: string; description?: string | null } | null;
+  onClose: () => void;
+}) {
+  const onNewChat = () => {
+    onClose();
+    newConversation();
+  };
+
+  const className =
+    kind === "workspace"
+      ? "session-popover session-popover-locked session-popover-locked-workspace"
+      : "session-popover session-popover-locked session-popover-locked-project";
+
+  return (
+    <div className={className} role="dialog" aria-live="polite">
+      <div className="session-locked-summary">
+        {kind === "workspace" ? (
+          <>
+            <FolderIcon />
+            <div className="session-locked-text">
+              <strong>{workspacePath ? lastPathSegment(workspacePath) : t("sessionLockedNoWorkspace")}</strong>
+              <em>{workspacePath ?? t("sessionLockedDefaultRoot")}</em>
+              {workspaceInfo?.vcs === "git" ? (
+                <span className="session-locked-git">
+                  <BranchIcon />
+                  <span>{workspaceInfo.branch ?? "(detached)"}</span>
+                  {workspaceInfo.dirty ? (
+                    <span className="session-dirty-dot" title="dirty worktree" />
+                  ) : null}
+                  {workspaceInfo.head ? (
+                    <code>{workspaceInfo.head}</code>
+                  ) : null}
+                </span>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <>
+            {project ? (
+              <span
+                className="project-dot"
+                style={{ background: chipColor(project.slug) }}
+                aria-hidden="true"
+              />
+            ) : (
+              <span className="session-muted-square" aria-hidden="true" />
+            )}
+            <div className="session-locked-text">
+              <strong>{project ? project.name : t("sessionProjectFreeChat")}</strong>
+              <em>{project?.description ?? project?.slug ?? t("sessionProjectFreeChatHint")}</em>
+            </div>
+          </>
+        )}
+      </div>
+      <div className="session-locked-explainer">
+        <LockIcon />
+        <span>{t("sessionLockedExplain")}</span>
+      </div>
+      <button
+        type="button"
+        className="session-locked-newchat"
+        onClick={onNewChat}
+      >
+        {t("sessionLockedNewChat")}
+      </button>
+    </div>
+  );
+}
+
 function promoteRecent(rows: RecentWorkspace[], path: string): RecentWorkspace[] {
   const filtered = rows.filter((r) => r.path !== path);
   return [
@@ -428,15 +705,6 @@ function promoteRecent(rows: RecentWorkspace[], path: string): RecentWorkspace[]
 
 function lastPathSegment(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
-}
-
-function LaptopIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="4" y="5" width="16" height="11" rx="1.5" />
-      <path d="M2 19h20" />
-    </svg>
-  );
 }
 
 function FolderIcon() {
@@ -480,6 +748,15 @@ function CloseIcon() {
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M6 6l12 12" />
       <path d="M18 6L6 18" />
+    </svg>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="11" width="16" height="9" rx="1.5" />
+      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
     </svg>
   );
 }

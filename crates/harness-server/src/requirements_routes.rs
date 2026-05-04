@@ -64,7 +64,7 @@ use axum::{
 use harness_core::{
     Activity, ActivityActor, ActivityKind, ActivityStore, Conversation, ConversationMetadata,
     Message, Requirement, RequirementRun, RequirementRunEvent, RequirementRunStatus,
-    RequirementRunStore, RequirementStatus, RequirementStore, VerificationPlan,
+    RequirementRunStore, RequirementStatus, RequirementStore, TriageState, VerificationPlan,
     VerificationResult, VerificationStatus,
 };
 use harness_requirement::{build_default_manifest, render_manifest_summary};
@@ -84,6 +84,8 @@ pub(crate) fn router() -> Router<AppState> {
             "/v1/requirements/:id",
             patch(update_requirement).delete(delete_requirement),
         )
+        .route("/v1/requirements/:id/approve", post(approve_requirement))
+        .route("/v1/requirements/:id/reject", post(reject_requirement))
         .route(
             "/v1/requirements/:id/conversations",
             post(link_conversation),
@@ -174,17 +176,58 @@ fn bad_request(reason: impl Into<String>) -> Response {
 
 // ----------------------- GET /v1/projects/:project_id/requirements -------
 
+#[derive(Debug, Deserialize, Default)]
+struct ListQuery {
+    /// Optional triage gate filter. Wire form: `approved`,
+    /// `proposed_by_agent`, `proposed_by_scan`, or the synthetic
+    /// `proposed` (matches both `proposed_by_*`). Anything else 400s.
+    #[serde(default)]
+    triage_state: Option<String>,
+}
+
 async fn list_requirements(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListQuery>,
 ) -> Response {
     let store = match require_store(&state) {
         Ok(s) => s,
         Err(r) => return r,
     };
+    let filter = match query.triage_state.as_deref() {
+        None => None,
+        Some("proposed") => Some(TriageFilter::AnyProposed),
+        Some(other) => match TriageState::from_wire(other) {
+            Some(state) => Some(TriageFilter::Exact(state)),
+            None => return bad_request(format!("unknown triage_state `{other}`")),
+        },
+    };
     match store.list(&project_id).await {
-        Ok(items) => Json(json!({ "project_id": project_id, "items": items })).into_response(),
+        Ok(mut items) => {
+            if let Some(f) = filter {
+                items.retain(|r| f.matches(r.triage_state));
+            }
+            Json(json!({ "project_id": project_id, "items": items })).into_response()
+        }
         Err(e) => internal_error(e),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TriageFilter {
+    Exact(TriageState),
+    /// Synthetic — matches anything that needs human attention
+    /// (`ProposedByAgent` ∨ `ProposedByScan`). Useful for the UI
+    /// Triage drawer which doesn't care which channel surfaced it.
+    AnyProposed,
+}
+
+impl TriageFilter {
+    fn matches(self, ts: TriageState) -> bool {
+        match self {
+            Self::Exact(target) => ts == target,
+            Self::AnyProposed => ts.needs_triage(),
+        }
     }
 }
 
@@ -197,6 +240,16 @@ struct CreateBody {
     description: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    /// Optional triage gate. Defaults to `approved` for REST callers
+    /// (this endpoint is hit by humans / scripts who already
+    /// approved). The agent-driven `requirement.create` tool sets
+    /// `proposed_by_agent` instead.
+    #[serde(default)]
+    triage_state: Option<String>,
+    /// Optional dependency list. Other requirement ids that must
+    /// reach `done` before the auto executor will pick this one up.
+    #[serde(default)]
+    depends_on: Option<Vec<String>>,
 }
 
 async fn create_requirement(
@@ -218,6 +271,15 @@ async fn create_requirement(
             Some(parsed) => item.status = parsed,
             None => return bad_request(format!("unknown status `{s}`")),
         }
+    }
+    if let Some(s) = body.triage_state.as_deref() {
+        match TriageState::from_wire(s) {
+            Some(parsed) => item.triage_state = parsed,
+            None => return bad_request(format!("unknown triage_state `{s}`")),
+        }
+    }
+    if let Some(deps) = body.depends_on {
+        item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
     }
     item.description = body
         .description
@@ -259,6 +321,18 @@ struct UpdateBody {
     /// clear, object ⇒ set.
     #[serde(default, deserialize_with = "deserialize_optional_plan")]
     verification_plan: OptionalPlan,
+    /// v1.0 — set the triage gate. Omit to leave as-is. Wire form:
+    /// one of `approved` / `proposed_by_agent` / `proposed_by_scan`.
+    /// For triage approval / rejection prefer the dedicated
+    /// `/v1/requirements/:id/approve` and `/reject` endpoints, which
+    /// also write a structured Activity row.
+    #[serde(default)]
+    triage_state: Option<String>,
+    /// v1.0 — replace the dependency list. Other requirement ids
+    /// that must reach `done` before the auto executor will pick
+    /// this one up. Omit to leave as-is; pass `[]` to clear.
+    #[serde(default)]
+    depends_on: Option<Vec<String>>,
 }
 
 /// Three-state value for `verification_plan` in PATCH —
@@ -370,6 +444,16 @@ async fn update_requirement(
         OptionalPlan::Clear => item.verification_plan = None,
         OptionalPlan::Set(p) => item.verification_plan = Some(p),
     }
+    let prior_triage = item.triage_state;
+    if let Some(s) = body.triage_state.as_deref() {
+        match TriageState::from_wire(s) {
+            Some(parsed) => item.triage_state = parsed,
+            None => return bad_request(format!("unknown triage_state `{s}`")),
+        }
+    }
+    if let Some(deps) = body.depends_on {
+        item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+    }
     item.touch();
     match store.upsert(&item).await {
         Ok(()) => {
@@ -399,7 +483,144 @@ async fn update_requirement(
                 )
                 .await;
             }
+            if item.triage_state != prior_triage {
+                record_activity(
+                    &state,
+                    &item.id,
+                    ActivityKind::Comment,
+                    ActivityActor::Human,
+                    json!({
+                        "kind": "triage_change",
+                        "from": prior_triage.as_wire(),
+                        "to": item.triage_state.as_wire(),
+                    }),
+                )
+                .await;
+            }
             item_json(&item).into_response()
+        }
+        Err(e) => internal_error(e),
+    }
+}
+
+// ----------------------- POST /v1/requirements/:id/approve --------------
+// ----------------------- POST /v1/requirements/:id/reject  --------------
+
+#[derive(Debug, Deserialize, Default)]
+struct RejectBody {
+    /// User-readable reason for rejection. Required and non-blank;
+    /// stored verbatim on the activity timeline so a future
+    /// reviewer can tell why the candidate was discarded.
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn approve_requirement(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let mut item = match store.get(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("requirement `{id}` not found") })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_error(e),
+    };
+    let prior = item.triage_state;
+    if prior == TriageState::Approved {
+        // Idempotent: already approved, no audit row, no upsert.
+        return Json(json!({
+            "approved": true,
+            "requirement": item,
+            "no_op": true
+        }))
+        .into_response();
+    }
+    item.triage_state = TriageState::Approved;
+    item.touch();
+    if let Err(e) = store.upsert(&item).await {
+        return internal_error(e);
+    }
+    record_activity(
+        &state,
+        &item.id,
+        ActivityKind::Comment,
+        ActivityActor::Human,
+        json!({
+            "kind": "approved",
+            "from": prior.as_wire(),
+            "to": item.triage_state.as_wire(),
+        }),
+    )
+    .await;
+    Json(json!({ "approved": true, "requirement": item })).into_response()
+}
+
+async fn reject_requirement(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RejectBody>,
+) -> Response {
+    let reason = body
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(reason) = reason else {
+        return bad_request("`reason` must not be blank");
+    };
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let mut item = match store.get(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("requirement `{id}` not found") })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_error(e),
+    };
+    let prior = item.triage_state;
+    // Reject = soft-discard. We do NOT set status=Done (that is the
+    // human-only acceptance gate); instead we leave the kanban
+    // status alone and only flip the triage row out of the queue
+    // by deleting it. The structured reason lives on the audit
+    // store of the parent project, addressable by the deleted id —
+    // future "Recently Rejected" UI can replay this.
+    record_activity(
+        &state,
+        &item.id,
+        ActivityKind::Comment,
+        ActivityActor::Human,
+        json!({
+            "kind": "rejected",
+            "reason": reason,
+            "from": prior.as_wire(),
+        }),
+    )
+    .await;
+    let project_id_for_log = item.project_id.clone();
+    let title_for_log = std::mem::take(&mut item.title);
+    drop(item);
+    match store.delete(&id).await {
+        Ok(deleted) => {
+            info!(
+                requirement_id = %id,
+                project_id = %project_id_for_log,
+                title = %title_for_log,
+                reason = %reason,
+                "rejected triage candidate"
+            );
+            Json(json!({ "rejected": true, "deleted": deleted, "reason": reason })).into_response()
         }
         Err(e) => internal_error(e),
     }
@@ -1251,6 +1472,223 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ---- Triage routes -------------------------------------------------
+
+    async fn seed_proposed(state: &AppState, project_id: &str, title: &str) -> String {
+        let store = state.requirements.as_ref().unwrap().clone();
+        let mut req = Requirement::new(project_id, title);
+        req.triage_state = TriageState::ProposedByAgent;
+        store.upsert(&req).await.unwrap();
+        req.id
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_triage_state() {
+        let state = state_with_store();
+        // Two proposed + one approved.
+        seed_proposed(&state, "p1", "scan finding 1").await;
+        seed_proposed(&state, "p1", "agent follow-up").await;
+        let approved_id = {
+            let store = state.requirements.as_ref().unwrap().clone();
+            let req = Requirement::new("p1", "user-confirmed work");
+            store.upsert(&req).await.unwrap();
+            req.id
+        };
+
+        // No filter → all 3.
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/projects/p1/requirements")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v["items"].as_array().unwrap().len(), 3);
+
+        // proposed (synthetic, both proposed_by_*) → 2.
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/projects/p1/requirements?triage_state=proposed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v["items"].as_array().unwrap().len(), 2);
+
+        // approved → 1.
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/projects/p1/requirements?triage_state=approved")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], approved_id);
+    }
+
+    #[tokio::test]
+    async fn list_rejects_unknown_triage_filter() {
+        let resp = app(state_with_store())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/projects/p/requirements?triage_state=zomg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn approve_flips_triage_state_and_records_activity() {
+        let (state, _, act_store) = state_with_activities();
+        let id = seed_proposed(&state, "p", "candidate").await;
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/requirements/{id}/approve"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["approved"], true);
+        // After approve, triage_state is the default (Approved) and
+        // skip_serializing_if drops it from the wire.
+        assert!(v["requirement"].get("triage_state").is_none());
+
+        let stored = state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .get(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.triage_state, TriageState::Approved);
+
+        let acts = act_store.list_for_requirement(&id).await.unwrap();
+        assert!(
+            acts.iter().any(|a| a.body["kind"] == "approved"),
+            "expected an approved activity, got {acts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn approve_already_approved_is_no_op() {
+        let state = state_with_store();
+        let store = state.requirements.as_ref().unwrap().clone();
+        let req = Requirement::new("p", "already approved");
+        store.upsert(&req).await.unwrap();
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/requirements/{}/approve", req.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v["no_op"], true);
+    }
+
+    #[tokio::test]
+    async fn reject_records_reason_and_deletes_row() {
+        let (state, _, act_store) = state_with_activities();
+        let id = seed_proposed(&state, "p", "bad candidate").await;
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/requirements/{id}/reject"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"reason":"out of scope for v1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["rejected"], true);
+        assert_eq!(v["deleted"], true);
+
+        // Row gone from store.
+        assert!(state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .get(&id)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Reason landed on the activity timeline (we appended *before*
+        // deletion so the row is addressable by the now-orphaned id).
+        let acts = act_store.list_for_requirement(&id).await.unwrap();
+        let rejected = acts
+            .iter()
+            .find(|a| a.body["kind"] == "rejected")
+            .expect("rejected activity");
+        assert_eq!(rejected.body["reason"], "out of scope for v1");
+    }
+
+    #[tokio::test]
+    async fn reject_blank_reason_is_400() {
+        let state = state_with_store();
+        let id = seed_proposed(&state, "p", "x").await;
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/requirements/{id}/reject"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"reason":"   "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_with_explicit_triage_and_depends_on() {
+        let state = state_with_store();
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/projects/p/requirements")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"x","triage_state":"proposed_by_scan","depends_on":["a","b"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let v = read_json(resp).await;
+        assert_eq!(v["triage_state"], "proposed_by_scan");
+        assert_eq!(v["depends_on"], serde_json::json!(["a", "b"]));
     }
 
     // ---- POST /runs ----------------------------------------------------

@@ -99,6 +99,7 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
             description  TEXT,
             instructions LONGTEXT     NOT NULL,
             tags         TEXT         NOT NULL,
+            workspaces   TEXT         NOT NULL,
             archived     TINYINT(1)   NOT NULL DEFAULT 0,
             created_at   VARCHAR(64)  NOT NULL,
             updated_at   VARCHAR(64)  NOT NULL
@@ -107,6 +108,29 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
+    // Forward-compat: older databases created before multi-workspace
+    // shipped are missing `workspaces`. MySQL <8.0.29 has no
+    // `ADD COLUMN IF NOT EXISTS`, so sniff INFORMATION_SCHEMA.
+    let has_workspaces: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'projects'
+             AND COLUMN_NAME = 'workspaces'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_workspaces {
+        sqlx::query("ALTER TABLE projects ADD COLUMN workspaces TEXT NOT NULL")
+            .execute(pool)
+            .await?;
+        // Backfill so the NOT NULL constraint is satisfied for legacy rows.
+        sqlx::query(
+            "UPDATE projects SET workspaces = '[]' WHERE workspaces IS NULL OR workspaces = ''",
+        )
+        .execute(pool)
+        .await?;
+    }
 
     sqlx::query(
         r#"
@@ -552,18 +576,21 @@ impl MysqlProjectStore {
 impl ProjectStore for MysqlProjectStore {
     async fn save(&self, project: &Project) -> Result<(), BoxError> {
         let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
+        let workspaces =
+            serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
         let archived: i8 = if project.archived { 1 } else { 0 };
         sqlx::query(
             r#"
             INSERT INTO projects
-                (id, slug, name, description, instructions, tags, archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 slug         = VALUES(slug),
                 name         = VALUES(name),
                 description  = VALUES(description),
                 instructions = VALUES(instructions),
                 tags         = VALUES(tags),
+                workspaces   = VALUES(workspaces),
                 archived     = VALUES(archived),
                 updated_at   = VALUES(updated_at)
             "#,
@@ -574,6 +601,7 @@ impl ProjectStore for MysqlProjectStore {
         .bind(&project.description)
         .bind(&project.instructions)
         .bind(&tags)
+        .bind(&workspaces)
         .bind(archived)
         .bind(&project.created_at)
         .bind(&project.updated_at)
@@ -585,7 +613,7 @@ impl ProjectStore for MysqlProjectStore {
 
     async fn load(&self, id: &str) -> Result<Option<Project>, BoxError> {
         let row: Option<ProjectRow> = sqlx::query_as(
-            r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+            r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                  FROM projects WHERE id = ?"#,
         )
         .bind(id)
@@ -597,7 +625,7 @@ impl ProjectStore for MysqlProjectStore {
 
     async fn find_by_slug(&self, slug: &str) -> Result<Option<Project>, BoxError> {
         let row: Option<ProjectRow> = sqlx::query_as(
-            r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+            r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                  FROM projects WHERE slug = ?"#,
         )
         .bind(slug)
@@ -610,7 +638,7 @@ impl ProjectStore for MysqlProjectStore {
     async fn list(&self, include_archived: bool, limit: u32) -> Result<Vec<Project>, BoxError> {
         let rows: Vec<ProjectRow> = if include_archived {
             sqlx::query_as(
-                r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+                r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                      FROM projects
                      ORDER BY updated_at DESC
                      LIMIT ?"#,
@@ -621,7 +649,7 @@ impl ProjectStore for MysqlProjectStore {
             .map_err(StoreError::from)?
         } else {
             sqlx::query_as(
-                r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+                r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                      FROM projects
                      WHERE archived = 0
                      ORDER BY updated_at DESC
@@ -664,6 +692,7 @@ struct ProjectRow {
     description: Option<String>,
     instructions: String,
     tags: String,
+    workspaces: String,
     archived: i8,
     created_at: String,
     updated_at: String,
@@ -672,6 +701,11 @@ struct ProjectRow {
 impl ProjectRow {
     fn into_project(self) -> Result<Project, BoxError> {
         let tags: Vec<String> = serde_json::from_str(&self.tags).map_err(StoreError::from)?;
+        let workspaces: Vec<harness_core::ProjectWorkspace> = if self.workspaces.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&self.workspaces).map_err(StoreError::from)?
+        };
         Ok(Project {
             id: self.id,
             slug: self.slug,
@@ -679,6 +713,7 @@ impl ProjectRow {
             description: self.description,
             instructions: self.instructions,
             tags,
+            workspaces,
             archived: self.archived != 0,
             created_at: self.created_at,
             updated_at: self.updated_at,

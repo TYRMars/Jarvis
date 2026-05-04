@@ -30,6 +30,7 @@ mod sandbox;
 pub mod shell;
 pub mod time;
 pub mod todo;
+pub mod triage_scan;
 pub mod workspace;
 
 pub use ask::AskTextTool;
@@ -55,12 +56,14 @@ pub use project::{
     ProjectRestoreTool, ProjectUpdateTool,
 };
 pub use requirement::{
-    RequirementBlockTool, RequirementCompleteTool, RequirementListTool, RequirementStartTool,
+    RequirementBlockTool, RequirementCompleteTool, RequirementCreateTool, RequirementDeleteTool,
+    RequirementListTool, RequirementReviewVerdictTool, RequirementStartTool, RequirementUpdateTool,
 };
 pub use roadmap::RoadmapImportTool;
 pub use shell::{Sandbox, ShellExecTool, ShellLimits};
 pub use time::TimeNowTool;
 pub use todo::{TodoAddTool, TodoDeleteTool, TodoListTool, TodoUpdateTool};
+pub use triage_scan::TriageScanTool;
 pub use workspace::WorkspaceContextTool;
 
 use harness_core::{ActivityStore, DocStore, ProjectStore, RequirementStore, TodoStore, ToolRegistry};
@@ -206,6 +209,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     registry.register(CodeGrepTool::new(root.clone()));
     registry.register(WorkspaceContextTool::new(root.clone()));
     registry.register(ProjectChecksTool::new(root.clone()));
+    registry.register(TriageScanTool::new(root.clone()));
     registry.register(PlanUpdateTool);
     registry.register(AskTextTool);
     // `exit_plan` is the terminal tool the agent calls in Plan Mode
@@ -280,7 +284,10 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
         registry.register(RequirementListTool::new(req_store.clone()));
         registry.register(RequirementStartTool::new(req_store.clone(), act_store.clone()));
         registry.register(RequirementBlockTool::new(req_store.clone(), act_store.clone()));
-        registry.register(RequirementCompleteTool::new(req_store, act_store));
+        registry.register(RequirementCompleteTool::new(req_store.clone(), act_store.clone()));
+        registry.register(RequirementCreateTool::new(req_store.clone(), act_store.clone()));
+        registry.register(RequirementUpdateTool::new(req_store.clone(), act_store));
+        registry.register(RequirementDeleteTool::new(req_store));
     }
     // `roadmap.import` is one of the writes the model can make on its
     // own without a kanban audit row (it creates fresh Requirements

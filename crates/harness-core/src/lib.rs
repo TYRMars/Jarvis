@@ -19,6 +19,7 @@ pub mod message;
 pub mod permission;
 pub mod plan;
 pub mod progress;
+pub mod subagent;
 pub mod project;
 pub mod requirement;
 pub mod requirement_run;
@@ -52,12 +53,18 @@ pub use progress::{
     emit as emit_progress, emit_with as emit_progress_to, is_active as progress_active,
     sender as progress_sender, ToolProgress,
 };
+pub use subagent::{
+    emit as emit_subagent, is_active as subagent_active, with_subagent, SubAgentEvent,
+    SubAgentFrame,
+};
 pub use permission::{
     glob_match, Decision, HitSource, PermissionMode, PermissionRule, PermissionStore,
     PermissionTable, RuleHit, Scope as PermissionScope, ScopedRule,
 };
-pub use project::{derive_slug, validate_slug, Project};
-pub use requirement::{Requirement, RequirementEvent, RequirementStatus};
+pub use project::{derive_slug, validate_slug, Project, ProjectWorkspace};
+pub use requirement::{
+    AcceptancePolicy, Requirement, RequirementEvent, RequirementStatus, TriageState,
+};
 pub use requirement_run::{
     CommandResult, RequirementRun, RequirementRunEvent, RequirementRunStatus, VerificationPlan,
     VerificationResult, VerificationStatus,

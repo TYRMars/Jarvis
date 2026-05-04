@@ -133,9 +133,27 @@ with that estimated-token budget),
 `JARVIS_MEMORY_MODE` (optional, `window` (default) or `summary`),
 `JARVIS_MEMORY_MODEL` (optional; model used by `summary` mode, defaults
 to `JARVIS_MODEL`),
-`JARVIS_APPROVAL_MODE` (optional, `auto` or `deny`; gates every tool
-whose `requires_approval()` is true. Without this set, gated tools
-still run unconditionally — same as before),
+`JARVIS_APPROVAL_MODE` (**deprecated** — kept for back-compat only,
+the binary logs a WARN at startup when set. New deployments should
+use `JARVIS_PERMISSION_MODE` (`ask` / `accept-edits` / `plan` /
+`auto` / `bypass`) which drives the same approval gate plus the
+five-mode permission engine from `permission-modes.md`),
+`JARVIS_WORK_MODE` (optional, `off` (default) or `auto`; when
+`auto`, `harness-server::auto_mode` spawns a background scheduler
+that picks Approved Requirements with an assignee + all
+`depends_on` done, mints a fresh-session run, and auto-runs the
+per-Requirement `verification_plan` after each agent loop. Off
+unless explicitly opted in),
+`JARVIS_WORK_TICK_SECONDS` (default `30`),
+`JARVIS_WORK_MAX_UNITS_PER_TICK` (default `1`),
+`JARVIS_WORK_MAX_RETRIES` (default `1`),
+`JARVIS_WORK_RUN_TIMEOUT_MS` (default `300000` — 5 min wall-clock
+budget per agent loop pickup),
+`JARVIS_WORKTREE_MODE` (`off` / `per_run` / `per_unit`; auto mode
+upgrades from `off` to `per_run` automatically so the scheduler
+never mutates the main checkout),
+`JARVIS_WORKTREE_ROOT` (default `.jarvis/worktrees` under the
+workspace),
 `RUST_LOG`.
 
 Passing `--mcp-serve` runs the binary as an MCP server on stdio,
@@ -229,6 +247,36 @@ binary uses. The individual tools are also pub so callers can register selective
   shallow top-level directory listing. Read-only, always on. The
   intended "first call" before the model picks where to grep or
   edit. No source-file contents — use `fs.read` for those.
+- `requirement.{list,start,block,complete,create,update,delete}` —
+  agent-side CRUD over the kanban under a `Project`. Mirrors
+  `crates/harness-server/src/requirements_routes.rs`. Important
+  defaults: `requirement.create` populates new rows with
+  `triage_state=ProposedByAgent` so the auto loop won't pick them
+  up; the agent must pass `triage_state="approved"` explicitly when
+  the user has confirmed (the system-prompt `Spec → Project`
+  workflow paragraph teaches this). `start` flips the kanban
+  column; `block` writes a structured `Activity::Blocked` row but
+  doesn't change status (the wire enum has no Blocked column);
+  `complete` flips to `Review` and is structurally barred from
+  writing `Done` (human-only acceptance gate); `delete` is the
+  only `requirement.*` tool that's approval-gated, because the
+  row's run history disappears with it. All status-mutation tools
+  emit Activity rows so the timeline carries the audit trail. Off
+  by default — registered only when **both** `requirement_store`
+  and `activity_store` are configured.
+- `triage.scan_candidates` — surface follow-up Requirement
+  candidates from passive workspace signals. v1.0 source:
+  `todo_comments` (walks the workspace via the same `ignore`-crate
+  filter as `code.grep` and emits each `TODO|FIXME|XXX|HACK`
+  marker as `{title, description, source: "todo_comment", path,
+  line}`). Skips empty markers (`// TODO` with no body) so the
+  noise stays low. Returns the list **without** writing anything;
+  the agent decides which candidates to commit via
+  `requirement.create(triage_state="proposed_by_scan")`. Optional
+  `path` narrows the scan, `limit` caps results (default 50, max
+  200). Read-only, always on. Future sources (`failed_runs` /
+  `orphan_worktrees`) are deferred to v1.1 — adding either would
+  require threading `RequirementRunStore` through `BuiltinsConfig`.
 - `roadmap.import` — bootstrap the workspace's roadmap into Work.
   Scans `docs/proposals/`, `docs/roadmap/`, `roadmap/`, or
   `ROADMAP.md` (in that order), parses each file's `**Status:**` /
@@ -415,7 +463,22 @@ Optional config knobs surfaced through `ResponsesConfig`:
 `store` (default `false` — we own state via `harness-store`),
 `service_tier`, `reasoning_summary` (`auto` / `concise` /
 `detailed`), `include_encrypted_reasoning` (gates
-`include: ["reasoning.encrypted_content"]` for cross-turn cache).
+`include: ["reasoning.encrypted_content"]` for cross-turn cache),
+`chain_responses` (whether requests with `previous_response_id`
+forward as a delta + force `store: true`).
+
+**`chain_responses` flavour-specific defaults (v1.0):** the public
+OpenAI Responses endpoint accepts `store: true`, but the Codex
+backend at `chatgpt.com/backend-api/codex/responses` rejects it
+with `400 {"detail":"Store must be set to false"}`. So:
+- `ResponsesConfig::codex(...)` defaults `chain_responses=false`.
+  Tool-using agent loops still work — the provider just sends the
+  full message history each iteration instead of a chained delta.
+  Costs more tokens; works reliably.
+- `ResponsesConfig::openai_responses(...)` also defaults to
+  `chain_responses=false` for symmetry; flip to `true` via
+  `with_chain_responses(true)` when you want the cache benefit
+  against the public endpoint.
 
 **Auth lives in `codex_auth.rs`** (used by the `ChatGptOauth`
 strategy):
@@ -573,6 +636,50 @@ configured" from "really broken"):
 - `POST   /v1/conversations/:id/messages/stream` — same plumbing, but
   emits SSE `AgentEvent`s; saves on the terminal `Done` event.
 
+**Triage queue** — Requirement rows carry a v1.0
+`triage_state: TriageState`
+(`Approved` | `ProposedByAgent` | `ProposedByScan`) with
+`#[serde(default, skip_serializing_if = "TriageState::is_default")]`
+so legacy rows + Approved rows omit the field on the wire.
+`Requirement.depends_on: Vec<String>` (also `serde(default)`) lists
+other Requirement ids that must reach `done` before the auto loop
+will pick the row up. Manual `Start` / drag-and-drop ignores both
+gates — they are scheduler concerns.
+
+REST surface around triage:
+
+- `GET    /v1/projects/:id/requirements?triage_state=approved|
+  proposed_by_agent|proposed_by_scan|proposed` — `proposed` is the
+  synthetic OR-of-both-proposed-* filter the Triage drawer uses.
+  Unknown wire values 400.
+- `POST   /v1/requirements/:id/approve` — flips
+  `triage_state` → `Approved`, idempotent (responds with
+  `{no_op:true}` when already Approved), writes a `kind:"approved"`
+  Activity row.
+- `POST   /v1/requirements/:id/reject` — body `{reason: string}`
+  required and non-blank; writes a `kind:"rejected"` Activity row
+  to the parent project's audit timeline **before** soft-deleting
+  the Requirement so a future "recently rejected" UI can replay
+  the timeline by orphaned id.
+- `POST   /v1/requirements/:id/runs` — mints a fresh-session run
+  (the "Start fresh run" detail-panel button hits this). Returns
+  `{run, conversation_id, manifest_summary, requirement}`. The
+  agent loop is **not** kicked off automatically — the caller is
+  expected to drop a user message into the new conversation, or
+  let the auto loop pick it up.
+
+**Auto loop guards** (`harness-server::auto_mode::tick`):
+- `triage_state == Approved` (no proposed-by-* runs without human review)
+- `assignee_id.is_some()` (no anonymous pickup)
+- All `depends_on` entries reach `RequirementStatus::Done` (topo sort)
+- No in-flight Pending/Running run for the same requirement
+- `failed_count < max_retries`
+
+The four guards are silent skips — the row stays in Backlog until
+all conditions clear. Operators see the missing pickups in the
+activity timeline (no `RunStarted` row) rather than via an explicit
+"blocked" signal.
+
 **Roadmap → Work bootstrap** — `POST /v1/roadmap/import`:
 
 Scan the workspace for proposal-style markdown
@@ -720,11 +827,13 @@ Streaming surfaces two new event types around every gated invocation:
 (deny case writes the `tool denied:` sentinel into `ToolEnd.content`),
 so transports that already pair those events don't need new branches.
 
-`apps/jarvis` exposes a coarse policy via `JARVIS_APPROVAL_MODE`
-(`auto` or `deny`). The WS transport overrides whatever the global
-config says with a per-socket `ChannelApprover` so clients get
-genuine per-call control — see the `/v1/chat/ws` section above for
-the wire protocol.
+`apps/jarvis` exposes a coarse policy via `JARVIS_PERMISSION_MODE`
+(`ask` / `accept-edits` / `plan` / `auto` / `bypass`; the legacy
+`JARVIS_APPROVAL_MODE=auto|deny` is still accepted but logs a
+deprecation WARN at startup). The WS transport overrides whatever
+the global config says with a per-socket `ChannelApprover` so
+clients get genuine per-call control — see the `/v1/chat/ws`
+section above for the wire protocol.
 
 ### Persistence (`harness-store`)
 

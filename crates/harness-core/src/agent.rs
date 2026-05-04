@@ -211,6 +211,16 @@ pub enum AgentEvent {
     /// [`crate::plan::emit`]. UIs typically render this as a
     /// checklist that updates in place.
     PlanUpdate { items: Vec<crate::plan::PlanItem> },
+    /// One frame from a running subagent. Emitted while a
+    /// `subagent.<name>` tool is executing — the subagent itself
+    /// publishes via [`crate::subagent::emit`] and the agent loop
+    /// relays each frame in step with `Tool::invoke`. Always wrapped
+    /// by a matching outer `ToolStart` / `ToolEnd` pair (the
+    /// subagent-as-tool surface). Transports surface this as both
+    /// an inline collapsible card in the main message stream **and**
+    /// a side-panel "running subagents" view, so users can watch
+    /// the delegated work as it happens.
+    SubAgentEvent { frame: crate::subagent::SubAgentFrame },
     /// In Plan Mode, the agent finished its read-only investigation
     /// and called the terminal `exit_plan` tool with the plan body.
     /// Transports surface this as a "review the plan" card with
@@ -498,18 +508,23 @@ impl Agent {
                                 tokio::sync::mpsc::unbounded_channel::<crate::progress::ToolProgress>();
                             let (plan_tx, mut plan_rx) =
                                 tokio::sync::mpsc::unbounded_channel::<Vec<crate::plan::PlanItem>>();
+                            let (sub_tx, mut sub_rx) =
+                                tokio::sync::mpsc::unbounded_channel::<crate::subagent::SubAgentFrame>();
                             let invoke = crate::workspace::with_session_workspace(
                                 agent.config.session_workspace.clone(),
                                 crate::progress::with_progress(
                                     prog_tx,
                                     crate::plan::with_plan(
                                         plan_tx,
-                                        run_one_with_optional_hitl(
-                                            agent.config.hitl_tx.clone(),
-                                            Self::run_one(
-                                                &agent.config.tools,
-                                                call,
-                                                decision.as_ref(),
+                                        crate::subagent::with_subagent(
+                                            sub_tx,
+                                            run_one_with_optional_hitl(
+                                                agent.config.hitl_tx.clone(),
+                                                Self::run_one(
+                                                    &agent.config.tools,
+                                                    call,
+                                                    decision.as_ref(),
+                                                ),
                                             ),
                                         ),
                                     ),
@@ -530,6 +545,9 @@ impl Agent {
                                     Some(items) = plan_rx.recv() => {
                                         yield AgentEvent::PlanUpdate { items };
                                     }
+                                    Some(frame) = sub_rx.recv() => {
+                                        yield AgentEvent::SubAgentEvent { frame };
+                                    }
                                     res = &mut invoke => {
                                         // Drain anything the tool
                                         // queued in the same wake as
@@ -545,6 +563,9 @@ impl Agent {
                                         }
                                         while let Ok(items) = plan_rx.try_recv() {
                                             yield AgentEvent::PlanUpdate { items };
+                                        }
+                                        while let Ok(frame) = sub_rx.try_recv() {
+                                            yield AgentEvent::SubAgentEvent { frame };
                                         }
                                         break res;
                                     }

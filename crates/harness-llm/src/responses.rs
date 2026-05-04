@@ -219,6 +219,16 @@ pub struct ResponsesConfig {
 impl ResponsesConfig {
     /// Codex flavour: ChatGPT subscription OAuth +
     /// `chatgpt.com/backend-api/codex/responses`.
+    ///
+    /// `chain_responses` defaults to `false` here because the Codex
+    /// backend rejects `store: true` (which the chaining path forces
+    /// when forwarding `previous_response_id`). Concretely the
+    /// endpoint returns `400 {"detail":"Store must be set to false"}`
+    /// the moment the agent loop tries to chain a follow-up
+    /// iteration. Public OpenAI Responses *does* accept `store: true`
+    /// — that flavour can opt back in via
+    /// [`Self::with_chain_responses(true)`] if it wants the cache /
+    /// forwarding benefit.
     pub fn codex(auth: CodexAuth) -> Self {
         Self {
             auth: ResponsesAuth::ChatGptOauth(Arc::new(Mutex::new(auth))),
@@ -233,7 +243,7 @@ impl ResponsesConfig {
             reasoning_effort: None,
             default_model: None,
             prompt_cache_key: None,
-            chain_responses: true,
+            chain_responses: false,
         }
     }
 
@@ -1590,11 +1600,13 @@ mod tests {
 
     #[test]
     fn chaining_on_for_codex_emits_previous_response_id_and_delta() {
-        // Codex flavour defaults `chain_responses=true`. With the
+        // Codex flavour defaults `chain_responses=false` because the
+        // ChatGPT backend rejects `store: true`. To exercise the chain
+        // wire shape we have to explicitly opt back in here. With the
         // agent supplying chain anchor + post-anchor delta of 1 message,
         // the wire should carry the chained shape: `previous_response_id`
         // present, `store=true`, and only the post-anchor message in input.
-        let cfg = default_codex_cfg();
+        let cfg = default_codex_cfg().with_chain_responses(true);
         let body = build(
             chained_req(
                 vec![
@@ -1666,8 +1678,11 @@ mod tests {
     fn chaining_skips_include_encrypted_reasoning_when_active() {
         // When chaining is active the server already has the prior
         // reasoning in its cached state; we must not echo it back via
-        // the `include` directive.
-        let cfg = default_codex_cfg().with_encrypted_reasoning(true);
+        // the `include` directive. Codex defaults to chain off, so opt
+        // back in here to exercise the "active" branch.
+        let cfg = default_codex_cfg()
+            .with_chain_responses(true)
+            .with_encrypted_reasoning(true);
         let body = build(
             chained_req(
                 vec![

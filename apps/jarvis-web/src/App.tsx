@@ -21,6 +21,8 @@ import { QuickSwitcher } from "./components/QuickSwitcher/QuickSwitcher";
 import { SettingsPage } from "./components/Settings/SettingsPage";
 import { ProjectsPage } from "./components/Projects/ProjectsPage";
 import { DocsPage } from "./components/Docs/DocsPage";
+import { WorkOverviewPage } from "./components/Projects/WorkOverview/WorkOverviewPage";
+import { SubAgentDemoPage } from "./components/SubAgent/SubAgentDemoPage";
 import { useAppStore, appStore } from "./store/appStore";
 import { boot, applyI18n } from "./services/boot";
 import { useShortcuts } from "./hooks/useShortcuts";
@@ -64,9 +66,25 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<ChatLayout />} />
+        <Route path="/projects/overview" element={<WorkOverviewLayout />} />
+        {/* `/projects/:projectId` deep-links into a specific project's
+            kanban so browser back, bookmarks, and sidebar links all
+            survive a reload. The plain `/projects` URL is the list. */}
+        <Route path="/projects/:projectId" element={<ProjectsLayout />} />
         <Route path="/projects" element={<ProjectsLayout />} />
         <Route path="/docs" element={<DocsLayout />} />
+        {/* Diagnostics moved into Work Overview. Keep the legacy URL
+            as a redirect so old bookmarks / docs links still resolve. */}
+        <Route
+          path="/diagnostics"
+          element={<Navigate to="/projects/overview" replace />}
+        />
         <Route path="/settings" element={<SettingsPage />} />
+        {/* SubAgent UI preview — static prototype with mocked frame
+            data. Reachable directly only; not linked from nav. Will
+            be replaced by the real components consuming WS events
+            once the subagent backend lands. */}
+        <Route path="/demo/subagent" element={<SubAgentDemoPage />} />
         {/* Catch-all: send unknown SPA paths home rather than rendering
             a blank page. Server-side `spa_fallback` already serves
             index.html for these, so this is the client-side mirror. */}
@@ -122,6 +140,29 @@ function DocsLayout() {
       <div id="app" className="page-app docs-app">
         <AppSidebar />
         <DocsPage />
+
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+
+        <QuickSwitcher />
+      </div>
+    </>
+  );
+}
+
+// v1.0 — full-page WorkOverview, reachable from the Work-mode
+// sidebar's "工作总览" link. Same shell as `ProjectsLayout` (same
+// `page-app projects-app` class so the sidebar layout matches);
+// the body just renders the existing `WorkOverviewPage` component
+// instead of the project list.
+function WorkOverviewLayout() {
+  return (
+    <>
+      <a className="skip-link" href="#work-overview-page">Skip to main content</a>
+      <div id="app" className="page-app projects-app">
+        <AppSidebar />
+        <main id="work-overview-page" className="work-overview-page-shell" tabIndex={-1}>
+          <WorkOverviewPage />
+        </main>
 
         <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
 

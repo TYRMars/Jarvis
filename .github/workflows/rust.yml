@@ -33,8 +33,14 @@ jobs:
           npm ci
           npm run build
 
-      - name: Cargo build
-        run: cargo build --workspace --verbose
+      - name: Cargo check (default features)
+        run: cargo check --workspace
+      - name: Cargo check (--features cloud)
+        run: cargo check --workspace --features cloud
+      - name: Cargo clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Cargo clippy (--features cloud)
+        run: cargo clippy --workspace --all-targets --features cloud -- -D warnings
       - name: Cargo test
         run: cargo test --workspace --verbose
 

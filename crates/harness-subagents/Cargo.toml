@@ -1,0 +1,23 @@
+[package]
+name = "harness-subagents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SubAgent registry: built-in delegated agents (claude_code SDK sidecar, codex internal, doc reader, reviewer) with streaming events relayed back to the main agent loop."
+
+[dependencies]
+harness-core.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Need `io-util` on top of the workspace defaults for `BufReader` /
+# `AsyncBufReadExt` / `AsyncWriteExt` used by the ClaudeCode sidecar
+# stdin/stdout plumbing.
+tokio = { workspace = true, features = ["io-util"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

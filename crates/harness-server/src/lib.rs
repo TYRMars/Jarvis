@@ -24,6 +24,7 @@
 
 mod agent_profiles_routes;
 mod auto_mode;
+mod auto_mode_routes;
 mod conversations;
 mod diagnostics;
 mod diagnostics_routes;
@@ -57,7 +58,7 @@ pub use state::{AppState, ServerInfo};
 // Re-export so binaries can construct stores / modes without depending
 // on harness-core directly when they only need the permission types.
 pub use harness_core::{PermissionMode, PermissionStore};
-pub use auto_mode::{spawn as spawn_auto_mode, AutoMode, AutoModeConfig};
+pub use auto_mode::{spawn as spawn_auto_mode, AutoMode, AutoModeConfig, AutoModeRuntime};
 pub use worktree::WorktreeMode;
 
 use std::net::SocketAddr;

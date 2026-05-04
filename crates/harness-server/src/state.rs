@@ -200,6 +200,14 @@ pub struct AppState {
     /// main checkout. Sourced from `JARVIS_WORKTREE_ALLOW_DIRTY`.
     /// Default false (refuse).
     pub worktree_allow_dirty: bool,
+    /// v1.0 — runtime on/off switch for the auto-mode scheduler.
+    /// `None` means the binary didn't wire one up (tests, mcp-serve
+    /// mode, etc.) and `auto_mode::spawn` falls back to "always
+    /// disabled". When `Some(_)`, the spawned tick loop polls this
+    /// flag and the `GET/POST /v1/auto-mode` REST endpoints
+    /// read/write it. Initial value is set by the binary from
+    /// `AutoModeConfig.mode` (i.e. `JARVIS_WORK_MODE`).
+    pub auto_mode_runtime: Option<crate::auto_mode::AutoModeRuntime>,
 }
 
 impl AppState {
@@ -232,6 +240,7 @@ impl AppState {
             worktree_mode: WorktreeMode::Off,
             worktree_root: None,
             worktree_allow_dirty: false,
+            auto_mode_runtime: None,
         }
     }
 
@@ -269,6 +278,7 @@ impl AppState {
             worktree_mode: WorktreeMode::Off,
             worktree_root: None,
             worktree_allow_dirty: false,
+            auto_mode_runtime: None,
         }
     }
 
@@ -435,6 +445,14 @@ impl AppState {
         self.worktree_mode = mode;
         self.worktree_root = root;
         self.worktree_allow_dirty = allow_dirty;
+        self
+    }
+
+    /// Attach the runtime on/off switch the auto-mode scheduler reads
+    /// each tick. The binary creates one and shares it between
+    /// `auto_mode::spawn` and the REST handlers; tests can ignore it.
+    pub fn with_auto_mode_runtime(mut self, runtime: crate::auto_mode::AutoModeRuntime) -> Self {
+        self.auto_mode_runtime = Some(runtime);
         self
     }
 
