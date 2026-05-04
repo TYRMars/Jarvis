@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { refreshProjects } from "../../services/projects";
@@ -13,9 +13,9 @@ import { ProjectBoard } from "./ProjectBoard";
 import {
   ProjectCreatePanel,
   ProjectEmptyState,
+  ProjectsHome,
   ProjectUnavailable,
 } from "./ProjectList";
-import { WorkOverviewPage } from "./WorkOverview/WorkOverviewPage";
 import { OpenSidebarButton } from "../Workspace/WorkspaceToggles";
 
 // Top-level Projects route: search + list + create + open. Three view
@@ -34,28 +34,29 @@ export function ProjectsPage() {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
-    null,
-  );
   const [requirementsVersion, setRequirementsVersion] = useState(0);
   const navigate = useNavigate();
+  // Selected project lives in the URL (`/projects/:projectId`) so the
+  // back button, bookmarks, and sidebar links all behave correctly.
+  // The plain `/projects` URL is the list view.
+  const { projectId: selectedProjectId = null } = useParams<{
+    projectId: string;
+  }>();
 
   useEffect(() => {
     void refreshProjects(includeArchived);
   }, [includeArchived]);
 
+  // `jarvis:new-project` is still fired by the sidebar's "新建项目"
+  // button + the Cmd-shortcut wired in `useShortcuts.ts`, so the
+  // listener stays. The old `jarvis:open-project` event is gone —
+  // the sidebar and the leaderboard now navigate via `/projects/:id`
+  // directly, which is cheaper and keeps URL state in sync.
   useEffect(() => {
     const onNewProject = () => setCreating(true);
-    const onOpenProject = (event: Event) => {
-      const id = (event as CustomEvent<string>).detail;
-      if (id) setSelectedProjectId(id);
-      setCreating(false);
-    };
     window.addEventListener("jarvis:new-project", onNewProject);
-    window.addEventListener("jarvis:open-project", onOpenProject);
     return () => {
       window.removeEventListener("jarvis:new-project", onNewProject);
-      window.removeEventListener("jarvis:open-project", onOpenProject);
     };
   }, []);
 
@@ -98,7 +99,7 @@ export function ProjectsPage() {
             ? 0
             : visibleProjects.length - 1
           : (idx + direction + visibleProjects.length) % visibleProjects.length;
-      setSelectedProjectId(visibleProjects[nextIdx].id);
+      navigate(`/projects/${visibleProjects[nextIdx].id}`);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -138,43 +139,80 @@ export function ProjectsPage() {
     >
       <header className="projects-page-header">
         <OpenSidebarButton />
-        <h1>{t("projectsTitle")}</h1>
-        <div className="projects-page-actions">
+        {selectedProject && (
           <button
             type="button"
-            className={
-              "ghost-icon projects-archive-toggle" +
-              (includeArchived ? " active" : "")
-            }
-            aria-label={
-              includeArchived
-                ? t("projectsArchiveHide")
-                : t("projectsArchiveShow")
-            }
-            title={
-              includeArchived
-                ? t("projectsArchiveHide")
-                : t("projectsArchiveShow")
-            }
-            onClick={() => setIncludeArchived((v) => !v)}
+            className="projects-back-btn projects-back-btn-leading"
+            onClick={() => {
+              navigate("/projects");
+              setQuery("");
+            }}
+            title={t("projectsBackBtn")}
+            aria-label={t("projectsBackBtn")}
           >
             <svg
-              width="17"
-              height="17"
+              width="14"
+              height="14"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="1.9"
+              strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
               aria-hidden="true"
             >
-              <path d="M4 7h16" />
-              <path d="M7 11h10" />
-              <path d="M10 15h4" />
+              <path d="M19 12H5" />
+              <path d="m12 19-7-7 7-7" />
             </svg>
+            <span>{t("projectsBackBtn")}</span>
           </button>
-          <label className="projects-search" aria-label={t("projectsSearch")}>
+        )}
+        <h1>{selectedProject ? selectedProject.name : t("projectsTitle")}</h1>
+        <div className="projects-page-actions">
+          {!selectedProject && (
+            <button
+              type="button"
+              className={
+                "ghost-icon projects-archive-toggle" +
+                (includeArchived ? " active" : "")
+              }
+              aria-label={
+                includeArchived
+                  ? t("projectsArchiveHide")
+                  : t("projectsArchiveShow")
+              }
+              title={
+                includeArchived
+                  ? t("projectsArchiveHide")
+                  : t("projectsArchiveShow")
+              }
+              onClick={() => setIncludeArchived((v) => !v)}
+            >
+              <svg
+                width="17"
+                height="17"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 7h16" />
+                <path d="M7 11h10" />
+                <path d="M10 15h4" />
+              </svg>
+            </button>
+          )}
+          <label
+            className="projects-search"
+            aria-label={
+              selectedProject
+                ? t("projectsSearchInProject")
+                : t("projectsSearch")
+            }
+          >
             <svg
               width="17"
               height="17"
@@ -193,39 +231,36 @@ export function ProjectsPage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={t("projectsSearch")}
+              placeholder={
+                selectedProject
+                  ? t("projectsSearchInProject")
+                  : t("projectsSearch")
+              }
             />
           </label>
-          {selectedProject && (
+          {!selectedProject && (
             <button
               type="button"
-              className="projects-back-btn"
-              onClick={() => setSelectedProjectId(null)}
+              className="projects-new-btn"
+              onClick={() => setCreating(true)}
             >
-              {t("projectsBackBtn")}
+              <svg
+                width="17"
+                height="17"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 5v14" />
+                <path d="M5 12h14" />
+              </svg>
+              <span>{t("projectsNewBtn")}</span>
             </button>
           )}
-          <button
-            type="button"
-            className="projects-new-btn"
-            onClick={() => setCreating(true)}
-          >
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
-            <span>{t("projectsNewBtn")}</span>
-          </button>
         </div>
       </header>
 
@@ -235,6 +270,7 @@ export function ProjectsPage() {
         <ProjectBoard
           project={selectedProject}
           requirements={requirements}
+          query={query}
           activeConversationId={activeConversationId}
           onChanged={refreshRequirements}
           onOpenConversation={(id) => {
@@ -250,7 +286,13 @@ export function ProjectsPage() {
           onCreate={() => setCreating(true)}
         />
       ) : (
-        <WorkOverviewPage />
+        <ProjectsHome
+          projects={visibleProjects}
+          onOpen={(id) => {
+            navigate(`/projects/${id}`);
+            setQuery("");
+          }}
+        />
       )}
     </main>
   );

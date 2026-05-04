@@ -19,6 +19,7 @@ harness-plugin.workspace = true
 harness-server.workspace = true
 harness-skill.workspace = true
 harness-store.workspace = true
+harness-subagents.workspace = true
 harness-tools.workspace = true
 
 async-trait.workspace = true
@@ -51,3 +52,7 @@ default = []
 sqlite = ["harness-store/sqlite"]
 postgres = ["harness-store/postgres"]
 mysql = ["harness-store/mysql"]
+# Cloud/edge runtime support (harness-cloud crate). Currently a no-op
+# placeholder until PR-1.1 lands the crate scaffold; the feature gate
+# exists so CI can already verify `--features cloud` compiles.
+cloud = []

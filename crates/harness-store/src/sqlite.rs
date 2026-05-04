@@ -101,6 +101,7 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
             description  TEXT,
             instructions TEXT NOT NULL,
             tags         TEXT NOT NULL,
+            workspaces   TEXT NOT NULL DEFAULT '[]',
             archived     INTEGER NOT NULL DEFAULT 0,
             created_at   TEXT NOT NULL,
             updated_at   TEXT NOT NULL
@@ -109,6 +110,20 @@ async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
+    // Forward-compat: older databases created before multi-workspace
+    // shipped are missing `workspaces`. Same pragma_table_info dance as
+    // doc_projects below.
+    let has_workspaces: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'workspaces'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_workspaces {
+        sqlx::query("ALTER TABLE projects ADD COLUMN workspaces TEXT NOT NULL DEFAULT '[]'")
+            .execute(pool)
+            .await?;
+    }
 
     sqlx::query(
         r#"
@@ -459,18 +474,21 @@ impl SqliteProjectStore {
 impl ProjectStore for SqliteProjectStore {
     async fn save(&self, project: &Project) -> Result<(), BoxError> {
         let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
+        let workspaces =
+            serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
         let archived: i64 = if project.archived { 1 } else { 0 };
         sqlx::query(
             r#"
             INSERT INTO projects
-                (id, slug, name, description, instructions, tags, archived, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                (id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(id) DO UPDATE SET
                 slug         = excluded.slug,
                 name         = excluded.name,
                 description  = excluded.description,
                 instructions = excluded.instructions,
                 tags         = excluded.tags,
+                workspaces   = excluded.workspaces,
                 archived     = excluded.archived,
                 updated_at   = excluded.updated_at
             "#,
@@ -481,6 +499,7 @@ impl ProjectStore for SqliteProjectStore {
         .bind(&project.description)
         .bind(&project.instructions)
         .bind(&tags)
+        .bind(&workspaces)
         .bind(archived)
         .bind(&project.created_at)
         .bind(&project.updated_at)
@@ -492,7 +511,7 @@ impl ProjectStore for SqliteProjectStore {
 
     async fn load(&self, id: &str) -> Result<Option<Project>, BoxError> {
         let row: Option<ProjectRow> = sqlx::query_as(
-            r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+            r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                  FROM projects WHERE id = ?1"#,
         )
         .bind(id)
@@ -504,7 +523,7 @@ impl ProjectStore for SqliteProjectStore {
 
     async fn find_by_slug(&self, slug: &str) -> Result<Option<Project>, BoxError> {
         let row: Option<ProjectRow> = sqlx::query_as(
-            r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+            r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                  FROM projects WHERE slug = ?1"#,
         )
         .bind(slug)
@@ -517,7 +536,7 @@ impl ProjectStore for SqliteProjectStore {
     async fn list(&self, include_archived: bool, limit: u32) -> Result<Vec<Project>, BoxError> {
         let rows: Vec<ProjectRow> = if include_archived {
             sqlx::query_as(
-                r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+                r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                      FROM projects
                      ORDER BY updated_at DESC
                      LIMIT ?1"#,
@@ -528,7 +547,7 @@ impl ProjectStore for SqliteProjectStore {
             .map_err(StoreError::from)?
         } else {
             sqlx::query_as(
-                r#"SELECT id, slug, name, description, instructions, tags, archived, created_at, updated_at
+                r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
                      FROM projects
                      WHERE archived = 0
                      ORDER BY updated_at DESC
@@ -571,6 +590,7 @@ struct ProjectRow {
     description: Option<String>,
     instructions: String,
     tags: String,
+    workspaces: String,
     archived: i64,
     created_at: String,
     updated_at: String,
@@ -579,6 +599,13 @@ struct ProjectRow {
 impl ProjectRow {
     fn into_project(self) -> Result<Project, BoxError> {
         let tags: Vec<String> = serde_json::from_str(&self.tags).map_err(StoreError::from)?;
+        // Tolerate empty / NULL-equivalent payloads; the migration
+        // backfills `'[]'` but a hand-edited DB might not.
+        let workspaces: Vec<harness_core::ProjectWorkspace> = if self.workspaces.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&self.workspaces).map_err(StoreError::from)?
+        };
         Ok(Project {
             id: self.id,
             slug: self.slug,
@@ -586,6 +613,7 @@ impl ProjectRow {
             description: self.description,
             instructions: self.instructions,
             tags,
+            workspaces,
             archived: self.archived != 0,
             created_at: self.created_at,
             updated_at: self.updated_at,

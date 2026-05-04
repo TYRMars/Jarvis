@@ -1,11 +1,18 @@
-import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import type { Project, Requirement, RequirementStatus } from "../../types/frames";
 import { t } from "../../utils/i18n";
 import {
+  approveRequirement,
   createRequirement,
   linkRequirementConversation,
+  rejectRequirement,
   updateRequirement,
 } from "../../services/requirements";
+import {
+  getAutoModeStatus,
+  setAutoModeEnabled,
+  type AutoModeStatus,
+} from "../../services/autoMode";
 import {
   DndContext,
   PointerSensor,
@@ -18,6 +25,7 @@ import {
 import { COLUMNS, StatusGlyph } from "./columns";
 import { MarkdownLite } from "./MarkdownLite";
 import { RequirementDetail } from "./RequirementDetail";
+import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 
 // The kanban board for a single project: header row, optional inline
 // "create requirement" panel, four columns (one per RequirementStatus).
@@ -25,12 +33,17 @@ import { RequirementDetail } from "./RequirementDetail";
 export function ProjectBoard({
   project,
   requirements,
+  query,
   activeConversationId,
   onChanged,
   onOpenConversation,
 }: {
   project: Project;
   requirements: Requirement[];
+  /// Free-text filter typed in the page header. When non-empty,
+  /// requirements whose title or description don't match the query
+  /// are hidden from both the kanban columns and the triage strip.
+  query?: string;
   activeConversationId: string | null;
   onChanged: () => void;
   onOpenConversation: (id: string) => void;
@@ -43,6 +56,7 @@ export function ProjectBoard({
   const [creatingForStatus, setCreatingForStatus] =
     useState<RequirementStatus | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const selected = selectedId
     ? requirements.find((r) => r.id === selectedId) ?? null
     : null;
@@ -65,6 +79,35 @@ export function ProjectBoard({
     onChanged();
   };
 
+  // Free-text filter typed in the page header. Match on title +
+  // description, case-insensitive. Empty query means "no filter" so
+  // every requirement passes through.
+  const filteredRequirements = useMemo(() => {
+    const q = (query ?? "").trim().toLowerCase();
+    if (!q) return requirements;
+    return requirements.filter((r) =>
+      [r.title, r.description ?? ""].some((v) =>
+        v.toLowerCase().includes(q),
+      ),
+    );
+  }, [requirements, query]);
+
+  // v1.0 — split the row set into kanban-eligible (triage_state
+  // approved or absent) vs Triage-queue (anything else). Auto loop
+  // would only consume the former, so the human gate is structural.
+  // The split is also what the kanban renders over: a triage row in
+  // "backlog" should NOT count towards the Backlog column tally.
+  const { boardRequirements, triageRequirements } = useMemo(() => {
+    const board: Requirement[] = [];
+    const triage: Requirement[] = [];
+    for (const r of filteredRequirements) {
+      const ts = r.triage_state ?? "approved";
+      if (ts === "approved") board.push(r);
+      else triage.push(r);
+    }
+    return { boardRequirements: board, triageRequirements: triage };
+  }, [filteredRequirements]);
+
   const grouped = useMemo(() => {
     const map: Record<RequirementStatus, Requirement[]> = {
       backlog: [],
@@ -72,40 +115,71 @@ export function ProjectBoard({
       review: [],
       done: [],
     };
-    for (const r of requirements) map[r.status].push(r);
+    for (const r of boardRequirements) map[r.status].push(r);
     return map;
-  }, [requirements]);
+  }, [boardRequirements]);
 
   return (
     <section className="project-board" aria-label={`${project.name} board`}>
       <div className="project-board-head">
-        <div>
-          <div className="project-board-kicker">{t("boardKicker")}</div>
-          <h2>{project.name}</h2>
+        {/* The project name is already in the page header (the
+            ProjectsPage h1), so we don't repeat it here — duplicate
+            titles read like a layout glitch. The optional description
+            stays as a one-paragraph subtitle when present. */}
+        <div className="project-board-head-meta">
           {project.description && <p>{project.description}</p>}
         </div>
-        <button
-          type="button"
-          className="projects-empty-btn"
-          onClick={() => setCreatingForStatus("backlog")}
-        >
-          <svg
-            width="17"
-            height="17"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+        <div className="project-board-head-actions">
+          <button
+            type="button"
+            className="settings-btn project-board-head-gear"
+            onClick={() => setSettingsOpen(true)}
+            aria-label={t("projectSettingsTitle")}
+            title={t("projectSettingsTitle")}
           >
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
-          <span>{t("boardNewReq")}</span>
-        </button>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="projects-empty-btn"
+            onClick={() => setCreatingForStatus("backlog")}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+            <span>{t("boardNewReq")}</span>
+          </button>
+        </div>
       </div>
+      <ProjectSettingsPanel
+        project={project}
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
 
       {creatingForStatus !== null && (
         <RequirementCreatePanel
@@ -197,10 +271,19 @@ export function ProjectBoard({
             <span>{t("boardViewDisplay")}</span>
           </button>
         </div>
+        <AutoModeToggle />
         <span className="project-board-count tabular-nums">
-          {t("boardCount", requirements.length)}
+          {t("boardCount", boardRequirements.length)}
         </span>
       </div>
+
+      {triageRequirements.length > 0 && (
+        <TriageDrawer
+          candidates={triageRequirements}
+          onChanged={onChanged}
+          onOpenDetail={(id) => setSelectedId(id)}
+        />
+      )}
 
       {/* Tailwind utility on the kanban frame: ensures the columns row
           can shrink against the sidebar without forcing a horizontal
@@ -478,5 +561,166 @@ function RequirementCard({
         )}
       </div>
     </article>
+  );
+}
+
+// v1.0 — Triage drawer. Sits above the kanban columns when there's
+// at least one `triage_state in {proposed_by_agent, proposed_by_scan}`
+// row. Each row gets Approve / Reject buttons that call the matching
+// REST endpoint; the cache update is optimistic so the drawer empties
+// immediately on click. Reject prompts for a reason (the server's
+// `/reject` requires it, and we want it on the audit timeline).
+function TriageDrawer({
+  candidates,
+  onChanged,
+  onOpenDetail,
+}: {
+  candidates: Requirement[];
+  onChanged: () => void;
+  /// v1.0 polish — let the row title open the detail panel so the
+  /// user can read the full description / activity timeline before
+  /// approving or rejecting. The detail panel itself surfaces a
+  /// "Reject" button when `triage_state` is one of `proposed_by_*`.
+  onOpenDetail: (id: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  const handleApprove = async (id: string) => {
+    await approveRequirement(id);
+    onChanged();
+  };
+
+  const handleReject = async (id: string) => {
+    const raw = window.prompt(t("triageRejectPrompt"));
+    if (raw === null) return;
+    const reason = raw.trim();
+    if (!reason) return;
+    try {
+      await rejectRequirement(id, reason);
+      onChanged();
+    } catch (e) {
+      console.warn("reject failed", e);
+    }
+  };
+
+  return (
+    <section className="triage-drawer" aria-label="Triage queue">
+      <header className="triage-drawer-head">
+        <span className="triage-drawer-title tabular-nums" aria-live="polite">
+          {t("triageHeader", candidates.length)}
+        </span>
+        <button
+          type="button"
+          className="triage-drawer-toggle"
+          onClick={() => setCollapsed((v) => !v)}
+        >
+          {collapsed ? t("triageExpand") : t("triageCollapse")}
+        </button>
+      </header>
+      {!collapsed && (
+        <ul className="triage-list">
+          {candidates.map((c) => {
+            const source: "agent" | "scan" =
+              c.triage_state === "proposed_by_scan" ? "scan" : "agent";
+            return (
+              <li key={c.id} className="triage-row">
+                <span className={"triage-source triage-source-" + source}>
+                  {source === "agent"
+                    ? t("triageSourceAgent")
+                    : t("triageSourceScan")}
+                </span>
+                <button
+                  type="button"
+                  className="triage-title triage-title-link"
+                  title={c.title}
+                  onClick={() => onOpenDetail(c.id)}
+                >
+                  {c.title}
+                </button>
+                <div className="triage-actions">
+                  <button
+                    type="button"
+                    className="triage-btn triage-btn-approve"
+                    onClick={() => void handleApprove(c.id)}
+                  >
+                    {t("triageApprove")}
+                  </button>
+                  <button
+                    type="button"
+                    className="triage-btn triage-btn-reject"
+                    onClick={() => void handleReject(c.id)}
+                  >
+                    {t("triageReject")}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// v1.0 — runtime on/off switch for the auto-mode scheduler. Polls
+// `/v1/auto-mode` once on mount so the toggle reflects the binary's
+// startup state (`JARVIS_WORK_MODE`); subsequent flips POST and
+// reconcile from the server's response. Hides itself entirely when
+// the binary isn't wired with an `AutoModeRuntime` (tests, mcp-serve)
+// — no point showing a control that returns 503.
+function AutoModeToggle() {
+  const [status, setStatus] = useState<AutoModeStatus | null>(null);
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAutoModeStatus().then((s) => {
+      if (!cancelled) setStatus(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!status || !status.configured) return null;
+
+  const handleToggle = async () => {
+    if (pending) return;
+    setPending(true);
+    setErr(null);
+    try {
+      const next = await setAutoModeEnabled(!status.enabled);
+      setStatus(next);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={
+        "auto-mode-toggle" + (status.enabled ? " is-on" : "") + (pending ? " is-pending" : "")
+      }
+      onClick={() => void handleToggle()}
+      disabled={pending}
+      title={
+        err
+          ? `${t("autoModeFailed")}: ${err}`
+          : status.enabled
+            ? t("autoModeOnHint")
+            : t("autoModeOffHint")
+      }
+    >
+      <span className="auto-mode-toggle-dot" aria-hidden="true" />
+      {pending
+        ? t("autoModePending")
+        : status.enabled
+          ? t("autoModeOn")
+          : t("autoModeOff")}
+    </button>
   );
 }

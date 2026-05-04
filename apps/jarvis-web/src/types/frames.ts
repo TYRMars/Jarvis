@@ -265,6 +265,14 @@ export interface ConvoDetail {
   project_id?: string | null;
 }
 
+/// One workspace folder a [`Project`] knows about. Mirrors
+/// `harness_core::ProjectWorkspace`. The `path` is canonicalised
+/// server-side on insert; clients should treat it as read-only.
+export interface ProjectWorkspace {
+  path: string;
+  name?: string | null;
+}
+
 /// Wire shape returned by `GET /v1/projects` (and the create / get /
 /// update endpoints). Mirrors `harness_core::Project` field-for-field
 /// plus the optional `conversation_count` only the list endpoint
@@ -276,6 +284,9 @@ export interface Project {
   description?: string | null;
   instructions: string;
   tags: string[];
+  /// Optional for back-compat with servers that pre-date the field.
+  /// Clients should treat `undefined` and `[]` as equivalent.
+  workspaces?: ProjectWorkspace[];
   archived: boolean;
   created_at: string;
   updated_at: string;
@@ -283,6 +294,12 @@ export interface Project {
 }
 
 export type RequirementStatus = "backlog" | "in_progress" | "review" | "done";
+
+/// v1.0 — triage gate. Distinguishes user-approved work (default,
+/// also the absent-on-wire shape) from agent-proposed / scan-
+/// surfaced candidates that are waiting for human approval. Auto
+/// executor only consumes `approved`.
+export type TriageState = "approved" | "proposed_by_agent" | "proposed_by_scan";
 
 export interface Requirement {
   id: string;
@@ -294,8 +311,31 @@ export interface Requirement {
   /** Phase 3.6: optional `AgentProfile.id` this requirement is
    *  assigned to. `null` / absent ⇒ "anyone / use server default". */
   assignee_id?: string | null;
+  /** v1.0 — defaults to `"approved"` when absent (server omits the
+   *  field via skip_serializing_if for back-compat). */
+  triage_state?: TriageState;
+  /** v1.0 — other requirement ids that must reach `done` before
+   *  the auto executor will pick this one up. Empty / absent = no
+   *  dependencies. */
+  depends_on?: string[];
+  /** Optional pinned VerificationPlan that auto mode (and the manual
+   *  "Run verification" form) executes after each RequirementRun.
+   *  Server-side type: `Option<VerificationPlan>`. */
+  verification_plan?: VerificationPlan | null;
   created_at: string;
   updated_at: string;
+}
+
+/// Mirrors `harness_core::VerificationPlan`. Pinned on a Requirement
+/// so the auto-mode loop and the detail-panel manual form share one
+/// source of truth for what success looks like.
+export interface VerificationPlan {
+  /// Shell-style commands to run after the agent finishes.
+  commands: string[];
+  /// When true, a successful command run still parks the run in
+  /// `Review` instead of flipping to `Done` — used for changes that
+  /// need a human eyeball before merge.
+  require_human_review?: boolean;
 }
 
 // ----------------- AgentProfile types ------------------------------

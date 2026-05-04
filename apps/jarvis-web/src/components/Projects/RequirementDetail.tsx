@@ -16,12 +16,15 @@ import {
   loadAgentProfiles,
   subscribeAgentProfiles,
 } from "../../services/agentProfiles";
+import { appStore } from "../../store/appStore";
 import {
   linkRequirementConversation,
   listActivitiesForRequirement,
   listRunsForRequirement,
   loadActivitiesForRequirement,
   loadRunsForRequirement,
+  rejectRequirement,
+  startRequirementRun,
   subscribeRequirementActivities,
   subscribeRequirementRuns,
   updateRequirement,
@@ -71,6 +74,13 @@ export function RequirementDetail({
   const [runsTick, setRunsTick] = useState(0);
   const [actsTick, setActsTick] = useState(0);
   const [profilesTick, setProfilesTick] = useState(0);
+  // "Start fresh run" UX state. Declared up here (alongside the
+  // other ticks) so the hook count stays stable regardless of
+  // whether `requirement` is null on this render — moving these
+  // below the `if (!requirement) return null` guard would crash
+  // React's hooks-order check when the detail panel opens.
+  const [startError, setStartError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   useEffect(() => {
     if (!requirement) return;
     void loadRunsForRequirement(requirement.id);
@@ -124,6 +134,80 @@ export function RequirementDetail({
     if (!activeConversationId) return;
     linkRequirementConversation(requirement.id, activeConversationId);
     onChanged();
+  };
+
+  // "Start fresh run" button state. Disable when the requirement is
+  // already done (no point queueing more work), when there's an
+  // in-flight run (Pending/Running) we'd otherwise double-fire, or
+  // while our own POST is still on the wire. The local-id check
+  // guards optimistic Requirement rows that the server hasn't
+  // reconciled yet — server-side `/runs` would 404 on those.
+  // (`starting` / `startError` themselves are declared at the top of
+  // the component so the hook count stays stable across renders.)
+  const inFlightRun = runs.find(
+    (r) => r.status === "pending" || r.status === "running",
+  );
+  const isLocalOnly = requirement.id.startsWith("req-local-");
+  const startDisabled =
+    starting ||
+    isLocalOnly ||
+    requirement.status === "done" ||
+    Boolean(inFlightRun);
+
+  // v1.0 polish — reject button is shown only when the row is in
+  // the Triage queue (`triage_state` is one of the `proposed_by_*`
+  // values). Approved rows stay in the kanban and don't carry a
+  // reject affordance — there's no audit story for "reject already-
+  // approved work" (the user would archive or delete instead). The
+  // handler reuses the same `rejectRequirement` service helper as
+  // the Triage drawer; the server records the reason on the
+  // activity timeline and soft-deletes the row.
+  const isProposed = requirement.triage_state === "proposed_by_agent" ||
+    requirement.triage_state === "proposed_by_scan";
+
+  const handleReject = async () => {
+    const raw = window.prompt(t("triageRejectPrompt"));
+    if (raw === null) return;
+    const reason = raw.trim();
+    if (!reason) return;
+    try {
+      await rejectRequirement(requirement.id, reason);
+      onChanged();
+      onClose();
+    } catch (e) {
+      console.warn("reject from detail failed", e);
+    }
+  };
+
+  const handleStartRun = async () => {
+    if (startDisabled) return;
+    setStartError(null);
+    setStarting(true);
+    try {
+      const { conversation_id } = await startRequirementRun(requirement.id);
+      onChanged();
+      // Jump straight into the freshly-minted conversation. The chat
+      // pane already knows how to surface a new id; resume / focus
+      // is the caller's job.
+      onOpenConversation(conversation_id);
+      // v1.0 polish — pre-fill the composer so the user lands on a
+      // populated textarea instead of an empty box. The starter
+      // prompt is editable, not auto-sent. Reads from i18n so the
+      // wording follows the active locale.
+      const starter = t("detailStartPromptPrefill", requirement.title);
+      appStore.getState().setComposerValue(starter);
+      // Focus the textarea so the user can edit / send immediately.
+      // The element id `input` is the historical hook (see
+      // Composer.tsx).
+      window.setTimeout(() => {
+        document.getElementById("input")?.focus();
+      }, 50);
+      onClose();
+    } catch (e) {
+      setStartError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarting(false);
+    }
   };
 
   return (
@@ -202,13 +286,22 @@ export function RequirementDetail({
           <p className="requirement-detail-empty">{t("detailEmptyDesc")}</p>
         )}
 
-        <RunsSection runs={runs} />
+        <RunsSection runs={runs} requirement={requirement} />
         <ActivitySection activities={activities} />
 
         <footer className="requirement-detail-footer">
           {sessions > 0 && (
             <span className="requirement-detail-sessions">
               {t("reqSessions", sessions)}
+            </span>
+          )}
+          {startError && (
+            <span
+              className="requirement-detail-start-error"
+              role="alert"
+              title={startError}
+            >
+              {t("detailStartFailed")}
             </span>
           )}
           <span className="flex-1" />
@@ -232,6 +325,37 @@ export function RequirementDetail({
               {t("detailLinkCurrent")}
             </button>
           )}
+          {isProposed && (
+            <button
+              type="button"
+              className="triage-btn triage-btn-reject"
+              onClick={() => void handleReject()}
+              title={t("triageReject")}
+            >
+              {t("triageReject")}
+            </button>
+          )}
+          <button
+            type="button"
+            className="requirement-detail-start-btn"
+            onClick={() => void handleStartRun()}
+            disabled={startDisabled}
+            title={
+              isLocalOnly
+                ? t("detailStartHintLocal")
+                : requirement.status === "done"
+                  ? t("detailStartHintDone")
+                  : inFlightRun
+                    ? t("detailStartHintInflight")
+                    : undefined
+            }
+          >
+            {starting
+              ? t("detailStartPending")
+              : inFlightRun
+                ? t("detailStartInflight")
+                : t("detailStartFresh")}
+          </button>
         </footer>
       </aside>
     </>
@@ -252,7 +376,13 @@ export function RequirementDetail({
 // Click a row to expand the inline summary / error / per-command
 // stdout details.
 
-function RunsSection({ runs }: { runs: RequirementRun[] }) {
+function RunsSection({
+  runs,
+  requirement,
+}: {
+  runs: RequirementRun[];
+  requirement: Requirement;
+}) {
   const [expanded, setExpanded] = useState<string | null>(null);
   return (
     <section className="requirement-detail-runs">
@@ -292,7 +422,7 @@ function RunsSection({ runs }: { runs: RequirementRun[] }) {
                     <VerificationBadge status={run.verification.status} />
                   )}
                 </button>
-                {isOpen && <RunDetail run={run} />}
+                {isOpen && <RunDetail run={run} requirement={requirement} />}
               </li>
             );
           })}
@@ -335,7 +465,13 @@ function VerificationBadge({ status }: { status: VerificationStatus }) {
   );
 }
 
-function RunDetail({ run }: { run: RequirementRun }) {
+function RunDetail({
+  run,
+  requirement,
+}: {
+  run: RequirementRun;
+  requirement: Requirement;
+}) {
   return (
     <div className="requirement-detail-run-body">
       {run.summary && (
@@ -369,7 +505,7 @@ function RunDetail({ run }: { run: RequirementRun }) {
             ))}
           </ul>
         )}
-      <VerifyRunForm run={run} />
+      <VerifyRunForm run={run} requirement={requirement} />
     </div>
   );
 }
@@ -378,10 +514,35 @@ function RunDetail({ run }: { run: RequirementRun }) {
 // against `/v1/runs/:id/verify`; the resulting `verification` is
 // applied through the WS frame, so we just need to fire-and-await
 // the request and surface errors.
-function VerifyRunForm({ run }: { run: RequirementRun }) {
-  const [text, setText] = useState("");
+//
+// UX rules learned from operator feedback:
+//   - Default-fill from `requirement.verification_plan.commands` so
+//     operators don't stare at an empty textarea wondering whether
+//     the placeholder is real input. The plan is the canonical
+//     "what success looks like" — manual runs should match the
+//     auto-mode loop unless the operator deliberately overrides.
+//   - Clear the error as soon as the user starts typing. The
+//     previous version left "至少加一条命令" pinned even after the
+//     operator added input, which read as "rejected" rather than
+//     "stale".
+//   - Surface a short hint above the textarea explaining where the
+//     defaults came from + the manual-vs-auto relationship — the
+//     button is wired but the relationship was opaque.
+function VerifyRunForm({
+  run,
+  requirement,
+}: {
+  run: RequirementRun;
+  requirement: Requirement;
+}) {
+  const planCommands = requirement.verification_plan?.commands ?? [];
+  const [text, setText] = useState(() => planCommands.join("\n"));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const hint = planCommands.length > 0
+    ? t("verifyRunHintFromPlan", planCommands.length)
+    : t("verifyRunHintNoPlan");
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -404,23 +565,47 @@ function VerifyRunForm({ run }: { run: RequirementRun }) {
     }
   };
 
+  const onTextChange = (v: string) => {
+    setText(v);
+    if (error) setError(null);
+  };
+
   return (
     <form className="requirement-detail-run-verify" onSubmit={submit}>
-      <label className="requirement-detail-run-verify-label">
-        {t("verifyRunLabel")}
-      </label>
+      <div className="requirement-detail-run-verify-head">
+        <label className="requirement-detail-run-verify-label">
+          {t("verifyRunLabel")}
+        </label>
+        <span className="requirement-detail-run-verify-hint">{hint}</span>
+      </div>
       <textarea
         className="requirement-detail-run-verify-input"
         value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="cargo test&#10;npm --prefix apps/jarvis-web test -- --run"
+        onChange={(e) => onTextChange(e.target.value)}
+        placeholder={t("verifyRunPlaceholder")}
         rows={3}
         disabled={busy}
+        spellCheck={false}
       />
       {error && <p className="requirement-detail-run-verify-error">{error}</p>}
-      <button type="submit" disabled={busy || run.status === "running"}>
-        {busy ? t("verifyRunRunning") : t("verifyRunButton")}
-      </button>
+      <div className="requirement-detail-run-verify-actions">
+        {planCommands.length > 0 && text !== planCommands.join("\n") && (
+          <button
+            type="button"
+            className="requirement-detail-run-verify-reset"
+            onClick={() => {
+              setText(planCommands.join("\n"));
+              setError(null);
+            }}
+            disabled={busy}
+          >
+            {t("verifyRunResetToPlan")}
+          </button>
+        )}
+        <button type="submit" disabled={busy || run.status === "running"}>
+          {busy ? t("verifyRunRunning") : t("verifyRunButton")}
+        </button>
+      </div>
     </form>
   );
 }

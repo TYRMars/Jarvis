@@ -27,12 +27,14 @@
 //!   `/verify`). The plan failing doesn't crash the loop.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use harness_core::{
     ActivityActor, ActivityKind, AgentProfile, Conversation, ConversationMetadata, Message,
     Requirement, RequirementRun, RequirementRunEvent, RequirementRunStatus, RequirementStatus,
-    VerificationStatus,
+    TriageState, VerificationStatus,
 };
 use harness_requirement::{build_default_manifest, render_manifest_summary};
 use serde_json::json;
@@ -93,19 +95,50 @@ impl Default for AutoModeConfig {
     }
 }
 
-/// Spawn the background loop. No-op when `config.mode == Off` —
-/// the binary calls this unconditionally and the function decides
-/// whether to actually start anything.
-pub fn spawn(state: AppState, config: AutoModeConfig) {
-    if config.mode == AutoMode::Off {
-        return;
+/// Runtime on/off switch. v1.0 — flipped via
+/// `POST /v1/auto-mode {enabled}`. Initial value matches the
+/// startup `AutoModeConfig.mode`. The background loop polls the
+/// flag every tick (so toggle latency is at most one
+/// `tick_seconds`).
+#[derive(Debug, Clone, Default)]
+pub struct AutoModeRuntime {
+    enabled: Arc<AtomicBool>,
+}
+
+impl AutoModeRuntime {
+    pub fn new(initial: AutoMode) -> Self {
+        Self {
+            enabled: Arc::new(AtomicBool::new(matches!(initial, AutoMode::Auto))),
+        }
     }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn set_enabled(&self, value: bool) {
+        self.enabled.store(value, Ordering::SeqCst);
+    }
+}
+
+/// Spawn the background loop unconditionally. The runtime flag (set
+/// from `config.mode` at startup, mutable via the REST handler)
+/// gates each tick — when disabled, `tick()` early-returns without
+/// touching any store. Spawning unconditionally lets the operator
+/// flip auto on at runtime even if the binary started with
+/// `JARVIS_WORK_MODE=off`.
+pub fn spawn(state: AppState, config: AutoModeConfig) {
+    let runtime = state
+        .auto_mode_runtime
+        .clone()
+        .unwrap_or_else(|| AutoModeRuntime::new(config.mode));
     info!(
         tick_s = config.tick_seconds,
         max_units = config.max_units_per_tick,
         max_retries = config.max_retries,
         run_timeout_ms = config.run_timeout_ms,
-        "auto mode loop starting"
+        initial_enabled = runtime.is_enabled(),
+        "auto mode loop starting (runtime-toggleable)"
     );
     tokio::spawn(async move {
         // Tokio's default first-tick is immediate; we want a
@@ -115,6 +148,9 @@ pub fn spawn(state: AppState, config: AutoModeConfig) {
         interval.tick().await; // consume the immediate first tick
         loop {
             interval.tick().await;
+            if !runtime.is_enabled() {
+                continue;
+            }
             if let Err(e) = tick(&state, &config).await {
                 warn!(error = %e, "auto mode tick failed");
             }
@@ -152,7 +188,14 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
             .list(&project.id)
             .await
             .map_err(|e| format!("list requirements({}): {e}", project.id))?;
-        for req in reqs {
+        // Pre-index project's requirements by id so the
+        // depends_on check below is O(1) per dep instead of
+        // re-listing per requirement. Cloned because the next loop
+        // also iterates `reqs`.
+        let dep_index: std::collections::HashMap<String, RequirementStatus> =
+            reqs.iter().map(|r| (r.id.clone(), r.status)).collect();
+
+        for req in &reqs {
             if picked >= config.max_units_per_tick {
                 break;
             }
@@ -161,6 +204,27 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                 req.status,
                 RequirementStatus::Backlog | RequirementStatus::InProgress
             ) {
+                continue;
+            }
+            // v1.0 — Triage gate. Auto loop only consumes
+            // user-approved work; agent / scan candidates wait
+            // until a human flips them via /approve. This is the
+            // structural guarantee that the agent can spawn
+            // proposals freely without the executor running them
+            // unattended.
+            if req.triage_state != TriageState::Approved {
+                continue;
+            }
+            // v1.0 — depends_on. Skip until every listed
+            // dependency reaches `done`. Unknown ids (deleted /
+            // cross-project) are treated as "not yet done" so a
+            // stale ref blocks rather than silently passes.
+            if !req.depends_on.iter().all(|dep_id| {
+                dep_index
+                    .get(dep_id)
+                    .map(|s| matches!(s, RequirementStatus::Done))
+                    .unwrap_or(false)
+            }) {
                 continue;
             }
             let Some(assignee_id) = req.assignee_id.clone() else {
@@ -699,6 +763,59 @@ mod tests {
         c.max_units_per_tick = 2;
         let n = tick(&state, &c).await.unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[tokio::test]
+    async fn tick_skips_proposed_by_agent_until_approved() {
+        // v1.0 — auto loop must NOT consume rows whose triage_state
+        // is `proposed_by_agent` (or `proposed_by_scan`). The
+        // structural triage gate is the single guarantee that lets
+        // the agent freely create candidates without the executor
+        // running them unattended.
+        let state = wire_stores(base_state_with_canned_llm("ok."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "agent proposed");
+        req.assignee_id = Some(prof.id.clone());
+        req.triage_state = TriageState::ProposedByAgent;
+        state.requirements.as_ref().unwrap().upsert(&req).await.unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 0, "proposed_by_agent must wait for human approval");
+
+        // Flip to approved and the same row is now eligible.
+        req.triage_state = TriageState::Approved;
+        state.requirements.as_ref().unwrap().upsert(&req).await.unwrap();
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 1, "approved row should be picked up");
+    }
+
+    #[tokio::test]
+    async fn tick_skips_until_depends_on_done() {
+        // v1.0 — depends_on. A requirement with an outstanding
+        // dependency should not be picked. Once the dependency
+        // flips to `done`, it becomes eligible.
+        let state = wire_stores(base_state_with_canned_llm("ok."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+
+        let mut dep = Requirement::new(&proj.id, "dep first");
+        dep.assignee_id = Some(prof.id.clone());
+        // Park the dep in Review so it doesn't get picked itself.
+        dep.status = RequirementStatus::Review;
+        state.requirements.as_ref().unwrap().upsert(&dep).await.unwrap();
+
+        let mut child = Requirement::new(&proj.id, "child waits");
+        child.assignee_id = Some(prof.id.clone());
+        child.depends_on = vec![dep.id.clone()];
+        state.requirements.as_ref().unwrap().upsert(&child).await.unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 0, "child should wait while dep != done");
+
+        // Mark dep done. Child becomes eligible.
+        dep.status = RequirementStatus::Done;
+        state.requirements.as_ref().unwrap().upsert(&dep).await.unwrap();
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 1, "child should now be picked once dep is done");
     }
 
     #[tokio::test]

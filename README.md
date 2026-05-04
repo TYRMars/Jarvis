@@ -61,9 +61,26 @@ Jarvis exposes OpenAI-shaped and Jarvis-native endpoints:
 - `GET /v1/workspace`
 - `GET /v1/workspace/diff`
 - `GET /v1/projects`
+- `GET /v1/projects/:id/requirements?triage_state=approved|proposed_by_*|proposed`
+- `POST /v1/requirements/:id/{approve,reject,runs}` — Triage approve / reject (with `reason`) / mint a fresh-session run
+- `GET /v1/diagnostics/{worktrees/orphans, runs/stuck, runs/failed}` — doctor / forensics
 - `GET /v1/server/info`
 
 The WebSocket is the richest transport: it supports multi-turn state, persisted conversation resume, approval decisions, HITL responses, routing/model changes, workspace changes, and streaming `AgentEvent`s.
+
+## Spec → Project Workflow (v1.0)
+
+v1.0 turns the kanban into a "spec-in / project-out" loop. **Spec** is anything the agent can read: a one-line user request, a `docs/feature-x.md` Jarvis fetches via `fs.read`, or candidates surfaced by `triage.scan_candidates` over `TODO|FIXME|XXX|HACK` comments in the workspace.
+
+The flow:
+
+1. **Capture** — talk to Jarvis in chat ("read `docs/avatar-upload.md` and lay out the work"). The agent calls `workspace.context` + `fs.read`, drafts a breakdown via `plan.update`, and after user confirmation calls `project.create_or_get` + `requirement.create` per item.
+2. **Triage** — agent-created and scan-surfaced rows default to `triage_state=proposed_by_*` and land in the **Triage drawer** above the kanban. A human clicks **通过 / 拒绝** (the latter requires a free-text reason that lands on the activity timeline). User-typed REST creates default to `triage_state=approved` for back-compat.
+3. **Execute** — open any approved Backlog card and click **新建一次运行 / Start fresh run** in the detail panel. The button mints a new conversation tied to the requirement, flips status to `in_progress`, and jumps you into chat.
+4. **Auto** — set an `assignee_id` on a card and start the binary with `JARVIS_WORK_MODE=auto`. The background scheduler picks `Approved` rows whose `depends_on` are all `done`, drives one run per tick (configurable via `JARVIS_WORK_MAX_UNITS_PER_TICK`), and runs the per-requirement `verification_plan.commands` after each agent loop. Runs that need worktree isolation are scoped through `git worktree add` (`JARVIS_WORKTREE_MODE=per_run`).
+5. **Verify** — every `RequirementRun` carries its `verification` result (stdout / stderr / exit_code per command, aggregate `passed/failed/needs_review`). Failed runs flip the card back to Backlog up to `JARVIS_WORK_MAX_RETRIES` times before writing a `Blocked` activity.
+
+The full spec is in [docs/proposals/work-orchestration.zh-CN.md](docs/proposals/work-orchestration.zh-CN.md).
 
 ## Quick Start
 
@@ -158,7 +175,13 @@ Important environment variables:
 | `JARVIS_MCP_SERVERS` | Comma-separated external MCP servers, such as `fs=uvx mcp-server-filesystem /tmp`. |
 | `JARVIS_MEMORY_MODE` | `window` or `summary`. |
 | `JARVIS_MEMORY_TOKENS` | Heuristic memory budget. |
-| `JARVIS_APPROVAL_MODE` | Default approval mode. |
+| `JARVIS_PERMISSION_MODE` | `ask` / `accept-edits` / `plan` / `auto` / `bypass`. (Replaces the deprecated `JARVIS_APPROVAL_MODE`.) |
+| `JARVIS_WORK_MODE` | `off` (default) or `auto`. When `auto`, the background scheduler drives Approved Requirements with an assignee. |
+| `JARVIS_WORK_MAX_UNITS_PER_TICK` | Cap on Requirements picked per scheduler tick (default `1`). |
+| `JARVIS_WORK_MAX_RETRIES` | Retry cap per Requirement before the loop stops re-picking it (default `1`). |
+| `JARVIS_WORK_TICK_SECONDS` | Scheduler tick interval (default `30`). |
+| `JARVIS_WORKTREE_MODE` | `off` (default) / `per_run` / `per_unit`. Auto mode upgrades to `per_run` if left `off`. |
+| `JARVIS_WORKTREE_ROOT` | Directory under the workspace where `git worktree add` lands child trees (default `.jarvis/worktrees`). |
 | `RUST_LOG` | Rust tracing filter. |
 
 ## Built-In Tools
@@ -170,9 +193,16 @@ Jarvis ships with a namespaced toolset:
 - `fs.read`, `fs.list`, `fs.write`, `fs.edit`, `fs.patch`
 - `code.grep`
 - `shell.exec`
-- `git.status`, `git.diff`, `git.log`, `git.show`
-- `workspace.context`
-- plan, approval, and user-input helper tools
+- `git.status`, `git.diff`, `git.log`, `git.show`, `git.add`, `git.commit`, `git.merge`
+- `workspace.context`, `project.checks`
+- `plan.update`, `ask.text`, `exit_plan`
+- `todo.{list,add,update,delete}` — workspace-scoped lightweight backlog
+- `project.{list,get,create,update,archive,restore,delete}` — project CRUD
+- `requirement.{list,create,update,delete,start,complete,block}` — kanban row CRUD; agent-created rows default to `triage_state=proposed_by_agent` and wait for human approval
+- `triage.scan_candidates` — surface follow-up Requirement candidates from `TODO|FIXME|XXX|HACK` markers (more sources planned)
+- `roadmap.import` — bootstrap a project + Requirements from `docs/proposals/`, `docs/roadmap/`, or `ROADMAP.md`
+- `doc.{list,get,create,update,delete,draft.{get,save}}` — long-form document CRUD
+- `codex.run`, `claude_code.run` — opt-in sub-agent runners
 
 Mutation tools are opt-in and approval-aware. The binary composition root decides which tools are registered; `harness-core` only sees the `ToolRegistry`.
 
@@ -189,6 +219,7 @@ crates/
   harness-server/  Axum HTTP, SSE, WebSocket, and UI serving
   harness-store/   SQLite/Postgres/MySQL stores
   harness-tools/   Built-in tools
+  harness-cloud/   Optional cloud / edge runtimes via harness-cloud
 apps/
   jarvis/          Server binary and composition root
   jarvis-cli/      Terminal coding-agent UI

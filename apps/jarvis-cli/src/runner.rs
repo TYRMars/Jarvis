@@ -448,6 +448,41 @@ async fn run_one_turn(
                         }
                         println!("{}", dim("  (Plan Mode: type a follow-up to refine, or /mode <ask|accept-edits|auto> to execute)"));
                     }
+                    AgentEvent::SubAgentEvent { frame } => {
+                        // Compact one-liner per subagent frame — the
+                        // CLI is mostly used for solo debugging, so
+                        // we surface enough to know "subagent X did
+                        // tool Y" without burying the main stream.
+                        // Web UI gets the full collapsible card +
+                        // side-panel rendering.
+                        if delta_open { println!(); delta_open = false; }
+                        let label = format!("[subagent:{}]", frame.subagent_name);
+                        match frame.event {
+                            harness_core::SubAgentEvent::Started { task, .. } => {
+                                println!("{} {}", dim(&label), task);
+                            }
+                            harness_core::SubAgentEvent::ToolStart { name, .. } => {
+                                println!("{} → {}", dim(&label), name);
+                            }
+                            harness_core::SubAgentEvent::ToolEnd { name, .. } => {
+                                println!("{} ← {}", dim(&label), name);
+                            }
+                            harness_core::SubAgentEvent::Status { message } => {
+                                println!("{} {}", dim(&label), dim(&message));
+                            }
+                            harness_core::SubAgentEvent::Done { final_message } => {
+                                println!("{} ✓ {}", dim(&label), final_message);
+                            }
+                            harness_core::SubAgentEvent::Error { message } => {
+                                println!("{} ✗ {}", dim(&label), message);
+                            }
+                            harness_core::SubAgentEvent::Delta { .. } => {
+                                // Subagent text deltas go to the
+                                // collapsible card; CLI skips them
+                                // to keep the main stream readable.
+                            }
+                        }
+                    }
                     AgentEvent::Done { conversation, .. } => {
                         if delta_open { println!(); }
                         return TurnOutcome::Done(conversation);

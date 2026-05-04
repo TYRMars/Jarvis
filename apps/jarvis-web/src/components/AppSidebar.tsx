@@ -110,7 +110,13 @@ export function AppSidebar() {
 
 function modeForPath(pathname: string): "chat" | "work" | "doc" {
   if (pathname.startsWith("/docs")) return "doc";
-  if (pathname.startsWith("/projects")) return "work";
+  // `/diagnostics` is operationally part of Work — it surfaces
+  // RequirementRun forensics + worktree cleanup, not chat or docs.
+  // Without this, the sidebar would flip to chat-mode after a user
+  // clicks the 诊断 nav link, hiding the link they just used.
+  if (pathname.startsWith("/projects") || pathname.startsWith("/diagnostics")) {
+    return "work";
+  }
   return "chat";
 }
 
@@ -143,10 +149,10 @@ function WorkSidebarBody() {
   };
 
   const openProject = (id: string) => {
-    void navigate("/projects");
-    window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent("jarvis:open-project", { detail: id }));
-    }, 0);
+    // Direct URL nav — `/projects/:projectId` is a real route now, so
+    // browser back, bookmarks, and reload all preserve the selection.
+    // No window event roundtrip needed.
+    void navigate(`/projects/${id}`);
   };
 
   return (
@@ -159,12 +165,28 @@ function WorkSidebarBody() {
           </svg>
           <span>{t("projectsNewBtn")}</span>
         </button>
-        <NavLink to="/projects" className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}>
+        <NavLink
+          to="/projects"
+          end
+          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
+        >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
             <path d="M3 10h18" />
           </svg>
-          <span>{t("settingsNavProjects")}</span>
+          <span>{t("sidebarNavProjectList")}</span>
+        </NavLink>
+        <NavLink
+          to="/projects/overview"
+          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="9" rx="1" />
+            <rect x="14" y="3" width="7" height="5" rx="1" />
+            <rect x="14" y="12" width="7" height="9" rx="1" />
+            <rect x="3" y="16" width="7" height="5" rx="1" />
+          </svg>
+          <span>{t("sidebarNavWorkOverview")}</span>
         </NavLink>
       </nav>
 

@@ -64,12 +64,12 @@ describe("AppSidebar search", () => {
     renderWithRouter(<AppSidebar />, ["/projects"]);
 
     expect(screen.getByRole("link", { name: "Chat" })).toHaveAttribute("href", "/");
-    expect(screen.getByRole("link", { name: "Work" })).toHaveAttribute("href", "/projects");
+    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("href", "/projects");
     expect(screen.getByRole("link", { name: "Doc" })).toHaveAttribute("href", "/docs");
     expect(screen.queryByText("Code")).not.toBeInTheDocument();
 
-    expect(screen.getByRole("link", { name: "Work" })).toHaveClass("active");
-    const link = screen.getByRole("link", { name: "Projects" });
+    expect(screen.getByRole("link", { name: "Projects" })).toHaveClass("active");
+    const link = screen.getByRole("link", { name: "List" });
     expect(link).toHaveAttribute("href", "/projects");
     expect(link).toHaveClass("active");
     expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();

@@ -25,6 +25,7 @@ use tracing_subscriber::EnvFilter;
 
 mod auth_store;
 mod config;
+mod doctor_cli;
 mod init;
 mod login;
 mod mcp_cli;
@@ -32,6 +33,7 @@ mod plugin_cli;
 mod project_cmd;
 mod serve;
 mod skill_cli;
+mod subagents;
 mod status;
 
 #[cfg(test)]
@@ -145,6 +147,10 @@ enum Cmd {
         #[command(subcommand)]
         action: plugin_cli::PluginAction,
     },
+    /// Pretty-print orphan worktrees, stuck runs, and recent failed
+    /// runs from a running `jarvis serve`. Same data as the Web UI
+    /// `/diagnostics` page; useful for SSH / cron / CI.
+    Doctor(doctor_cli::DoctorArgs),
 }
 
 #[derive(Args, Debug, Default)]
@@ -236,6 +242,7 @@ async fn main() -> Result<()> {
         Cmd::Mcp { action } => mcp_cli::run(action, cfg.as_ref()).await,
         Cmd::Skill { action } => skill_cli::run(action, cfg.as_ref()).await,
         Cmd::Plugin { action } => plugin_cli::run(action, cfg.as_ref()).await,
+        Cmd::Doctor(args) => doctor_cli::run(args, cfg.as_ref()).await,
     }
 }
 

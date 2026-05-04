@@ -10,6 +10,7 @@ import { messageFrameHandlers } from "./messageFrames";
 import { toolFrameHandlers } from "./toolFrames";
 import { approvalFrameHandlers } from "./approvalFrames";
 import { planFrameHandlers } from "./planFrames";
+import { subAgentFrameHandlers } from "./subAgentFrames";
 import { hitlFrameHandlers } from "./hitlFrames";
 import { lifecycleFrameHandlers } from "./lifecycleFrames";
 import { domainFrameHandlers } from "./domainFrames";
@@ -20,6 +21,7 @@ export const frameHandlers: Map<string, (ev: any) => void> = new Map(
     ...toolFrameHandlers,
     ...approvalFrameHandlers,
     ...planFrameHandlers,
+    ...subAgentFrameHandlers,
     ...hitlFrameHandlers,
     ...lifecycleFrameHandlers,
     ...domainFrameHandlers,

@@ -1,8 +1,16 @@
 # Work 编排与自动执行
 
-**状态：** Adopted partial — Phase 0 / 1 / 2 / 3 已落地;Phase 4-7 仍是 Proposed,
-并补充借鉴 [Multica](https://github.com/multica-ai/multica) 的 AgentProfile /
-Activity timeline / 持久化 RequirementRun 三个新概念(详见下文 "## 借鉴 Multica
+**状态：** Adopted (v1.0.0) — Phase 0–6 已落地,只剩 Phase 7 (Cloud / Edge
+调度) 仍是 Proposed。v1.0.0 在 `Requirement` 上加了 `triage_state` (Approved /
+ProposedByAgent / ProposedByScan) + `depends_on` 两个字段,把"agent 自身触发的
+任务"与"用户显式批准的任务"在结构上分开,auto loop 只消费 `Approved` 且依赖全
+`Done` 的需求。新增 `requirement.{create,update,delete}` 工具让 agent 在普通对
+话里就能落库需求 (system prompt 加了"识别 spec → plan.update 预览 →
+project.create_or_get → requirement.create" 工作流段),以及 `triage.scan_candidates`
+工具用于扫 TODO/FIXME 注释生成候选。Triage 队列在 Web UI `/projects` 看板上以
+抽屉形式展示,带 Approve / Reject (要求 reason)。
+另外仍补充借鉴 [Multica](https://github.com/multica-ai/multica) 的 AgentProfile /
+Activity timeline / 持久化 RequirementRun 三个概念(详见下文 "## 借鉴 Multica
 的产品形态")。
 **涉及:** 已新增 `crates/harness-requirement/`(原计划名 `harness-work`,因与
 `harness_core::Project + Requirement` 模型融合而改名);扩展 `harness-core` 的事件
@@ -770,17 +778,22 @@ v0 只本地执行；Cloud dispatch 是后续阶段。
 - WS 帧 `activity_appended`;
 - 看板卡片右侧抽屉显示完整时间线。
 
-### Phase 4：Verification Gate
+### Phase 4：Verification Gate (已落地)
 
 - 支持验证命令(走现有 `shell.exec` + 审批门);
 - 把 stdout / stderr / exit_code / duration 写回 `RequirementRun.verification`(依赖 Phase 3.5);
 - 失败进入 `Failed`;成功进入 `NeedsReview` 或 `Completed`;
 - 同步发 `verification_finished` activity(依赖 Phase 3.7);
 - UI 展示 diff/test/check;
-- 新增 `requirement.*` agent 工具(`requirement.list / start / block / complete`)
-  让 agent 自己能驱动看板状态(目前只能从 UI / REST 推)。
+- 新增 `requirement.*` agent 工具(`requirement.list / start / block / complete /
+  create / update / delete`)让 agent 自己能驱动看板状态(`create/update/delete`
+  在 v1.0.0 加入,见下方 v1.0.0 章节)。
 
-### Phase 5：Worktree 与诊断
+实际落地:`harness-server::verification` 模块 +
+`POST /v1/runs/:id/verify`。`apply_verification` 复用同一条 fan-out (Activity /
+WS 帧 / 终态翻转),手动 `POST /verification` 与自动验证走同一段代码。
+
+### Phase 5：Worktree 与诊断 (已落地)
 
 - 可选 per-run worktree;
 - doctor 检查孤儿 worktree、未合并变更、失败 run — **底层数据来自
@@ -789,13 +802,60 @@ v0 只本地执行；Cloud dispatch 是后续阶段。
 - 合并前展示 diff;
 - 默认不自动合并。
 
-### Phase 6：受限 Auto Mode
+实际落地:`harness-server::worktree` 模块 + `harness-server::diagnostics` 模块 +
+REST `/v1/diagnostics/worktrees/orphans{,/cleanup}` /
+`/v1/diagnostics/runs/{stuck,failed}` /
+`DELETE /v1/runs/:id/worktree`。诊断只读;cleanup 与 remove 走显式 POST/DELETE,
+不会被 auto loop 自动触发。
+
+### Phase 6：受限 Auto Mode (已落地)
 
 - 自动推进一个 Ready unit(**前置依赖 Phase 3.6 的 AgentProfile** —
   auto loop 必须明确"派给哪个 agent");
+- v1.0.0 起额外要求 `triage_state == Approved` 和 `depends_on` 全部 `Done`(
+  防止 agent 自己创建的需求被 auto loop 默默吃掉);
 - 最大重试次数;
 - 遇到审批、高风险、blocked 自动暂停,在 timeline 写明原因;
 - 记录 cost/token/耗时(写进 RequirementRun)。
+
+实际落地:`harness-server::auto_mode` 模块 + 环境变量 `JARVIS_WORK_MODE=auto` /
+`JARVIS_WORK_TICK_SECONDS` / `JARVIS_WORK_MAX_UNITS_PER_TICK` /
+`JARVIS_WORK_MAX_RETRIES` / `JARVIS_WORK_RUN_TIMEOUT_MS`。Off by default;binary
+unconditional 调用 `spawn_auto_mode`,`Off` mode no-op。
+
+### Phase 6.5:Spec → Project 拆解 (v1.0.0 新增)
+
+v1.0.0 的核心目标:让 Jarvis 能根据 **spec → 自动建立 project / 规划
+requirement / 逐项执行 / 验证回报**。Spec 不是专门的文档格式,可能是用户的一句
+话、一份让 Jarvis 读的文档,或 Jarvis 自己巡检发现的候选。所以 v1.0 不做
+`spec.import` 这种"专门 parser",而是补齐已有原语:
+
+- 新增 `Requirement.triage_state: TriageState`
+  (`Approved` / `ProposedByAgent` / `ProposedByScan`),`#[serde(default,
+  skip_serializing_if = "is_default")]` 兼容旧数据。
+- 新增 `Requirement.depends_on: Vec<String>` 用于 auto loop 的拓扑序选取。
+- 新增 agent 工具 `requirement.create / update / delete`
+  (`harness-tools::requirement`):agent 在普通对话里就能落库。`create` 默认
+  `triage_state=ProposedByAgent`,要 agent 显式传 `approved` 才直接进 board;
+  `delete` 是写操作里唯一 approval-gated 的(`update` 不是 — 通过审计行恢复)。
+- 新增 agent 工具 `triage.scan_candidates` (`harness-tools::triage_scan`):
+  扫 workspace 的 TODO / FIXME / XXX / HACK 注释 + 后续可加 `failed_runs` /
+  `orphan_worktrees`,返回结构化候选清单,**不直接落库** — 由 agent 决定
+  `requirement.create(triage_state=ProposedByScan)`。
+- 系统 prompt 段(`apps/jarvis/src/serve.rs::CODING_SYSTEM_PROMPT`):教 LLM
+  "用户描述需求 / 让你读 doc 拆解" → workspace.context → fs.read →
+  plan.update 预览 → project.create_or_get → requirement.create 循环。
+- REST: 给 `GET /v1/projects/:id/requirements` 加 `?triage_state=approved|
+  proposed_by_*|proposed` filter; 新增 `POST /v1/requirements/:id/approve`
+  (idempotent) 和 `POST /v1/requirements/:id/reject` (要求 `reason`,写
+  Activity 后软删)。
+- Web UI:`ProjectBoard` 在看板列上方加 "Triage drawer",列出
+  `proposed_by_*` 候选,带 Approve / Reject(prompt 输入 reason)按钮。
+  Backlog 列只展示 `Approved` 行,所以 board count 不再被巡检候选污染。
+- Auto loop:`harness-server::auto_mode::tick` 增加两条 `continue` 守卫
+  — `triage_state != Approved` 跳过;`depends_on` 任一项不在 `Done`
+  跳过(O(1) per-dep,基于本 project 的 status 快照)。新增的两条
+  `tick_*` 测试覆盖这两条路径。
 
 ### Phase 7：Cloud / Edge 调度
 

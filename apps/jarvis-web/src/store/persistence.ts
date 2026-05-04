@@ -265,7 +265,10 @@ const PANEL_DEFAULTS: Record<WorkspacePanelKey, boolean> = {
   diff: false,
   terminal: false,
   files: false,
-  tasks: false,
+  // Tasks defaults ON now: it doubles as the SubAgent activity surface
+  // ("希望在 side-panel 任务中面看到 subagent"). The list renders both
+  // subagent runs (top) and built-in tool calls (bottom) in one place.
+  tasks: true,
   plan: false,
   changeReport: false,
   todos: false,

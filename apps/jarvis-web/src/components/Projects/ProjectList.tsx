@@ -1,13 +1,25 @@
-import { useState } from "react";
-import type { Project } from "../../types/frames";
+import { useEffect, useMemo, useState } from "react";
+import type {
+  Project,
+  ProjectWorkspace,
+  RequirementStatus,
+} from "../../types/frames";
 import { t } from "../../utils/i18n";
 import {
   archiveProject,
   createProject,
   restoreProject,
 } from "../../services/projects";
+import {
+  listRequirements,
+  loadRequirements,
+} from "../../services/requirements";
 import { EmptyState } from "../shared/EmptyState";
 import { chipColor } from "../../utils/chipColor";
+import {
+  ProjectWorkspacesEditor,
+  compactWorkspaces,
+} from "./ProjectWorkspacesEditor";
 
 // Note: `t` is imported above (already used by `projects-row-count`).
 // Recent additions wire it through every user-visible string in this
@@ -75,6 +87,170 @@ export function ProjectListRow({
   );
 }
 
+// v1.0 — single project tile in the home grid. Pulls the cached
+// requirements for the project and renders a tiny "backlog · in
+// progress · review · done" count strip so the user can spot
+// where the work is at a glance without drilling in. Click anywhere
+// on the tile to open the kanban.
+//
+// The card subscribes implicitly via [`listRequirements`] which
+// reads the in-memory cache; the parent page already invokes
+// `loadRequirements(p.id)` for every visible project on mount and
+// re-renders on cache change, so we don't need our own loader here.
+export function ProjectGridCard({
+  project,
+  onOpen,
+}: {
+  project: Project;
+  onOpen: () => void;
+}) {
+  const reqs = listRequirements(project.id);
+  const counts = useMemo(() => {
+    const c: Record<RequirementStatus, number> = {
+      backlog: 0,
+      in_progress: 0,
+      review: 0,
+      done: 0,
+    };
+    for (const r of reqs) {
+      const triage = r.triage_state ?? "approved";
+      if (triage !== "approved") continue; // exclude proposed-by-* (Triage queue)
+      c[r.status] = (c[r.status] ?? 0) + 1;
+    }
+    return c;
+  }, [reqs]);
+  const total = counts.backlog + counts.in_progress + counts.review + counts.done;
+
+  return (
+    <button
+      type="button"
+      className={"project-grid-card" + (project.archived ? " archived" : "")}
+      onClick={onOpen}
+    >
+      <header className="project-grid-card-head">
+        <span
+          className="project-dot"
+          style={{ background: chipColor(project.slug) }}
+          aria-hidden="true"
+        />
+        <h3>{project.name}</h3>
+        {project.archived && (
+          <span className="project-grid-card-archived">
+            {t("projectListArchived")}
+          </span>
+        )}
+      </header>
+      {/* Description slot is always rendered (em-dash placeholder when
+          empty) so every card has the same height — without it cards
+          with descriptions sit taller than ones without and the grid
+          looks ragged. The `title` attribute carries the full text so
+          the 2-line clamp doesn't silently swallow long descriptions. */}
+      <p
+        className={
+          "project-grid-card-desc" +
+          (project.description ? "" : " is-empty")
+        }
+        title={project.description || undefined}
+      >
+        {project.description || "—"}
+      </p>
+      <footer className="project-grid-card-counts">
+        <CountChip label={t("colBacklog")} value={counts.backlog} tone="backlog" />
+        <CountChip label={t("colInProgress")} value={counts.in_progress} tone="in_progress" />
+        <CountChip label={t("colReview")} value={counts.review} tone="review" />
+        <CountChip label={t("colDone")} value={counts.done} tone="done" />
+        <span className="project-grid-card-total">
+          {t("projectGridTotal", total)}
+        </span>
+      </footer>
+    </button>
+  );
+}
+
+function CountChip({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <span
+      className={"project-grid-count count-" + tone + (value === 0 ? " is-zero" : "")}
+      title={label}
+    >
+      <span className="project-grid-count-label">{label}</span>
+      <span className="project-grid-count-value tabular-nums">{value}</span>
+    </span>
+  );
+}
+
+// v1.0 — projects-home body: a grid of project cards covering the
+// content area, plus a one-line aggregate summary above the grid.
+// Replaces the previous "drop the whole WorkOverview here" choice,
+// which left the page empty of project chrome and forced users to
+// hit the sidebar to find their projects.
+//
+// Side effect on mount / projects-list change: kick a
+// `loadRequirements(p.id)` for every visible project so the count
+// chips render with real data instead of zeroes. Idempotent — the
+// service-layer cache dedupes follow-ups.
+export function ProjectsHome({
+  projects,
+  onOpen,
+}: {
+  projects: Project[];
+  onOpen: (id: string) => void;
+}) {
+  const ids = projects.map((p) => p.id).join(",");
+  useEffect(() => {
+    for (const p of projects) {
+      void loadRequirements(p.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ids]);
+
+  // Re-read every render. The parent (ProjectsPage) re-renders on
+  // every requirements-cache bump (via `subscribeRequirements`), so
+  // memoising on `[projects, ids]` here would silently freeze the
+  // summary at boot-time zeros — `projects` reference + the joined
+  // ids string don't change when only the per-project requirement
+  // lists do. The loop is O(projects × requirements), cheap.
+  const totals: Record<RequirementStatus, number> = {
+    backlog: 0,
+    in_progress: 0,
+    review: 0,
+    done: 0,
+  };
+  for (const p of projects) {
+    for (const r of listRequirements(p.id)) {
+      const triage = r.triage_state ?? "approved";
+      if (triage !== "approved") continue;
+      totals[r.status] = (totals[r.status] ?? 0) + 1;
+    }
+  }
+
+  return (
+    <section className="projects-home" aria-label={t("projectsTitle")}>
+      <div className="projects-home-summary text-soft">
+        <span>{t("projectGridProjectCount", projects.length)}</span>
+        <span aria-hidden="true">·</span>
+        <span>
+          {t("colBacklog")} <strong>{totals.backlog}</strong>
+        </span>
+        <span>
+          {t("colInProgress")} <strong>{totals.in_progress}</strong>
+        </span>
+        <span>
+          {t("colReview")} <strong>{totals.review}</strong>
+        </span>
+        <span>
+          {t("colDone")} <strong>{totals.done}</strong>
+        </span>
+      </div>
+      <div className="projects-grid">
+        {projects.map((p) => (
+          <ProjectGridCard key={p.id} project={p} onOpen={() => onOpen(p.id)} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // Shown when the user has no projects yet, or when their search
 // query yields zero matches. The "create" CTA is conditional on
 // query state — we don't tell people to "start a project" when
@@ -130,6 +306,7 @@ export function ProjectUnavailable() {
 export function ProjectCreatePanel({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [workspaces, setWorkspaces] = useState<ProjectWorkspace[]>([]);
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -138,6 +315,7 @@ export function ProjectCreatePanel({ onDone }: { onDone: () => void }) {
     const created = await createProject({
       name: name.trim(),
       description: description.trim() || undefined,
+      workspaces: compactWorkspaces(workspaces),
     });
     setBusy(false);
     if (created) onDone();
@@ -161,6 +339,13 @@ export function ProjectCreatePanel({ onDone }: { onDone: () => void }) {
           rows={3}
         />
       </label>
+      <div className="projects-create-section">
+        <span className="projects-create-section-title">
+          {t("projectWorkspacesTitle")}
+        </span>
+        <p className="projects-create-section-hint">{t("projectWorkspacesHint")}</p>
+        <ProjectWorkspacesEditor value={workspaces} onChange={setWorkspaces} />
+      </div>
       <div className="projects-create-actions">
         <button
           type="button"

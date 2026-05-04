@@ -220,6 +220,21 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         "tools registered",
     );
 
+    // Built-in subagents (`subagent.read_doc` / `.review` / `.codex`
+    // / `.claude_code`). Each one carves a per-subagent tool subset
+    // from the canonical registry and registers as a wrapper tool;
+    // see `crate::subagents::register_builtins` for the per-kind
+    // toolset rationale. Non-fatal: missing ClaudeCode SDK only
+    // skips that one subagent.
+    let _subagent_count = crate::subagents::register_builtins(
+        &canonical_tools,
+        llm.clone(),
+        workspace_root.clone(),
+        requirement_store.clone(),
+        activity_store.clone(),
+    )
+    .await;
+
     // Persistence (`store` / `project_store` / `todo_store`) was
     // opened earlier so the TODO store could flow into
     // `BuiltinsConfig`. The same handles are reused below — no
@@ -503,8 +518,11 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     state = state.with_server_info(server_info);
 
     // Phase 6 — auto mode scheduler. Off by default; opt in via
-    // `JARVIS_WORK_MODE=auto`. The spawn() helper no-ops when
-    // mode is `Off`, so the call is unconditional.
+    // `JARVIS_WORK_MODE=auto`. v1.0: the spawned loop polls a shared
+    // [`AutoModeRuntime`] flag each tick so the operator can flip
+    // the scheduler on/off at runtime via `POST /v1/auto-mode`
+    // without rebooting the binary. Initial value comes from the
+    // env var.
     let auto_cfg = harness_server::AutoModeConfig {
         mode: std::env::var("JARVIS_WORK_MODE")
             .ok()
@@ -528,6 +546,8 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
             .and_then(|s| s.parse().ok())
             .unwrap_or(5 * 60 * 1000),
     };
+    let auto_runtime = harness_server::AutoModeRuntime::new(auto_cfg.mode);
+    state = state.with_auto_mode_runtime(auto_runtime);
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
 
     info!(%addr, "jarvis listening");
@@ -1048,7 +1068,36 @@ fn build_memory(
     Ok(Some(mem))
 }
 
+/// Build the global [`Approver`] attached to the agent's
+/// `AgentConfig`. Recognises both the new `JARVIS_PERMISSION_MODE`
+/// (preferred — same env that drives [`pick_permission_mode`]) and
+/// the legacy `JARVIS_APPROVAL_MODE` (kept for back-compat, no
+/// second warn here since [`pick_permission_mode`] already logged
+/// it). Mapping:
+///
+/// | env value             | source       | Approver       |
+/// |-----------------------|--------------|----------------|
+/// | `auto` / `bypass` / `accept-edits` | PERMISSION_MODE | `AlwaysApprove` |
+/// | `plan`                | PERMISSION_MODE | `AlwaysDeny`    |
+/// | `ask`                 | PERMISSION_MODE | `None` (per-tool gate via rule engine) |
+/// | `auto`                | APPROVAL_MODE   | `AlwaysApprove` |
+/// | `deny`                | APPROVAL_MODE   | `AlwaysDeny`    |
+///
+/// The per-socket WS transport overrides whichever Approver this
+/// installs — see `/v1/chat/ws` notes in CLAUDE.md.
 fn build_approver(cfg: &Config) -> Result<Option<Arc<dyn Approver>>> {
+    if let Ok(mode) = std::env::var("JARVIS_PERMISSION_MODE") {
+        let approver: Option<Arc<dyn Approver>> = match mode.as_str() {
+            "auto" | "bypass" | "accept-edits" => Some(Arc::new(AlwaysApprove)),
+            "plan" => Some(Arc::new(AlwaysDeny)),
+            "ask" => None,
+            _ => None,
+        };
+        if approver.is_some() {
+            info!(permission_mode = %mode, "approval gate enabled");
+        }
+        return Ok(approver);
+    }
     let mode = pick_string_opt("JARVIS_APPROVAL_MODE", cfg.approval.mode.as_deref());
     let Some(mode) = mode else {
         return Ok(None);
@@ -1276,6 +1325,20 @@ roadmap project for the current workspace (look for tags including \"roadmap\" �
 ends in `-roadmap`), then requirement.list and group by status. If no such project exists and \
 roadmap.import is available, suggest running it to bootstrap one from docs/proposals/ or \
 ROADMAP.md. \
+\
+Spec → Project workflow: when the user describes new work — either inline (\"add a user-avatar \
+upload\") or by pointing at a doc (\"read docs/feature-x.md and lay out the work\") — drive the \
+following sequence: \
+(1) call workspace.context, plus fs.read on any doc the user named; \
+(2) call plan.update with the proposed breakdown (titles only) and let the user confirm or edit; \
+(3) once confirmed, resolve the project (project.list / project.get; project.create only if it \
+genuinely does not exist), then call requirement.create per item — populate `verification_plan.commands` \
+with focused checks (`cargo test -p <crate>`, `npm test --prefix <pkg>`, etc.) and pass \
+`triage_state=approved` when the user explicitly accepted that exact list; \
+(4) for follow-ups you discover while running other work, call requirement.create without overriding \
+triage_state — they default to proposed_by_agent and wait in the Triage queue for the user. \
+Do not bulk-create requirements without first showing the breakdown via plan.update. \
+\
 End every coding turn with a short report: which files changed, which checks ran, which checks \
 were skipped and why, and any residual risk you couldn't verify.";
 

@@ -24,6 +24,37 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A workspace folder a [`Project`] knows about.
+///
+/// Projects live independently of any particular filesystem root, but
+/// many real workflows (Claude Code-style multi-repo projects) want to
+/// associate a project with one or more on-disk folders so the chat UI
+/// can offer them as candidates and surface their VCS state.
+///
+/// Paths are stored verbatim — canonicalisation is the caller's job
+/// (the REST layer canonicalises on insert).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectWorkspace {
+    /// Filesystem path. Expected to be absolute and canonical, but the
+    /// type does not enforce that — see `harness-server`'s create /
+    /// update handlers for the normalisation pass.
+    pub path: String,
+    /// Optional display label. When `None`, UIs fall back to the last
+    /// path segment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ProjectWorkspace {
+    /// Convenience constructor for callers that don't need a display name.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            name: None,
+        }
+    }
+}
+
 /// A reusable, named bundle of instructions / context that can be bound
 /// to one or more [`Conversation`](crate::Conversation)s.
 ///
@@ -49,6 +80,14 @@ pub struct Project {
     /// Free-form tags; useful for UI grouping. Order is preserved.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Workspace folders associated with this project. Order is
+    /// preserved and is the order the UI displays them in.
+    ///
+    /// Empty for projects that exist purely as instruction containers.
+    /// `#[serde(default)]` keeps legacy JSON rows that pre-date this
+    /// field loadable.
+    #[serde(default)]
+    pub workspaces: Vec<ProjectWorkspace>,
     /// Soft-delete flag. Archived projects are hidden from default
     /// listings but their bound conversations keep working.
     #[serde(default)]
@@ -74,6 +113,7 @@ impl Project {
             description: None,
             instructions: instructions.into(),
             tags: Vec::new(),
+            workspaces: Vec::new(),
             archived: false,
             created_at: now.clone(),
             updated_at: now,
@@ -95,6 +135,12 @@ impl Project {
     /// Builder-style setter for `tags`. Bumps `updated_at`.
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.set_tags(tags);
+        self
+    }
+
+    /// Builder-style setter for `workspaces`. Bumps `updated_at`.
+    pub fn with_workspaces(mut self, workspaces: Vec<ProjectWorkspace>) -> Self {
+        self.set_workspaces(workspaces);
         self
     }
 
@@ -125,6 +171,12 @@ impl Project {
     /// Replace `tags`; bumps `updated_at`.
     pub fn set_tags(&mut self, tags: Vec<String>) {
         self.tags = tags;
+        self.touch();
+    }
+
+    /// Replace `workspaces`; bumps `updated_at`.
+    pub fn set_workspaces(&mut self, workspaces: Vec<ProjectWorkspace>) {
+        self.workspaces = workspaces;
         self.touch();
     }
 
@@ -302,5 +354,45 @@ mod tests {
         let p = Project::new("n", "i");
         let json = serde_json::to_string(&p).unwrap();
         assert!(!json.contains("description"));
+    }
+
+    #[test]
+    fn workspaces_default_empty_for_legacy_json() {
+        // A pre-workspaces JSON row must still load — Phase 1 of the
+        // multi-workspace rollout depends on this `serde(default)` contract.
+        let legacy = r#"{
+            "id": "11111111-1111-1111-1111-111111111111",
+            "slug": "legacy",
+            "name": "Legacy",
+            "instructions": "be terse",
+            "tags": [],
+            "archived": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let p: Project = serde_json::from_str(legacy).unwrap();
+        assert!(p.workspaces.is_empty());
+    }
+
+    #[test]
+    fn workspaces_round_trip() {
+        let ws = vec![
+            ProjectWorkspace {
+                path: "/a".into(),
+                name: Some("Alpha".into()),
+            },
+            ProjectWorkspace::new("/b"),
+        ];
+        let p = Project::new("n", "i").with_workspaces(ws.clone());
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.workspaces, ws);
+    }
+
+    #[test]
+    fn workspace_name_is_skipped_when_none() {
+        let ws = ProjectWorkspace::new("/c");
+        let json = serde_json::to_string(&ws).unwrap();
+        assert!(!json.contains("name"));
     }
 }

@@ -60,6 +60,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::roadmap_routes::router())
         .merge(crate::agent_profiles_routes::router())
         .merge(crate::diagnostics_routes::router())
+        .merge(crate::auto_mode_routes::router())
         .merge(crate::docs_routes::router())
         .merge(crate::work_overview_routes::router())
         .merge(ui::router())
@@ -290,7 +291,7 @@ async fn get_server_info(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
-async fn workspace_snapshot(root: &std::path::Path) -> serde_json::Value {
+pub(crate) async fn workspace_snapshot(root: &std::path::Path) -> serde_json::Value {
     let canonical = tokio::fs::canonicalize(root)
         .await
         .unwrap_or_else(|_| root.to_path_buf());

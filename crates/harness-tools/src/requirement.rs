@@ -43,14 +43,28 @@
 //! through the tool-call context or (b) introduce a dedicated
 //! `ActivityActor::AgentTool` variant.
 //!
-//! Approval policy: `requirement.*` mutations are **not**
-//! approval-gated. The user wants the agent to drive board state
-//! freely; the audit timeline ([`Activity`]) is the recovery
-//! mechanism, not an upfront block. Operators who want stricter
-//! control can register a `RuleApprover` rule against
-//! `requirement.*` — same opt-in pattern as `todo.*`. The one
-//! human-only gate is the `Review → Done` transition, enforced
-//! structurally: this tool simply cannot write `Done`.
+//! Approval policy: status-mutation tools (`requirement.start /
+//! block / complete`) are **not** approval-gated — the user wants
+//! the agent to drive board state freely; the audit timeline
+//! ([`Activity`]) is the recovery mechanism, not an upfront
+//! block. Operators who want stricter control can register a
+//! `RuleApprover` rule against `requirement.*` — same opt-in
+//! pattern as `todo.*`.
+//!
+//! `requirement.create / update / delete` (v1.0) are different —
+//! they create or remove backlog rows that the auto executor will
+//! later spend real tokens on. They run **without** an approval
+//! gate, but new rows the agent creates default to
+//! [`TriageState::ProposedByAgent`] so they sit in the triage
+//! queue until a human approves. That's a structural gate the
+//! model can't bypass: even if the agent calls `requirement.create`
+//! freely, nothing executes without explicit human acceptance.
+//! REST callers (humans hitting `POST /v1/projects/:id/requirements`)
+//! still default to [`TriageState::Approved`] for back-compat.
+//!
+//! The one human-only gate is the `Review → Done` transition,
+//! enforced structurally: `requirement.complete` simply cannot
+//! write `Done`.
 //!
 //! Tools are registered conditionally — both
 //! `BuiltinsConfig::requirement_store` AND `activity_store` must
@@ -62,7 +76,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use harness_core::{
     Activity, ActivityActor, ActivityKind, ActivityStore, BoxError, Requirement,
-    RequirementStatus, RequirementStore, Tool, ToolCategory,
+    RequirementStatus, RequirementStore, Tool, ToolCategory, TriageState, VerificationPlan,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -512,6 +526,529 @@ impl Tool for RequirementCompleteTool {
     }
 }
 
+// ---------- requirement.review_verdict ------------------------------------
+//
+// Tool the reviewer subagent uses to record its verdict. **NOT** part of
+// the default tool registration — `register_builtins` does not register
+// it. The composition root is responsible for adding it ONLY to the
+// reviewer subagent's tool registry, so the work agent can never write
+// `Done` directly. See `docs/proposals/subagents.zh-CN.md` (the
+// "Reviewer Verdict" section).
+//
+// Behaviour:
+//   - `pass`  → status: Review → Done, two Activity rows (StatusChange + Comment).
+//   - `fail`  → status: Review → InProgress, two Activity rows. The
+//     commentary travels with the row so the next pickup can read it.
+//   - Errors out if the row isn't currently in `Review` (unexpected —
+//     reviewer is dispatched by the auto loop after the work agent
+//     flipped to Review).
+
+pub struct RequirementReviewVerdictTool {
+    store: Arc<dyn RequirementStore>,
+    activity: Arc<dyn ActivityStore>,
+}
+
+impl RequirementReviewVerdictTool {
+    pub fn new(store: Arc<dyn RequirementStore>, activity: Arc<dyn ActivityStore>) -> Self {
+        Self { store, activity }
+    }
+}
+
+#[async_trait]
+impl Tool for RequirementReviewVerdictTool {
+    fn name(&self) -> &str {
+        "requirement.review_verdict"
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Write
+    }
+
+    fn description(&self) -> &str {
+        "Record a reviewer verdict on a requirement currently in Review. \
+         `pass` flips it to Done; `fail` bounces it back to InProgress \
+         with the commentary attached so the next work-agent pickup can \
+         adapt. Reviewer subagents call this exactly once per run; the \
+         main work agent does not have access to this tool."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Requirement UUID under review."
+                },
+                "verdict": {
+                    "type": "string",
+                    "enum": ["pass", "fail"],
+                    "description": "`pass` accepts the work; `fail` bounces it back."
+                },
+                "commentary": {
+                    "type": "string",
+                    "description": "1-2 sentence justification visible to humans and to the next work-agent pickup on `fail`."
+                },
+                "evidence": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional bullets — verification_plan items + their pass/fail status, file paths checked, etc."
+                }
+            },
+            "required": ["id", "verdict", "commentary"]
+        })
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("id").and_then(|v| v.as_str()).map(str::to_string)
+    }
+
+    async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: String,
+            verdict: String,
+            commentary: String,
+            #[serde(default)]
+            evidence: Vec<String>,
+        }
+        let parsed: Args = serde_json::from_value(args).map_err(|e| -> BoxError {
+            format!("requirement.review_verdict: bad args: {e}").into()
+        })?;
+        let commentary = parsed.commentary.trim().to_owned();
+        if commentary.is_empty() {
+            return Err(
+                "requirement.review_verdict: `commentary` must not be blank".into(),
+            );
+        }
+        let pass = match parsed.verdict.as_str() {
+            "pass" => true,
+            "fail" => false,
+            other => {
+                return Err(format!(
+                    "requirement.review_verdict: bad verdict `{other}` — expected `pass` or `fail`"
+                )
+                .into())
+            }
+        };
+
+        let mut item = self
+            .store
+            .get(&parsed.id)
+            .await?
+            .ok_or_else(|| -> BoxError {
+                format!("requirement.review_verdict: id `{}` not found", parsed.id).into()
+            })?;
+        if item.status != RequirementStatus::Review {
+            return Err(format!(
+                "requirement.review_verdict: id `{}` is `{}`, not `review` — \
+                 reviewer should only run after work agent flipped to Review",
+                parsed.id,
+                item.status.as_wire()
+            )
+            .into());
+        }
+
+        let prior = item.status;
+        item.status = if pass {
+            RequirementStatus::Done
+        } else {
+            RequirementStatus::InProgress
+        };
+        item.touch();
+        self.store.upsert(&item).await?;
+
+        record_activity(
+            &self.activity,
+            &item.id,
+            ActivityKind::StatusChange,
+            json!({
+                "from": prior.as_wire(),
+                "to": item.status.as_wire(),
+            }),
+        )
+        .await;
+        record_activity(
+            &self.activity,
+            &item.id,
+            ActivityKind::Comment,
+            json!({
+                "text": commentary,
+                "kind": if pass { "review_passed" } else { "review_failed" },
+                "evidence": parsed.evidence,
+            }),
+        )
+        .await;
+        Ok(requirement_to_json(&item).to_string())
+    }
+}
+
+// ---------- requirement.create --------------------------------------------
+
+/// Helper: parse a string `triage_state` argument into the enum, or
+/// fall back to a context-appropriate default.
+fn parse_triage_state(raw: Option<&str>, default_when_missing: TriageState) -> Result<TriageState, BoxError> {
+    match raw {
+        None => Ok(default_when_missing),
+        Some(s) => TriageState::from_wire(s.trim()).ok_or_else(|| -> BoxError {
+            format!(
+                "unknown triage_state `{s}` — expected one of \
+                 approved / proposed_by_agent / proposed_by_scan"
+            )
+            .into()
+        }),
+    }
+}
+
+pub struct RequirementCreateTool {
+    store: Arc<dyn RequirementStore>,
+    activity: Arc<dyn ActivityStore>,
+}
+
+impl RequirementCreateTool {
+    pub fn new(store: Arc<dyn RequirementStore>, activity: Arc<dyn ActivityStore>) -> Self {
+        Self { store, activity }
+    }
+}
+
+#[async_trait]
+impl Tool for RequirementCreateTool {
+    fn name(&self) -> &str {
+        "requirement.create"
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Write
+    }
+
+    fn description(&self) -> &str {
+        "Create a new requirement card under a project. The agent \
+         calls this when a user describes work to be done, or when \
+         decomposing a spec/doc into kanban rows. New rows default to \
+         status=`backlog` and triage_state=`proposed_by_agent` — they \
+         appear in the project's Triage queue and DO NOT run \
+         automatically until a human approves. Pass \
+         `triage_state=approved` only when the user has explicitly \
+         confirmed the card (e.g. \"yes, add these and start\"). \
+         Optional `verification_plan.commands` (e.g. \
+         [\"cargo test\"]) pin the verification gate that runs after \
+         each agent run finishes. Optional `depends_on` lists other \
+         requirement ids that must reach `done` first."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "project_id": { "type": "string", "description": "Project UUID. Use project.list to find it." },
+                "title": { "type": "string", "description": "One-sentence headline." },
+                "description": { "type": "string", "description": "Optional longer body (markdown allowed)." },
+                "verification_plan": {
+                    "type": "object",
+                    "description": "Optional pinned verification template. Has a `commands` array of shell strings (e.g. [\"cargo test -p foo\"]) and optional `require_diff` / `require_tests` / `require_human_review` booleans.",
+                    "properties": {
+                        "commands": { "type": "array", "items": { "type": "string" } },
+                        "require_diff": { "type": "boolean" },
+                        "require_tests": { "type": "boolean" },
+                        "require_human_review": { "type": "boolean" }
+                    }
+                },
+                "depends_on": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Other requirement ids that must reach `done` before this one is auto-eligible."
+                },
+                "assignee_id": { "type": "string", "description": "Optional AgentProfile id to pin." },
+                "triage_state": {
+                    "type": "string",
+                    "enum": ["approved", "proposed_by_agent", "proposed_by_scan"],
+                    "description": "Triage gate. Defaults to `proposed_by_agent` so agent-created rows wait for human approval. Pass `approved` only when the user explicitly confirmed."
+                }
+            },
+            "required": ["project_id", "title"]
+        })
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("title").and_then(|v| v.as_str()).map(str::to_string)
+    }
+
+    async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        #[derive(Deserialize)]
+        struct Args {
+            project_id: String,
+            title: String,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            verification_plan: Option<VerificationPlan>,
+            #[serde(default)]
+            depends_on: Option<Vec<String>>,
+            #[serde(default)]
+            assignee_id: Option<String>,
+            #[serde(default)]
+            triage_state: Option<String>,
+        }
+        let parsed: Args = serde_json::from_value(args)
+            .map_err(|e| -> BoxError { format!("requirement.create: bad args: {e}").into() })?;
+        let project_id = parsed.project_id.trim().to_string();
+        if project_id.is_empty() {
+            return Err("requirement.create: `project_id` must not be blank".into());
+        }
+        let title = parsed.title.trim().to_string();
+        if title.is_empty() {
+            return Err("requirement.create: `title` must not be blank".into());
+        }
+        // Agent-driven creation defaults to ProposedByAgent — the
+        // model can override to Approved when the user confirms.
+        let triage_state =
+            parse_triage_state(parsed.triage_state.as_deref(), TriageState::ProposedByAgent)?;
+
+        let mut req = Requirement::new(&project_id, &title);
+        if let Some(d) = parsed.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            req.description = Some(d.to_string());
+        }
+        if let Some(plan) = parsed.verification_plan {
+            req.verification_plan = Some(plan);
+        }
+        if let Some(deps) = parsed.depends_on {
+            req.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+        }
+        if let Some(a) = parsed.assignee_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            req.assignee_id = Some(a.to_string());
+        }
+        req.triage_state = triage_state;
+
+        self.store.upsert(&req).await?;
+        // Audit: log creation as a Comment with kind=created so the
+        // timeline carries the source channel.
+        record_activity(
+            &self.activity,
+            &req.id,
+            ActivityKind::Comment,
+            json!({
+                "kind": "created",
+                "title": req.title,
+                "triage_state": req.triage_state.as_wire(),
+            }),
+        )
+        .await;
+        Ok(requirement_to_json(&req).to_string())
+    }
+}
+
+// ---------- requirement.update --------------------------------------------
+
+pub struct RequirementUpdateTool {
+    store: Arc<dyn RequirementStore>,
+    activity: Arc<dyn ActivityStore>,
+}
+
+impl RequirementUpdateTool {
+    pub fn new(store: Arc<dyn RequirementStore>, activity: Arc<dyn ActivityStore>) -> Self {
+        Self { store, activity }
+    }
+}
+
+#[async_trait]
+impl Tool for RequirementUpdateTool {
+    fn name(&self) -> &str {
+        "requirement.update"
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Write
+    }
+
+    fn description(&self) -> &str {
+        "Update mutable metadata on an existing requirement. Pass any \
+         subset of {title, description, verification_plan, depends_on, \
+         assignee_id, triage_state} — omitted fields keep their current \
+         value. To clear `description`, pass an empty string. To clear \
+         `assignee_id` pass an empty string. Status transitions go \
+         through requirement.{start,complete,block} instead, not this \
+         tool."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "title": { "type": "string" },
+                "description": { "type": "string", "description": "Empty string clears." },
+                "verification_plan": { "type": "object" },
+                "depends_on": { "type": "array", "items": { "type": "string" } },
+                "assignee_id": { "type": "string", "description": "Empty string clears." },
+                "triage_state": {
+                    "type": "string",
+                    "enum": ["approved", "proposed_by_agent", "proposed_by_scan"]
+                }
+            },
+            "required": ["id"]
+        })
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("id").and_then(|v| v.as_str()).map(str::to_string)
+    }
+
+    async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: String,
+            #[serde(default)]
+            title: Option<String>,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            verification_plan: Option<VerificationPlan>,
+            #[serde(default)]
+            depends_on: Option<Vec<String>>,
+            #[serde(default)]
+            assignee_id: Option<String>,
+            #[serde(default)]
+            triage_state: Option<String>,
+        }
+        let parsed: Args = serde_json::from_value(args)
+            .map_err(|e| -> BoxError { format!("requirement.update: bad args: {e}").into() })?;
+        let mut item = self
+            .store
+            .get(&parsed.id)
+            .await?
+            .ok_or_else(|| -> BoxError {
+                format!("requirement.update: id `{}` not found", parsed.id).into()
+            })?;
+        let prior_triage = item.triage_state;
+        let mut changed = false;
+        if let Some(t) = parsed.title {
+            let trimmed = t.trim().to_string();
+            if trimmed.is_empty() {
+                return Err("requirement.update: `title` must not be blank".into());
+            }
+            if item.title != trimmed {
+                item.title = trimmed;
+                changed = true;
+            }
+        }
+        if let Some(d) = parsed.description {
+            let trimmed = d.trim().to_string();
+            let new_desc = if trimmed.is_empty() { None } else { Some(trimmed) };
+            if item.description != new_desc {
+                item.description = new_desc;
+                changed = true;
+            }
+        }
+        if let Some(plan) = parsed.verification_plan {
+            item.verification_plan = Some(plan);
+            changed = true;
+        }
+        if let Some(deps) = parsed.depends_on {
+            let cleaned: Vec<String> =
+                deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+            if item.depends_on != cleaned {
+                item.depends_on = cleaned;
+                changed = true;
+            }
+        }
+        if let Some(a) = parsed.assignee_id {
+            let trimmed = a.trim().to_string();
+            let new_assignee = if trimmed.is_empty() { None } else { Some(trimmed) };
+            if item.assignee_id != new_assignee {
+                item.assignee_id = new_assignee;
+                changed = true;
+            }
+        }
+        if let Some(raw) = parsed.triage_state.as_deref() {
+            let parsed_state = parse_triage_state(Some(raw), TriageState::Approved)?;
+            if item.triage_state != parsed_state {
+                item.triage_state = parsed_state;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(requirement_to_json(&item).to_string());
+        }
+        item.touch();
+        self.store.upsert(&item).await?;
+        if prior_triage != item.triage_state {
+            record_activity(
+                &self.activity,
+                &item.id,
+                ActivityKind::Comment,
+                json!({
+                    "kind": "triage_change",
+                    "from": prior_triage.as_wire(),
+                    "to": item.triage_state.as_wire(),
+                }),
+            )
+            .await;
+        }
+        Ok(requirement_to_json(&item).to_string())
+    }
+}
+
+// ---------- requirement.delete --------------------------------------------
+
+pub struct RequirementDeleteTool {
+    store: Arc<dyn RequirementStore>,
+}
+
+impl RequirementDeleteTool {
+    pub fn new(store: Arc<dyn RequirementStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl Tool for RequirementDeleteTool {
+    fn name(&self) -> &str {
+        "requirement.delete"
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Write
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
+    fn description(&self) -> &str {
+        "Permanently remove a requirement row. Use sparingly — the \
+         row's run history and activity timeline disappear with it. \
+         For \"this no longer applies\" the better move is \
+         requirement.update setting triage_state=approved + \
+         requirement.complete (lands in Review for the human to flip \
+         to Done). This tool is gated by approval."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" }
+            },
+            "required": ["id"]
+        })
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("id").and_then(|v| v.as_str()).map(str::to_string)
+    }
+
+    async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: String,
+        }
+        let parsed: Args = serde_json::from_value(args)
+            .map_err(|e| -> BoxError { format!("requirement.delete: bad args: {e}").into() })?;
+        let deleted = self.store.delete(&parsed.id).await?;
+        Ok(json!({ "id": parsed.id, "deleted": deleted }).to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,17 +1421,194 @@ mod tests {
     }
 
     #[test]
-    fn no_tool_requires_approval() {
-        // requirement.* deliberately does NOT gate on the approver;
-        // the audit timeline is the recovery mechanism, and operators
-        // who want stricter control register a `RuleApprover` rule.
-        // Same opt-in pattern as `todo.*`.
+    fn no_status_tool_requires_approval() {
+        // Status-mutation tools (`start / block / complete`) and
+        // `create / update` are NOT approval-gated; the audit timeline
+        // + the structural Triage gate are the recovery mechanisms.
+        // `requirement.delete` IS gated because it discards run history
+        // irrecoverably.
         let (rs, acts) = fixtures();
         let rs_dyn: Arc<dyn RequirementStore> = rs;
         let acts_dyn: Arc<dyn ActivityStore> = acts;
         assert!(!RequirementListTool::new(rs_dyn.clone()).requires_approval());
         assert!(!RequirementStartTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
         assert!(!RequirementBlockTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
-        assert!(!RequirementCompleteTool::new(rs_dyn, acts_dyn).requires_approval());
+        assert!(!RequirementCompleteTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
+        assert!(!RequirementCreateTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
+        assert!(!RequirementUpdateTool::new(rs_dyn.clone(), acts_dyn).requires_approval());
+        assert!(RequirementDeleteTool::new(rs_dyn).requires_approval());
+    }
+
+    // ---------- create / update / delete --------------------------------
+
+    #[tokio::test]
+    async fn create_defaults_to_proposed_by_agent_and_backlog() {
+        let (rs, acts) = fixtures();
+        let create = RequirementCreateTool::new(rs.clone(), acts.clone());
+        let out = create
+            .invoke(json!({
+                "project_id": "p1",
+                "title": "Add avatar upload",
+                "description": "Multipart POST /api/avatar"
+            }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["title"], "Add avatar upload");
+        assert_eq!(v["status"], "backlog");
+        assert_eq!(v["triage_state"], "proposed_by_agent");
+        assert_eq!(v["project_id"], "p1");
+        assert_eq!(v["description"], "Multipart POST /api/avatar");
+
+        let timeline = acts.snapshot().await;
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].kind, ActivityKind::Comment);
+        assert_eq!(timeline[0].body["kind"], "created");
+        assert_eq!(timeline[0].body["triage_state"], "proposed_by_agent");
+    }
+
+    #[tokio::test]
+    async fn create_with_explicit_approved_overrides_default() {
+        let (rs, acts) = fixtures();
+        let create = RequirementCreateTool::new(rs, acts);
+        let out = create
+            .invoke(json!({
+                "project_id": "p",
+                "title": "user-confirmed task",
+                "triage_state": "approved"
+            }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        // Default Approved field is skipped on the wire (serde
+        // skip_serializing_if), so absence == approved.
+        assert!(v.get("triage_state").is_none());
+    }
+
+    #[tokio::test]
+    async fn create_persists_verification_plan_and_depends_on() {
+        let (rs, acts) = fixtures();
+        let create = RequirementCreateTool::new(rs.clone(), acts);
+        let out = create
+            .invoke(json!({
+                "project_id": "p",
+                "title": "x",
+                "verification_plan": {
+                    "commands": ["cargo test -p foo"],
+                    "require_tests": true
+                },
+                "depends_on": ["dep-1", "dep-2", "  "]
+            }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let id = v["id"].as_str().unwrap();
+        let arc: Arc<dyn RequirementStore> = rs;
+        let stored = arc.get(id).await.unwrap().unwrap();
+        assert_eq!(stored.depends_on, vec!["dep-1".to_string(), "dep-2".to_string()]);
+        assert!(stored.verification_plan.is_some());
+        assert!(stored.verification_plan.as_ref().unwrap().require_tests);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_blank_title_or_project() {
+        let (rs, acts) = fixtures();
+        let create = RequirementCreateTool::new(rs, acts);
+        let err = create
+            .invoke(json!({ "project_id": "p", "title": "  " }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("title"));
+    }
+
+    #[tokio::test]
+    async fn create_rejects_unknown_triage_state() {
+        let (rs, acts) = fixtures();
+        let create = RequirementCreateTool::new(rs, acts);
+        let err = create
+            .invoke(json!({ "project_id": "p", "title": "x", "triage_state": "zomg" }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown triage_state"));
+    }
+
+    #[tokio::test]
+    async fn update_changes_title_and_records_triage_change() {
+        let (rs, acts) = fixtures();
+        let create = RequirementCreateTool::new(rs.clone(), acts.clone());
+        let out = create
+            .invoke(json!({ "project_id": "p", "title": "draft" }))
+            .await
+            .unwrap();
+        let id = serde_json::from_str::<Value>(&out).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // wipe the create activity so we can read just the update audit.
+        let baseline = acts.snapshot().await.len();
+
+        let update = RequirementUpdateTool::new(rs.clone(), acts.clone());
+        let out = update
+            .invoke(json!({
+                "id": id,
+                "title": "final title",
+                "triage_state": "approved"
+            }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["title"], "final title");
+
+        let extra = acts.snapshot().await.len() - baseline;
+        assert_eq!(extra, 1, "expected exactly one triage_change activity");
+        let tail = &acts.snapshot().await[baseline];
+        assert_eq!(tail.body["kind"], "triage_change");
+        assert_eq!(tail.body["from"], "proposed_by_agent");
+        assert_eq!(tail.body["to"], "approved");
+    }
+
+    #[tokio::test]
+    async fn update_no_op_when_nothing_changes() {
+        let (rs, acts) = fixtures();
+        let r = seed(&rs, "p", "x").await;
+        let baseline = r.updated_at.clone();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let update = RequirementUpdateTool::new(rs.clone(), acts);
+        update.invoke(json!({ "id": r.id })).await.unwrap();
+        let arc: Arc<dyn RequirementStore> = rs;
+        let after = arc.get(&r.id).await.unwrap().unwrap();
+        assert_eq!(after.updated_at, baseline, "no-op should not touch updated_at");
+    }
+
+    #[tokio::test]
+    async fn update_clears_description_with_empty_string() {
+        let (rs, acts) = fixtures();
+        let mut r = Requirement::new("p", "x");
+        r.description = Some("longform".into());
+        let arc: Arc<dyn RequirementStore> = rs.clone();
+        arc.upsert(&r).await.unwrap();
+
+        let update = RequirementUpdateTool::new(rs.clone(), acts);
+        update
+            .invoke(json!({ "id": r.id, "description": "" }))
+            .await
+            .unwrap();
+        let after = arc.get(&r.id).await.unwrap().unwrap();
+        assert!(after.description.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_removes_row() {
+        let (rs, acts) = fixtures();
+        let r = seed(&rs, "p", "x").await;
+        let arc: Arc<dyn RequirementStore> = rs.clone();
+        let _ = acts; // unused
+
+        let delete = RequirementDeleteTool::new(rs);
+        let out = delete.invoke(json!({ "id": r.id.clone() })).await.unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["deleted"], true);
+        assert!(arc.get(&r.id).await.unwrap().is_none());
     }
 }

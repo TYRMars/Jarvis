@@ -81,6 +81,31 @@ pub struct Requirement {
     /// JSON rows without it deserialise as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_plan: Option<VerificationPlan>,
+    /// Triage gate (v1.0). Distinguishes "user-approved work the
+    /// auto executor may pick up" from "agent-proposed / scan-
+    /// surfaced candidate that must be reviewed first". Auto loop
+    /// only consumes [`TriageState::Approved`] rows. Older JSON
+    /// rows without the field deserialise as `Approved` (the
+    /// pre-v1.0 default behaviour).
+    #[serde(default, skip_serializing_if = "TriageState::is_default")]
+    pub triage_state: TriageState,
+    /// Other requirement ids that must reach
+    /// [`RequirementStatus::Done`] before this one is eligible for
+    /// auto execution. Manual `Start` ignores this list — the gate
+    /// is a scheduler concern, not a hard FK. Empty = no
+    /// dependencies. Older JSON rows without the field deserialise
+    /// as an empty `Vec`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// Who decides `Review → Done`. The default
+    /// [`AcceptancePolicy::Subagent`] hands the call off to a
+    /// reviewer subagent (see `docs/proposals/subagents.zh-CN.md`)
+    /// once the work agent flips to Review; setting it to
+    /// [`AcceptancePolicy::Human`] preserves the pre-subagent
+    /// behaviour and waits for a person to click "accept" in the UI.
+    /// Older JSON rows without the field deserialise as `Subagent`.
+    #[serde(default, skip_serializing_if = "AcceptancePolicy::is_default")]
+    pub acceptance_policy: AcceptancePolicy,
     /// RFC-3339 / ISO-8601 timestamp of creation.
     pub created_at: String,
     /// RFC-3339 / ISO-8601 timestamp; bumped on every mutation via
@@ -129,9 +154,128 @@ impl RequirementStatus {
     }
 }
 
+/// Triage gate for a [`Requirement`]. Distinguishes
+/// **user-approved** work (default) from **agent-proposed** or
+/// **scan-surfaced** candidates that must be reviewed before any
+/// automation picks them up.
+///
+/// Wire form is snake_case (`"approved"` / `"proposed_by_agent"` /
+/// `"proposed_by_scan"`). Older requirement rows on disk that
+/// don't carry the field deserialise as [`TriageState::Approved`]
+/// — i.e. v0 behaviour is preserved when no triage gate was set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageState {
+    /// User has approved the work. The auto executor may pick it
+    /// up subject to the usual `assignee_id` / `depends_on` /
+    /// `status` checks. This is the default for backward compat.
+    #[default]
+    Approved,
+    /// The agent proposed this requirement during a conversation
+    /// (e.g. via `requirement.create` while working on a different
+    /// card). Stays out of the auto queue until a human approves.
+    ProposedByAgent,
+    /// A scan tool surfaced this candidate (TODO comments, doctor
+    /// findings, recent failed runs). Same gate as
+    /// [`TriageState::ProposedByAgent`] — needs human approval
+    /// before the executor will touch it.
+    ProposedByScan,
+}
+
+impl TriageState {
+    /// Parse a wire string. `None` for unrecognised values; REST
+    /// handlers turn that into a 400.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "approved" => Self::Approved,
+            "proposed_by_agent" => Self::ProposedByAgent,
+            "proposed_by_scan" => Self::ProposedByScan,
+            _ => return None,
+        })
+    }
+
+    /// Wire form (snake_case).
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::ProposedByAgent => "proposed_by_agent",
+            Self::ProposedByScan => "proposed_by_scan",
+        }
+    }
+
+    /// `true` for the [`TriageState::Approved`] default — used by
+    /// `#[serde(skip_serializing_if = ...)]` so v0 callers don't
+    /// see the new field on the wire.
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Approved)
+    }
+
+    /// `true` when this gate requires a human to approve before the
+    /// auto executor will pick the requirement up.
+    pub fn needs_triage(self) -> bool {
+        !matches!(self, Self::Approved)
+    }
+}
+
+/// Who decides `Review → Done` for a [`Requirement`].
+///
+/// Older JSON rows on disk that don't carry the field deserialise
+/// as the default [`AcceptancePolicy::Subagent`] — i.e. the new
+/// reviewer-subagent behaviour applies once the v1.0 subagent
+/// machinery is wired in. Until that machinery lands, the field is
+/// inert (no caller checks it), so the default is forward-looking
+/// without changing today's flow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptancePolicy {
+    /// Default. Once the work agent flips the requirement to
+    /// `Review`, the auto loop dispatches a reviewer subagent that
+    /// runs the [`VerificationPlan`] and decides pass/fail. On pass
+    /// the requirement flips to `Done`; on fail it bounces back to
+    /// `InProgress` with the reviewer's commentary attached so the
+    /// next pickup can adapt.
+    #[default]
+    Subagent,
+    /// Pre-subagent behaviour. The requirement stops at `Review` and
+    /// waits for a human to accept it via the UI's "complete" action.
+    /// Use this for changes where automated verification can't be
+    /// trusted (UX/visual design, security-sensitive work, anything
+    /// the verification_plan can't model).
+    Human,
+}
+
+impl AcceptancePolicy {
+    /// Parse a wire string. `None` for unrecognised values; REST
+    /// handlers turn that into a 400.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "subagent" => Self::Subagent,
+            "human" => Self::Human,
+            _ => return None,
+        })
+    }
+
+    /// Wire form (snake_case).
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Subagent => "subagent",
+            Self::Human => "human",
+        }
+    }
+
+    /// `true` for the [`AcceptancePolicy::Subagent`] default — used
+    /// by `#[serde(skip_serializing_if = ...)]` so legacy callers
+    /// don't see the new field on the wire when nothing's been set.
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Subagent)
+    }
+}
+
 impl Requirement {
     /// Mint a new requirement with a fresh UUID and current RFC-3339
-    /// timestamps. Status defaults to [`RequirementStatus::Backlog`].
+    /// timestamps. Status defaults to [`RequirementStatus::Backlog`];
+    /// triage_state defaults to [`TriageState::Approved`] so manual
+    /// REST `POST /requirements` keeps its pre-v1.0 semantics.
     pub fn new(project_id: impl Into<String>, title: impl Into<String>) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
@@ -143,6 +287,9 @@ impl Requirement {
             conversation_ids: Vec::new(),
             assignee_id: None,
             verification_plan: None,
+            triage_state: TriageState::Approved,
+            depends_on: Vec::new(),
+            acceptance_policy: AcceptancePolicy::Subagent,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -172,6 +319,15 @@ impl Requirement {
 /// mutation. WS transports filter by `project_id` and forward to
 /// subscribed clients as `requirement_upserted` / `requirement_deleted`
 /// frames.
+///
+/// `Upserted` carries a full `Requirement` (~280 bytes of strings +
+/// vecs) while `Deleted` is just an id pair; clippy flags this as
+/// `large_enum_variant`. We accept the size asymmetry — broadcast
+/// channel events are infrequent (one per kanban mutation), and the
+/// alternative (boxing) costs us a heap alloc on every fan-out path
+/// across 5 store backends. Same exemption pattern as
+/// [`AgentProfileEvent`](crate::AgentProfileEvent).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RequirementEvent {
@@ -312,5 +468,56 @@ mod tests {
         ] {
             assert!(json.get(key).is_some(), "missing wire key: {key}");
         }
+    }
+
+    #[test]
+    fn legacy_json_without_acceptance_policy_defaults_to_subagent() {
+        // Pre-v1.0 row on disk — no `acceptance_policy` field.
+        let raw = serde_json::json!({
+            "id": "r1",
+            "project_id": "p1",
+            "title": "Old row",
+            "status": "backlog",
+            "conversation_ids": [],
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z"
+        });
+        let r: Requirement = serde_json::from_value(raw).unwrap();
+        assert_eq!(r.acceptance_policy, AcceptancePolicy::Subagent);
+    }
+
+    #[test]
+    fn default_acceptance_policy_omitted_on_wire() {
+        let r = Requirement::new("p1", "Hello");
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(
+            json.get("acceptance_policy").is_none(),
+            "default Subagent policy should be skipped on serialise; got: {json}"
+        );
+    }
+
+    #[test]
+    fn explicit_human_policy_round_trips() {
+        let mut r = Requirement::new("p1", "Hello");
+        r.acceptance_policy = AcceptancePolicy::Human;
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["acceptance_policy"], "human");
+        let back: Requirement = serde_json::from_value(json).unwrap();
+        assert_eq!(back.acceptance_policy, AcceptancePolicy::Human);
+    }
+
+    #[test]
+    fn acceptance_policy_wire_strings() {
+        assert_eq!(AcceptancePolicy::Subagent.as_wire(), "subagent");
+        assert_eq!(AcceptancePolicy::Human.as_wire(), "human");
+        assert_eq!(
+            AcceptancePolicy::from_wire("subagent"),
+            Some(AcceptancePolicy::Subagent)
+        );
+        assert_eq!(
+            AcceptancePolicy::from_wire("human"),
+            Some(AcceptancePolicy::Human)
+        );
+        assert_eq!(AcceptancePolicy::from_wire("unknown"), None);
     }
 }

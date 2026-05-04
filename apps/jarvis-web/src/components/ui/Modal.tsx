@@ -43,9 +43,24 @@ export interface ModalProps {
   /// buttons. Layout is the caller's responsibility; we just give you
   /// a container with consistent chrome.
   children: ReactNode;
-  /// Extra class on the dialog box itself. Use for sizing overrides
-  /// (e.g. `column-editor-dialog` already declares `width: min(720px, ...)`).
+  /// Extra class on the dialog box itself. Use it for content-specific
+  /// styling (per-form layout tweaks). For width, prefer the `size`
+  /// prop — it's the shared knob every modal inherits, so widths stay
+  /// consistent across the app.
   dialogClassName?: string;
+  /// Dialog size. Picks one of the shared widths defined in
+  /// `styles.css` under `.docs-modal-dialog.ui-modal-size-*`:
+  ///
+  /// - `"sm"` (default) — 420px. Confirm/alert dialogs.
+  /// - `"md"` — 560px. Compact forms.
+  /// - `"lg"` — 720px. Full forms (provider create, column editor).
+  /// - `"xl"` — 960px. Side-by-side or rich-content dialogs.
+  ///
+  /// Sizes `md` and above also clamp `max-height` and arrange the
+  /// dialog as a flex-column, so a tall body can scroll inside via
+  /// `overflow-y: auto` on whatever the caller treats as the
+  /// scrollable region.
+  size?: "sm" | "md" | "lg" | "xl";
   /// `"alertdialog"` for confirm-style modals (one decision; user can't
   /// dismiss without making a choice in the strictest sense, though we
   /// still allow ESC). Default `"dialog"` for everything else.
@@ -62,6 +77,7 @@ export function Modal({
   title,
   children,
   dialogClassName,
+  size = "sm",
   role = "dialog",
   busy = false,
 }: ModalProps) {
@@ -104,7 +120,11 @@ export function Modal({
     >
       <div
         ref={dialogRef}
-        className={"docs-modal-dialog" + (dialogClassName ? " " + dialogClassName : "")}
+        className={
+          "docs-modal-dialog ui-modal-size-" +
+          size +
+          (dialogClassName ? " " + dialogClassName : "")
+        }
         role={role}
         aria-modal="true"
         aria-labelledby={titleId}

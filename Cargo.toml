@@ -10,6 +10,7 @@ members = [
     "crates/harness-server",
     "crates/harness-skill",
     "crates/harness-store",
+    "crates/harness-subagents",
     "crates/harness-tools",
     "apps/jarvis",
     "apps/jarvis-cli",
@@ -31,6 +32,7 @@ harness-requirement = { path = "crates/harness-requirement" }
 harness-server = { path = "crates/harness-server" }
 harness-skill = { path = "crates/harness-skill" }
 harness-store = { path = "crates/harness-store" }
+harness-subagents = { path = "crates/harness-subagents" }
 harness-tools = { path = "crates/harness-tools" }
 
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "fs", "process"] }

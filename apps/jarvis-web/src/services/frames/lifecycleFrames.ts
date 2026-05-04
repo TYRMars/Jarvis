@@ -6,12 +6,19 @@
 
 import { appStore } from "../../store/appStore";
 import { recordUsage } from "../usage";
+import { recordUsageDaily } from "../usageCumulator";
 import { applyRouting } from "../socket";
 import { setInFlight, showError, showTransientStatus } from "../status";
 import { refreshConvoList } from "../conversations";
 
 export const lifecycleFrameHandlers: Record<string, (ev: any) => void> = {
-  usage: (ev) => recordUsage(ev),
+  usage: (ev) => {
+    // Per-turn composer badge (resets between turns).
+    recordUsage(ev);
+    // Long-running daily cumulator (persists across turns + reloads
+    // for the WorkOverview UsagePanel).
+    recordUsageDaily(ev);
+  },
   forked: (ev) => {
     appStore.getState().applyForked(ev.user_ordinal);
   },
