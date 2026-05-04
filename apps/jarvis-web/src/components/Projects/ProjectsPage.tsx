@@ -99,7 +99,7 @@ export function ProjectsPage() {
             ? 0
             : visibleProjects.length - 1
           : (idx + direction + visibleProjects.length) % visibleProjects.length;
-      navigate(`/projects/${visibleProjects[nextIdx].id}`);
+      void navigate(`/projects/${visibleProjects[nextIdx].id}`);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -144,7 +144,7 @@ export function ProjectsPage() {
             type="button"
             className="projects-back-btn projects-back-btn-leading"
             onClick={() => {
-              navigate("/projects");
+              void navigate("/projects");
               setQuery("");
             }}
             title={t("projectsBackBtn")}
@@ -289,7 +289,7 @@ export function ProjectsPage() {
         <ProjectsHome
           projects={visibleProjects}
           onOpen={(id) => {
-            navigate(`/projects/${id}`);
+            void navigate(`/projects/${id}`);
             setQuery("");
           }}
         />
