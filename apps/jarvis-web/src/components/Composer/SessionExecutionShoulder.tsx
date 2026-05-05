@@ -17,7 +17,9 @@ import { SessionExecutionDrawer } from "./SessionExecutionDrawer";
 export function SessionExecutionShoulder() {
   const activeId = useAppStore((s) => s.activeId);
   const draftProjectId = useAppStore((s) => s.draftProjectId);
-  const lang = useAppStore((s) => s.lang) as DisplayLang;
+  // Store's `lang` is already `"en" | "zh"` — same shape as
+  // `DisplayLang`. Don't widen with an `as` cast (lint catches it).
+  const lang: DisplayLang = useAppStore((s) => s.lang);
   const ctx = useConversationWorkContext(activeId, draftProjectId);
 
   const [now, setNow] = useState<number>(() => Date.now());

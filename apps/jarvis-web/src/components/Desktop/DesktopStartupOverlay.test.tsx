@@ -11,9 +11,13 @@ type DesktopStatus = {
 };
 
 function installTauriMock(handler: (cmd: string, args?: any) => unknown) {
+  // Real Tauri `invoke` returns a Promise; wrap the (sync) handler
+  // result in `Promise.resolve` rather than `async (...) => handler(...)`,
+  // which lint flags because the arrow has no `await` to justify the
+  // `async` keyword.
   (window as any).__TAURI__ = {
     core: {
-      invoke: vi.fn(async (cmd: string, args?: any) => handler(cmd, args)),
+      invoke: vi.fn((cmd: string, args?: any) => Promise.resolve(handler(cmd, args))),
     },
   };
 }
