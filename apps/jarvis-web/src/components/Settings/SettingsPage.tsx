@@ -33,12 +33,8 @@ import {
   DEFAULT_APPEARANCE_LAYOUT_TAB,
   type AppearanceLayoutTab,
 } from "./sections/AppearanceLayoutSection";
-import {
-  ModelsSection,
-  MODELS_TABS,
-  DEFAULT_MODELS_TAB,
-  type ModelsTab,
-} from "./sections/ModelsSection";
+import { ModelsSection } from "./sections/ModelsSection";
+import { AgentsSection } from "./sections/AgentsSection";
 import {
   ExtensionsSection,
   EXTENSIONS_TABS,
@@ -101,8 +97,11 @@ const NAV_GROUPS: NavGroup[] = [
         id: "models",
         labelKey: "settingsNavModels",
         fallback: "Models",
-        tabs: MODELS_TABS,
-        defaultTab: DEFAULT_MODELS_TAB,
+      },
+      {
+        id: "subagents",
+        labelKey: "settingsNavSubagents",
+        fallback: "Subagents",
       },
       {
         id: "extensions",
@@ -152,16 +151,16 @@ const LEGACY_HASH_MAP: Record<string, { id: string; tab?: string }> = {
   workspace: { id: "system", tab: "workspace" },
   server: { id: "system", tab: "server" },
   about: { id: "system", tab: "about" },
-  providers: { id: "models", tab: "providers" },
-  "agent-profiles": { id: "models", tab: "subagents" },
+  providers: { id: "models" },
+  "agent-profiles": { id: "subagents" },
   mcp: { id: "extensions", tab: "mcp" },
   skills: { id: "extensions", tab: "skills" },
   plugins: { id: "extensions", tab: "plugins" },
   soul: { id: "persona" },
   // Mappings for sections introduced on main after the redesign:
-  // `agents` is the renamed AgentProfilesSection — same destination
-  // as `agent-profiles`. `diagnostics` lives under System.
-  agents: { id: "models", tab: "subagents" },
+  // `agents` is the renamed AgentProfilesSection. `diagnostics`
+  // lives under System.
+  agents: { id: "subagents" },
   diagnostics: { id: "system", tab: "diagnostics" },
 };
 
@@ -175,6 +174,13 @@ function parseHash(): ParsedHash {
   const raw = window.location.hash.replace(/^#/, "");
   if (!raw) return { id: FIRST_ID };
   const [first, second] = raw.split("/");
+
+  // Legacy: `#models/subagents` from the period when subagents was
+  // a tab inside the Models super-section. Promoted to its own
+  // top-level entry, but old bookmarks should still land right.
+  if (first === "models" && second === "subagents") {
+    return { id: "subagents" };
+  }
 
   // Modern format: <section>/<tab>?
   const item = ALL_ITEMS.find((it) => it.id === first);
@@ -499,12 +505,9 @@ function renderSection(parsed: ParsedHash, setTab: (tab: string) => void) {
     case "persona":
       return <SoulSection />;
     case "models":
-      return (
-        <ModelsSection
-          tab={(parsed.tab as ModelsTab) ?? DEFAULT_MODELS_TAB}
-          onTabChange={(t) => setTab(t)}
-        />
-      );
+      return <ModelsSection />;
+    case "subagents":
+      return <AgentsSection />;
     case "extensions":
       return (
         <ExtensionsSection

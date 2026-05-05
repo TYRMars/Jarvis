@@ -98,11 +98,11 @@ pub async fn run(
                 // Don't fail the whole login on a config-write
                 // hiccup — auth is the bigger lift; the operator
                 // can still set JARVIS_PROVIDER manually.
-                eprintln!("⚠ Couldn't update config.toml ({e}).");
+                eprintln!("⚠ Couldn't update config.json ({e}).");
                 eprintln!(
                     "  Run with `JARVIS_PROVIDER={provider} jarvis serve`, \
-                     or edit ~/.config/jarvis/config.toml to set \
-                     [provider].name = \"{provider}\"."
+                     or edit ~/.jarvis/config.json to set \
+                     \"default_provider\": \"{provider}\"."
                 );
             }
         }

@@ -13,7 +13,9 @@
 //! 1. command-line flags
 //! 2. `JARVIS_*` environment variables
 //! 3. config file (`--config <path>`, `$JARVIS_CONFIG`,
+//!    `$JARVIS_CONFIG_HOME/config.json`,
 //!    `$XDG_CONFIG_HOME/jarvis/config.json`,
+//!    `~/.jarvis/config.json`,
 //!    `~/.config/jarvis/config.json`)
 //! 4. compiled-in defaults
 //!
@@ -288,6 +290,18 @@ pub struct MemorySection {
     /// active provider's default model if unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Enable Claude Code-style file-based project memory. When unset,
+    /// Jarvis auto-loads memory only if the project memory directory
+    /// already exists; set `true` to create/load it, `false` to disable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_enabled: Option<bool>,
+    /// Project memory directory. Relative paths are resolved under the
+    /// workspace root. Defaults to `.jarvis/memory`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
+    /// Byte cap for the loaded `MEMORY.md` index. Defaults to 25 KiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -355,18 +369,23 @@ impl Config {
 }
 
 /// Discovery order:
-/// `$JARVIS_CONFIG` → `$XDG_CONFIG_HOME/jarvis/config.json`
-/// → `~/.config/jarvis/config.json`
+/// `$JARVIS_CONFIG` → `$JARVIS_CONFIG_HOME/config.json`
+/// → `$XDG_CONFIG_HOME/jarvis/config.json`
+/// → `~/.jarvis/config.json` → `~/.config/jarvis/config.json`
 /// → (Windows) `%APPDATA%\jarvis\config.json`.
 fn default_search_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(p) = std::env::var("JARVIS_CONFIG") {
         out.push(PathBuf::from(p));
     }
+    if let Ok(home) = std::env::var("JARVIS_CONFIG_HOME") {
+        out.push(PathBuf::from(home).join("config.json"));
+    }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         out.push(PathBuf::from(xdg).join("jarvis").join("config.json"));
     }
     if let Some(home) = std::env::var_os("HOME") {
+        out.push(PathBuf::from(&home).join(".jarvis").join("config.json"));
         out.push(
             PathBuf::from(home)
                 .join(".config")
@@ -462,11 +481,13 @@ mod tests {
         let saved_home = std::env::var("HOME").ok();
         let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let saved_jarvis = std::env::var("JARVIS_CONFIG").ok();
+        let saved_jarvis_home = std::env::var("JARVIS_CONFIG_HOME").ok();
         let saved_appdata = std::env::var("APPDATA").ok();
         unsafe {
             std::env::set_var("HOME", dir.path());
             std::env::remove_var("XDG_CONFIG_HOME");
             std::env::remove_var("JARVIS_CONFIG");
+            std::env::remove_var("JARVIS_CONFIG_HOME");
             std::env::remove_var("APPDATA");
         }
 
@@ -485,6 +506,10 @@ mod tests {
             match saved_jarvis {
                 Some(v) => std::env::set_var("JARVIS_CONFIG", v),
                 None => std::env::remove_var("JARVIS_CONFIG"),
+            }
+            match saved_jarvis_home {
+                Some(v) => std::env::set_var("JARVIS_CONFIG_HOME", v),
+                None => std::env::remove_var("JARVIS_CONFIG_HOME"),
             }
             match saved_appdata {
                 Some(v) => std::env::set_var("APPDATA", v),
@@ -511,6 +536,108 @@ mod tests {
             s.contains("read config") || s.contains("/no/such"),
             "got: {s}"
         );
+    }
+
+    #[test]
+    fn discover_uses_jarvis_config_home() {
+        let _lock = crate::test_env::lock();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"default_provider":"openai"}"#).unwrap();
+        let saved_home = std::env::var("HOME").ok();
+        let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let saved_jarvis = std::env::var("JARVIS_CONFIG").ok();
+        let saved_jarvis_home = std::env::var("JARVIS_CONFIG_HOME").ok();
+        let saved_appdata = std::env::var("APPDATA").ok();
+        unsafe {
+            std::env::set_var("JARVIS_CONFIG_HOME", dir.path());
+            std::env::remove_var("JARVIS_CONFIG");
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::remove_var("HOME");
+            std::env::remove_var("APPDATA");
+        }
+        let (loaded, cfg) = Config::discover(None).unwrap().unwrap();
+        assert_eq!(loaded, path);
+        assert_eq!(cfg.default_provider.as_deref(), Some("openai"));
+        unsafe {
+            match saved_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match saved_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match saved_jarvis {
+                Some(v) => std::env::set_var("JARVIS_CONFIG", v),
+                None => std::env::remove_var("JARVIS_CONFIG"),
+            }
+            match saved_jarvis_home {
+                Some(v) => std::env::set_var("JARVIS_CONFIG_HOME", v),
+                None => std::env::remove_var("JARVIS_CONFIG_HOME"),
+            }
+            match saved_appdata {
+                Some(v) => std::env::set_var("APPDATA", v),
+                None => std::env::remove_var("APPDATA"),
+            }
+        }
+    }
+
+    #[test]
+    fn discover_prefers_home_dot_jarvis_over_legacy_config() {
+        let _lock = crate::test_env::lock();
+        let dir = tempdir().unwrap();
+        let modern = dir.path().join(".jarvis");
+        let legacy = dir.path().join(".config/jarvis");
+        std::fs::create_dir_all(&modern).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(
+            modern.join("config.json"),
+            r#"{"default_provider":"anthropic"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            legacy.join("config.json"),
+            r#"{"default_provider":"openai"}"#,
+        )
+        .unwrap();
+        let saved_home = std::env::var("HOME").ok();
+        let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let saved_jarvis = std::env::var("JARVIS_CONFIG").ok();
+        let saved_jarvis_home = std::env::var("JARVIS_CONFIG_HOME").ok();
+        let saved_appdata = std::env::var("APPDATA").ok();
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+            std::env::remove_var("JARVIS_CONFIG");
+            std::env::remove_var("JARVIS_CONFIG_HOME");
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::remove_var("APPDATA");
+        }
+        let (loaded, cfg) = Config::discover(None).unwrap().unwrap();
+        assert_eq!(loaded, modern.join("config.json"));
+        assert_eq!(cfg.default_provider.as_deref(), Some("anthropic"));
+        unsafe {
+            match saved_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match saved_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match saved_jarvis {
+                Some(v) => std::env::set_var("JARVIS_CONFIG", v),
+                None => std::env::remove_var("JARVIS_CONFIG"),
+            }
+            match saved_jarvis_home {
+                Some(v) => std::env::set_var("JARVIS_CONFIG_HOME", v),
+                None => std::env::remove_var("JARVIS_CONFIG_HOME"),
+            }
+            match saved_appdata {
+                Some(v) => std::env::set_var("APPDATA", v),
+                None => std::env::remove_var("APPDATA"),
+            }
+        }
     }
 
     #[test]

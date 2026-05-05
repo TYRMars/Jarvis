@@ -17,6 +17,7 @@ import type {
   WorkspacePanelKey,
 } from "../persistence";
 import {
+  initialConvoGroupBy,
   initialEffort,
   initialLang,
   initialPlanCardOpen,
@@ -47,6 +48,17 @@ import type {
 /// keep insertion order.
 function sortTodosByUpdatedDesc(items: TodoItem[]): TodoItem[] {
   return items.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+}
+
+/// One folder's branch / worktree pick made in the composer project
+/// rail before a session starts. `active_path` is what the harness
+/// should treat as the working root for the next run — equal to the
+/// project workspace path when `mode == "checkout"`, or the freshly
+/// minted worktree path when `mode == "worktree"`.
+export interface DraftFolderRef {
+  active_path: string;
+  branch: string;
+  mode: "worktree" | "checkout";
 }
 
 export interface CoreSlice {
@@ -140,6 +152,11 @@ export interface CoreSlice {
   convoRouting: Record<string, string>;
   convoStatus: ConvoStatusKind;
   persistEnabled: boolean;
+  /// Recents-section grouping mode. "date" → chronological buckets
+  /// (Today / Yesterday / Mar 12 / Older); "project" → one bucket
+  /// per project, with free-chat rows in their own section.
+  /// Persisted to localStorage as `jarvis.convoGroupBy`.
+  convoGroupBy: import("../persistence").ConvoGroupBy;
 
   // ---- Projects ----
   projectsAvailable: boolean;
@@ -153,6 +170,11 @@ export interface CoreSlice {
   draftWorkspacePath: string | null;
   draftWorkspaceInfo: WorkspaceInfo | null;
   draftProjectId: string | null;
+  /// Per-folder branch / worktree decisions the user made in the
+  /// composer project rail before sending the first message. Keyed
+  /// by the project workspace's canonical path. Cleared when the
+  /// project is unbound or the active session starts.
+  draftFolderRefs: Record<string, DraftFolderRef>;
 
   // ---- Workspace diff (right-rail review card) ----
   workspaceDiff: import("../../services/workspaceDiff").WorkspaceDiffState;
@@ -197,6 +219,7 @@ export interface CoreSlice {
   setConvoRoutingFor: (id: string, value: string | null) => void;
   setConvoStatus: (kind: ConvoStatusKind) => void;
   setPersistEnabled: (v: boolean) => void;
+  setConvoGroupBy: (mode: import("../persistence").ConvoGroupBy) => void;
 
   setProjectsAvailable: (v: boolean) => void;
   setProjects: (rows: Project[]) => void;
@@ -206,6 +229,8 @@ export interface CoreSlice {
   setSocketWorkspace: (path: string | null, info?: WorkspaceInfo | null) => void;
   setDraftWorkspace: (path: string | null, info?: WorkspaceInfo | null) => void;
   setDraftProjectId: (id: string | null) => void;
+  setDraftFolderRef: (path: string, ref: DraftFolderRef | null) => void;
+  clearDraftFolderRefs: () => void;
 
   setWorkspaceDiff: (
     diff: import("../../services/workspaceDiff").WorkspaceDiffState,
@@ -238,7 +263,6 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
     tasks: initialWorkspacePanel("tasks"),
     plan: initialWorkspacePanel("plan"),
     changeReport: initialWorkspacePanel("changeReport"),
-    todos: initialWorkspacePanel("todos"),
   },
   workspacePanelMenuOpen: false,
   accountMenuOpen: false,
@@ -256,6 +280,7 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   convoRouting: loadConvoRouting(),
   convoStatus: "",
   persistEnabled: true,
+  convoGroupBy: initialConvoGroupBy(),
   projectsAvailable: true,
   projects: [],
   projectsById: {},
@@ -266,6 +291,7 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   draftWorkspacePath: null,
   draftWorkspaceInfo: null,
   draftProjectId: null,
+  draftFolderRefs: {},
 
   workspaceDiff: null,
   workspaceDiffLoading: false,
@@ -433,6 +459,10 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   },
   setConvoStatus: (kind) => set({ convoStatus: kind }),
   setPersistEnabled: (v) => set({ persistEnabled: v }),
+  setConvoGroupBy: (mode) => {
+    safeSet("jarvis.convoGroupBy", mode);
+    set({ convoGroupBy: mode });
+  },
 
   // ---- Projects ----
   setProjectsAvailable: (v) => set({ projectsAvailable: v }),
@@ -468,7 +498,25 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
     }),
   setDraftWorkspace: (path, info = null) =>
     set({ draftWorkspacePath: path, draftWorkspaceInfo: path ? info : null }),
-  setDraftProjectId: (id) => set({ draftProjectId: id }),
+  setDraftProjectId: (id) =>
+    set((s) => ({
+      draftProjectId: id,
+      // Switching projects (or clearing the binding) invalidates any
+      // per-folder branch / worktree picks the user made for the
+      // previous project.
+      draftFolderRefs: id === s.draftProjectId ? s.draftFolderRefs : {},
+    })),
+  setDraftFolderRef: (path, ref) =>
+    set((s) => {
+      if (ref === null) {
+        if (!(path in s.draftFolderRefs)) return s;
+        const next = { ...s.draftFolderRefs };
+        delete next[path];
+        return { draftFolderRefs: next };
+      }
+      return { draftFolderRefs: { ...s.draftFolderRefs, [path]: ref } };
+    }),
+  clearDraftFolderRefs: () => set({ draftFolderRefs: {} }),
 
   // ---- Workspace diff ----
   setWorkspaceDiff: (workspaceDiff) =>

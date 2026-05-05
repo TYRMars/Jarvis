@@ -36,6 +36,30 @@ export async function fetchWorkspace(): Promise<WorkspaceState> {
 /// Probe an arbitrary folder and return the same `{root, vcs, branch}`
 /// shape as `/v1/workspace`. Used by the composer workspace picker
 /// before that folder becomes the active session root.
+/// Resolve a folder basename (typically the result of
+/// `window.showDirectoryPicker()`, which only exposes `handle.name`)
+/// into one or more absolute-path candidates the backend can act on.
+/// The server walks a fixed set of common project roots under `$HOME`
+/// to a bounded depth and merges in any recent workspace whose
+/// basename matches; see `crates/harness-server/src/workspace_find.rs`.
+///
+/// Returns `[]` on any failure (network, 4xx, 5xx) so callers can
+/// fall back to "ask the user to type the path manually" without an
+/// extra try/catch dance.
+export async function findWorkspaceByName(name: string): Promise<string[]> {
+  if (!name.trim()) return [];
+  try {
+    const r = await fetch(
+      apiUrl(`/v1/workspace/find?name=${encodeURIComponent(name)}`),
+    );
+    if (!r.ok) return [];
+    const body = (await r.json()) as { candidates?: string[] };
+    return body.candidates ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function probeWorkspace(path: string): Promise<WorkspaceInfo> {
   const res = await fetch(apiUrl(`/v1/workspace/probe?path=${encodeURIComponent(path)}`));
   const text = await res.text();

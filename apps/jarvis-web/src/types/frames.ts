@@ -122,6 +122,14 @@ export interface ResumedFrame {
   type: "resumed";
   id: string;
   message_count?: number;
+  /// Server already sends these on resume (`routes.rs:1535-1544`);
+  /// the web client now rehydrates `draftProjectId` /
+  /// `draftWorkspacePath` from them so the in-session execution
+  /// shoulder can find the bound Requirement without a round-trip
+  /// to `GET /v1/conversations/:id`.
+  project_id?: string | null;
+  workspace_path?: string | null;
+  workspace?: any;
 }
 
 export interface ConfiguredFrame {
@@ -288,12 +296,35 @@ export interface Project {
   /// Clients should treat `undefined` and `[]` as equivalent.
   workspaces?: ProjectWorkspace[];
   archived: boolean;
+  /// Custom kanban columns. `null` / absent means "use the four
+  /// built-in defaults" — see `defaultBoardColumns` in
+  /// `Projects/columns.tsx`. When present, the saved labels are
+  /// rendered verbatim (no i18n lookup).
+  columns?: KanbanColumn[] | null;
   created_at: string;
   updated_at: string;
   conversation_count?: number;
 }
 
-export type RequirementStatus = "backlog" | "in_progress" | "review" | "done";
+/// One user-configurable column on a project's kanban. Mirrors
+/// `harness_core::KanbanColumn`.
+export interface KanbanColumn {
+  /// Stable id; what `Requirement.status` references.
+  id: string;
+  /// Display label, free-form, language-of-the-user.
+  label: string;
+  /// Optional kind hint that drives the icon. One of
+  /// `"backlog" | "in_progress" | "review" | "done"`. Custom columns
+  /// omit this and get a neutral dot.
+  kind?: "backlog" | "in_progress" | "review" | "done" | null;
+}
+
+/// The four built-in column ids — useful when callers want to hint at
+/// "one of the default lanes" specifically (e.g. the home grid count
+/// chips). `RequirementStatus` itself is just `string` since custom
+/// columns can use any id matching the project's `columns[i].id`.
+export type BuiltinStatus = "backlog" | "in_progress" | "review" | "done";
+export type RequirementStatus = string;
 
 /// v1.0 — triage gate. Distinguishes user-approved work (default,
 /// also the absent-on-wire shape) from agent-proposed / scan-

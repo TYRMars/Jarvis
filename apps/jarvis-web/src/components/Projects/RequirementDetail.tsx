@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type {
   Activity,
-  ActivityActor,
   AgentProfile,
   Requirement,
   RequirementRun,
@@ -30,8 +29,9 @@ import {
   updateRequirement,
   verifyRunByCommands,
 } from "../../services/requirements";
-import { COLUMNS } from "./columns";
+import type { BoardColumn } from "./columns";
 import { MarkdownLite } from "./MarkdownLite";
+import { ActivityList } from "./activityRow";
 
 // Right-side slide-in panel that replaces the previous in-place
 // expand interaction. The card surface stays compact (single
@@ -43,12 +43,14 @@ import { MarkdownLite } from "./MarkdownLite";
 // the X button all dispatch `onClose`.
 export function RequirementDetail({
   requirement,
+  columns,
   activeConversationId,
   onClose,
   onChanged,
   onOpenConversation,
 }: {
   requirement: Requirement | null;
+  columns: BoardColumn[];
   activeConversationId: string | null;
   onClose: () => void;
   onChanged: () => void;
@@ -113,8 +115,12 @@ export function RequirementDetail({
   const canLink =
     !!activeConversationId &&
     !requirement.conversation_ids.includes(activeConversationId);
-  const statusCol = COLUMNS.find((c) => c.status === requirement.status);
-  const statusLabel = statusCol ? t(statusCol.labelKey) : requirement.status;
+  const statusCol = columns.find((c) => c.id === requirement.status);
+  const statusLabel = statusCol ? statusCol.label : requirement.status;
+  // Use the column's `kind` (when set) so the chip's pill class still
+  // resolves the legacy `status-<x>` palette for built-in columns;
+  // custom columns fall through to a neutral chip.
+  const pillKind = statusCol?.kind ?? null;
 
   const setStatus = (status: RequirementStatus) => {
     updateRequirement(requirement.id, { status });
@@ -228,15 +234,16 @@ export function RequirementDetail({
             <span className="requirement-card-id">REQ-{idShort}</span>
             <select
               className={
-                "requirement-status-pill status-" + requirement.status
+                "requirement-status-pill" +
+                (pillKind ? " status-" + pillKind : " status-custom")
               }
               value={requirement.status}
-              onChange={(e) => setStatus(e.target.value as RequirementStatus)}
+              onChange={(e) => setStatus(e.target.value)}
               aria-label={t("reqStatusAria", statusLabel)}
             >
-              {COLUMNS.map((c) => (
-                <option key={c.status} value={c.status}>
-                  {t(c.labelKey)}
+              {columns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
                 </option>
               ))}
             </select>
@@ -641,76 +648,9 @@ function ActivitySection({ activities }: { activities: Activity[] }) {
   return (
     <section className="requirement-detail-activities">
       <h3 className="requirement-detail-runs-heading">{t("activityHeading")}</h3>
-      {activities.length === 0 ? (
-        <p className="requirement-detail-empty">{t("activityEmpty")}</p>
-      ) : (
-        <ol className="requirement-detail-activity-list">
-          {activities.map((a) => (
-            <li key={a.id} className={"requirement-detail-activity-row kind-" + a.kind}>
-              <span className="requirement-detail-activity-time">
-                {formatTime(a.created_at)}
-              </span>
-              <span className="requirement-detail-activity-actor">
-                {actorLabel(a.actor)}
-              </span>
-              <span className="requirement-detail-activity-text">
-                {activityText(a)}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
+      <ActivityList activities={activities} />
     </section>
   );
-}
-
-function actorLabel(actor: ActivityActor): string {
-  switch (actor.type) {
-    case "human":
-      return t("activityActorHuman");
-    case "system":
-      return t("activityActorSystem");
-    case "agent":
-      return t("activityActorAgent", actor.profile_id);
-  }
-}
-
-function activityText(a: Activity): string {
-  const body = a.body as Record<string, string | undefined>;
-  switch (a.kind) {
-    case "status_change":
-      return t("activityStatusChange", body.from ?? "?", body.to ?? "?");
-    case "run_started":
-      return t("activityRunStarted", shortenId(body.run_id));
-    case "run_finished":
-      return t(
-        "activityRunFinished",
-        shortenId(body.run_id),
-        body.status ?? "?",
-      );
-    case "verification_finished":
-      return t(
-        "activityVerificationFinished",
-        shortenId(body.run_id),
-        body.status ?? "?",
-      );
-    case "assignee_change": {
-      const fromName = assigneeName(body.from);
-      const toName = assigneeName(body.to);
-      return t("activityAssigneeChange", fromName, toName);
-    }
-    default:
-      return t("activityFallback", a.kind);
-  }
-}
-
-/// Resolve an assignee id (from an `assignee_change` activity body)
-/// into a human-readable label. `null` / `undefined` ⇒ "Unassigned";
-/// known id ⇒ the profile name; unknown id ⇒ short id stub.
-function assigneeName(id: string | undefined | null): string {
-  if (id == null) return t("detailAssigneeUnassigned");
-  const p = getAgentProfileFromCache(id);
-  return p ? p.name : shortenId(id);
 }
 
 function shortenId(id: string | undefined): string {

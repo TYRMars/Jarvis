@@ -14,6 +14,7 @@ members = [
     "crates/harness-tools",
     "apps/jarvis",
     "apps/jarvis-cli",
+    "apps/jarvis-desktop",
 ]
 
 [workspace.package]
@@ -70,6 +71,10 @@ base64 = "0.22"
 open = "5"
 tiktoken-rs = "0.6"
 libc = "0.2"
+portable-pty = "0.9"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-build = "2"
+rfd = "0.15"
 
 [profile.release]
 lto = "thin"

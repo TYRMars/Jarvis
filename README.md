@@ -167,6 +167,7 @@ Important environment variables:
 | --- | --- |
 | `JARVIS_PROVIDER` | Provider name, for example `openai`, `anthropic`, `google`, `codex`, `ollama`. |
 | `JARVIS_MODEL` | Default model for the selected provider. |
+| `JARVIS_CONFIG`, `JARVIS_CONFIG_HOME` | Explicit config file or system config directory. Default discovery includes `~/.jarvis/config.json` before legacy `~/.config/jarvis/config.json`. |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | Provider credentials. |
 | `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`, `OLLAMA_BASE_URL` | Compatible gateway or proxy base URLs. |
 | `JARVIS_ADDR` | HTTP bind address. Defaults to `0.0.0.0:7001`. |
@@ -175,6 +176,8 @@ Important environment variables:
 | `JARVIS_MCP_SERVERS` | Comma-separated external MCP servers, such as `fs=uvx mcp-server-filesystem /tmp`. |
 | `JARVIS_MEMORY_MODE` | `window` or `summary`. |
 | `JARVIS_MEMORY_TOKENS` | Heuristic memory budget. |
+| `JARVIS_ENABLE_PROJECT_MEMORY` | Enable Claude Code-style file-based project memory at `.jarvis/memory`. Existing memory dirs auto-load even without this flag. |
+| `JARVIS_PROJECT_MEMORY_DIR`, `JARVIS_PROJECT_MEMORY_BYTES` | Override the project memory directory and loaded `MEMORY.md` byte cap. |
 | `JARVIS_PERMISSION_MODE` | `ask` / `accept-edits` / `plan` / `auto` / `bypass`. (Replaces the deprecated `JARVIS_APPROVAL_MODE`.) |
 | `JARVIS_WORK_MODE` | `off` (default) or `auto`. When `auto`, the background scheduler drives Approved Requirements with an assignee. |
 | `JARVIS_WORK_MAX_UNITS_PER_TICK` | Cap on Requirements picked per scheduler tick (default `1`). |
@@ -183,6 +186,13 @@ Important environment variables:
 | `JARVIS_WORKTREE_MODE` | `off` (default) / `per_run` / `per_unit`. Auto mode upgrades to `per_run` if left `off`. |
 | `JARVIS_WORKTREE_ROOT` | Directory under the workspace where `git worktree add` lands child trees (default `.jarvis/worktrees`). |
 | `RUST_LOG` | Rust tracing filter. |
+
+Project instruction loading mirrors Claude Code's local rules shape, but stays workspace-scoped:
+
+- root files: `AGENTS.md`, `JARVIS.md`, `CLAUDE.md`, `AGENT.md`
+- Jarvis files: `.jarvis/JARVIS.md`, `.jarvis/AGENTS.md`, `.jarvis/CLAUDE.md`, `.jarvis/AGENT.md`
+- local rules: `.jarvis/rules/*.md`
+- `@include path/to/file.md` is supported inside loaded files, capped at 5 levels and limited to paths under the workspace root.
 
 ## Built-In Tools
 

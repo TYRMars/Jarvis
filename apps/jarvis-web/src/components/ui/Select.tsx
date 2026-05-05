@@ -25,12 +25,14 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 
 export interface SelectOption<T extends string = string> {
   /// Identity stored in `value`. Must be unique within the option list.
@@ -93,6 +95,17 @@ export function Select<T extends string = string>({
     ),
   );
   const [query, setQuery] = useState("");
+  // Portal-positioned popup: tracks the trigger's bounding rect so we
+  // can render the popup at fixed coords inside `<body>` and escape
+  // any `overflow: hidden|auto|scroll` ancestor (modal scroll
+  // containers, kanban panes, etc.). Recomputed on every open and on
+  // window scroll/resize while open.
+  const [popupRect, setPopupRect] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -121,6 +134,15 @@ export function Select<T extends string = string>({
 
   // Outside-click close. Skip when the popup isn't open so we don't
   // burn a global listener at idle.
+  //
+  // Capture phase is intentional: ancestor containers (e.g. the
+  // shared `<Modal>` shell, which calls `e.stopPropagation()` on
+  // pointerdown to keep clicks inside the dialog from dismissing it
+  // via the backdrop) would otherwise swallow the bubble before
+  // the document-level listener fires, leaving the popup open after
+  // a click elsewhere in the modal — including a click on a
+  // sibling Select's trigger, which then leaves two popups visible
+  // at once.
   useEffect(() => {
     if (!open) return;
     const onDocPointer = (e: PointerEvent) => {
@@ -129,8 +151,9 @@ export function Select<T extends string = string>({
       if (triggerRef.current?.contains(t)) return;
       setOpen(false);
     };
-    document.addEventListener("pointerdown", onDocPointer);
-    return () => document.removeEventListener("pointerdown", onDocPointer);
+    document.addEventListener("pointerdown", onDocPointer, true);
+    return () =>
+      document.removeEventListener("pointerdown", onDocPointer, true);
   }, [open]);
 
   // Auto-focus search field when opening so type-ahead works without
@@ -142,6 +165,54 @@ export function Select<T extends string = string>({
       return () => window.clearTimeout(id);
     }
   }, [open, searchable]);
+
+  // Compute / track the popup's portal-fixed coordinates.
+  //  - useLayoutEffect for the initial measurement so we don't paint
+  //    a frame at (0, 0) before the rect lands.
+  //  - Capture-phase scroll listener so popups close-track even when
+  //    a nested scroller (modal body) moves.
+  //  - Flip-up when there's less room below than above + the popup's
+  //    natural max-height (320px) wouldn't fit; cap maxHeight so the
+  //    popup is never taller than its viewport budget.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPopupRect(null);
+      return;
+    }
+    const POPUP_MAX = 320;
+    const MARGIN = 8;
+    const compute = () => {
+      const r = triggerRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const below = window.innerHeight - r.bottom - MARGIN;
+      const above = r.top - MARGIN;
+      const flipUp = below < 200 && above > below;
+      if (flipUp) {
+        setPopupRect({
+          top: Math.max(MARGIN, r.top - Math.min(POPUP_MAX, above) - 4),
+          left: r.left,
+          width: r.width,
+          maxHeight: Math.min(POPUP_MAX, Math.max(120, above)),
+        });
+      } else {
+        setPopupRect({
+          top: r.bottom + 4,
+          left: r.left,
+          width: r.width,
+          maxHeight: Math.min(POPUP_MAX, Math.max(120, below)),
+        });
+      }
+    };
+    compute();
+    const onScroll = () => compute();
+    const onResize = () => compute();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open]);
 
   const selected = options.find((o) => o.value === value) ?? null;
 
@@ -216,7 +287,7 @@ export function Select<T extends string = string>({
           <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
-      {open && (
+      {open && popupRect && createPortal(
         <div
           ref={popupRef}
           id={popupId}
@@ -224,12 +295,19 @@ export function Select<T extends string = string>({
           tabIndex={-1}
           aria-activedescendant={activeId}
           onKeyDown={onPopupKey}
-          className="ui-select-popup"
-          style={
-            popupMinWidth
-              ? { minWidth: `${popupMinWidth}px` }
-              : undefined
-          }
+          className="ui-select-popup ui-select-popup-portal"
+          style={{
+            position: "fixed",
+            top: `${popupRect.top}px`,
+            left: `${popupRect.left}px`,
+            minWidth: `${Math.max(popupRect.width, popupMinWidth ?? 0)}px`,
+            maxHeight: `${popupRect.maxHeight}px`,
+            // Must clear `.docs-modal-overlay` (z-index: 1000) so the
+            // popup is visible when this Select is rendered inside a
+            // Modal. 1100 leaves headroom for any future overlay layer
+            // above the modal but below page-blocking dialogs.
+            zIndex: 1100,
+          }}
         >
           {searchable && (
             <div className="ui-select-search">
@@ -297,7 +375,8 @@ export function Select<T extends string = string>({
               })}
             </ul>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

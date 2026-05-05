@@ -23,6 +23,7 @@ import { ProjectsPage } from "./components/Projects/ProjectsPage";
 import { DocsPage } from "./components/Docs/DocsPage";
 import { WorkOverviewPage } from "./components/Projects/WorkOverview/WorkOverviewPage";
 import { SubAgentDemoPage } from "./components/SubAgent/SubAgentDemoPage";
+import { DesktopStartupOverlay } from "./components/Desktop/DesktopStartupOverlay";
 import { useAppStore, appStore } from "./store/appStore";
 import { boot, applyI18n } from "./services/boot";
 import { useShortcuts } from "./hooks/useShortcuts";
@@ -64,6 +65,7 @@ export function App() {
 
   return (
     <BrowserRouter>
+      <DesktopStartupOverlay />
       <Routes>
         <Route path="/" element={<ChatLayout />} />
         <Route path="/projects/overview" element={<WorkOverviewLayout />} />

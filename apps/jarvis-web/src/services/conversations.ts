@@ -60,48 +60,41 @@ export function newConversation(
   opts: { projectId?: string | null; workspacePath?: string | null } = {},
 ): void {
   const store = appStore.getState();
-  if (store.inFlight) {
-    showError(t("turnInProgress"));
-    return;
-  }
+  if (store.activeId) store.saveConversationSurface(store.activeId);
   if (!store.persistEnabled) {
     if (!sendFrame({ type: "reset" })) return;
     store.clearMessages();
     store.setActiveId(null);
     return;
   }
-  const frame: any = { type: "new" };
-  const { provider, model } = pickedRouting();
-  if (provider) frame.provider = provider;
-  if (model) frame.model = model;
-  if (opts.projectId) frame.project_id = opts.projectId;
-  // Workspace resolution:
-  // - explicit `null` from the caller (e.g. picker → "No workspace")
-  //   leaves the field off, dropping the per-session pin so the
-  //   server falls back to its startup root.
-  // - explicit string is sent verbatim; server canonicalises.
-  // - undefined falls back to the live socket pin so callers that
-  //   don't expose a picker (slash command etc.) still inherit.
-  const explicit = opts.workspacePath;
-  const resolved = explicit === undefined ? store.socketWorkspace : explicit;
-  if (resolved) frame.workspace_path = resolved;
-  if (!sendFrame(frame)) return;
   store.clearMessages();
+  store.clearApprovals();
+  store.clearHitls();
+  store.clearTasks();
+  store.setPlan([]);
+  store.setProposedPlan(null);
+  store.clearSubAgentRuns();
+  if (opts.projectId !== undefined) store.setDraftProjectId(opts.projectId);
+  if (opts.workspacePath !== undefined) {
+    store.setDraftWorkspace(opts.workspacePath, null);
+  }
+  store.setActiveId(null);
 }
 
 export async function resumeConversation(id: string): Promise<void> {
   const store = appStore.getState();
-  if (store.inFlight) {
-    showError(t("turnInProgress"));
-    return;
-  }
   if (store.activeId === id) return;
+  if (store.activeId) store.saveConversationSurface(store.activeId);
   store.setLoadingConvoId(id);
   try {
-    const r = await fetch(apiUrl(`/v1/conversations/${encodeURIComponent(id)}`));
-    if (!r.ok) throw new Error(`get: ${r.status}`);
-    const body = await r.json();
-    store.loadHistory(body.messages || []);
+    const restored = store.restoreConversationSurface(id);
+    if (!restored) {
+      const r = await fetch(apiUrl(`/v1/conversations/${encodeURIComponent(id)}`));
+      if (!r.ok) throw new Error(`get: ${r.status}`);
+      const body = await r.json();
+      store.loadHistory(body.messages || []);
+      store.saveConversationSurface(id);
+    }
     // Restore this conversation's saved provider+model first so the
     // resume frame ships the right routing on the same WS turn.
     const saved = store.convoRouting[id];
@@ -128,7 +121,7 @@ export async function resumeConversation(id: string): Promise<void> {
 
 export async function deleteConversation(id: string): Promise<void> {
   const store = appStore.getState();
-  if (store.inFlight) {
+  if (store.isConversationRunning(id)) {
     showError(t("turnInProgress"));
     return;
   }

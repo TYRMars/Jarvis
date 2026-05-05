@@ -10,6 +10,7 @@ import { t } from "../../utils/i18n";
 import { SendButton, StopButton } from "../ComposerButtons";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { sendFrame, isOpen } from "../../services/socket";
+import { startConversationTurn } from "../../services/conversationSockets";
 import { currentJarvisSoulPrompt } from "../../store/persistence";
 import { isLocalProjectId } from "../../services/projects";
 
@@ -88,31 +89,45 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
     if (store.inFlight) return;
     const raw = value.trim();
     if (!raw) return;
-    if (!isOpen()) {
-      showBanner(t("websocketNotConnected"));
-      return;
-    }
     // Flip the gate FIRST so the second click bails before pushing
     // a duplicate user bubble. Roll back if the WS send actually
     // fails — the user shouldn't be locked out by a closed socket.
     store.setInFlight(true);
     const content = expandPaste(raw);
     const { provider, model } = pickedRouting();
-    if (store.persistEnabled && !store.activeId) {
-      const newFrame: any = { type: "new" };
-      if (provider) newFrame.provider = provider;
-      if (model) newFrame.model = model;
+    if (store.persistEnabled) {
+      const isNew = !store.activeId;
+      const conversationId = store.activeId || crypto.randomUUID();
       const projectId = store.draftProjectId;
-      if (projectId && !isLocalProjectId(projectId)) {
-        newFrame.project_id = projectId;
+      if (store.activeId) store.saveConversationSurface(store.activeId);
+      store.setActiveId(conversationId);
+      if (isNew) {
+        store.clearMessages();
       }
-      if (store.draftWorkspacePath) {
-        newFrame.workspace_path = store.draftWorkspacePath;
-      }
-      if (!sendFrame(newFrame)) {
+      const ok = startConversationTurn({
+        conversationId,
+        content,
+        routing: { provider, model },
+        isNew,
+        projectId: projectId && !isLocalProjectId(projectId) ? projectId : null,
+        workspacePath: store.draftWorkspacePath,
+        soulPrompt: currentJarvisSoulPrompt(),
+      });
+      if (!ok) {
         store.setInFlight(false);
         return;
       }
+      pushUser(content);
+      setValue("");
+      clearPaste();
+      store.setUsage({ prompt: 0, completion: 0, cached: 0, reasoning: 0, calls: 0 });
+      store.saveConversationSurface(conversationId);
+      return;
+    }
+    if (!isOpen()) {
+      showBanner(t("websocketNotConnected"));
+      store.setInFlight(false);
+      return;
     }
     const frame: any = { type: "user", content };
     if (provider) frame.provider = provider;

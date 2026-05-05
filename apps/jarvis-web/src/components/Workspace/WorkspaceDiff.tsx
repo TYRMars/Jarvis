@@ -23,14 +23,38 @@ import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import {
   fetchFileDiff,
+  fetchWorkspaceDiff,
   refreshWorkspaceDiff,
   type DiffFileEntry,
   type WorkspaceDiff as WorkspaceDiffData,
 } from "../../services/workspaceDiff";
+import type { ProjectWorkspace } from "../../types/frames";
 import { UnifiedDiffViewer } from "../Chat/UnifiedDiffViewer";
 import { t } from "../../utils/i18n";
 import { CommitDialog } from "./CommitDialog";
 import { CreatePrDialog } from "./CreatePrDialog";
+
+interface DiffRootDescriptor {
+  /// Absolute filesystem path; passed as `?root=` to the API. Null
+  /// means "let the server use its pinned default" — used in the
+  /// fallback single-root case where no project / active path is set.
+  path: string | null;
+  /// Display name. Folder basename for multi-folder projects, just
+  /// the basename of the active path otherwise.
+  label: string;
+}
+
+function basename(p: string | null): string {
+  if (!p) return "";
+  const stripped = p.replace(/[\\/]+$/, "");
+  const i = Math.max(stripped.lastIndexOf("/"), stripped.lastIndexOf("\\"));
+  return i >= 0 ? stripped.slice(i + 1) : stripped;
+}
+
+function tx(key: string, fallback: string): string {
+  const v = t(key);
+  return v === key ? fallback : v;
+}
 
 const CR_REVIEW_PROMPT = (base: string, branch: string | null): string =>
   `Please review the diff between \`${base}\` and \`${branch ?? "HEAD"}\`. ` +
@@ -47,21 +71,71 @@ const CR_COMMIT_MSG_PROMPT = (base: string): string =>
   `if useful. Output the message in a code block so I can copy it.`;
 
 export function WorkspaceDiff() {
-  const diff = useAppStore((s) => s.workspaceDiff);
-  const loading = useAppStore((s) => s.workspaceDiffLoading);
+  const draftProjectId = useAppStore((s) => s.draftProjectId);
+  const projectsById = useAppStore((s) => s.projectsById);
+  const draftWorkspacePath = useAppStore((s) => s.draftWorkspacePath);
+  const socketWorkspace = useAppStore((s) => s.socketWorkspace);
+  const activeRoot = socketWorkspace ?? draftWorkspacePath ?? null;
 
-  // Mount-fetch — runs once when the card first appears. Safe to
-  // re-run on remount because of the seq guard inside the service.
-  useEffect(() => {
-    if (diff == null) void refreshWorkspaceDiff();
-  }, [diff]);
+  // Resolve the list of folders to diff. Multi-folder projects
+  // (project.workspaces.length > 1) get one collapsible section per
+  // folder. Single-folder / no-project falls back to the legacy
+  // store-backed flow so the count badge + composer shoulder keep
+  // working unchanged.
+  const roots = useMemo<DiffRootDescriptor[]>(() => {
+    const project = draftProjectId ? projectsById[draftProjectId] : null;
+    const workspaces: ProjectWorkspace[] = project?.workspaces ?? [];
+    if (workspaces.length > 1) {
+      return workspaces.map((w) => ({
+        path: w.path,
+        label: w.name || basename(w.path) || w.path,
+      }));
+    }
+    return [
+      {
+        path: activeRoot,
+        label: basename(activeRoot) || tx("wsDiffSingleRoot", "workspace"),
+      },
+    ];
+  }, [draftProjectId, projectsById, activeRoot]);
 
-  if (diff === "unavailable") {
-    // Server has no workspace root. Hide entirely so we don't
-    // confuse the user with a card that can't ever populate.
-    return null;
+  if (roots.length > 1) {
+    return (
+      <div className="ws-diff ws-diff-multi">
+        {roots.map((r) => (
+          <WorkspaceDiffRoot
+            key={r.path ?? "(default)"}
+            root={r}
+            // First folder expanded by default so the user sees
+            // something on first render; the rest are collapsed
+            // pills the user can drill into.
+            initiallyOpen={false}
+          />
+        ))}
+      </div>
+    );
   }
 
+  return <WorkspaceDiffSingleStore />;
+}
+
+/// Single-folder render path. Same store-backed flow as before so
+/// `WorkspaceDiffCount` (which reads from `s.workspaceDiff`) stays
+/// in sync with the rendered card.
+function WorkspaceDiffSingleStore() {
+  const diff = useAppStore((s) => s.workspaceDiff);
+  const loading = useAppStore((s) => s.workspaceDiffLoading);
+  const setWorkspaceDiff = useAppStore((s) => s.setWorkspaceDiff);
+  const draftWorkspacePath = useAppStore((s) => s.draftWorkspacePath);
+  const socketWorkspace = useAppStore((s) => s.socketWorkspace);
+  const activeRoot = socketWorkspace ?? draftWorkspacePath ?? null;
+
+  useEffect(() => {
+    setWorkspaceDiff(null);
+    void refreshWorkspaceDiff();
+  }, [activeRoot, setWorkspaceDiff]);
+
+  if (diff === "unavailable") return null;
   if (diff == null) {
     return (
       <div className="ws-diff">
@@ -69,16 +143,107 @@ export function WorkspaceDiff() {
       </div>
     );
   }
+  return <WorkspaceDiffBody diff={diff} loading={loading} onRefresh={() => void refreshWorkspaceDiff(diff.base)} />;
+}
 
-  return <WorkspaceDiffBody diff={diff} loading={loading} />;
+/// Per-root section in the multi-folder layout. Each instance owns
+/// its own fetch state — independent of the appStore — so refreshing
+/// folder A doesn't blank folder B's expanded file list.
+function WorkspaceDiffRoot({
+  root,
+  initiallyOpen,
+}: {
+  root: DiffRootDescriptor;
+  initiallyOpen: boolean;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
+  const [diff, setDiff] = useState<WorkspaceDiffData | "unavailable" | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = (base?: string) => {
+    setLoading(true);
+    void fetchWorkspaceDiff(root.path, base).then((res) => {
+      setDiff(res);
+      setLoading(false);
+    });
+  };
+
+  // Auto-load when first expanded so the section header shows the
+  // count, but don't fetch every folder eagerly on mount.
+  useEffect(() => {
+    if (!open || diff != null) return;
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Re-fetch when the folder path changes (project switch).
+  useEffect(() => {
+    setDiff(null);
+    if (open) refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root.path]);
+
+  const stat = diff && diff !== "unavailable" ? diff.stat : null;
+  const branchLabel = diff && diff !== "unavailable" ? diff.branch ?? "HEAD" : null;
+
+  return (
+    <section className="ws-diff-folder">
+      <button
+        type="button"
+        className="ws-diff-folder-header"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span className="files-chevron" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+        </svg>
+        <span className="ws-diff-folder-name" title={root.path ?? ""}>{root.label}</span>
+        {branchLabel ? <span className="ws-diff-folder-branch">{branchLabel}</span> : null}
+        {stat ? (
+          <span className="ws-diff-folder-stat">
+            <span className="ws-diff-stat-add">+{stat.added}</span>
+            <span className="ws-diff-stat-del">−{stat.removed}</span>
+            <span className="ws-diff-stat-files">{t("wsDiffFiles", stat.files)}</span>
+          </span>
+        ) : diff === "unavailable" ? (
+          <span className="ws-diff-folder-stat">{tx("wsDiffNotGit", "not a git repo")}</span>
+        ) : null}
+      </button>
+      {open ? (
+        diff === "unavailable" ? (
+          <div className="ws-diff-empty">{tx("wsDiffNotGitBody", "This folder is not a git repository.")}</div>
+        ) : diff == null ? (
+          <div className="ws-diff-empty">{loading ? t("wsDiffLoading") : "…"}</div>
+        ) : (
+          <WorkspaceDiffBody
+            diff={diff}
+            loading={loading}
+            onRefresh={(base) => refresh(base)}
+            root={root.path ?? undefined}
+          />
+        )
+      ) : null}
+    </section>
+  );
 }
 
 function WorkspaceDiffBody({
   diff,
   loading,
+  onRefresh,
+  root,
 }: {
   diff: WorkspaceDiffData;
   loading: boolean;
+  onRefresh: (base?: string) => void;
+  /// When set, the body is rendered inside a per-folder section in
+  /// the multi-folder layout — `FileRow`s scope their per-file
+  /// fetches to this root and the refresh button targets it. Absent
+  /// in the legacy single-folder flow.
+  root?: string;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [baseDraft, setBaseDraft] = useState(diff.base);
@@ -93,7 +258,6 @@ function WorkspaceDiffBody({
     setBaseDraft(diff.base);
   }, [diff.base]);
 
-  const totalChange = diff.stat.added + diff.stat.removed;
   const hasUncommitted =
     diff.uncommitted.added + diff.uncommitted.removed + diff.uncommitted.files > 0;
 
@@ -126,7 +290,7 @@ function WorkspaceDiffBody({
     const next = baseDraft.trim();
     if (!next) return;
     setEditingBase(false);
-    if (next !== diff.base) void refreshWorkspaceDiff(next);
+    if (next !== diff.base) onRefresh(next);
   }
 
   return (
@@ -174,7 +338,7 @@ function WorkspaceDiffBody({
             className="ws-diff-refresh"
             disabled={loading}
             title={t("wsDiffRefresh")}
-            onClick={() => void refreshWorkspaceDiff(diff.base)}
+            onClick={() => onRefresh(diff.base)}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <polyline points="23 4 23 10 17 10" />
@@ -205,10 +369,11 @@ function WorkspaceDiffBody({
       </div>
 
       {hasUncommitted ? (
-        <div className="ws-diff-uncommitted" title={t("wsDiffUncommittedHint")}>
-          <span aria-hidden="true">⚠</span>
-          {t("wsDiffUncommitted", diff.uncommitted.files, diff.uncommitted.added, diff.uncommitted.removed)}
-        </div>
+        <UncommittedSection
+          summary={diff.uncommitted}
+          base={diff.base}
+          root={root}
+        />
       ) : null}
 
       {sortedFiles.length === 0 ? (
@@ -222,6 +387,7 @@ function WorkspaceDiffBody({
               base={diff.base}
               expanded={expanded.has(f.path)}
               onToggle={() => toggle(f.path)}
+              root={root}
             />
           ))}
         </ul>
@@ -300,32 +466,120 @@ function WorkspaceDiffBody({
   );
 }
 
+/// Working-tree (uncommitted) file list. Replaces the old single-line
+/// "65 files uncommitted" warning — that aggregate hid the actual
+/// content the user wants to inspect on a typical "I haven't committed
+/// yet" branch. Entries come from `diff.uncommitted.entries` (new in
+/// the v2 wire); older servers (< this build) only ship the aggregate
+/// counts and we fall back to the legacy banner.
+function UncommittedSection({
+  summary,
+  base,
+  root,
+}: {
+  summary: import("../../services/workspaceDiff").UncommittedSummary;
+  base: string;
+  root?: string;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Default-collapsed when there are committed changes (the user's
+  // primary view), default-expanded when the working-tree IS the
+  // change set (no committed delta yet — the common branch state).
+  const [open, setOpen] = useState(true);
+  const entries = summary.entries ?? [];
+
+  const toggle = (path: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+
+  return (
+    <section className="ws-diff-uncommitted-section">
+      <button
+        type="button"
+        className="ws-diff-uncommitted ws-diff-uncommitted-toggle"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        title={t("wsDiffUncommittedHint")}
+      >
+        <span className="ws-diff-chevron" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+        <span aria-hidden="true">⚠</span>
+        <span className="ws-diff-uncommitted-label">
+          {t("wsDiffUncommitted", summary.files, summary.added, summary.removed)}
+        </span>
+      </button>
+      {open && entries.length > 0 ? (
+        <ul className="ws-diff-files ws-diff-files-uncommitted">
+          {entries.map((f) => (
+            <FileRow
+              key={f.path}
+              file={f}
+              base={base}
+              expanded={expanded.has(f.path)}
+              onToggle={() => toggle(f.path)}
+              root={root}
+              uncommitted
+            />
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
 function FileRow({
   file,
   base,
   expanded,
   onToggle,
+  root,
+  uncommitted = false,
 }: {
   file: DiffFileEntry;
   base: string;
   expanded: boolean;
   onToggle: () => void;
+  /// When set, per-file fetches are scoped to this folder via
+  /// `?root=<root>` and cached separately so two folders touching the
+  /// same relative path don't collide. The store-backed
+  /// single-folder flow leaves this undefined and uses the legacy
+  /// shared `workspaceDiffFileCache` keyed by `<base>::<path>`.
+  root?: string;
+  /// Tells the per-file fetch to ask for the working-tree (HEAD vs.
+  /// unstaged + staged) diff instead of the committed-vs-base one.
+  /// Cache key includes the flag so a file that exists in both views
+  /// renders distinct hunks.
+  uncommitted?: boolean;
 }) {
-  const cacheKey = `${base}::${file.path}`;
-  const cached = useAppStore((s) => s.workspaceDiffFileCache[cacheKey]);
+  const cacheKey = `${root ?? ""}::${uncommitted ? "wt" : "head"}::${base}::${file.path}`;
+  const storeCache = useAppStore((s) => s.workspaceDiffFileCache[cacheKey]);
   const setEntry = useAppStore((s) => s.setWorkspaceDiffFileEntry);
+  const [localCached, setLocalCached] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const cached = root ? localCached : storeCache;
 
-  // Lazy fetch when first expanded. Cached afterwards via the
-  // store, so re-expanding doesn't refetch.
+  // Lazy fetch when first expanded. Multi-folder mode uses local
+  // state so refreshing folder A doesn't blow folder B's open
+  // hunks — single-folder mode keeps the legacy store cache.
   useEffect(() => {
     if (!expanded || cached != null || loading) return;
     setLoading(true);
-    void fetchFileDiff(base, file.path).then((diff) => {
-      if (diff != null) setEntry(cacheKey, diff);
+    void fetchFileDiff(base, file.path, root, uncommitted).then((diff) => {
+      if (diff != null) {
+        if (root) {
+          setLocalCached(diff);
+        } else {
+          setEntry(cacheKey, diff);
+        }
+      }
       setLoading(false);
     });
-  }, [expanded, cached, loading, base, file.path, cacheKey, setEntry]);
+  }, [expanded, cached, loading, base, file.path, cacheKey, setEntry, root, uncommitted]);
 
   return (
     <li className="ws-diff-file" data-status={file.status}>
@@ -359,7 +613,12 @@ function FileRow({
 
 /// Compact count rendered next to the section title in
 /// `AppWorkspaceRail` so the user sees the file count without
-/// expanding the card.
+/// expanding the card. v1 just reflects the store-backed primary
+/// folder — in multi-folder projects the per-folder counts live
+/// inside each section header. Wiring an aggregate count would
+/// require fetching every folder eagerly on mount, which we
+/// deliberately avoid (the right rail must stay snappy with many
+/// folders).
 export function WorkspaceDiffCount() {
   const diff = useAppStore((s) => s.workspaceDiff);
   if (diff == null || diff === "unavailable") return <span>0</span>;

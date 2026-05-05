@@ -249,11 +249,32 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         ) {
             info!(
                 bytes = extra.len(),
-                "loaded project instructions (AGENTS.md / CLAUDE.md / AGENT.md)"
+                "loaded project instructions (AGENTS.md / JARVIS.md / CLAUDE.md / .jarvis)"
             );
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&extra);
             project_context_loaded = true;
+        }
+    }
+    let project_memory_dir = project_memory_dir(&cfg);
+    let project_memory_cap = project_memory_max_bytes(&cfg);
+    let project_memory_setting = project_memory_enabled_setting(&cfg);
+    let mut project_memory_loaded = false;
+    if include_project_memory(&workspace_root, &project_memory_dir, project_memory_setting) {
+        if let Some(extra) = harness_tools::workspace::load_project_memory(
+            &workspace_root,
+            &project_memory_dir,
+            project_memory_cap,
+            project_memory_setting == Some(true),
+        ) {
+            info!(
+                bytes = extra.len(),
+                dir = %project_memory_dir.display(),
+                "loaded project memory prompt"
+            );
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&extra);
+            project_memory_loaded = true;
         }
     }
     // Snapshot the canonical registry as the agent template's tool
@@ -512,6 +533,9 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         coding_mode,
         project_context_loaded,
         project_context_bytes_cap: Some(project_ctx_cap),
+        project_memory_loaded,
+        project_memory_dir: Some(project_memory_dir.display().to_string()),
+        project_memory_bytes_cap: Some(project_memory_cap),
         mcp_prefixes,
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
@@ -1320,6 +1344,11 @@ whole repo. \
 At the start of a fresh session, call todo.list to see persistent project follow-ups; \
 record new follow-ups via todo.add (not plan.update — that's for the current turn only) \
 and mark them completed/blocked as you go. \
+If your previous turn asked a yes/no question about a specific entity (\"标记为 Done?\", \
+\"删除这个 Requirement?\", \"重新跑这次验证?\", etc.) and the user replies in the affirmative \
+(\"yes\", \"可以\", \"go ahead\", \"行\", \"OK\"), treat that as authorization to act on **that exact \
+entity** — its id is already in your earlier tool results. Do not re-enumerate via project.list / \
+requirement.list to \"re-confirm\"; that turns a one-click confirmation into a multi-tool round-trip. \
 If the user asks about project progress or 'what's still pending', use project.list to find a \
 roadmap project for the current workspace (look for tags including \"roadmap\" — the slug usually \
 ends in `-roadmap`), then requirement.list and group by status. If no such project exists and \
@@ -1342,7 +1371,8 @@ Do not bulk-create requirements without first showing the breakdown via plan.upd
 End every coding turn with a short report: which files changed, which checks ran, which checks \
 were skipped and why, and any residual risk you couldn't verify.";
 
-/// Should we auto-load `AGENTS.md` / `CLAUDE.md` / `AGENT.md`
+/// Should we auto-load `AGENTS.md` / `JARVIS.md` / `CLAUDE.md`,
+/// `.jarvis/JARVIS.md`, and `.jarvis/rules/*.md`
 /// from the workspace and append to the system prompt? Defaults to
 /// `true` because that's what every coding-agent the user has
 /// likely tried (Claude Code, Cursor, Codex, …) does. Opt out via
@@ -1356,14 +1386,61 @@ fn include_project_context(cfg: &Config) -> bool {
 }
 
 /// Cap on the total bytes of project context appended to the system
-/// prompt. Defaults to 32 KiB — enough for any realistic AGENTS.md
-/// / CLAUDE.md, far short of blowing a small-context model.
+/// prompt. Defaults to 32 KiB — enough for realistic agent
+/// instruction files, far short of blowing a small-context model.
 fn project_context_max_bytes(cfg: &Config) -> usize {
     std::env::var("JARVIS_PROJECT_CONTEXT_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
         .or(cfg.agent.project_context_max_bytes)
         .unwrap_or(32 * 1024)
+}
+
+/// Resolve the file-based project memory switch. `Some(true)` means
+/// create/load the memory dir; `Some(false)` means disabled; `None`
+/// means auto-load only when the dir already exists.
+fn project_memory_enabled_setting(cfg: &Config) -> Option<bool> {
+    if std::env::var_os("JARVIS_NO_PROJECT_MEMORY").is_some() {
+        return Some(false);
+    }
+    if std::env::var_os("JARVIS_ENABLE_PROJECT_MEMORY").is_some() {
+        return Some(true);
+    }
+    cfg.memory.project_enabled
+}
+
+fn project_memory_dir(cfg: &Config) -> PathBuf {
+    std::env::var("JARVIS_PROJECT_MEMORY_DIR")
+        .ok()
+        .or_else(|| cfg.memory.project_dir.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(harness_tools::workspace::PROJECT_MEMORY_DIR))
+}
+
+fn project_memory_max_bytes(cfg: &Config) -> usize {
+    std::env::var("JARVIS_PROJECT_MEMORY_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .or(cfg.memory.project_max_bytes)
+        .unwrap_or(harness_tools::workspace::PROJECT_MEMORY_MAX_ENTRYPOINT_BYTES)
+}
+
+fn include_project_memory(
+    workspace_root: &std::path::Path,
+    memory_dir: &std::path::Path,
+    setting: Option<bool>,
+) -> bool {
+    match setting {
+        Some(v) => v,
+        None => {
+            let dir = if memory_dir.is_absolute() {
+                memory_dir.to_path_buf()
+            } else {
+                workspace_root.join(memory_dir)
+            };
+            dir.is_dir()
+        }
+    }
 }
 
 /// Pick the agent's system prompt. Order: explicit
@@ -1457,7 +1534,7 @@ fn load_codex_from_cli_home(cfg: &Config) -> Result<CodexAuth> {
 /// env var first, then the on-disk auth file written by `jarvis
 /// init`. Returns a clear error pointing the operator at `jarvis
 /// init` if neither is set. API keys deliberately are never read
-/// from the TOML config file — secrets and preferences live in
+/// from the JSON config file — secrets and preferences live in
 /// different files.
 fn resolve_api_key(provider: &str, env_var: &str) -> Result<String> {
     if let Ok(v) = std::env::var(env_var) {

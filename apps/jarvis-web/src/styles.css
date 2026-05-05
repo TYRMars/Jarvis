@@ -580,6 +580,38 @@ body.sidebar-closed #input-area {
   display: none;
 }
 
+.convo-group-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px 6px;
+}
+
+.convo-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+.convo-group-toggle:hover {
+  background: var(--surface-2, rgba(0, 0, 0, 0.04));
+  border-color: var(--border, rgba(0, 0, 0, 0.08));
+  color: var(--text);
+}
+
+.convo-group-toggle:focus-visible {
+  outline: none;
+  border-color: var(--accent, #2563eb);
+}
+
 .section-label {
   margin: 0 0 10px;
   color: var(--text-soft);
@@ -662,6 +694,7 @@ body.sidebar-closed #input-area {
 }
 
 #pinned-list,
+#running-list,
 #convo-list {
   display: flex;
   flex-direction: column;
@@ -677,6 +710,7 @@ body.sidebar-closed #input-area {
    that resolves to full --text on hover/active. See
    docs/design-system/components.md for the unified contract. */
 #pinned-list li:not(.convo-group-label),
+#running-list li:not(.convo-group-label),
 #convo-list li:not(.convo-group-label) {
   position: relative;
   display: grid;
@@ -692,18 +726,21 @@ body.sidebar-closed #input-area {
 }
 
 #pinned-list li:not(.convo-group-label):hover,
+#running-list li:not(.convo-group-label):hover,
 #convo-list li:not(.convo-group-label):hover {
   color: var(--text);
   background: var(--panel-hover);
 }
 
 #pinned-list li.active,
+#running-list li.active:not(.convo-group-label),
 #convo-list li.active:not(.convo-group-label) {
   color: var(--text);
   background: var(--panel-active);
 }
 
 #pinned-list .id,
+#running-list .id,
 #convo-list .id {
   overflow: hidden;
   font-size: 11px;
@@ -712,12 +749,14 @@ body.sidebar-closed #input-area {
 }
 
 #pinned-list .meta,
+#running-list .meta,
 #convo-list .meta {
   color: var(--text-soft);
   font-size: 11px;
 }
 
-#convo-list .delete {
+#convo-list .delete,
+#running-list .delete {
   width: 22px;
   height: 22px;
   color: var(--text-soft);
@@ -728,11 +767,14 @@ body.sidebar-closed #input-area {
 }
 
 #convo-list li:hover .delete,
-#convo-list .delete:focus {
+#running-list li:hover .delete,
+#convo-list .delete:focus,
+#running-list .delete:focus {
   opacity: 1;
 }
 
-#convo-list .delete:hover {
+#convo-list .delete:hover,
+#running-list .delete:hover {
   color: #ffffff;
   background: var(--accent-red);
 }
@@ -1034,9 +1076,23 @@ body.sidebar-closed #input-area {
   white-space: nowrap;
 }
 
-.conversation-id:empty::before {
-  content: "New session";
+/* Bound-project segment: same baseline weight as the conversation
+   title but in the foreground colour to read as a meaningful
+   parent — distinct from the muted separators on either side and
+   from the conversation title (which is text-soft). */
+.crumb-project {
+  color: var(--text);
+  font-weight: 650;
+  max-width: 24vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+/* Empty-state fallback was previously a CSS `::before { content: "New
+   session" }`, which can't be localised. The label now lives in the
+   React component (ChatHeader.tsx), which substitutes the i18n
+   fallback when `label` is empty. */
 
 .header-controls {
   display: flex;
@@ -2089,12 +2145,14 @@ body.sidebar-closed #input-area {
 /* Active conversation row gets a subtle accent rail on the leading
    edge so users can find their place in long sidebars. */
 #convo-list li.active:not(.convo-group-label),
+#running-list li.active:not(.convo-group-label),
 #pinned-list li.active:not(.convo-group-label) {
   background: var(--surface-hover, var(--pre-bg));
   position: relative;
 }
 
 #convo-list li.active:not(.convo-group-label)::before,
+#running-list li.active:not(.convo-group-label)::before,
 #pinned-list li.active:not(.convo-group-label)::before {
   content: "";
   position: absolute;
@@ -2109,6 +2167,7 @@ body.sidebar-closed #input-area {
 /* Conversation rail row layout. Compact single-line density, closer to
    Claude's sidebar: title first, tiny state dot, then count/time. */
 #pinned-list li:not(.convo-group-label),
+#running-list li:not(.convo-group-label),
 #convo-list li:not(.convo-group-label) {
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr) auto;
@@ -2134,13 +2193,39 @@ body.sidebar-closed #input-area {
 }
 
 #convo-list li.active:not(.convo-group-label) .convo-dot,
+#running-list li.active:not(.convo-group-label) .convo-dot,
 #pinned-list li.active:not(.convo-group-label) .convo-dot {
   border-color: var(--accent);
   background: var(--accent);
   opacity: 1;
 }
 
+#convo-list li.running:not(.convo-group-label) .convo-dot,
+#running-list li.running:not(.convo-group-label) .convo-dot,
+#pinned-list li.running:not(.convo-group-label) .convo-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  opacity: 1;
+  animation: convo-running-pulse 1.35s ease-in-out infinite;
+}
+
+#convo-list li[data-run-status="waiting_approval"] .convo-dot,
+#running-list li[data-run-status="waiting_approval"] .convo-dot,
+#pinned-list li[data-run-status="waiting_approval"] .convo-dot,
+#convo-list li[data-run-status="waiting_hitl"] .convo-dot,
+#running-list li[data-run-status="waiting_hitl"] .convo-dot,
+#pinned-list li[data-run-status="waiting_hitl"] .convo-dot {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+@keyframes convo-running-pulse {
+  0%, 100% { transform: scale(0.88); opacity: 0.72; }
+  50% { transform: scale(1.28); opacity: 1; }
+}
+
 #convo-list li.active:not(.convo-group-label)::before,
+#running-list li.active:not(.convo-group-label)::before,
 #pinned-list li.active:not(.convo-group-label)::before {
   display: none;
 }
@@ -2196,6 +2281,10 @@ body.sidebar-closed #input-area {
   white-space: nowrap;
 }
 
+.convo-sub .run {
+  color: var(--accent);
+}
+
 .convo-group-label {
   margin: 12px 0 5px;
   padding: 0 8px 0 2px;
@@ -2227,9 +2316,12 @@ body.sidebar-closed #input-area {
 
 #convo-list li:hover .convo-actions,
 #convo-list li.active .convo-actions,
+#running-list li:hover .convo-actions,
+#running-list li.active .convo-actions,
 #pinned-list li:hover .convo-actions,
 #pinned-list li.active .convo-actions,
 #convo-list li:focus-within .convo-actions,
+#running-list li:focus-within .convo-actions,
 #pinned-list li:focus-within .convo-actions {
   opacity: 1;
 }
@@ -2255,6 +2347,7 @@ body.sidebar-closed #input-area {
 }
 
 #pinned-list li.active .convo-actions,
+#running-list li.active .convo-actions,
 #convo-list li.active .convo-actions {
   background: linear-gradient(90deg, transparent, var(--panel-active) 26%);
 }
@@ -2336,6 +2429,7 @@ body.sidebar-closed #input-area {
 }
 
 #pinned-list,
+#running-list,
 #convo-list {
   list-style: none;
   padding: 0;
@@ -3427,6 +3521,57 @@ body.workspace-rail-closed #input-area {
   font-family: var(--font-mono);
 }
 
+/* Multi-workspace branch rail. Replaces the single branch chip when
+   the bound project carries 2+ workspace folders. Stays a flex row
+   that wraps on narrow viewports so 5+ workspaces don't push the
+   primary project chip off-screen. */
+.session-branch-rail {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+}
+.session-branch-rail .session-chip-branch {
+  max-width: 220px;
+  padding: 0 7px;
+  gap: 5px;
+}
+.session-branch-rail .session-branch-rail-name {
+  font-family: var(--font);
+  color: var(--text);
+  font-weight: 600;
+}
+.session-branch-rail .session-branch-rail-branch {
+  color: var(--text-soft);
+}
+/* Inactive workspace chips: muted so the active one reads first.
+   Active gets the standard panel background; inactive sits a tier
+   lower in the visual hierarchy. */
+.session-chip-branch.is-inactive {
+  background: transparent;
+  border-color: var(--border-soft, var(--border));
+  opacity: 0.7;
+}
+.session-chip-branch.is-active {
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+/* Tiny "{n}个工作区" tag inside the ComposerShoulder branch crumb,
+   shown only when the bound project has 2+ workspace folders. Reads
+   as a footnote — gradient muting + smaller font to stay subordinate
+   to the branch name itself. */
+.shoulder-crumb-multi {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-hover);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .session-chip-project {
   color: var(--text-muted);
   border-style: dashed;
@@ -3450,6 +3595,493 @@ body.workspace-rail-closed #input-area {
   height: 6px;
   border-radius: 999px;
   background: #d97706;
+}
+
+/* ===================== Composer project rail ====================
+   Draft-only chip row at the top of the composer — see
+   `apps/jarvis-web/src/components/Composer/ComposerProjectRail.tsx`.
+   Layout reuses `.session-chip` / `.session-chip-branch` /
+   `.session-dirty-dot` so the rail visually matches the existing
+   session context, just with extra interactivity (branch popover,
+   add folder dialog, project picker clear button). */
+
+.composer-project-rail {
+  position: relative;
+  width: min(var(--composer-width), 100%);
+  margin: 0 auto 6px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+}
+
+.composer-project-rail-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Project picker chip — empty state inherits .session-chip; selected
+   state gets a dashed border + green dot, mimicking the screenshot's
+   "Jarvis Product" treatment. */
+.composer-project-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.composer-project-chip.is-selected {
+  border-style: dashed;
+  border-color: var(--accent, #16a34a);
+  background: var(--panel);
+  color: var(--text);
+  position: relative;
+  padding-left: 22px;
+}
+.composer-project-chip.is-selected::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.18);
+}
+.composer-project-chip-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `✕` next to a selected project chip — clears the binding. */
+.composer-project-chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.composer-project-chip-clear:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* Project picker popover — anchored ABOVE the project chip. The
+   chip lives directly above the composer input, so a "drop down"
+   popover would land inside the input/clipped by the input area's
+   overflow. Open upward instead so the project list reads above
+   the chip with a 6px gap. Reuses `.session-popover` for shadow
+   / radius / scrolling. */
+.composer-project-popover {
+  left: 0;
+  top: auto;
+  bottom: calc(100% + 6px);
+  min-width: 220px;
+  max-width: 320px;
+  z-index: 30;
+}
+
+/* Divider between the project list and the "+ 新建项目" entry.
+   Hairline so it reads as a section break, not a heavy separator. */
+.composer-project-popover-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+/* "+ 新建项目" row in the popover. Same height + padding as
+   `.session-menu-row`; the icon sits where the project dot would. */
+.composer-project-popover-create {
+  color: var(--text-soft);
+}
+.composer-project-popover-create:hover {
+  color: var(--text);
+}
+.composer-project-popover-create svg {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+/* Folder chip in the rail — extends `.session-chip-branch` with a
+   pointer (clickable) and the `wt`/`ck` mode badge. */
+.composer-folder-chip {
+  cursor: pointer;
+}
+.composer-folder-chip:hover {
+  background: var(--panel-hover);
+}
+.composer-folder-chip[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.composer-folder-chip-mode {
+  margin-left: 2px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel-hover);
+  color: var(--text-soft);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.composer-add-folder-chip {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* ============== Branch popover (per-folder picker) ============== */
+
+.branch-popover {
+  position: absolute;
+  left: 0;
+  /* Open upward: chip row sits directly above the textarea, so a
+     down-opening popover lands inside the input and gets clipped.
+     Same pattern as `.composer-project-popover`. */
+  top: auto;
+  bottom: calc(100% + 6px);
+  z-index: 60;
+  width: min(340px, 92vw);
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-popover);
+  font-size: var(--fs-13);
+}
+.branch-popover-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.branch-popover-path {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.branch-popover-search {
+  padding: 6px 4px 4px;
+}
+.branch-popover-search input {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-deep, var(--bg));
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.branch-popover-search input:focus {
+  border-color: var(--accent, #16a34a);
+}
+.branch-popover-list {
+  flex: 1;
+  min-height: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.branch-popover-empty {
+  padding: 12px 10px;
+  color: var(--text-soft);
+  text-align: center;
+}
+.branch-popover-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.branch-popover-row:hover,
+.branch-popover-row[data-highlighted="true"] {
+  background: var(--panel-hover);
+}
+.branch-popover-row[data-current="true"] {
+  font-weight: 600;
+}
+.branch-popover-row[data-remote="true"] {
+  color: var(--text-soft);
+}
+.branch-popover-row[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.branch-popover-row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.branch-popover-remote-prefix {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--panel-hover);
+  color: var(--text-soft);
+  font-family: var(--font);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.branch-popover-check {
+  color: var(--accent, #16a34a);
+}
+.branch-popover-mode {
+  display: flex;
+  gap: 4px;
+  padding: 6px 4px 2px;
+  border-top: 1px solid var(--border);
+}
+.branch-popover-mode-btn {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.branch-popover-mode-btn:hover {
+  background: var(--panel-hover);
+}
+.branch-popover-mode-btn[data-active="true"] {
+  background: var(--accent, #16a34a);
+  border-color: var(--accent, #16a34a);
+  color: white;
+}
+.branch-popover-mode-btn[data-danger="true"] {
+  border-color: #dc2626;
+  color: #dc2626;
+}
+.branch-popover-mode-btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.branch-popover-error {
+  padding: 6px 8px;
+  margin: 4px 2px 0;
+  border: 1px solid #dc2626;
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+  font-size: 12px;
+}
+.branch-popover-dirty {
+  padding: 8px;
+  margin: 6px 2px 0;
+  border: 1px solid #d97706;
+  border-radius: 6px;
+  background: rgba(217, 119, 6, 0.08);
+  color: var(--text);
+  font-size: 12px;
+}
+.branch-popover-dirty p {
+  margin: 0 0 6px;
+}
+.branch-popover-dirty-files {
+  margin: 0 0 6px;
+  padding: 0 0 0 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.branch-popover-dirty-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ============ Add folder dialog (modal for `+` chip) ============ */
+
+.add-folder-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+.add-folder-modal {
+  width: min(440px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+}
+.add-folder-modal-header {
+  font-size: var(--fs-14);
+}
+.add-folder-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-13);
+}
+.add-folder-modal-field span {
+  color: var(--text-muted);
+}
+.add-folder-modal-field input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-deep, var(--bg));
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-mono);
+  outline: none;
+}
+.add-folder-modal-field input:focus {
+  border-color: var(--accent, #16a34a);
+}
+/* Path input + Browse button live on one row so the OS-picker
+   trigger feels attached to the field rather than hovering off
+   somewhere. The input flexes; the button keeps its natural width. */
+.add-folder-modal-path-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.add-folder-modal-path-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.add-folder-modal-path-row .add-folder-modal-btn {
+  flex: 0 0 auto;
+}
+/* Disambiguation list rendered when the OS-picker basename matches
+   2+ folders under the search roots. Each row is a click target that
+   pulls the absolute path into the input. */
+.add-folder-modal-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--panel-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.add-folder-modal-candidates-hint {
+  margin: 0;
+  color: var(--text-soft);
+}
+.add-folder-modal-candidates ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.add-folder-modal-candidates li button {
+  width: 100%;
+  display: block;
+  padding: 4px 6px;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+.add-folder-modal-candidates li button:hover,
+.add-folder-modal-candidates li button[data-active="true"] {
+  background: var(--panel);
+  border-color: var(--border);
+}
+.add-folder-modal-candidates li code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.add-folder-modal-error {
+  padding: 6px 8px;
+  border: 1px solid #dc2626;
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+  font-size: 12px;
+}
+.add-folder-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.add-folder-modal-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.add-folder-modal-btn:hover {
+  background: var(--panel-hover);
+}
+.add-folder-modal-btn[data-primary="true"] {
+  background: var(--accent, #16a34a);
+  border-color: var(--accent, #16a34a);
+  color: white;
+}
+.add-folder-modal-btn[data-primary="true"]:hover {
+  filter: brightness(1.05);
+}
+.add-folder-modal-btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .session-popover {
@@ -3739,6 +4371,43 @@ body.workspace-rail-closed #input-area {
 .session-locked-newchat:focus-visible {
   outline: 2px solid var(--focus-ring, var(--accent, var(--text)));
   outline-offset: 2px;
+}
+
+/* Two-button row inside the locked popover. Primary keeps current
+   project; secondary clears bindings — both reachable in one click,
+   visual hierarchy distinguishes the common case. */
+.session-locked-actions {
+  display: flex;
+  gap: 6px;
+  align-self: stretch;
+}
+.session-locked-actions .session-locked-newchat {
+  flex: 1 1 auto;
+  align-self: auto;
+}
+.session-locked-newchat.ghost {
+  background: transparent;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  font-weight: 600;
+}
+.session-locked-newchat.ghost:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+  filter: none;
+}
+
+/* Locked-state visual cue on the chip row. Pre-message the chips are
+   the user's resource picker; once a session locks they become a
+   read-only "what context this conversation runs in" panel — the
+   hover affordance + cursor swap reinforce that they no longer drive
+   binding changes. The "+" chip stays interactive (its job in locked
+   state is to surface the locked popover with new-chat actions). */
+.session-context[data-locked] .session-chip:not(.session-chip-add) {
+  cursor: default;
+}
+.session-context[data-locked] .session-chip:not(.session-chip-add):hover {
+  background: var(--panel);
 }
 
 .branch-bar {
@@ -6458,9 +7127,16 @@ body.approvals-open #panel {
 }
 
 /* v1.0 — Projects home grid. Replaces the "drop the WorkOverview
-   page here" home, which left no project chrome on the home view. */
+   page here" home, which left no project chrome on the home view.
+   Owns its own 28px gutter so the grid doesn't render flush against
+   the viewport edges — matches the convention from PR #22 where each
+   panel body picks its own padding (`.projects-page-header` = 16/28/12,
+   `.project-board` = 20/28/28). Without this the cards sat
+   edge-to-edge on /projects but regained breathing room the moment a
+   user clicked into a project, which read as a layout bug. */
 .projects-home {
   width: 100%;
+  padding: 20px 28px 28px;
 }
 .projects-home-summary {
   display: flex;
@@ -7384,6 +8060,17 @@ body.approvals-open #panel {
 .requirement-status-pill.status-done {
   color: var(--text-soft);
   opacity: 0.85;
+}
+
+/* Neutral pill for custom columns (no `kind` hint). Sits between the
+   default chrome and the four built-in tints — visible enough that the
+   chip doesn't read as disabled, muted enough that it doesn't compete
+   with the meaningful built-in states. The kanban-column equivalent
+   isn't styled separately: the base `.project-board-column` rule
+   already paints a calm grid, which is the right look for "custom". */
+.requirement-status-pill.status-custom {
+  color: var(--text-soft);
+  border-color: var(--border);
 }
 
 /* `.requirement-card-footer / -spacer / -sessions` were migrated to
@@ -11004,6 +11691,83 @@ select.settings-input {
   font-size: var(--fs-12);
 }
 
+.settings-agent-builtins {
+  margin-bottom: 20px;
+}
+
+.settings-agent-builtins-head {
+  margin-bottom: 8px;
+}
+
+.settings-agent-builtins-title {
+  margin: 0;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.settings-agent-builtins-desc {
+  margin: 2px 0 0;
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+}
+
+.settings-agent-builtins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.settings-agent-builtin-card {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-soft, rgba(0, 0, 0, 0.02));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-agent-builtin-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-agent-builtin-name {
+  font-weight: 700;
+  font-size: var(--fs-13);
+  color: var(--text);
+}
+
+.settings-agent-builtin-badge {
+  font-size: var(--fs-11);
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--text-soft);
+  background: var(--bg);
+}
+
+.settings-agent-builtin-badge.gated {
+  color: rgb(180, 95, 0);
+  border-color: rgba(180, 95, 0, 0.4);
+}
+
+.settings-agent-builtin-tool {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--fs-11);
+  color: var(--text-soft);
+}
+
+.settings-agent-builtin-desc-text {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text);
+  line-height: 1.4;
+}
+
 /* ----- Settings → Diagnostics (Phase 5b) ----- */
 
 .settings-diagnostics-toolbar {
@@ -11957,11 +12721,14 @@ select.settings-input {
 }
 
 .ui-select-popup {
+  /* Default visual chrome — positioning is set inline via the portal
+   * so the popup escapes any ancestor with `overflow: hidden|auto`
+   * (modals, scroll containers, kanban panes). The legacy
+   * `position: absolute` baseline is preserved as a fallback for any
+   * caller that bypasses the portal. */
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  /* Match the trigger width by default; consumer can override via
-   * `popupMinWidth` for narrow triggers + long labels. */
   min-width: 100%;
   max-width: min(360px, 90vw);
   max-height: min(60vh, 320px);
@@ -11973,6 +12740,13 @@ select.settings-input {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.ui-select-popup-portal {
+  /* Width is provided inline via `minWidth`. Cap the rendered width
+   * so an extra-long label doesn't blow past a narrow trigger by
+   * more than ~360px. */
+  max-width: min(360px, 90vw);
 }
 
 .ui-select-search {
@@ -15029,3 +15803,850 @@ select.settings-input {
     grid-column: 1;
   }
 }
+
+/* -----------------------------------------------------------------
+ * Session execution shoulder.
+ *
+ * Sits above the composer's existing Git/branch row when the active
+ * conversation is bound to a Requirement. Mirrors the look-and-feel
+ * of `.composer-shoulder` but slightly tighter so two stacked rows
+ * don't dominate the input area. Tone classes pick up the same
+ * status-* / run-status-* / verify-* palette tokens as the kanban.
+ * ----------------------------------------------------------------- */
+
+.session-exec-shoulder {
+  width: min(var(--composer-width), 100%);
+  margin: 0 auto 6px;
+  min-height: 40px;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  font-size: var(--fs-13, 13px);
+  cursor: pointer;
+  user-select: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.session-exec-shoulder:hover {
+  background: var(--panel-hover, var(--panel));
+}
+
+.session-exec-shoulder:focus-visible {
+  outline: 2px solid var(--accent-blue, #4c6ef5);
+  outline-offset: 2px;
+}
+
+.session-exec-shoulder-id {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--text-soft);
+  letter-spacing: 0.02em;
+}
+
+.session-exec-shoulder-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.session-exec-shoulder-status {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: var(--fs-12, 12px);
+  font-weight: 500;
+}
+
+.session-exec-shoulder-status.tone-running {
+  background: color-mix(in srgb, var(--accent-blue, #4c6ef5) 12%, transparent);
+  color: var(--accent-blue, #4c6ef5);
+}
+
+.session-exec-shoulder-status.tone-success {
+  background: color-mix(in srgb, var(--accent-green, #2f9e44) 12%, transparent);
+  color: var(--accent-green, #2f9e44);
+}
+
+.session-exec-shoulder-status.tone-warning {
+  background: color-mix(in srgb, var(--accent-amber, #f59f00) 14%, transparent);
+  color: var(--accent-amber, #f59f00);
+}
+
+.session-exec-shoulder-status.tone-danger {
+  background: color-mix(in srgb, var(--accent-red, #e03131) 14%, transparent);
+  color: var(--accent-red, #e03131);
+}
+
+.session-exec-shoulder-status.tone-neutral {
+  background: var(--panel-hover, var(--panel));
+  color: var(--text-soft);
+}
+
+.session-exec-shoulder-detail {
+  flex: 0 0 auto;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+  font-size: var(--fs-12, 12px);
+}
+
+.session-exec-shoulder-action {
+  flex: 0 0 auto;
+  color: var(--text-soft);
+  font-size: var(--fs-12, 12px);
+}
+
+.session-exec-shoulder:hover .session-exec-shoulder-action {
+  color: var(--text);
+}
+
+.session-exec-drawer-stream {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-12, 12px);
+  background: var(--panel-hover, var(--panel));
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.session-exec-drawer-stream.stream-err {
+  color: var(--accent-red, #e03131);
+}
+
+@media (max-width: 720px) {
+  .session-exec-shoulder {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+  .session-exec-shoulder-title {
+    flex-basis: 100%;
+    order: -1;
+  }
+}
+
+/* -----------------------------------------------------------------
+ * Resource manager dialog (new-session composer).
+ * ----------------------------------------------------------------- */
+
+.resource-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  min-height: 360px;
+}
+
+.resource-dialog-search {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input-bg, var(--panel));
+  color: var(--text);
+  font: inherit;
+}
+
+.resource-dialog-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.resource-dialog-tab {
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  font: inherit;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.resource-dialog-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent-blue, #4c6ef5);
+}
+
+.resource-dialog-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.resource-dialog-list,
+.resource-dialog-preview {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  overflow-y: auto;
+  max-height: 360px;
+}
+
+.resource-dialog-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.resource-dialog-row {
+  margin: 0;
+}
+
+.resource-dialog-row-button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  gap: 2px;
+}
+
+.resource-dialog-row-button:hover {
+  background: var(--panel-hover, var(--panel));
+}
+
+.resource-dialog-row.selected .resource-dialog-row-button {
+  border-color: var(--accent-blue, #4c6ef5);
+  background: color-mix(
+    in srgb,
+    var(--accent-blue, #4c6ef5) 8%,
+    transparent
+  );
+}
+
+.resource-dialog-row-title {
+  font-weight: 600;
+  font-size: var(--fs-14, 14px);
+}
+
+.resource-dialog-row-sub {
+  color: var(--text-soft);
+  font-size: var(--fs-12, 12px);
+}
+
+.resource-dialog-empty {
+  color: var(--text-soft);
+  font-size: var(--fs-13, 13px);
+  margin: 12px 4px;
+}
+
+.resource-dialog-folder-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resource-dialog-folder-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-12, 12px);
+  color: var(--text-soft);
+}
+
+.resource-dialog-folder-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg, var(--panel));
+  color: var(--text);
+  font: inherit;
+}
+
+/* Browse + Probe pair on the primary folder input row. Same row
+   gap as the multi-row editor so single-folder vs multi-folder UX
+   reads consistently. */
+.resource-dialog-folder-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* Multi-folder editor rows under the primary input. The user can hit
+   "+ Add folder" to bundle additional folders into a single
+   new-project create. Each row pairs an input with its own Probe +
+   Remove buttons; per-row error / status text breaks to a new line
+   below so the action row stays compact. */
+.resource-dialog-folder-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.resource-dialog-folder-row {
+  display: grid;
+  /* `auto` columns adapt to whether Browse is rendered (Chrome) or
+     not (Safari/Firefox); `1fr` for the input always grows. */
+  grid-template-columns: 1fr auto auto auto;
+  gap: 6px;
+  align-items: center;
+}
+.resource-dialog-folder-row .resource-dialog-folder-input {
+  width: 100%;
+  min-width: 0;
+}
+.resource-dialog-folder-row .resource-dialog-btn.ghost {
+  padding: 4px 9px;
+  font-size: 13px;
+  border-color: transparent;
+  color: var(--text-soft);
+}
+.resource-dialog-folder-row .resource-dialog-btn.ghost:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+.resource-dialog-folder-row-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-left: 2px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.resource-dialog-folder-row-status code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.resource-dialog-folder-addrow {
+  align-self: flex-start;
+  margin-top: 2px;
+  border-style: dashed;
+  color: var(--text-soft);
+}
+.resource-dialog-folder-multihint {
+  margin: 6px 2px 0;
+  padding: 8px 10px;
+  background: var(--panel-hover);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.resource-dialog-error {
+  color: var(--accent-red, #e03131);
+  font-size: var(--fs-12, 12px);
+}
+
+.resource-dialog-probed {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-13, 13px);
+}
+
+.resource-dialog-preview-heading {
+  margin: 0 0 6px;
+  font-size: var(--fs-12, 12px);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-soft);
+}
+
+.resource-dialog-preview-body {
+  margin: 0 0 8px;
+  font-size: var(--fs-13, 13px);
+}
+
+/* Subtitle paragraph at the top of the dialog body. Sits between the
+   modal title (rendered by `Modal`) and the search input, giving users
+   a one-line orientation. Muted so it reads as orientation copy, not
+   another action. */
+.resource-dialog-subtitle {
+  margin: 0 0 12px;
+  padding: 0 4px;
+  color: var(--text-soft);
+  font-size: var(--fs-13, 13px);
+  line-height: 1.5;
+}
+
+.resource-dialog-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* Pushes Cancel to the leading edge and the action pair (free-chat +
+   primary) to the trailing edge. Standard "primary on the right" form
+   pattern; Cancel stays reachable as the bail-out. */
+.resource-dialog-footer-spacer {
+  flex: 1 1 auto;
+}
+
+.resource-dialog-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition: background-color 0.12s ease, border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.resource-dialog-btn:hover:not(:disabled) {
+  background: var(--panel-hover);
+  border-color: var(--border-strong, var(--text-soft));
+}
+
+.resource-dialog-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.resource-dialog-btn.primary {
+  background: var(--accent-blue, #4c6ef5);
+  color: #fff;
+  border-color: var(--accent-blue, #4c6ef5);
+}
+
+.resource-dialog-btn.primary:hover:not(:disabled) {
+  /* Filter darkens the same accent token across themes — avoids a
+     hand-tuned hover colour that drifts when the accent changes. */
+  filter: brightness(0.92);
+}
+
+.resource-dialog-btn.primary:disabled {
+  background: var(--panel);
+  color: var(--text-soft);
+  border-color: var(--border);
+}
+
+/* =====================================================================
+   Right-rail: shared "coming soon / unavailable" empty state.
+   Used by Preview (placeholder) and Terminal (when the server has no
+   workspace root pinned). Same vocabulary as `.rail-empty` but with a
+   bigger icon + body copy.
+   ===================================================================== */
+
+.rail-coming-soon {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  padding: 24px 18px;
+  min-height: 200px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.rail-coming-soon svg {
+  color: var(--text-soft);
+  opacity: 0.85;
+}
+
+.rail-coming-soon strong {
+  font-size: var(--fs-14);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rail-coming-soon span {
+  max-width: 36ch;
+  font-size: var(--fs-13);
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
+/* =====================================================================
+   Files panel: preview pane + nested rows.
+   Tree rows reuse the existing `.files-row` chrome above; this block
+   just adds the inline preview surface that opens when the user
+   clicks a file, and the multi-folder root header.
+   ===================================================================== */
+
+.files-row {
+  /* Replace the original 4-col grid (button-only) with a flexbox so
+     the row can be a `<button>` *or* a `<div>` and still flow nicely
+     with chevron + icon + name + optional size badge. The original
+     grid's last-column "size" is now a margin-left:auto badge. */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  min-height: 28px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.files-row.files-row-root {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.files-row.files-row-file.is-open {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.files-row em {
+  margin-left: auto;
+}
+
+.files-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.files-preview {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  max-height: 50%;
+  min-height: 120px;
+  overflow: hidden;
+}
+
+.files-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-12);
+}
+
+.files-preview-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-preview-meta {
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.files-preview-close {
+  flex: 0 0 auto;
+}
+
+.files-preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: var(--panel);
+}
+
+.files-preview-text {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text);
+  tab-size: 2;
+}
+
+/* =====================================================================
+   Terminal panel: xterm.js host + status strip.
+   ===================================================================== */
+
+.terminal-surface {
+  /* Override the legacy stub (15px padding + muted text fallbacks)
+     so xterm.js owns the canvas without competing chrome. */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 200px;
+  padding: 0;
+  background: #0c0d10;
+  color: #e6e8eb;
+  font: inherit;
+}
+
+.terminal-xterm-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 6px 6px 10px;
+}
+
+.terminal-xterm-host .xterm {
+  height: 100%;
+}
+
+.terminal-xterm-host .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.terminal-status {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: var(--fs-12);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+}
+
+.terminal-status-info {
+  color: #9aa0a6;
+}
+
+.terminal-status-warn {
+  color: #e6a23c;
+}
+
+/* =====================================================================
+   Workspace diff: multi-folder layout. One collapsible section per
+   `project.workspaces[]` entry; single-folder projects keep the
+   legacy flat layout above this block.
+   ===================================================================== */
+
+.ws-diff-multi {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--panel);
+}
+
+.ws-diff-folder {
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-diff-folder:last-child {
+  border-bottom: 0;
+}
+
+.ws-diff-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+
+.ws-diff-folder-header:hover {
+  background: var(--panel-hover);
+}
+
+.ws-diff-folder-name {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.ws-diff-folder-branch {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-hover);
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.ws-diff-folder-stat {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+  color: var(--text-soft);
+}
+
+/* Uncommitted (working-tree) section inside the Diff card.
+   Reuses `.ws-diff-uncommitted` (the legacy banner) as its summary
+   header, then expands to a per-file list when the user clicks
+   the chevron. The list shares `.ws-diff-files` styling with the
+   committed-changes list above so both read as one continuous
+   review surface. */
+.ws-diff-uncommitted-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-diff-uncommitted-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ws-diff-uncommitted-toggle:hover {
+  filter: brightness(0.97);
+}
+
+.ws-diff-uncommitted-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ws-diff-files-uncommitted {
+  margin-top: 4px;
+}
+
+/* ----------------------------------------------------------------- */
+/* Desktop sidecar startup-error overlay. Only mounts inside the
+   Tauri shell when `desktop_status` reports `last_error` or the
+   server health check fails. Sits above every page so the user
+   can recover before getting frustrated by a blank chat. */
+
+.desktop-startup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(8, 10, 14, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.desktop-startup-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.32);
+  padding: 24px 26px 22px;
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.desktop-startup-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.desktop-startup-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.desktop-startup-error {
+  font-size: 12.5px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--code-bg, rgba(255, 90, 90, 0.08));
+  border: 1px solid rgba(255, 90, 90, 0.32);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.desktop-startup-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.desktop-startup-meta-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.desktop-startup-meta-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text);
+  background: var(--code-bg, rgba(255, 255, 255, 0.04));
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+}
+.desktop-startup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.desktop-startup-actions .btn {
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--panel-soft, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+.desktop-startup-actions .btn:hover:not(:disabled) {
+  background: var(--panel-hover, rgba(255, 255, 255, 0.04));
+}
+.desktop-startup-actions .btn.primary {
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  border-color: var(--accent);
+}
+.desktop-startup-actions .btn.primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+.desktop-startup-actions .btn.ghost {
+  background: transparent;
+}
+.desktop-startup-actions .btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.desktop-startup-logs {
+  max-height: 220px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--code-bg, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

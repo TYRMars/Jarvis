@@ -15,7 +15,7 @@ import { PlanProposedCard } from "./Approvals/PlanProposedCard";
 import { ModelMenu } from "./ModelMenu/ModelMenu";
 import { UsageBadge } from "./UsageBadge";
 import { ComposerShoulder } from "./ComposerShoulder";
-import { ComposerSessionContext } from "./ComposerSessionContext";
+import { ComposerProjectRail } from "./Composer/ComposerProjectRail";
 import { OpenSidebarButton, WorkspacePanelMenu } from "./Workspace/WorkspaceToggles";
 import { pickedRouting } from "../services/socket";
 import { slashCommands } from "../services/slash_commands";
@@ -67,7 +67,16 @@ export function AppChatPane() {
             {!pendingApproval && pendingAsk ? <AskTextCard requestId={pendingAsk} /> : null}
           </div>
         ) : null}
-        {inSession ? <ComposerShoulder /> : <ComposerSessionContext />}
+        {/* Multi-workspace git status:
+            - In-session: rendered INSIDE ComposerShoulder (replaces
+              the single-branch crumb).
+            - Pre-session (draft): owned by `ComposerProjectRail`, an
+              interactive chip row with project picker, per-folder
+              branch / worktree popover, and an `+ add folder` chip.
+            Either way the rail sits above the input as part of the
+            existing context surface — not a separate row that
+            disappears between session-state transitions. */}
+        {inSession ? <ComposerShoulder /> : <ComposerProjectRail />}
         <Composer
           slashCommands={slashCommands}
           pickedRouting={pickedRouting}

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
@@ -58,6 +58,32 @@ describe("AppSidebar search", () => {
     // store flip is what we observe — the modal itself isn't a child
     // of `<AppSidebar>` (it's mounted at the App root).
     expect(useAppStore.getState().quickOpen).toBe(true);
+  });
+
+  it("surfaces active background turns in the running section", () => {
+    useAppStore.getState().setConvoRows([
+      {
+        id: "run-12345678",
+        title: "Background build",
+        message_count: 3,
+        created_at: "2026-04-26T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+      {
+        id: "idle-12345678",
+        title: "Idle notes",
+        message_count: 1,
+        created_at: "2026-04-26T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+    ]);
+    useAppStore.getState().setConversationRunStatus("run-12345678", "running");
+
+    renderWithRouter(<AppSidebar />);
+
+    const runningSection = document.querySelector("#running-section")!;
+    expect(within(runningSection as HTMLElement).getByText("Background build")).toBeInTheDocument();
+    expect(within(runningSection as HTMLElement).queryByText("Idle notes")).not.toBeInTheDocument();
   });
 
   it("renders Projects as a primary active tab", () => {

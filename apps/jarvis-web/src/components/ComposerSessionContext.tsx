@@ -22,6 +22,14 @@ import {
 import { newConversation } from "../services/conversations";
 import { chipColor } from "../utils/chipColor";
 import { t } from "../utils/i18n";
+import { SessionExecutionShoulder } from "./Composer/SessionExecutionShoulder";
+import { MultiGitRail } from "./Composer/MultiGitRail";
+import { ResourceManagerDialog } from "./Composer/ResourceManagerDialog";
+import type {
+  NewSessionResourceSelection,
+  ResourceDialogTab,
+} from "./Composer/resourceSelectionTypes";
+import { createProject } from "../services/projects";
 
 type MenuKind = "workspace" | "project" | "context-add" | null;
 
@@ -56,8 +64,55 @@ export function ComposerSessionContext() {
   // unsuspended or while no project is selected.
   const [projectWorkspaces, setProjectWorkspaces] =
     useState<ProjectWorkspaceStatus[] | null>(null);
+  // ResourceManagerDialog state — replaces the three legacy popovers
+  // for new-session resource selection. The popover code below is
+  // kept compiled as fallback / dead code per the migration plan in
+  // `docs/proposals/new-session-resource-manager.zh-CN.md`.
+  const [resourceDialogOpen, setResourceDialogOpen] = useState(false);
+  const [resourceDialogTab, setResourceDialogTab] =
+    useState<ResourceDialogTab>("recent");
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const openResourceDialog = (tab: ResourceDialogTab) => {
+    setResourceDialogTab(tab);
+    setResourceDialogOpen(true);
+    setMenu(null);
+  };
+
+  const applyNewSessionResourceSelection = async (
+    sel: NewSessionResourceSelection,
+  ) => {
+    if (sel.mode === "free_chat") {
+      setDraftProjectId(null);
+      setDraftWorkspace(sel.workspacePath, null);
+      return;
+    }
+    if (sel.mode === "existing_project") {
+      setDraftProjectId(sel.projectId);
+      setDraftWorkspace(sel.workspacePath, null);
+      return;
+    }
+    // new_project_from_folder: create the project bundling all
+    // chosen folders (1+), then bind. The first folder pins the
+    // socket workspace; the remaining folders live on the project
+    // for future sessions to pick from. Server canonicalises +
+    // dedupes the path list on insert, so duplicates the user
+    // typed twice collapse silently.
+    const created = await createProject({
+      name: sel.projectDraft.name,
+      slug: sel.projectDraft.slug,
+      instructions: sel.projectDraft.instructions,
+      workspaces: sel.workspacePaths.map((p) => ({ path: p })),
+    });
+    if (created) {
+      setDraftProjectId(created.id);
+    } else {
+      // createProject already surfaces an error toast; leave the
+      // workspace draft so the user can try a different project name.
+    }
+    setDraftWorkspace(sel.workspacePaths[0] ?? null, null);
+  };
 
   // Once the session has started (the WS handler populates `activeId`
   // from the `started` frame), project + workspace are locked. The
@@ -100,14 +155,18 @@ export function ComposerSessionContext() {
     }
   }, [menu]);
 
-  // Fetch live Git status for the currently-bound project when the
-  // workspace popover opens. The service caches for 5s, so re-opening
-  // the popover quickly doesn't re-shell out to git.
+  // Fetch live Git status for the currently-bound project. Used to
+  // gate behind `menu === "workspace"` so the data only existed
+  // inside the workspace popover. We now want it on display above the
+  // input too (multi-git branch rail), so the fetch runs whenever a
+  // project is bound — regardless of whether the popover is open or
+  // the session is locked.
+  //
+  // Cost: one server roundtrip per bound project per 5s (the service
+  // caches that long). Acceptable: the rail benefits from up-to-date
+  // dirty/branch info, and switching projects fires the fetch only
+  // once before the cache kicks in.
   useEffect(() => {
-    if (menu !== "workspace" || sessionLocked) {
-      setProjectWorkspaces(null);
-      return;
-    }
     const projectId = draftProjectId;
     if (!projectId || isLocalProjectId(projectId)) {
       setProjectWorkspaces(null);
@@ -120,7 +179,7 @@ export function ComposerSessionContext() {
     return () => {
       cancelled = true;
     };
-  }, [menu, draftProjectId, sessionLocked]);
+  }, [draftProjectId]);
 
   const workspaceInfo = draftWorkspaceInfo ?? socketWorkspaceInfo ?? baseline;
   const workspacePath = draftWorkspacePath ?? socketWorkspace ?? baseline?.root ?? null;
@@ -133,6 +192,11 @@ export function ComposerSessionContext() {
   const project = draftProjectId && !isLocalProjectId(draftProjectId)
     ? projects.find((p) => p.id === draftProjectId)
     : null;
+
+  // Multi-workspace fan-out lives in `MultiGitRail`, rendered by
+  // `AppChatPane` above this component. We keep the per-project
+  // workspace fetch here for the workspace popover's row list; the
+  // rail subscribes to the same data via the projects service cache.
 
   // Build the list of rows, filter, and decide whether the user's input
   // should also offer a "Open <path>" candidate.
@@ -323,51 +387,98 @@ export function ComposerSessionContext() {
   };
 
   return (
-    <div className="session-context" ref={wrapRef}>
+    <>
+      {sessionLocked && <SessionExecutionShoulder />}
+      <ResourceManagerDialog
+        open={resourceDialogOpen}
+        onClose={() => setResourceDialogOpen(false)}
+        onConfirm={(sel) => {
+          void applyNewSessionResourceSelection(sel);
+        }}
+        initialTab={resourceDialogTab}
+        baselineWorkspacePath={baseline?.root ?? null}
+      />
+    <div
+      className="session-context"
+      ref={wrapRef}
+      data-locked={sessionLocked || undefined}
+    >
       <button
         type="button"
         className="session-chip"
-        title={workspacePath ?? "Pick workspace"}
-        aria-haspopup="menu"
-        aria-expanded={menu === "workspace"}
-        onClick={() => setMenu(menu === "workspace" ? null : "workspace")}
+        title={workspacePath ?? t("sessionChipPickWorkspace")}
+        aria-haspopup="dialog"
+        aria-expanded={resourceDialogOpen && resourceDialogTab === "folders"}
+        onClick={() => {
+          if (sessionLocked) {
+            setMenu(menu === "workspace" ? null : "workspace");
+          } else {
+            openResourceDialog("folders");
+          }
+        }}
       >
         <FolderIcon />
         <span>{workspaceName}</span>
       </button>
 
-      <span className="session-chip session-chip-branch" title={workspaceInfo?.root ?? workspacePath ?? ""}>
-        <BranchIcon />
-        <span>{branch}</span>
-        {workspaceInfo?.vcs === "git" && workspaceInfo.dirty ? (
-          <span className="session-dirty-dot" title="dirty worktree" />
-        ) : null}
-      </span>
+      {/* Branch slot: when the bound project has 2+ workspaces we
+          fan out into `MultiGitRail` (one chip per workspace) inline;
+          otherwise the single-branch chip mirrors today's behaviour.
+          Both renders happen on the SAME flex row as the workspace +
+          project chips so the new-session header reads the same
+          across single/multi-workspace projects — no extra stacked
+          row that disappears between session-state transitions. */}
+      {(project?.workspaces?.length ?? 0) > 1 ? (
+        <MultiGitRail />
+      ) : (
+        <span
+          className="session-chip session-chip-branch"
+          title={workspaceInfo?.root ?? workspacePath ?? ""}
+        >
+          <BranchIcon />
+          <span>{branch}</span>
+          {workspaceInfo?.vcs === "git" && workspaceInfo.dirty ? (
+            <span className="session-dirty-dot" title="dirty worktree" />
+          ) : null}
+        </span>
+      )}
 
       <button
         type="button"
         className="session-chip session-chip-project"
-        aria-haspopup="menu"
-        aria-expanded={menu === "project"}
-        title={project ? project.name : "Project context is optional"}
-        onClick={() => setMenu(menu === "project" ? null : "project")}
+        aria-haspopup="dialog"
+        aria-expanded={resourceDialogOpen && resourceDialogTab === "projects"}
+        title={project ? project.name : t("sessionChipProjectOptional")}
+        onClick={() => {
+          if (sessionLocked) {
+            setMenu(menu === "project" ? null : "project");
+          } else {
+            openResourceDialog("projects");
+          }
+        }}
       >
         {project ? (
           <span className="project-dot" style={{ background: chipColor(project.slug) }} aria-hidden="true" />
         ) : (
           <span className="session-muted-square" aria-hidden="true" />
         )}
-        <span>{project ? project.name : "Free chat"}</span>
+        <span>{project ? project.name : t("sessionChipFreeChat")}</span>
       </button>
 
       <button
         type="button"
         className="session-chip session-chip-add"
-        aria-label="Add context"
-        aria-haspopup="menu"
-        aria-expanded={menu === "context-add"}
-        title="Add context"
-        onClick={() => setMenu(menu === "context-add" ? null : "context-add")}
+        aria-label={t("sessionChipAddContext")}
+        aria-haspopup="dialog"
+        aria-expanded={resourceDialogOpen && resourceDialogTab === "recent"}
+        title={t("sessionChipAddContext")}
+        onClick={() => {
+          if (sessionLocked) {
+            setMenu(menu === "context-add" ? null : "context-add");
+          } else {
+            openResourceDialog("recent");
+          }
+        }}
       >
         <PlusIcon />
       </button>
@@ -605,6 +716,7 @@ export function ComposerSessionContext() {
         </div>
       ) : null}
     </div>
+    </>
   );
 }
 
@@ -625,9 +737,24 @@ function LockedSessionPopover({
   project: { id: string; slug: string; name: string; description?: string | null } | null;
   onClose: () => void;
 }) {
-  const onNewChat = () => {
+  // Preserve the user's project + workspace selection when they hit
+  // "New chat" from a locked popover. Without this, the only escape
+  // hatch from a running session blew away context the user explicitly
+  // chose minutes ago — same project name in the chip would have to be
+  // reselected via the resource dialog every time.
+  const onNewChatKeepContext = () => {
     onClose();
-    newConversation();
+    newConversation({
+      projectId: project?.id ?? null,
+      workspacePath,
+    });
+  };
+  // Secondary affordance for the "I really want a clean slate"
+  // intent. Drops both project binding and workspace pin so the new
+  // session starts truly empty.
+  const onNewChatClear = () => {
+    onClose();
+    newConversation({ projectId: null, workspacePath: null });
   };
 
   const className =
@@ -680,13 +807,25 @@ function LockedSessionPopover({
         <LockIcon />
         <span>{t("sessionLockedExplain")}</span>
       </div>
-      <button
-        type="button"
-        className="session-locked-newchat"
-        onClick={onNewChat}
-      >
-        {t("sessionLockedNewChat")}
-      </button>
+      <div className="session-locked-actions">
+        <button
+          type="button"
+          className="session-locked-newchat"
+          onClick={onNewChatKeepContext}
+        >
+          {t("sessionLockedNewChatPreserve")}
+        </button>
+        {/* Secondary: the "wipe everything" path — opacity nudge + the
+            ghost variant marks it as the less-common intent. Still
+            reachable in one click; just visually subordinate. */}
+        <button
+          type="button"
+          className="session-locked-newchat ghost"
+          onClick={onNewChatClear}
+        >
+          {t("sessionLockedNewChatClear")}
+        </button>
+      </div>
     </div>
   );
 }

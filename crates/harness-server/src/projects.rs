@@ -25,7 +25,8 @@ use axum::{
     Router,
 };
 use harness_core::{
-    derive_slug, validate_slug, ConversationStore, Project, ProjectStore, ProjectWorkspace,
+    derive_slug, validate_column_id, validate_slug, ConversationStore, KanbanColumn, Project,
+    ProjectStore, ProjectWorkspace,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -34,6 +35,7 @@ use tracing::error;
 
 use crate::routes::workspace_snapshot;
 use crate::state::AppState;
+use crate::worktree::{create_worktree_for_branch, WorktreeOutcome};
 
 /// Total wall-clock budget for one `/v1/projects/:id/workspaces/status`
 /// call. With `tokio::join_all` and per-process git probes (~50ms each
@@ -53,6 +55,14 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/projects/:id_or_slug/workspaces/status",
             get(workspaces_status),
+        )
+        .route(
+            "/v1/projects/:id_or_slug/workspaces/branches",
+            get(workspace_branches),
+        )
+        .route(
+            "/v1/projects/:id_or_slug/workspaces/switch",
+            post(workspace_switch),
         )
 }
 
@@ -373,6 +383,11 @@ struct UpdateRequest {
     /// Pass `Some(false)` to un-archive in one call; `Some(true)`
     /// reaches the same place as `DELETE` (without `?hard=true`).
     archived: Option<bool>,
+    /// Replace the project's kanban columns wholesale. Pass an empty
+    /// vec to revert to the four built-in defaults; pass `None` to
+    /// leave the existing setting alone. Each entry is validated
+    /// (id shape + non-empty label, no duplicate ids).
+    columns: Option<Vec<KanbanColumn>>,
 }
 
 async fn update(
@@ -442,11 +457,57 @@ async fn update(
             p.unarchive();
         }
     }
+    if let Some(cols) = req.columns {
+        // Empty vec → revert to defaults (stored as `None` so future
+        // changes to the built-in set automatically apply). Otherwise
+        // validate each column and persist verbatim.
+        if cols.is_empty() {
+            p.columns = None;
+        } else {
+            if let Err(reason) = validate_columns(&cols) {
+                return bad_request(&reason);
+            }
+            p.columns = Some(cols);
+        }
+        p.touch();
+    }
 
     if let Err(e) = store.save(&p).await {
         return internal_error(e);
     }
     Json(project_to_json(&p)).into_response()
+}
+
+/// Validate a column list submitted by the client. Returns an error
+/// message suitable for surfacing to the API caller verbatim. Rules:
+/// - 1–32 columns
+/// - each id passes [`validate_column_id`] (lowercase / digits / `_` / `-`)
+/// - ids are unique (case-sensitive)
+/// - labels are non-blank after trimming
+/// - kind, when set, is one of the four built-in glyph kinds
+fn validate_columns(cols: &[KanbanColumn]) -> Result<(), String> {
+    if cols.len() > 32 {
+        return Err("at most 32 columns are allowed".into());
+    }
+    let mut seen = std::collections::HashSet::with_capacity(cols.len());
+    for col in cols {
+        validate_column_id(&col.id).map_err(|reason| format!("column `{}`: {reason}", col.id))?;
+        if !seen.insert(col.id.as_str()) {
+            return Err(format!("duplicate column id `{}`", col.id));
+        }
+        if col.label.trim().is_empty() {
+            return Err(format!("column `{}`: label must not be blank", col.id));
+        }
+        if let Some(kind) = col.kind.as_deref() {
+            if !matches!(kind, "backlog" | "in_progress" | "review" | "done") {
+                return Err(format!(
+                    "column `{}`: kind `{kind}` is not one of backlog / in_progress / review / done",
+                    col.id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ----------------------- delete -----------------------
@@ -647,7 +708,7 @@ fn project_to_json(p: &Project) -> Value {
             entry
         })
         .collect();
-    json!({
+    let mut out = json!({
         "id": p.id,
         "slug": p.slug,
         "name": p.name,
@@ -658,7 +719,288 @@ fn project_to_json(p: &Project) -> Value {
         "archived": p.archived,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
-    })
+    });
+    // `columns` is omitted from the wire shape when `None` (the "use
+    // built-in defaults" sentinel) so legacy clients keep ignoring the
+    // field. When customised, the array is emitted verbatim — the
+    // KanbanColumn struct's serde derives produce
+    // `{id, label, kind?}` per entry.
+    if let Some(cols) = &p.columns {
+        out["columns"] = serde_json::to_value(cols).unwrap_or(json!([]));
+    }
+    out
+}
+
+// ----------------------- workspace branches -----------------------
+
+#[derive(Debug, Deserialize)]
+struct BranchesQuery {
+    /// Canonical workspace path; must match one of `project.workspaces[].path`.
+    path: String,
+}
+
+/// `GET /v1/projects/:id_or_slug/workspaces/branches?path=<canonical>`
+/// — list local + remote branches for one of a project's workspaces.
+///
+/// Path must be in `project.workspaces[]` (we don't probe arbitrary
+/// directories). Non-git folders return `{current: null, branches: []}`
+/// rather than an error so the UI can render an empty popover.
+async fn workspace_branches(
+    State(state): State<AppState>,
+    Path(id_or_slug): Path<String>,
+    Query(q): Query<BranchesQuery>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let project = match load_by_id_or_slug(&*store, &id_or_slug).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(e),
+    };
+    if !project.workspaces.iter().any(|w| w.path == q.path) {
+        return bad_request("path is not a workspace of this project");
+    }
+    let path = std::path::PathBuf::from(&q.path);
+    let snap = workspace_snapshot(&path).await;
+    if snap.get("vcs").and_then(|v| v.as_str()) != Some("git") {
+        return Json(json!({ "current": null, "branches": [] })).into_response();
+    }
+    // `git for-each-ref` is the cheapest way to get a structured branch
+    // list. `%(HEAD)` is `*` for the current branch, space otherwise.
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .args([
+            "for-each-ref",
+            "--format=%(HEAD)%(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .output()
+        .await;
+    let stdout = match out {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(o) => {
+            return internal_error(format!(
+                "git for-each-ref: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ))
+        }
+        Err(e) => return internal_error(format!("git for-each-ref: spawn: {e}")),
+    };
+    let text = String::from_utf8_lossy(&stdout);
+    let mut current: Option<String> = None;
+    let mut branches: Vec<Value> = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        // First char is `*` (current) or ` ` (other); rest is the ref name.
+        let (head_marker, name) = line.split_at(1);
+        let is_current = head_marker == "*";
+        let name = name.trim();
+        if name.is_empty() || name == "origin/HEAD" {
+            continue;
+        }
+        // v1.0 heuristic: only `<remote>/<branch>` style names from
+        // `refs/remotes` are flagged remote. Local branches that contain
+        // a slash (e.g. `feature/foo`) stay local. We can refine by
+        // shelling out to `git remote` once we need multi-remote support.
+        let is_remote = name.starts_with("origin/");
+        if is_current {
+            current = Some(name.to_string());
+        }
+        branches.push(json!({
+            "name": name,
+            "is_current": is_current,
+            "is_remote": is_remote,
+        }));
+    }
+    Json(json!({ "current": current, "branches": branches })).into_response()
+}
+
+// ----------------------- workspace switch -----------------------
+
+#[derive(Debug, Deserialize)]
+struct SwitchRequest {
+    /// Canonical workspace path; must match one of `project.workspaces[].path`.
+    path: String,
+    /// Branch name to switch to (must already exist locally; remote
+    /// branches accepted via `origin/<name>` will land in a detached
+    /// state — caller picks).
+    branch: String,
+    /// `worktree` (default) creates a fresh worktree at
+    /// `JARVIS_WORKTREE_ROOT/<branch-slug>-<short-id>` and returns its
+    /// path; `checkout` runs `git checkout <branch>` in the workspace
+    /// itself.
+    #[serde(default = "default_switch_mode")]
+    mode: String,
+    /// Only respected by `checkout` mode. When `false` (default) and
+    /// the workspace is dirty, the call rejects with 409 + a list of
+    /// dirty paths so the UI can ask the user to confirm.
+    #[serde(default)]
+    force: bool,
+}
+
+fn default_switch_mode() -> String {
+    "worktree".to_string()
+}
+
+async fn workspace_switch(
+    State(state): State<AppState>,
+    Path(id_or_slug): Path<String>,
+    Json(req): Json<SwitchRequest>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let project = match load_by_id_or_slug(&*store, &id_or_slug).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(e),
+    };
+    if !project.workspaces.iter().any(|w| w.path == req.path) {
+        return bad_request("path is not a workspace of this project");
+    }
+    let branch = req.branch.trim();
+    if branch.is_empty() {
+        return bad_request("branch must not be empty");
+    }
+    // Reject anything that smells like a flag — keeps the model from
+    // sneaking `--force` etc. through the branch field.
+    if branch.starts_with('-') || branch.contains('\n') || branch.contains('\0') {
+        return bad_request("branch contains invalid characters");
+    }
+    let workspace_path = std::path::PathBuf::from(&req.path);
+
+    match req.mode.as_str() {
+        "worktree" => {
+            // Pick a stable worktree root next to the workspace so it
+            // co-locates with whatever the auto-loop scheduler does.
+            let wt_root = state
+                .workspace_root
+                .clone()
+                .unwrap_or_else(|| workspace_path.clone())
+                .join(".jarvis")
+                .join("worktrees");
+            let suffix = short_random_suffix();
+            let folder = format!("{}-{}", slugify_branch(branch), suffix);
+            let target = wt_root.join(folder);
+            match create_worktree_for_branch(&workspace_path, &target, branch, false).await {
+                WorktreeOutcome::Created(p) => Json(json!({
+                    "active_path": p.display().to_string(),
+                    "branch": branch,
+                    "mode": "worktree",
+                }))
+                .into_response(),
+                WorktreeOutcome::Refused(reason) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": reason })),
+                )
+                    .into_response(),
+            }
+        }
+        "checkout" => {
+            // Dirty check first unless caller forced it.
+            if !req.force {
+                let status = tokio::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&workspace_path)
+                    .args(["status", "--porcelain"])
+                    .output()
+                    .await;
+                match status {
+                    Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+                        let dirty: Vec<String> = String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .map(|l| l.to_string())
+                            .collect();
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(json!({
+                                "error": "dirty",
+                                "dirty_files": dirty,
+                            })),
+                        )
+                            .into_response();
+                    }
+                    Ok(o) if !o.status.success() => {
+                        return internal_error(format!(
+                            "git status: {}",
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ))
+                    }
+                    Ok(_) => {}
+                    Err(e) => return internal_error(format!("git status: spawn: {e}")),
+                }
+            }
+            let out = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&workspace_path)
+                .args(["checkout", branch])
+                .output()
+                .await;
+            match out {
+                Ok(o) if o.status.success() => Json(json!({
+                    "active_path": workspace_path.display().to_string(),
+                    "branch": branch,
+                    "mode": "checkout",
+                }))
+                .into_response(),
+                Ok(o) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!(
+                            "git checkout failed: {}",
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ),
+                    })),
+                )
+                    .into_response(),
+                Err(e) => internal_error(format!("git checkout: spawn: {e}")),
+            }
+        }
+        other => bad_request(&format!(
+            "mode must be `worktree` or `checkout`, got `{other}`"
+        )),
+    }
+}
+
+/// Convert a branch name into a filesystem-safe slug (no slashes,
+/// dots, spaces). Caps length to 32 chars so the worktree folder
+/// name doesn't blow up on long descriptive branches.
+fn slugify_branch(branch: &str) -> String {
+    let s: String = branch
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed: String = s.trim_matches('-').chars().take(32).collect();
+    if trimmed.is_empty() {
+        "branch".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn short_random_suffix() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Cheap monotonic-ish suffix; we don't need cryptographic
+    // randomness — just enough to avoid collision when the user
+    // switches between two branches with the same slug.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}", nanos & 0xffffff)
 }
 
 // ============================== tests ==============================
@@ -1155,6 +1497,430 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn create_omits_columns_field_by_default() {
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.oneshot(json_post(
+                "/v1/projects",
+                json!({"name": "Default cols", "instructions": "x"}),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        // No customisation yet — the wire shape stays clean so
+        // existing clients don't have to learn about the field.
+        assert!(
+            body.get("columns").is_none(),
+            "unset columns should be omitted, got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_sets_and_clears_columns() {
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({"name": "Cols", "instructions": "x"}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+
+        // Set custom columns.
+        let (status, body) = body_json(
+            app.clone()
+                .oneshot(json_put(
+                    &format!("/v1/projects/{id}"),
+                    json!({
+                        "columns": [
+                            {"id": "triage", "label": "Triage", "kind": "backlog"},
+                            {"id": "doing",  "label": "Doing",  "kind": "in_progress"},
+                            {"id": "blocked","label": "Blocked"},
+                        ]
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let cols = body["columns"].as_array().unwrap();
+        assert_eq!(cols.len(), 3);
+        assert_eq!(cols[0]["id"], "triage");
+        assert_eq!(cols[2]["id"], "blocked");
+        assert!(
+            cols[2].get("kind").is_none(),
+            "kindless columns must not serialize a null/empty kind"
+        );
+
+        // Empty vec reverts to defaults — `columns` field is omitted
+        // from the response.
+        let (_, body) = body_json(
+            app.oneshot(json_put(
+                &format!("/v1/projects/{id}"),
+                json!({"columns": []}),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert!(body.get("columns").is_none());
+    }
+
+    #[tokio::test]
+    async fn update_rejects_invalid_columns() {
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({"name": "Bad", "instructions": "x"}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+
+        // Duplicate ids
+        let resp = app
+            .clone()
+            .oneshot(json_put(
+                &format!("/v1/projects/{id}"),
+                json!({
+                    "columns": [
+                        {"id": "x", "label": "X"},
+                        {"id": "x", "label": "Y"},
+                    ]
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Bad id charset
+        let resp = app
+            .clone()
+            .oneshot(json_put(
+                &format!("/v1/projects/{id}"),
+                json!({"columns": [{"id": "Bad Id", "label": "Y"}]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Blank label
+        let resp = app
+            .clone()
+            .oneshot(json_put(
+                &format!("/v1/projects/{id}"),
+                json!({"columns": [{"id": "ok", "label": "   "}]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Unknown kind
+        let resp = app
+            .oneshot(json_put(
+                &format!("/v1/projects/{id}"),
+                json!({"columns": [{"id": "ok", "label": "Y", "kind": "magic"}]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Helper: init a real git repo with one commit so HEAD exists.
+    async fn init_git_repo_with_branch(dir: &std::path::Path, branch: &str) {
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@t.invalid"],
+            vec!["config", "user.name", "t"],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(&args)
+                .output()
+                .expect("git");
+            assert!(out.status.success());
+        }
+        std::fs::write(dir.join("seed"), "x").unwrap();
+        for args in [vec!["add", "."], vec!["commit", "-q", "-m", "seed"]] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(&args)
+                .output()
+                .expect("git");
+            assert!(out.status.success());
+        }
+        if branch != "main" {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["branch", branch])
+                .output()
+                .expect("git");
+            assert!(out.status.success());
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn workspace_branches_lists_local_and_marks_current() {
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo_with_branch(repo.path(), "feature-x").await;
+        let path = repo.path().to_string_lossy().to_string();
+        let app = full_router(make_state());
+        // Create a project bound to this repo.
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({
+                        "name": "Repo",
+                        "instructions": "x",
+                        "workspaces": [{ "path": path }],
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+        let canonical = body["workspaces"][0]["path"].as_str().unwrap().to_string();
+
+        let (status, body) = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/projects/{id}/workspaces/branches?path={}",
+                        canonical.replace(' ', "%20")
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["current"], "main");
+        let names: Vec<&str> = body["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"main"));
+        assert!(names.contains(&"feature-x"));
+    }
+
+    #[tokio::test]
+    async fn workspace_branches_returns_empty_for_non_git_path() {
+        let plain = tempfile::tempdir().unwrap();
+        let path = plain.path().to_string_lossy().to_string();
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({
+                        "name": "Plain",
+                        "instructions": "x",
+                        "workspaces": [{ "path": path }],
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+        let canonical = body["workspaces"][0]["path"].as_str().unwrap().to_string();
+
+        let (status, body) = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/projects/{id}/workspaces/branches?path={}",
+                        canonical.replace(' ', "%20")
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["current"], Value::Null);
+        assert_eq!(body["branches"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn workspace_branches_400s_for_unknown_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({
+                        "name": "P",
+                        "instructions": "x",
+                        "workspaces": [{ "path": path }],
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/projects/{id}/workspaces/branches?path={}",
+                        "/totally/different/path"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn workspace_switch_worktree_creates_new_path() {
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo_with_branch(repo.path(), "feature-x").await;
+        let path = repo.path().to_string_lossy().to_string();
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({
+                        "name": "Repo",
+                        "instructions": "x",
+                        "workspaces": [{ "path": path }],
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+        let canonical = body["workspaces"][0]["path"].as_str().unwrap().to_string();
+
+        let (status, body) = body_json(
+            app.oneshot(json_post(
+                &format!("/v1/projects/{id}/workspaces/switch"),
+                json!({
+                    "path": canonical,
+                    "branch": "feature-x",
+                    "mode": "worktree",
+                }),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["mode"], "worktree");
+        assert_eq!(body["branch"], "feature-x");
+        let active = body["active_path"].as_str().unwrap();
+        assert!(std::path::Path::new(active).exists());
+        assert!(active.contains(".jarvis"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn workspace_switch_checkout_rejects_dirty() {
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo_with_branch(repo.path(), "feature-x").await;
+        std::fs::write(repo.path().join("dirty"), "z").unwrap();
+        let path = repo.path().to_string_lossy().to_string();
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({
+                        "name": "Repo",
+                        "instructions": "x",
+                        "workspaces": [{ "path": path }],
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+        let canonical = body["workspaces"][0]["path"].as_str().unwrap().to_string();
+
+        let resp = app
+            .oneshot(json_post(
+                &format!("/v1/projects/{id}/workspaces/switch"),
+                json!({
+                    "path": canonical,
+                    "branch": "feature-x",
+                    "mode": "checkout",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn workspace_switch_400s_for_invalid_branch() {
+        let repo = tempfile::tempdir().unwrap();
+        let path = repo.path().to_string_lossy().to_string();
+        let app = full_router(make_state());
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/v1/projects",
+                    json!({
+                        "name": "Repo",
+                        "instructions": "x",
+                        "workspaces": [{ "path": path }],
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+        let canonical = body["workspaces"][0]["path"].as_str().unwrap().to_string();
+
+        let resp = app
+            .oneshot(json_post(
+                &format!("/v1/projects/{id}/workspaces/switch"),
+                json!({
+                    "path": canonical,
+                    "branch": "--force",
+                    "mode": "worktree",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

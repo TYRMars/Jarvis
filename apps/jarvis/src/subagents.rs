@@ -219,15 +219,16 @@ pub async fn register_builtins(
     )));
 
     // -- claude_code --
-    // Only registers when the Node SDK is reachable. Probe failure
-    // is logged at INFO so an operator notices it but startup
+    // Spawns the local `claude` CLI per invocation. Only registers
+    // when `claude --version` returns the Claude Code banner; if
+    // the binary isn't on PATH we log at INFO and skip — startup
     // continues uninterrupted.
-    let node_bin = std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_NODE")
-        .unwrap_or_else(|_| "node".into());
-    match claude_code::probe(&node_bin).await {
+    let claude_bin = std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_BIN")
+        .unwrap_or_else(|_| "claude".into());
+    match claude_code::probe(&claude_bin).await {
         Ok(()) => {
             let cc_cfg = claude_code::ClaudeCodeConfig {
-                node_bin,
+                claude_bin,
                 model: std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_MODEL").ok(),
             };
             let cc = ClaudeCodeSubAgent::new(cc_cfg);
@@ -235,10 +236,10 @@ pub async fn register_builtins(
                 Arc::new(cc) as Arc<dyn SubAgent>,
                 workspace_root.clone(),
             )));
-            info!("subagent.claude_code registered (Node SDK probe ok)");
+            info!("subagent.claude_code registered (claude CLI probe ok)");
         }
         Err(reason) => {
-            info!(reason = %reason, "subagent.claude_code skipped (probe failed; install `npm i -g @anthropic-ai/claude-agent-sdk` to enable)");
+            info!(reason = %reason, "subagent.claude_code skipped (claude CLI probe failed; install Claude Code from https://claude.com/claude-code and run `claude /login`)");
         }
     }
 

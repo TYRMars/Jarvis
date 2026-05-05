@@ -168,6 +168,74 @@ pub async fn create_worktree(
     }
 }
 
+/// Mint a worktree at `target` checked out to `branch`.
+///
+/// Differs from [`create_worktree`] in three ways:
+/// 1. Caller picks the absolute target path (not `<root>/<run_id>`),
+///    so the HTTP layer can derive a human-readable folder name from
+///    the branch (e.g. `<root>/<branch-slug>-<short-id>`).
+/// 2. The new tree is checked out to `branch`, not detached at HEAD —
+///    matches the user's "use this branch" intent.
+/// 3. The clean check is opt-out (`require_clean=false` lets the
+///    caller bypass it; the auto-loop scheduler should keep its
+///    safety gate by passing `true`, but interactive
+///    `POST /v1/projects/:id/workspaces/switch` defaults to `false`
+///    because dirty work in the source tree doesn't follow the branch).
+///
+/// The parent of `target` is created if missing. Refuses if `target`
+/// already exists (caller picks a fresh suffix and retries) or if
+/// `repo` isn't a git repo. The branch must already exist locally;
+/// new branches are out of scope for the chip popover.
+pub async fn create_worktree_for_branch(
+    repo: &Path,
+    target: &Path,
+    branch: &str,
+    require_clean: bool,
+) -> WorktreeOutcome {
+    if !is_git_repo(repo).await {
+        return WorktreeOutcome::Refused(format!(
+            "workspace `{}` is not a git repo",
+            repo.display()
+        ));
+    }
+    if require_clean && !is_clean_checkout(repo).await {
+        return WorktreeOutcome::Refused(format!(
+            "workspace `{}` has uncommitted changes",
+            repo.display()
+        ));
+    }
+    if let Some(parent) = target.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            return WorktreeOutcome::Refused(format!(
+                "failed to create worktree parent `{}`: {e}",
+                parent.display()
+            ));
+        }
+    }
+    if target.exists() {
+        return WorktreeOutcome::Refused(format!(
+            "worktree path already exists: `{}`",
+            target.display()
+        ));
+    }
+    let out = Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(["worktree", "add"])
+        .arg(target)
+        .arg(branch)
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => WorktreeOutcome::Created(target.to_path_buf()),
+        Ok(o) => WorktreeOutcome::Refused(format!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => WorktreeOutcome::Refused(format!("git worktree add: spawn failed: {e}")),
+    }
+}
+
 /// Remove a worktree at `path`. Only paths *inside*
 /// `worktree_root` are permitted — anything else is an error.
 /// Forces removal (`--force`) so a worktree that has accumulated
@@ -359,6 +427,57 @@ mod tests {
                 assert!(reason.contains("already exists"));
             }
             WorktreeOutcome::Created(_) => panic!("second create should be refused"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn create_worktree_for_branch_checks_out_named_branch() {
+        let repo = tempfile::tempdir().unwrap();
+        init_repo(repo.path()).await;
+        // Create a second branch off the seed commit.
+        let out = Command::new("git")
+            .args(["-C"])
+            .arg(repo.path())
+            .args(["branch", "feature-x"])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+
+        let wt_root = tempfile::tempdir().unwrap();
+        let target = wt_root.path().join("feature-x-abcd1234");
+        let outcome = create_worktree_for_branch(repo.path(), &target, "feature-x", false).await;
+        match outcome {
+            WorktreeOutcome::Created(p) => {
+                assert_eq!(p, target);
+                assert!(p.join("seed.txt").exists());
+                // Confirm the new tree is on `feature-x`, not detached.
+                let head = Command::new("git")
+                    .args(["-C"])
+                    .arg(&p)
+                    .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                    .output()
+                    .await
+                    .unwrap();
+                let branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
+                assert_eq!(branch, "feature-x");
+            }
+            WorktreeOutcome::Refused(r) => panic!("{r}"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn create_worktree_for_branch_refuses_existing_target() {
+        let repo = tempfile::tempdir().unwrap();
+        init_repo(repo.path()).await;
+        let wt_root = tempfile::tempdir().unwrap();
+        let target = wt_root.path().join("dup");
+        std::fs::create_dir_all(&target).unwrap();
+        match create_worktree_for_branch(repo.path(), &target, "main", false).await {
+            WorktreeOutcome::Refused(r) => assert!(r.contains("already exists")),
+            WorktreeOutcome::Created(_) => panic!("existing target should be refused"),
         }
     }
 

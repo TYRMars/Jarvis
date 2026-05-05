@@ -22,7 +22,8 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { COLUMNS, StatusGlyph } from "./columns";
+import { columnsFor, StatusGlyph, type BoardColumn } from "./columns";
+import { ColumnEditor } from "./ColumnEditor";
 import { MarkdownLite } from "./MarkdownLite";
 import { RequirementDetail } from "./RequirementDetail";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
@@ -50,13 +51,26 @@ export function ProjectBoard({
 }) {
   // `creatingForStatus` doubles as both visibility flag and which
   // initial column the new requirement should land in. `null` =
-  // panel hidden; a status value = panel shown above the columns row,
-  // pre-set to that lane (top-level + button = "backlog", per-column
-  // + buttons = that column's status).
+  // panel hidden; a status string = panel shown above the columns row,
+  // pre-set to that lane (top-level + button = first column,
+  // per-column + buttons = that column's id).
   const [creatingForStatus, setCreatingForStatus] =
     useState<RequirementStatus | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editingColumns, setEditingColumns] = useState(false);
+
+  // Resolve the active column set. `Project.columns` is the customised
+  // list when present; otherwise we get the four built-in defaults
+  // (Backlog / In Progress / Review / Done). The memo keys on the
+  // identity of the saved array so a PATCH that returns the same
+  // shape doesn't churn render loops downstream.
+  const cols: BoardColumn[] = useMemo(
+    () => columnsFor(project),
+    [project.columns],
+  );
+  const colIds = useMemo(() => new Set(cols.map((c) => c.id)), [cols]);
+  const firstColId = cols[0]?.id ?? "backlog";
   const selected = selectedId
     ? requirements.find((r) => r.id === selectedId) ?? null
     : null;
@@ -72,7 +86,11 @@ export function ProjectBoard({
   const onDragEnd = (e: DragEndEvent) => {
     if (!e.over) return;
     const reqId = String(e.active.id);
-    const target = String(e.over.id) as RequirementStatus;
+    const target = String(e.over.id);
+    // Guard against drops onto stale column ids. With custom columns
+    // this matters: a board re-render mid-drag could leave a droppable
+    // attached to a column that was just removed by the editor.
+    if (!colIds.has(target)) return;
     const req = requirements.find((r) => r.id === reqId);
     if (!req || req.status === target) return;
     updateRequirement(reqId, { status: target });
@@ -109,15 +127,19 @@ export function ProjectBoard({
   }, [filteredRequirements]);
 
   const grouped = useMemo(() => {
-    const map: Record<RequirementStatus, Requirement[]> = {
-      backlog: [],
-      in_progress: [],
-      review: [],
-      done: [],
-    };
-    for (const r of boardRequirements) map[r.status].push(r);
+    // Seed with the active column ids so empty lanes still render.
+    // Requirements whose `status` doesn't match any current column id
+    // (e.g. a column was just removed) land in a synthetic bucket
+    // keyed by the orphan status — they're not displayed on the
+    // board, but the data isn't lost on disk and a future column
+    // edit can restore them.
+    const map: Record<string, Requirement[]> = {};
+    for (const c of cols) map[c.id] = [];
+    for (const r of boardRequirements) {
+      if (map[r.status]) map[r.status].push(r);
+    }
     return map;
-  }, [boardRequirements]);
+  }, [boardRequirements, cols]);
 
   return (
     <section className="project-board" aria-label={`${project.name} board`}>
@@ -130,6 +152,30 @@ export function ProjectBoard({
           {project.description && <p>{project.description}</p>}
         </div>
         <div className="project-board-head-actions">
+          <button
+            type="button"
+            className="settings-btn"
+            onClick={() => setEditingColumns(true)}
+            aria-label={t("columnEditorOpenBtn")}
+            title={t("columnEditorOpenBtn")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="5" height="16" rx="1" />
+              <rect x="10" y="4" width="5" height="16" rx="1" />
+              <rect x="17" y="4" width="4" height="10" rx="1" />
+            </svg>
+            <span>{t("columnEditorOpenBtn")}</span>
+          </button>
           <button
             type="button"
             className="settings-btn project-board-head-gear"
@@ -155,7 +201,7 @@ export function ProjectBoard({
           <button
             type="button"
             className="projects-empty-btn"
-            onClick={() => setCreatingForStatus("backlog")}
+            onClick={() => setCreatingForStatus(firstColId)}
           >
             <svg
               width="17"
@@ -180,11 +226,21 @@ export function ProjectBoard({
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+      {editingColumns && (
+        <ColumnEditor
+          project={project}
+          onClose={() => {
+            setEditingColumns(false);
+            onChanged();
+          }}
+        />
+      )}
 
       {creatingForStatus !== null && (
         <RequirementCreatePanel
           projectId={project.id}
           initialStatus={creatingForStatus}
+          columns={cols}
           onDone={() => {
             setCreatingForStatus(null);
             onChanged();
@@ -289,22 +345,37 @@ export function ProjectBoard({
           can shrink against the sidebar without forcing a horizontal
           scrollbar from the legacy `min-width: 0` plumbing. The
           existing `.project-board-columns` class still owns the grid
-          template; this is additive, not a replacement. */}
+          template; this is additive, not a replacement.
+
+          The inline `--kanban-col-count` CSS var feeds the grid track
+          count in styles.css (`repeat(var(--kanban-col-count, 4),
+          minmax(180px, 1fr))`). Without it, customised projects with
+          ≥5 columns squeeze into a 4-track grid; with it, the grid
+          grows and the existing `overflow-x: auto` rule kicks in once
+          the row exceeds the viewport. */}
       <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-        <div className="project-board-columns min-w-0">
-          {COLUMNS.map((col) => (
+        <div
+          className="project-board-columns min-w-0"
+          style={
+            { "--kanban-col-count": cols.length } as React.CSSProperties
+          }
+        >
+          {cols.map((col) => (
             <section
-              key={col.status}
-              className={"project-board-column status-" + col.status}
+              key={col.id}
+              className={
+                "project-board-column" +
+                (col.kind ? " status-" + col.kind : " status-custom")
+              }
             >
               <div className="project-board-column-head">
-                <StatusGlyph status={col.status} />
-                <h3>{t(col.labelKey)}</h3>
-                <span>{grouped[col.status].length}</span>
+                <StatusGlyph kind={col.kind ?? null} />
+                <h3>{col.label}</h3>
+                <span>{grouped[col.id]?.length ?? 0}</span>
                 <button
                   type="button"
                   className="ghost-icon project-board-column-add"
-                  onClick={() => setCreatingForStatus(col.status)}
+                  onClick={() => setCreatingForStatus(col.id)}
                   aria-label={t("boardNewReq")}
                   title={t("boardNewReq")}
                 >
@@ -324,14 +395,15 @@ export function ProjectBoard({
                   </svg>
                 </button>
               </div>
-              <DroppableCardList status={col.status}>
-                {grouped[col.status].length === 0 ? (
+              <DroppableCardList status={col.id}>
+                {(grouped[col.id]?.length ?? 0) === 0 ? (
                   <div className="project-board-empty">{t("boardEmptyCol")}</div>
                 ) : (
-                  grouped[col.status].map((req) => (
+                  grouped[col.id].map((req) => (
                     <RequirementCard
                       key={req.id}
                       requirement={req}
+                      columns={cols}
                       activeConversationId={activeConversationId}
                       onChanged={onChanged}
                       onOpenConversation={onOpenConversation}
@@ -347,6 +419,7 @@ export function ProjectBoard({
 
       <RequirementDetail
         requirement={selected}
+        columns={cols}
         activeConversationId={activeConversationId}
         onClose={() => setSelectedId(null)}
         onChanged={onChanged}
@@ -380,16 +453,18 @@ function DroppableCardList({
 function RequirementCreatePanel({
   projectId,
   initialStatus,
+  columns,
   onDone,
 }: {
   projectId: string;
   initialStatus: RequirementStatus;
+  columns: BoardColumn[];
   onDone: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const targetCol = COLUMNS.find((c) => c.status === initialStatus);
-  const targetLabel = targetCol ? t(targetCol.labelKey) : initialStatus;
+  const targetCol = columns.find((c) => c.id === initialStatus);
+  const targetLabel = targetCol ? targetCol.label : initialStatus;
 
   const submit = () => {
     if (!title.trim()) return;
@@ -444,12 +519,14 @@ function RequirementCreatePanel({
 
 function RequirementCard({
   requirement,
+  columns,
   activeConversationId,
   onChanged,
   onOpenConversation,
   onOpenDetail,
 }: {
   requirement: Requirement;
+  columns: BoardColumn[];
   activeConversationId: string | null;
   onChanged: () => void;
   onOpenConversation: (id: string) => void;
@@ -466,8 +543,14 @@ function RequirementCard({
   const canLink =
     !!activeConversationId &&
     !requirement.conversation_ids.includes(activeConversationId);
-  const statusCol = COLUMNS.find((c) => c.status === requirement.status);
-  const statusLabel = statusCol ? t(statusCol.labelKey) : requirement.status;
+  const statusCol = columns.find((c) => c.id === requirement.status);
+  const statusLabel = statusCol ? statusCol.label : requirement.status;
+  // Pill class still uses kind so the legacy status-* CSS rules apply
+  // for built-in columns; custom columns fall through to a neutral
+  // class. Without this, a renamed Backlog (`kind: "backlog"`) keeps
+  // its dashed-circle pill, while a brand-new "Blocked" custom column
+  // gets a token-coloured neutral chip.
+  const pillKind = statusCol?.kind ?? null;
 
   const linkCurrent = () => {
     if (!activeConversationId) return;
@@ -521,7 +604,10 @@ function RequirementCard({
           their own rules. */}
       <div className="requirement-card-footer flex items-center gap-1.5 mt-2 text-xs text-soft">
         <span
-          className={"requirement-status-pill status-" + requirement.status}
+          className={
+            "requirement-status-pill" +
+            (pillKind ? " status-" + pillKind : " status-custom")
+          }
           aria-label={t("reqStatusAria", statusLabel)}
         >
           {statusLabel}

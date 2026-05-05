@@ -306,10 +306,37 @@ impl SummarizingMemory {
             }
         };
 
+        // Pull the visible answer out of the assistant message. Most
+        // providers put the summary in `content`, but thinking models
+        // (Kimi K2 / kimi-for-coding, certain o1-style endpoints) emit
+        // their visible answer in `reasoning_content` and leave
+        // `content` either `None` or empty. We accept either, in
+        // priority order, and reject the response only when *both*
+        // are blank — without this fallback, kimi-coding deployments
+        // ended up persisting empty summaries and the agent saw no
+        // prior context, hallucinating "对话历史被压缩了" on every
+        // follow-up.
         let text = match resp.message {
             Message::Assistant {
-                content: Some(t), ..
-            } => t,
+                content,
+                reasoning_content,
+                ..
+            } => {
+                let primary = content
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty());
+                let fallback = reasoning_content
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty());
+                match primary.or(fallback) {
+                    Some(t) => t,
+                    None => {
+                        return Err(
+                            "summariser returned empty content and reasoning".into(),
+                        );
+                    }
+                }
+            }
             _ => return Err("summariser returned no assistant text".into()),
         };
 
@@ -357,7 +384,12 @@ fn persist_key(fingerprint: &str) -> String {
 
 fn extract_summary(conv: &Conversation) -> Option<String> {
     conv.messages.iter().find_map(|m| match m {
-        Message::System { content, .. } => Some(content.clone()),
+        // Reject blank cached summaries — early kimi-coding runs wrote
+        // these when the summariser returned empty content. Treating
+        // them as cache misses lets the next `summarise` call ask
+        // again (with the new content/reasoning fallback) and overwrite
+        // the bad row, instead of replaying nothing in perpetuity.
+        Message::System { content, .. } if !content.trim().is_empty() => Some(content.clone()),
         _ => None,
     })
 }

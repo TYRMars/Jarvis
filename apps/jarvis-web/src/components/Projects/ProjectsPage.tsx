@@ -130,6 +130,16 @@ export function ProjectsPage() {
     if (selectedProject) void loadRequirements(selectedProject.id);
   }, [selectedProject?.id]);
 
+  // Bind the composer's draft to the project the user is currently
+  // viewing. The sidebar's "+ New session" reads `draftProjectId`
+  // (with `activeProjectFilter` as a fallback), so this is what makes
+  // a click in the sidebar create a project-bound chat instead of a
+  // free-floating one. Cleared when the URL goes back to `/projects`
+  // (no id) so leaving the project page doesn't strand the binding.
+  useEffect(() => {
+    useAppStore.getState().setDraftProjectId?.(selectedProjectId);
+  }, [selectedProjectId]);
+
   return (
     <main
       id="projects-page"

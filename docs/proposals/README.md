@@ -34,6 +34,8 @@ Status legend in each doc's header:
 | [permission-modes.md](permission-modes.md) | Five permission modes (`ask` / `accept-edits` / `plan` / `auto` / `bypass`) + rule engine | Adopted (backend); Web UI follow-up |
 | [new-session-resource-manager.zh-CN.md](new-session-resource-manager.zh-CN.md) | 新建会话资源管理弹框：选择项目/文件夹、自动创建项目、多工作区绑定 | Proposed |
 | [session-execution-context.zh-CN.md](session-execution-context.zh-CN.md) | 会话执行上下文条：输入区上方展示当前需求、执行状态、验证与详情入口 | Proposed |
+| [tauri-desktop-client.zh-CN.md](tauri-desktop-client.zh-CN.md) | Tauri 桌面端：复用 jarvis-web，Rust 管理 sidecar/server 与系统集成 | Proposed |
+| [web-multi-session-runs.zh-CN.md](web-multi-session-runs.zh-CN.md) | Web 多会话并行与异步运行：per-conversation run 状态、后台 run API、sidebar 运行态 | Proposed |
 
 ## Product Alignment Audit
 

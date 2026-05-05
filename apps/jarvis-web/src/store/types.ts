@@ -149,6 +149,39 @@ export interface HitlCardState {
 /// submit time.
 export type PastedBlobs = Record<string, string>;
 
+export type ConversationRunStatus =
+  | "idle"
+  | "running"
+  | "waiting_approval"
+  | "waiting_hitl"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface ConversationRuntime {
+  conversationId: string;
+  status: ConversationRunStatus;
+  startedAt: number | null;
+  updatedAt: number;
+  currentTool: string | null;
+  lastError: string | null;
+}
+
+export interface ConversationSurfaceSnapshot {
+  messages: UiMessage[];
+  emptyHintIdShort: string | null;
+  toolBlocks: Record<string, ToolBlockEntry>;
+  approvals: ApprovalCardState[];
+  hitls: HitlCardState[];
+  tasks: TaskRailEntry[];
+  plan: PlanItem[];
+  proposedPlan: string | null;
+  // Keep this deliberately loose here to avoid tying the shared
+  // store-types module to the SubAgent component graph.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  subAgentRuns: Record<string, any>;
+}
+
 /// Local re-export so callers can import `ConvoListRow` from the
 /// store namespace if they prefer.
 export type { ConvoListRow };

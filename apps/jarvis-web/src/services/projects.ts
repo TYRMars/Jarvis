@@ -10,7 +10,7 @@
 // own error state.
 
 import { appStore } from "../store/appStore";
-import type { Project, ProjectWorkspace } from "../types/frames";
+import type { KanbanColumn, Project, ProjectWorkspace } from "../types/frames";
 import { apiUrl } from "./api";
 import { showError } from "./status";
 
@@ -111,6 +111,10 @@ export interface UpdateProjectInput {
   /// `undefined` leaves the list untouched. `[]` clears it.
   workspaces?: ProjectWorkspace[];
   archived?: boolean;
+  /// `undefined` leaves the list untouched. `[]` reverts to the
+  /// four built-in defaults. Otherwise replaces the customised
+  /// column set wholesale.
+  columns?: KanbanColumn[];
 }
 
 export async function updateProject(
@@ -324,6 +328,95 @@ export function invalidateWorkspaceStatusCache(idOrSlug?: string): void {
   } else {
     statusCache.clear();
   }
+}
+
+// ----------------------- workspace branches / switch -----------------------
+
+/// Mirrors `GET /v1/projects/:id/workspaces/branches`.
+export interface ProjectWorkspaceBranches {
+  current: string | null;
+  branches: { name: string; is_current: boolean; is_remote: boolean }[];
+}
+
+/// `GET /v1/projects/:id/workspaces/branches?path=<canonical>` — list
+/// local + remote branches for one of a project's workspaces. No
+/// caching: branches change underfoot (user typed `git branch foo` in
+/// the terminal) and the popover only opens on demand.
+export async function fetchProjectWorkspaceBranches(
+  idOrSlug: string,
+  path: string,
+): Promise<ProjectWorkspaceBranches> {
+  if (isLocalProjectId(idOrSlug)) {
+    return { current: null, branches: [] };
+  }
+  const url = apiUrl(
+    `/v1/projects/${encodeURIComponent(idOrSlug)}/workspaces/branches?path=${encodeURIComponent(path)}`,
+  );
+  const r = await fetch(url);
+  if (r.status === 404 || r.status === 503) {
+    return { current: null, branches: [] };
+  }
+  if (!r.ok) {
+    const body = await safeBody(r);
+    throw new Error(body?.error ?? `branches: ${r.status}`);
+  }
+  return (await r.json()) as ProjectWorkspaceBranches;
+}
+
+export type SwitchWorkspaceMode = "worktree" | "checkout";
+
+export interface SwitchWorkspaceResult {
+  active_path: string;
+  branch: string;
+  mode: SwitchWorkspaceMode;
+}
+
+/// `POST /v1/projects/:id/workspaces/switch` — either creates a
+/// worktree (default) or `git checkout`s the workspace itself.
+///
+/// On a `checkout` mode dirty-tree refusal the server returns 409
+/// with `{error: "dirty", dirty_files: [...]}`; we surface that as a
+/// thrown `DirtyWorkspaceError` so the caller can ask the user to
+/// confirm and retry with `force=true`.
+export class DirtyWorkspaceError extends Error {
+  constructor(
+    message: string,
+    public dirtyFiles: string[],
+  ) {
+    super(message);
+    this.name = "DirtyWorkspaceError";
+  }
+}
+
+export async function switchProjectWorkspace(
+  idOrSlug: string,
+  path: string,
+  branch: string,
+  mode: SwitchWorkspaceMode,
+  opts: { force?: boolean } = {},
+): Promise<SwitchWorkspaceResult> {
+  const r = await fetch(
+    apiUrl(`/v1/projects/${encodeURIComponent(idOrSlug)}/workspaces/switch`),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, branch, mode, force: !!opts.force }),
+    },
+  );
+  if (r.status === 409) {
+    const body = await safeBody(r);
+    throw new DirtyWorkspaceError(
+      body?.error ?? "workspace is dirty",
+      Array.isArray(body?.dirty_files) ? body.dirty_files : [],
+    );
+  }
+  if (!r.ok) {
+    const body = await safeBody(r);
+    throw new Error(body?.error ?? `switch: ${r.status}`);
+  }
+  const result = (await r.json()) as SwitchWorkspaceResult;
+  invalidateWorkspaceStatusCache(idOrSlug);
+  return result;
 }
 
 function readLocalProjects(): Project[] {
