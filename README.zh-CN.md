@@ -150,6 +150,7 @@ target/release/jarvis serve
 | --- | --- |
 | `JARVIS_PROVIDER` | Provider 名称，例如 `openai`、`anthropic`、`google`、`codex`、`ollama`。 |
 | `JARVIS_MODEL` | 所选 Provider 的默认模型。 |
+| `JARVIS_CONFIG`、`JARVIS_CONFIG_HOME` | 显式配置文件或系统配置目录。默认发现顺序包含 `~/.jarvis/config.json`，并优先于旧的 `~/.config/jarvis/config.json`。 |
 | `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY` | Provider 凭据。 |
 | `OPENAI_BASE_URL`、`ANTHROPIC_BASE_URL`、`GOOGLE_BASE_URL`、`OLLAMA_BASE_URL` | 兼容网关或代理地址。 |
 | `JARVIS_ADDR` | HTTP 监听地址，默认 `0.0.0.0:7001`。 |
@@ -158,8 +159,17 @@ target/release/jarvis serve
 | `JARVIS_MCP_SERVERS` | 外部 MCP server 列表，例如 `fs=uvx mcp-server-filesystem /tmp`。 |
 | `JARVIS_MEMORY_MODE` | `window` 或 `summary`。 |
 | `JARVIS_MEMORY_TOKENS` | 记忆 token 预算的启发式上限。 |
+| `JARVIS_ENABLE_PROJECT_MEMORY` | 启用 Claude Code 风格的项目文件化记忆，默认目录为 `.jarvis/memory`；已存在的记忆目录会自动加载。 |
+| `JARVIS_PROJECT_MEMORY_DIR`、`JARVIS_PROJECT_MEMORY_BYTES` | 覆盖项目记忆目录和 `MEMORY.md` 索引加载字节上限。 |
 | `JARVIS_APPROVAL_MODE` | 默认审批模式。 |
 | `RUST_LOG` | Rust tracing 过滤器。 |
+
+项目规则读取对齐 Claude Code 的本地规则形态，但目前只读取工作区内文件：
+
+- 根目录文件：`AGENTS.md`、`JARVIS.md`、`CLAUDE.md`、`AGENT.md`
+- Jarvis 目录文件：`.jarvis/JARVIS.md`、`.jarvis/AGENTS.md`、`.jarvis/CLAUDE.md`、`.jarvis/AGENT.md`
+- 本地规则：`.jarvis/rules/*.md`
+- 已加载文件中支持 `@include path/to/file.md`，最多 5 层，且只能引用工作区根目录内的路径。
 
 ## 内置工具
 

@@ -257,8 +257,7 @@ export type WorkspacePanelKey =
   | "files"
   | "tasks"
   | "plan"
-  | "changeReport"
-  | "todos";
+  | "changeReport";
 
 const PANEL_DEFAULTS: Record<WorkspacePanelKey, boolean> = {
   preview: false,
@@ -271,7 +270,6 @@ const PANEL_DEFAULTS: Record<WorkspacePanelKey, boolean> = {
   tasks: true,
   plan: false,
   changeReport: false,
-  todos: false,
 };
 
 export function initialWorkspacePanel(key: WorkspacePanelKey): boolean {
@@ -283,6 +281,18 @@ export function initialWorkspacePanel(key: WorkspacePanelKey): boolean {
 
 export function initialSidebarOpen(): boolean {
   return safeGet("jarvis.sidebarOpen") !== "false";
+}
+
+/// Sidebar conversation list grouping mode. "date" buckets rows by
+/// recency (Today / Yesterday / Mar 12 / Older); "project" buckets
+/// by the conversation's bound project, with free-chat rows landing
+/// in their own section. Defaults to "date" — that's the only mode
+/// the list shipped with originally.
+export type ConvoGroupBy = "date" | "project";
+
+export function initialConvoGroupBy(): ConvoGroupBy {
+  const saved = safeGet("jarvis.convoGroupBy");
+  return saved === "project" ? "project" : "date";
 }
 
 // ---- Title resolution --------------------------------------------

@@ -61,7 +61,10 @@ pub use permission::{
     glob_match, Decision, HitSource, PermissionMode, PermissionRule, PermissionStore,
     PermissionTable, RuleHit, Scope as PermissionScope, ScopedRule,
 };
-pub use project::{derive_slug, validate_slug, Project, ProjectWorkspace};
+pub use project::{
+    default_kanban_columns, derive_slug, validate_column_id, validate_slug, KanbanColumn, Project,
+    ProjectWorkspace,
+};
 pub use requirement::{
     AcceptancePolicy, Requirement, RequirementEvent, RequirementStatus, TriageState,
 };

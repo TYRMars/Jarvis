@@ -5,7 +5,7 @@
 //! without leaking tokens. Layout:
 //!
 //! ```text
-//! ~/.config/jarvis/
+//! ~/.jarvis/
 //!   config.json         # 0644
 //!   auth/
 //!     openai.json       # 0600 — { "api_key": "sk-..." }
@@ -26,13 +26,15 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Resolve `<config-root>` (parent of `auth/`). Mirrors
-/// `Config::discover` / `default_search_paths` in `config.rs`. Picks
-/// the first writable location:
+/// `Config::discover` / `default_search_paths` in `config.rs`, with
+/// a compatibility wrinkle for older installs. Picks:
 ///
 /// 1. `$JARVIS_CONFIG_HOME` (explicit override)
 /// 2. `$XDG_CONFIG_HOME/jarvis`
-/// 3. `~/.config/jarvis`
-/// 4. `%APPDATA%\jarvis` (Windows)
+/// 3. `~/.jarvis` if it already contains config/auth
+/// 4. an existing legacy `~/.config/jarvis`
+/// 5. `~/.jarvis` (Claude-style default for new installs)
+/// 6. `%APPDATA%\jarvis` (Windows)
 ///
 /// Returns `Err` if none of those are derivable (e.g. no `HOME`).
 pub fn config_dir() -> Result<PathBuf> {
@@ -43,7 +45,16 @@ pub fn config_dir() -> Result<PathBuf> {
         return Ok(PathBuf::from(xdg).join("jarvis"));
     }
     if let Some(home) = std::env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join(".config").join("jarvis"));
+        let home = PathBuf::from(home);
+        let modern = home.join(".jarvis");
+        let legacy = home.join(".config").join("jarvis");
+        if modern.join("config.json").is_file() || modern.join("auth").is_dir() {
+            return Ok(modern);
+        }
+        if legacy.join("config.json").is_file() || legacy.join("auth").is_dir() {
+            return Ok(legacy);
+        }
+        return Ok(modern);
     }
     if let Some(appdata) = std::env::var_os("APPDATA") {
         return Ok(PathBuf::from(appdata).join("jarvis"));
@@ -185,6 +196,27 @@ mod tests {
                 _lock: lock,
             }
         }
+
+        fn with_home(home: &Path) -> Self {
+            let lock = crate::test_env::lock();
+            let keys = ["JARVIS_CONFIG_HOME", "XDG_CONFIG_HOME", "HOME", "APPDATA"];
+            let mut saved = Vec::new();
+            for k in keys {
+                saved.push((k, std::env::var(k).ok()));
+            }
+            // SAFETY: env mutations are serialised across tests by the
+            // global lock above; the guard outlives the mutations.
+            unsafe {
+                std::env::remove_var("JARVIS_CONFIG_HOME");
+                std::env::remove_var("XDG_CONFIG_HOME");
+                std::env::set_var("HOME", home);
+                std::env::remove_var("APPDATA");
+            }
+            EnvGuard {
+                keys: saved,
+                _lock: lock,
+            }
+        }
     }
     impl Drop for EnvGuard {
         fn drop(&mut self) {
@@ -217,6 +249,38 @@ mod tests {
         let dir = tempdir().unwrap();
         let _g = EnvGuard::isolate(dir.path());
         assert_eq!(load_api_key("anthropic").unwrap(), None);
+    }
+
+    #[test]
+    fn config_dir_defaults_to_home_dot_jarvis_for_new_installs() {
+        let dir = tempdir().unwrap();
+        let _g = EnvGuard::with_home(dir.path());
+        assert_eq!(config_dir().unwrap(), dir.path().join(".jarvis"));
+    }
+
+    #[test]
+    fn config_dir_keeps_existing_legacy_home_config() {
+        let dir = tempdir().unwrap();
+        let legacy = dir.path().join(".config").join("jarvis");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("config.json"), "{}").unwrap();
+
+        let _g = EnvGuard::with_home(dir.path());
+        assert_eq!(config_dir().unwrap(), legacy);
+    }
+
+    #[test]
+    fn config_dir_prefers_home_dot_jarvis_after_migration() {
+        let dir = tempdir().unwrap();
+        let modern = dir.path().join(".jarvis");
+        let legacy = dir.path().join(".config").join("jarvis");
+        std::fs::create_dir_all(&modern).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(modern.join("config.json"), "{}").unwrap();
+        std::fs::write(legacy.join("config.json"), "{}").unwrap();
+
+        let _g = EnvGuard::with_home(dir.path());
+        assert_eq!(config_dir().unwrap(), modern);
     }
 
     #[test]

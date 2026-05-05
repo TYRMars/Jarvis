@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Jarvis desktop app icon. Source-of-truth vector — every raster
+  size in `icons/` is derived from this file (or its PIL twin in
+  `scripts/generate_icons.py` while we don't have a system SVG
+  rasteriser pinned).
+
+  Composition:
+    - 1024×1024 canvas with the icon content inside an 824×824
+      "safe area" centred at (512, 512) — that's the Apple HIG
+      target so macOS dock / Launchpad render at the same size as
+      first-party apps.
+    - Off-white squircle background with a soft drop shadow so the
+      icon "lifts" from the dock the way other modern app icons do.
+    - Stylised butler in line-art (round face, dot eyes, handlebar
+      moustache, bowtie, suit collar) — a nod to the JARVIS-as-
+      butler metaphor. The bowtie picks up the JARVIS holographic
+      cyan as the only colour accent.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Squircle background gradient — subtle vertical falloff so
+         the icon doesn't read as a flat rectangle at large sizes. -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef1f6"/>
+    </linearGradient>
+    <!-- Soft drop shadow for the squircle. -->
+    <filter id="lift" x="-10%" y="-10%" width="120%" height="125%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dx="0" dy="10" result="off"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.18"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Cyan glow used on the bowtie to suggest the Jarvis HUD. -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Apple-style squircle background. The path is a superellipse
+       approximation (n≈5) drawn via cubic Béziers so the corners
+       are noticeably softer than a CSS `border-radius` round-rect.
+       100px transparent padding on every side. -->
+  <path filter="url(#lift)" fill="url(#bg)"
+        d="M 512,100
+           C 760,100 924,100 924,348
+           C 924,512 924,512 924,676
+           C 924,924 760,924 512,924
+           C 264,924 100,924 100,676
+           C 100,512 100,512 100,348
+           C 100,100 264,100 512,100 Z"/>
+
+  <!-- Butler face — soft round outline. -->
+  <g transform="translate(512 540)">
+    <!-- Head outline -->
+    <circle r="220" fill="#ffffff" stroke="#1a2230" stroke-width="14"/>
+
+    <!-- Bowler hat brim hint (very subtle line above the head) -->
+    <path d="M -200,-180 Q 0,-220 200,-180" fill="none"
+          stroke="#1a2230" stroke-width="14" stroke-linecap="round"/>
+    <!-- Hat dome -->
+    <path d="M -160,-184 Q -140,-300 0,-310 Q 140,-300 160,-184 Z"
+          fill="#1a2230"/>
+
+    <!-- Eyes (two dots, slightly above centre) -->
+    <circle cx="-72" cy="-30" r="14" fill="#1a2230"/>
+    <circle cx="72"  cy="-30" r="14" fill="#1a2230"/>
+
+    <!-- Monocle around the right eye — a single thin ring. -->
+    <circle cx="72" cy="-30" r="44" fill="none"
+            stroke="#1a2230" stroke-width="6"/>
+    <line x1="116" y1="-12" x2="150" y2="22"
+          stroke="#1a2230" stroke-width="6" stroke-linecap="round"/>
+
+    <!-- Handlebar moustache — two symmetric curls. -->
+    <path d="M 0,46
+             C -30,46 -54,60 -78,72
+             C -110,86 -138,84 -150,60
+             C -132,80 -100,80 -78,68
+             C -54,56 -30,52 0,52
+             C 30,52 54,56 78,68
+             C 100,80 132,80 150,60
+             C 138,84 110,86 78,72
+             C 54,60 30,46 0,46 Z"
+          fill="#1a2230"/>
+
+    <!-- Bowtie — the Jarvis-cyan colour accent. Drawn as two
+         triangles meeting at a small knot. -->
+    <g transform="translate(0 220)" filter="url(#glow)">
+      <path d="M -110,-40 L -16,-12 L -16,12 L -110,40 Z"
+            fill="#3aa6e8"/>
+      <path d="M  110,-40 L  16,-12 L  16,12 L  110,40 Z"
+            fill="#3aa6e8"/>
+      <rect x="-16" y="-14" width="32" height="28" rx="6" fill="#1f6d9d"/>
+    </g>
+
+    <!-- Suit collar — V shape under the bowtie. -->
+    <path d="M -150,260 L 0,200 L 150,260 L 150,310 L 0,250 L -150,310 Z"
+          fill="#1a2230"/>
+  </g>
+</svg>

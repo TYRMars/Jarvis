@@ -5,7 +5,7 @@
 // Enter / blur commits, Esc cancels.
 
 import { useState } from "react";
-import { useAppStore, appStore } from "../../store/appStore";
+import { useAppStore } from "../../store/appStore";
 import { resolveTitle } from "../../store/persistence";
 import { t } from "../../utils/i18n";
 import { relTime } from "../../utils/time";
@@ -21,6 +21,7 @@ interface Props {
 
 export function ConvoRow({ row, isPinned }: Props) {
   const activeId = useAppStore((s) => s.activeId);
+  const runtime = useAppStore((s) => s.conversationRuns[row.id]);
   const togglePin = useAppStore((s) => s.togglePin);
   const setTitleOverride = useAppStore((s) => s.setTitleOverride);
   const projectsById = useAppStore((s) => s.projectsById);
@@ -32,15 +33,18 @@ export function ConvoRow({ row, isPinned }: Props) {
   const titleText = resolveTitle(row);
 
   const onConfirmDelete = () => {
-    if (appStore.getState().inFlight) return;
     if (!confirm(t("deleteConfirm", row.id.slice(0, 8)))) return;
     void deleteConversation(row.id);
   };
+  const status = runtime?.status ?? "idle";
+  const isActiveRun =
+    status === "running" || status === "waiting_approval" || status === "waiting_hitl";
 
   return (
     <li
       data-id={row.id}
-      className={row.id === activeId ? "active" : undefined}
+      data-run-status={status}
+      className={(row.id === activeId ? "active" : "") + (isActiveRun ? " running" : "")}
       onClick={() => {
         if (editing) return;
         void resumeConversation(row.id);
@@ -120,6 +124,15 @@ export function ConvoRow({ row, isPinned }: Props) {
           </span>
         )}
         <span className="meta count">{t("msgCount", row.message_count)}</span>
+        {isActiveRun ? (
+          <span className="meta run">
+            {status === "waiting_approval"
+              ? t("approve")
+              : status === "waiting_hitl"
+                ? t("submitted")
+                : t("running")}
+          </span>
+        ) : null}
         <span className="meta time">{relTime(row.updated_at || row.created_at)}</span>
         <span className="id">{row.id.slice(0, 8)}</span>
       </div>

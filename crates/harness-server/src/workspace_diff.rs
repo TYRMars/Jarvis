@@ -73,12 +73,40 @@ struct DiffQuery {
     /// Base branch to diff against (defaults to `main`). Validated
     /// for safe characters before reaching `git`.
     base: Option<String>,
+    /// Per-request workspace root override. When the web UI has the
+    /// user pinned to a non-default workspace (project switch,
+    /// `set_workspace` over WS), it forwards the active path here so
+    /// the diff reflects the *active* repo, not the binary's startup
+    /// root. Falls back to `AppState::workspace_root` when absent.
+    root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FileDiffQuery {
     base: Option<String>,
     path: String,
+    root: Option<String>,
+    /// Truthy → return the working-tree diff (HEAD vs. unstaged +
+    /// staged) for the file — same view as `git diff HEAD -- <path>`.
+    /// Absent / "0" / "false" → legacy committed-vs-base diff.
+    ///
+    /// Typed as `String` instead of `bool` because axum's
+    /// `serde_urlencoded`-backed Query extractor only accepts the
+    /// literal `true` / `false` for bool fields and rejects `1` /
+    /// `0` / `yes` with a 400 — which is exactly the bug the rail's
+    /// uncommitted-row click hit before this widening.
+    #[serde(default)]
+    uncommitted: Option<String>,
+}
+
+fn truthy(s: Option<&str>) -> bool {
+    match s {
+        None => false,
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        ),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -88,7 +116,7 @@ struct DiffStat {
     files: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct FileEntry {
     path: String,
     /// Single-letter `git diff --name-status` code: `M` modified,
@@ -146,9 +174,40 @@ fn safe_relative_path(path: &str) -> Result<&str, &'static str> {
     Ok(path)
 }
 
+
+/// Resolve the workspace root for one request. The optional `override_root`
+/// (forwarded by the web UI as `?root=<path>` or in the request body) wins
+/// over `AppState::workspace_root` so the user can flip the active workspace
+/// without restarting the binary — mirrors what `set_workspace` already
+/// does for the WS-driven tool sandbox. Returns `503` only when *both* the
+/// override and the server-pinned root are absent. The override path must
+/// be absolute, NUL/newline-free, and resolve via `canonicalize` to an
+/// existing directory; anything else returns `400`.
 #[allow(clippy::result_large_err)]
-fn require_workspace(state: &AppState) -> Result<&PathBuf, Response> {
-    state.workspace_root.as_ref().ok_or_else(|| {
+fn resolve_workspace(
+    state: &AppState,
+    override_root: Option<&str>,
+) -> Result<PathBuf, Response> {
+    if let Some(raw) = override_root {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(bad_request("`root` must not be empty"));
+        }
+        if trimmed.contains(['\0', '\n', '\r']) {
+            return Err(bad_request("`root` contains forbidden characters"));
+        }
+        if !std::path::Path::new(trimmed).is_absolute() {
+            return Err(bad_request("`root` must be an absolute path"));
+        }
+        let canonical = std::fs::canonicalize(trimmed).map_err(|e| {
+            bad_request(&format!("`root` does not resolve: {e}"))
+        })?;
+        if !canonical.is_dir() {
+            return Err(bad_request("`root` is not a directory"));
+        }
+        return Ok(canonical);
+    }
+    state.workspace_root.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "workspace root not configured" })),
@@ -222,10 +281,11 @@ async fn get_workspace_diff(
     State(state): State<AppState>,
     Query(q): Query<DiffQuery>,
 ) -> Response {
-    let root = match require_workspace(&state) {
+    let root = match resolve_workspace(&state, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
+    let root = root.as_path();
     let base = q.base.as_deref().unwrap_or(DEFAULT_BASE);
     let base = match safe_branch(base) {
         Ok(b) => b,
@@ -419,29 +479,81 @@ fn aggregate_stat(files: &[FileEntry]) -> Value {
     })
 }
 
-/// Working-tree diff summary (HEAD vs. unstaged + staged). Always
-/// best-effort — failures degrade to empty.
+/// Working-tree diff summary (HEAD vs. unstaged + staged) plus a
+/// per-file list. The aggregate counts power the rail's "65 files
+/// uncommitted" warning; the file list lets the panel render those
+/// 65 entries inline so the user can click through each hunk
+/// without committing first. Untracked files (status `?`) are
+/// surfaced too — `git diff` ignores them by default, but
+/// `--others --exclude-standard` via `ls-files` catches them.
 async fn uncommitted_summary(root: &std::path::Path) -> Value {
-    let raw = match run_git(root, &["diff", "--numstat", "HEAD"]).await {
-        Ok(s) => s,
-        Err(_) => return json!({ "added": 0, "removed": 0, "files": 0 }),
-    };
-    let mut added: u64 = 0;
-    let mut removed: u64 = 0;
-    let mut files: u64 = 0;
-    for line in raw.lines() {
-        let mut parts = line.splitn(3, '\t');
-        let a = parts.next().unwrap_or("0");
-        let r = parts.next().unwrap_or("0");
-        let p = parts.next().unwrap_or("").trim();
-        if p.is_empty() {
-            continue;
+    let mut files: Vec<FileEntry> = Vec::new();
+    let mut by_path: std::collections::HashMap<String, FileEntry> =
+        std::collections::HashMap::new();
+
+    // Tracked changes vs HEAD (covers staged + unstaged).
+    if let Ok(raw) = run_git(root, &["diff", "--numstat", "HEAD"]).await {
+        for entry in parse_numstat(&raw) {
+            by_path.insert(entry.path.clone(), entry);
         }
-        added = added.saturating_add(if a == "-" { 0 } else { a.parse().unwrap_or(0) });
-        removed = removed.saturating_add(if r == "-" { 0 } else { r.parse().unwrap_or(0) });
-        files += 1;
     }
-    json!({ "added": added, "removed": removed, "files": files })
+    if let Ok(name_status) = run_git(root, &["diff", "--name-status", "HEAD"]).await {
+        let mut tmp: Vec<FileEntry> = by_path.values().cloned().collect();
+        apply_name_status(&mut tmp, &name_status);
+        for entry in tmp {
+            by_path.insert(entry.path.clone(), entry);
+        }
+    }
+
+    // Untracked files — `git diff` ignores them, so list them
+    // separately and synthesise +<line-count> / `-0` stats so the
+    // UI can show them with sensible counts.
+    if let Ok(raw) = run_git(
+        root,
+        &["ls-files", "--others", "--exclude-standard"],
+    )
+    .await
+    {
+        for line in raw.lines() {
+            let path = line.trim();
+            if path.is_empty() || by_path.contains_key(path) {
+                continue;
+            }
+            let added = match tokio::fs::read_to_string(root.join(path)).await {
+                Ok(text) => text.lines().count() as u64,
+                Err(_) => 0, // unreadable / binary
+            };
+            by_path.insert(
+                path.to_string(),
+                FileEntry {
+                    path: path.to_string(),
+                    status: "?".to_string(),
+                    added,
+                    removed: 0,
+                    old_path: None,
+                },
+            );
+        }
+    }
+
+    files.extend(by_path.into_values());
+    files.sort_by(|a, b| {
+        let aw = a.added + a.removed;
+        let bw = b.added + b.removed;
+        bw.cmp(&aw).then_with(|| a.path.cmp(&b.path))
+    });
+
+    let added: u64 = files.iter().map(|f| f.added).sum();
+    let removed: u64 = files.iter().map(|f| f.removed).sum();
+    let count = files.len() as u64;
+    json!({
+        "added": added,
+        "removed": removed,
+        "files": count,
+        // Shape mirrors `committed.files`: the UI reuses the same
+        // FileRow component for both lists.
+        "entries": files,
+    })
 }
 
 // ----------------------------------------------------------------------
@@ -452,10 +564,11 @@ async fn get_workspace_diff_file(
     State(state): State<AppState>,
     Query(q): Query<FileDiffQuery>,
 ) -> Response {
-    let root = match require_workspace(&state) {
+    let root = match resolve_workspace(&state, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
+    let root = root.as_path();
     let base = q.base.as_deref().unwrap_or(DEFAULT_BASE);
     let base = match safe_branch(base) {
         Ok(b) => b,
@@ -467,15 +580,40 @@ async fn get_workspace_diff_file(
     };
 
     // `--` separator stops `git` from interpreting the path as a
-    // revspec even if it shadows a branch name.
-    let mut diff = match run_git(
-        root,
-        &["diff", &format!("{base}...HEAD"), "--", path],
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return server_error(e),
+    // revspec even if it shadows a branch name. The `uncommitted`
+    // flag flips us between two flavours:
+    //   - false / default: committed delta (`<base>...HEAD`)
+    //   - true:            working-tree delta (`HEAD -- <path>`)
+    let mut diff = if truthy(q.uncommitted.as_deref()) {
+        // Untracked files won't show up via `git diff HEAD -- <path>`;
+        // the canonical workaround is `git diff --no-index /dev/null
+        // <path>` which exits 1 on differences (still success for our
+        // purposes). Try the regular diff first, fall back to
+        // no-index when it returns empty so binary / fresh files
+        // still render hunks instead of "(empty)".
+        match run_git(root, &["diff", "HEAD", "--", path]).await {
+            Ok(s) if !s.trim().is_empty() => s,
+            // `--no-index` exits 1 when there's a diff — that
+            // surfaces as Err(stderr) in our wrapper. Empty
+            // string is a fine fallback; clients already render
+            // "(empty diff)" gracefully.
+            _ => run_git(
+                root,
+                &["diff", "--no-index", "--", "/dev/null", path],
+            )
+            .await
+            .unwrap_or_default(),
+        }
+    } else {
+        match run_git(
+            root,
+            &["diff", &format!("{base}...HEAD"), "--", path],
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => return server_error(e),
+        }
     };
     if diff.len() > MAX_FILE_DIFF_BYTES {
         // Truncate at a line boundary if possible so the diffy /
@@ -507,16 +645,20 @@ struct CommitBody {
     /// checkbox so the user explicitly opts in to a network action.
     #[serde(default)]
     push: bool,
+    /// Per-request workspace root override. See `DiffQuery::root`.
+    #[serde(default)]
+    root: Option<String>,
 }
 
 async fn post_workspace_commit(
     State(state): State<AppState>,
     Json(body): Json<CommitBody>,
 ) -> Response {
-    let root = match require_workspace(&state) {
+    let root = match resolve_workspace(&state, body.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
+    let root = root.as_path();
     let message = body.message.trim();
     if message.is_empty() {
         return bad_request("commit message must not be empty");
@@ -617,10 +759,11 @@ async fn get_pr_preview(
     State(state): State<AppState>,
     Query(q): Query<DiffQuery>,
 ) -> Response {
-    let root = match require_workspace(&state) {
+    let root = match resolve_workspace(&state, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
+    let root = root.as_path();
     let base = q.base.as_deref().unwrap_or(DEFAULT_BASE);
     let base = match safe_branch(base) {
         Ok(b) => b,
@@ -753,6 +896,9 @@ struct CreatePrBody {
     /// confusing if we don't auto-handle it.
     #[serde(default = "default_true")]
     push: bool,
+    /// Per-request workspace root override. See `DiffQuery::root`.
+    #[serde(default)]
+    root: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -763,10 +909,11 @@ async fn post_create_pr(
     State(state): State<AppState>,
     Json(body): Json<CreatePrBody>,
 ) -> Response {
-    let root = match require_workspace(&state) {
+    let root = match resolve_workspace(&state, body.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
+    let root = root.as_path();
     let title = body.title.trim();
     if title.is_empty() {
         return bad_request("PR title must not be empty");
@@ -1005,5 +1152,29 @@ mod tests {
         assert!(safe_relative_path("src/../../../etc").is_err());
         assert!(safe_relative_path("--upload-pack=evil").is_err());
         assert!(safe_relative_path("").is_err());
+    }
+
+    #[test]
+    fn safe_relative_path_accepts_sveltekit_plus_paths() {
+        // Regression: SvelteKit routes use `+page.ts` / `+layout.svelte`.
+        // Our validator only rejects leading `-` (which can be confused
+        // for a flag), not leading `+`.
+        assert!(safe_relative_path("vite-project/src/routes/study-plan/+page.ts").is_ok());
+        assert!(safe_relative_path("+layout.svelte").is_ok());
+    }
+
+    #[test]
+    fn truthy_accepts_common_flag_values() {
+        // Why this exists: axum's Query<T> uses serde_urlencoded which
+        // only deserialises bool from literal "true"/"false". Treating
+        // the flag as a string and normalising here keeps clients that
+        // send `?flag=1` / `?flag=yes` / bare `?flag` working.
+        for v in ["1", "true", "True", "yes", "on", "anything"] {
+            assert!(truthy(Some(v)), "{v} should be truthy");
+        }
+        for v in ["", "0", "false", "False", "no", "off"] {
+            assert!(!truthy(Some(v)), "{v} should be falsy");
+        }
+        assert!(!truthy(None));
     }
 }

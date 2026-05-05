@@ -263,7 +263,9 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
             let req_clone = req.clone();
             let timeout_ms = config.run_timeout_ms;
             tokio::spawn(async move {
-                if let Err(e) = drive_one(&state_clone, &req_clone, &profile, timeout_ms).await {
+                if let Err(e) =
+                    drive_one(&state_clone, &req_clone, Some(&profile), timeout_ms).await
+                {
                     warn!(
                         requirement_id = %req_clone.id,
                         error = %e,
@@ -276,17 +278,108 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
     Ok(picked)
 }
 
+/// Default wall-clock budget for ad-hoc background runs (status
+/// flips, REST start_run). Matches `AutoModeConfig::default()` —
+/// the auto loop overrides via `JARVIS_WORK_RUN_TIMEOUT_MS`.
+pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 5 * 60 * 1000;
+
+/// Fire-and-forget background run for `requirement`. Used by
+/// REST handlers (PATCH `/v1/requirements/:id` on a status flip
+/// to `in_progress`, POST `/v1/requirements/:id/runs`) to drive
+/// the agent loop without blocking the response.
+///
+/// Idempotent: if a Pending or Running run already exists for the
+/// requirement, the spawned task logs an INFO and bails — the
+/// existing run is the source of truth, and the next status flip
+/// or `start_run` won't double-fire.
+///
+/// Best-effort: missing stores / dangling assignee profile are
+/// logged at WARN, not surfaced. The caller has already returned
+/// success to the user, so we never want a background failure to
+/// be invisible (the run row would record it anyway), but we
+/// also don't want to abort an entire HTTP response because a
+/// peripheral lookup failed.
+pub(crate) fn spawn_background_run(state: AppState, requirement: Requirement) {
+    tokio::spawn(async move {
+        let Some(runs) = state.requirement_runs.as_ref() else {
+            warn!(
+                requirement_id = %requirement.id,
+                "spawn_background_run: requirement run store missing — skipping"
+            );
+            return;
+        };
+        match runs.list_for_requirement(&requirement.id).await {
+            Ok(history) => {
+                let inflight = history.iter().any(|r| {
+                    matches!(
+                        r.status,
+                        RequirementRunStatus::Pending | RequirementRunStatus::Running
+                    )
+                });
+                if inflight {
+                    info!(
+                        requirement_id = %requirement.id,
+                        "spawn_background_run: skipping — in-flight run already exists"
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                warn!(
+                    requirement_id = %requirement.id,
+                    error = %e,
+                    "spawn_background_run: list runs failed — skipping"
+                );
+                return;
+            }
+        }
+        let profile = match (
+            requirement.assignee_id.as_deref(),
+            state.agent_profiles.as_ref(),
+        ) {
+            (Some(aid), Some(store)) => match store.get(aid).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        requirement_id = %requirement.id,
+                        error = %e,
+                        "spawn_background_run: agent profile lookup failed — running without it"
+                    );
+                    None
+                }
+            },
+            _ => None,
+        };
+        if let Err(e) =
+            drive_one(&state, &requirement, profile.as_ref(), DEFAULT_RUN_TIMEOUT_MS).await
+        {
+            warn!(
+                requirement_id = %requirement.id,
+                error = %e,
+                "spawn_background_run: drive_one failed"
+            );
+        }
+    });
+}
+
 /// One end-to-end pickup: mint conversation + worktree, build
 /// agent, drive `agent.run` under a timeout, persist outcome,
 /// auto-verify if the requirement carries a plan.
 ///
+/// `profile` is optional. When present, its `provider` / `model` /
+/// `system_prompt` are used to route the LLM call and prefix the
+/// manifest summary. When `None`, the run uses the binary's default
+/// provider+model (`state.build_agent(None, None)`) — this is the
+/// path taken by the ad-hoc background run triggered from a status
+/// flip on a requirement without an assignee.
+///
 /// Errors here are logged but never surfaced — the run row
 /// records the failure, which is the durable record an operator
 /// will look at.
-async fn drive_one(
+pub(crate) async fn drive_one(
     state: &AppState,
     requirement: &Requirement,
-    profile: &AgentProfile,
+    profile: Option<&AgentProfile>,
     timeout_ms: u64,
 ) -> Result<(), String> {
     let req_store = state
@@ -309,7 +402,7 @@ async fn drive_one(
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let manifest = build_default_manifest(&workspace, requirement).await;
     let summary = render_manifest_summary(&manifest);
-    let composed_summary = match profile.system_prompt.as_deref() {
+    let composed_summary = match profile.and_then(|p| p.system_prompt.as_deref()) {
         Some(p) if !p.trim().is_empty() => {
             format!("=== assignee instructions ===\n{}\n\n{}", p.trim(), summary)
         }
@@ -374,7 +467,7 @@ async fn drive_one(
             "run_id": run.id,
             "conversation_id": conversation_id,
             "auto": true,
-            "profile_id": profile.id,
+            "profile_id": profile.map(|p| p.id.clone()),
         }),
     )
     .await;
@@ -393,12 +486,14 @@ async fn drive_one(
         .await;
     }
 
-    // 6. Build agent + drive loop under a timeout.
-    let agent_result = state.build_agent_with(
-        Some(&profile.provider),
-        Some(&profile.model),
-        |cfg| {
-            if let Some(prompt) = profile.system_prompt.as_deref() {
+    // 6. Build agent + drive loop under a timeout. With a
+    // profile we honour its provider+model+prompt; without one we
+    // fall back to the binary's default route (same path the chat
+    // UI uses), so a status-flip trigger still has a working LLM
+    // even on requirements that were never assigned.
+    let agent_result = match profile {
+        Some(p) => state.build_agent_with(Some(&p.provider), Some(&p.model), |cfg| {
+            if let Some(prompt) = p.system_prompt.as_deref() {
                 if !prompt.trim().is_empty() {
                     // Already prepended into conv's system message;
                     // we leave the agent template's own
@@ -406,9 +501,10 @@ async fn drive_one(
                     let _ = prompt;
                 }
             }
-            cfg.model = profile.model.clone();
-        },
-    );
+            cfg.model = p.model.clone();
+        }),
+        None => state.build_agent(None, None),
+    };
     let outcome = match agent_result {
         Ok(agent) => {
             // Run inside an async block so the borrowed `&mut

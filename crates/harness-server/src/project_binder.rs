@@ -101,10 +101,7 @@ pub(crate) async fn materialise(
             });
         }
     };
-    let block = format!(
-        "=== project: {} ===\n{}",
-        project.name, project.instructions
-    );
+    let block = render_project_block(&project);
     let mut messages = conv.messages;
     let pos = leading_system_count(&messages);
     messages.insert(pos, Message::system(block));
@@ -143,6 +140,60 @@ fn leading_system_count(messages: &[Message]) -> usize {
         .iter()
         .take_while(|m| matches!(m, Message::System { .. }))
         .count()
+}
+
+/// Render the per-turn project context block. Includes the structured
+/// metadata the agent needs to ground its answers — name, slug,
+/// optional one-line description, the workspace folder list, and the
+/// project's free-form `instructions` body. Without this enrichment
+/// the agent only saw the user-authored `instructions` string and had
+/// to discover everything else (slug, folders, branch) via tool calls.
+///
+/// Stable, fence-shaped header (`=== project: ... ===`) so
+/// [`strip_project_block`] can find the injected message via the
+/// `injected_at` index without parsing the body. The trailing
+/// `=== /project ===` close marker isn't required for stripping but
+/// reads more naturally as a delimited block.
+fn render_project_block(project: &harness_core::Project) -> String {
+    let mut out = String::with_capacity(256);
+    out.push_str("=== project: ");
+    out.push_str(&project.name);
+    if !project.slug.is_empty() {
+        out.push_str(" (");
+        out.push_str(&project.slug);
+        out.push(')');
+    }
+    out.push_str(" ===\n");
+    if let Some(desc) = project.description.as_deref() {
+        let trimmed = desc.trim();
+        if !trimmed.is_empty() {
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+    }
+    if !project.workspaces.is_empty() {
+        out.push_str("\nWorkspaces:\n");
+        for ws in &project.workspaces {
+            out.push_str("- ");
+            if let Some(name) = ws.name.as_deref() {
+                let n = name.trim();
+                if !n.is_empty() {
+                    out.push_str(n);
+                    out.push_str(" — ");
+                }
+            }
+            out.push_str(&ws.path);
+            out.push('\n');
+        }
+    }
+    let instr = project.instructions.trim();
+    if !instr.is_empty() {
+        out.push_str("\nInstructions:\n");
+        out.push_str(instr);
+        out.push('\n');
+    }
+    out.push_str("=== /project ===");
+    out
 }
 
 #[cfg(test)]
@@ -228,11 +279,74 @@ mod tests {
         assert_eq!(out.conversation.messages.len(), 3);
         match &out.conversation.messages[1] {
             Message::System { content, .. } => {
-                assert!(content.starts_with("=== project: Writing ==="));
+                assert!(content.starts_with("=== project: Writing (w) ==="));
                 assert!(content.contains("be lyrical"));
+                // Closing marker tells the agent the block is delimited.
+                assert!(content.contains("=== /project ==="));
             }
             other => panic!("expected injected System, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn injected_block_includes_workspaces_and_description() {
+        let store = FakeProjectStore::default();
+        let mut p = Project::new("Jarvis Product", "Be helpful.")
+            .with_slug("jarvis-product")
+            .with_description("Upper-layer product workspace.");
+        p.set_workspaces(vec![
+            harness_core::ProjectWorkspace {
+                path: "/Users/zj/Jarvis".into(),
+                name: Some("Repo".into()),
+            },
+            harness_core::ProjectWorkspace::new("/Users/zj/Notes"),
+        ]);
+        let pid = p.id.clone();
+        store.put(p).await;
+        let store_arc: Arc<dyn ProjectStore> = Arc::new(store);
+
+        let conv = Conversation::new();
+        let out = materialise(Some(&store_arc), conv, Some(&pid))
+            .await
+            .unwrap();
+        let Message::System { content, .. } = &out.conversation.messages[0] else {
+            panic!("expected System");
+        };
+        // Header carries name + slug.
+        assert!(content.starts_with("=== project: Jarvis Product (jarvis-product) ==="));
+        // Description renders verbatim (one line below the header).
+        assert!(content.contains("Upper-layer product workspace."));
+        // Workspaces are listed under a clear header.
+        assert!(content.contains("Workspaces:"));
+        assert!(content.contains("- Repo — /Users/zj/Jarvis"));
+        assert!(content.contains("- /Users/zj/Notes"));
+        // Instructions still present.
+        assert!(content.contains("Instructions:"));
+        assert!(content.contains("Be helpful."));
+        assert!(content.trim_end().ends_with("=== /project ==="));
+    }
+
+    #[tokio::test]
+    async fn injected_block_omits_empty_optional_sections() {
+        let store = FakeProjectStore::default();
+        // Minimal project: no description, no workspaces, instructions only.
+        let p = Project::new("Mini", "Stay terse.").with_slug("mini");
+        let pid = p.id.clone();
+        store.put(p).await;
+        let store_arc: Arc<dyn ProjectStore> = Arc::new(store);
+
+        let conv = Conversation::new();
+        let out = materialise(Some(&store_arc), conv, Some(&pid))
+            .await
+            .unwrap();
+        let Message::System { content, .. } = &out.conversation.messages[0] else {
+            panic!("expected System");
+        };
+        // No `Workspaces:` label when the list is empty — keeps the
+        // block tight for instruction-only projects.
+        assert!(!content.contains("Workspaces:"));
+        // Still has the close marker.
+        assert!(content.trim_end().ends_with("=== /project ==="));
     }
 
     #[tokio::test]

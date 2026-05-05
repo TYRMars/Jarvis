@@ -31,6 +31,7 @@
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../store/appStore";
+import { MultiGitRail } from "./Composer/MultiGitRail";
 import { refreshWorkspaceDiff } from "../services/workspaceDiff";
 import { CreatePrDialog } from "./Workspace/CreatePrDialog";
 import { t } from "../utils/i18n";
@@ -38,20 +39,39 @@ import { t } from "../utils/i18n";
 export function ComposerShoulder() {
   const diff = useAppStore((s) => s.workspaceDiff);
   const setVisible = useAppStore((s) => s.setWorkspacePanelVisible);
+  const setWorkspaceDiff = useAppStore((s) => s.setWorkspaceDiff);
+  // When the bound project has multiple workspace folders, surface a
+  // small "{n}个工作区" tag so the user knows the single branch crumb
+  // here is just the *active* workspace's view, not the whole project.
+  // The full multi-git rail lives in `ComposerSessionContext` directly
+  // above; this is just a hint for the diff/PR shoulder.
+  const draftProjectId = useAppStore((s) => s.draftProjectId);
+  const projectsById = useAppStore((s) => s.projectsById);
+  // Active workspace path the diff endpoint should be scoped to —
+  // same priority as the chip row in `ComposerSessionContext`. When
+  // the user switches projects (or pins a different folder via
+  // `set_workspace`), this flips and we have to re-fetch so the
+  // shoulder reflects the *active* repo, not whatever the binary was
+  // started with.
+  const draftWorkspacePath = useAppStore((s) => s.draftWorkspacePath);
+  const socketWorkspace = useAppStore((s) => s.socketWorkspace);
+  const activeRoot = draftWorkspacePath ?? socketWorkspace ?? null;
+  const projectWorkspaceCount = (() => {
+    if (!draftProjectId) return 0;
+    const p = projectsById?.[draftProjectId];
+    return p?.workspaces?.length ?? 0;
+  })();
   const [prOpen, setPrOpen] = useState(false);
 
-  // Auto-fetch once on mount. The diff endpoint is ~50ms on a
-  // typical repo and gives us branch + ahead/behind + per-file
-  // numstat — everything the shoulder needs in one round-trip.
-  // Subsequent updates flow through the WorkspaceDiff rail card's
-  // refresh button or after a commit/PR action.
+  // Re-fetch whenever the active workspace flips. The service reads
+  // `activeRoot` from the store internally, so we just need to drop
+  // the stale snapshot and kick a fresh request. Drop-then-fetch (vs
+  // fetch-then-overwrite) avoids a flash of the previous repo's
+  // branch crumb on top of the new repo's diff stat.
   useEffect(() => {
-    if (diff == null) void refreshWorkspaceDiff();
-    // We deliberately don't re-fetch on every diff change — that
-    // would loop. The card / dialogs trigger refreshes when the
-    // working tree actually changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    setWorkspaceDiff(null);
+    void refreshWorkspaceDiff();
+  }, [activeRoot, setWorkspaceDiff]);
 
   // Server doesn't have a workspace pinned at all → hide the row
   // entirely. The composer just renders flush against the message
@@ -92,19 +112,29 @@ export function ComposerShoulder() {
 
   return (
     <div className="composer-shoulder">
-      <button
-        type="button"
-        className="shoulder-crumb"
-        onClick={() => void refreshWorkspaceDiff(base)}
-        title={`${branch} → ${base}\nclick to refresh`}
-      >
-        <BranchIcon />
-        <span className="shoulder-crumb-base">{base}</span>
-        <span className="shoulder-crumb-arrow" aria-hidden="true">
-          ←
-        </span>
-        <span className="shoulder-crumb-branch">{branch}</span>
-      </button>
+      {projectWorkspaceCount > 1 ? (
+        // Multi-workspace project — render the per-workspace git rail
+        // inline so users see every workspace's branch / dirty state on
+        // the same row as the diff/PR actions, not as a separate row
+        // above. The single crumb hides; the rail covers the same job
+        // (current branch is the active chip + highlighted).
+        <MultiGitRail />
+      ) : (
+        // Single-workspace fallback — original `base ← branch` crumb.
+        <button
+          type="button"
+          className="shoulder-crumb"
+          onClick={() => void refreshWorkspaceDiff(base)}
+          title={`${branch} → ${base}\nclick to refresh`}
+        >
+          <BranchIcon />
+          <span className="shoulder-crumb-base">{base}</span>
+          <span className="shoulder-crumb-arrow" aria-hidden="true">
+            ←
+          </span>
+          <span className="shoulder-crumb-branch">{branch}</span>
+        </button>
+      )}
 
       <div className="shoulder-actions">
         {totalChanges > 0 ? (

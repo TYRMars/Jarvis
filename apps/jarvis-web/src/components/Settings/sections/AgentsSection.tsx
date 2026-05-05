@@ -20,6 +20,10 @@ import {
   subscribeAgentProfiles,
   updateAgentProfile,
 } from "../../../services/agentProfiles";
+import {
+  loadBuiltinSubAgents,
+  type BuiltinSubAgent,
+} from "../../../services/subagents";
 import type { AgentProfile } from "../../../types/frames";
 
 function tx(key: string, fallback: string): string {
@@ -29,22 +33,27 @@ function tx(key: string, fallback: string): string {
 
 export function AgentsSection({ embedded }: { embedded?: boolean } = {}) {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [builtins, setBuiltins] = useState<BuiltinSubAgent[]>([]);
   useEffect(() => {
     void loadAgentProfiles();
     const off = subscribeAgentProfiles(() => setProfiles(listAgentProfiles()));
     setProfiles(listAgentProfiles());
     return off;
   }, []);
+  useEffect(() => {
+    void loadBuiltinSubAgents().then(setBuiltins);
+  }, []);
 
   return (
     <Section
-      id="agents"
+      id="subagents"
       titleKey="settingsAgentsTitle"
-      titleFallback="Agents"
+      titleFallback="Subagents"
       descKey="settingsAgentsDesc"
-      descFallback="Named agent profiles requirements can be assigned to. Each profile picks a provider + model and an optional system prompt prepended to the run manifest."
+      descFallback="Built-in delegated agents the main agent can invoke as `subagent.*` tools, plus your own named profiles requirements can be assigned to."
       embedded={embedded}
     >
+      <BuiltinSubAgentList items={builtins} />
       <CreateAgentForm />
       <div className="settings-agent-list" role="list">
         {profiles.length === 0 ? (
@@ -54,6 +63,52 @@ export function AgentsSection({ embedded }: { embedded?: boolean } = {}) {
         )}
       </div>
     </Section>
+  );
+}
+
+function BuiltinSubAgentList({ items }: { items: BuiltinSubAgent[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="settings-agent-builtins">
+      <div className="settings-agent-builtins-head">
+        <h3 className="settings-agent-builtins-title">
+          {tx("settingsAgentsBuiltinTitle", "Built-in subagents")}
+        </h3>
+        <p className="settings-agent-builtins-desc">
+          {tx(
+            "settingsAgentsBuiltinDesc",
+            "Always available — registered automatically by the binary as `subagent.*` tools. Read-only.",
+          )}
+        </p>
+      </div>
+      <div className="settings-agent-builtins-grid" role="list">
+        {items.map((b) => (
+          <BuiltinSubAgentCard key={b.tool_name} item={b} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BuiltinSubAgentCard({ item }: { item: BuiltinSubAgent }) {
+  return (
+    <div className="settings-agent-builtin-card" role="listitem">
+      <div className="settings-agent-builtin-head">
+        <strong className="settings-agent-builtin-name">{item.name}</strong>
+        <span
+          className={
+            "settings-agent-builtin-badge" +
+            (item.requires_approval ? " gated" : "")
+          }
+        >
+          {item.requires_approval
+            ? tx("settingsAgentsBuiltinGated", "needs approval")
+            : tx("settingsAgentsBuiltinAuto", "auto-runs")}
+        </span>
+      </div>
+      <code className="settings-agent-builtin-tool">{item.tool_name}</code>
+      <p className="settings-agent-builtin-desc-text">{item.description}</p>
+    </div>
   );
 }
 

@@ -172,6 +172,10 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     groupToday: "Today",
     groupYesterday: "Yesterday",
     groupOlder: "Older",
+    groupByDate: "Date",
+    groupByProject: "Project",
+    groupByLabel: "Group by",
+    groupNoProject: "Free chat",
     emptyConvoHint: (idShort) => `Conversation ${idShort} started. Type below to begin.`,
     resumeFailed: (msg) => `resume failed: ${msg}`,
     review: "Review",
@@ -239,13 +243,14 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsNavAppearanceLayout: "Appearance & Layout",
     settingsNavPersona: "Persona",
     settingsNavModels: "Models",
+    settingsNavSubagents: "Subagents",
     settingsNavExtensions: "Extensions",
     settingsNavSystem: "System",
     // Super-section descriptions
     settingsAppearanceLayoutTitle: "Appearance & Layout",
     settingsAppearanceLayoutDesc: "Theme, language, and which panels show up in the chat surface.",
     settingsModelsTitle: "Models",
-    settingsModelsDesc: "Configure LLM providers, named subagents, and per-browser defaults like the active model and effort level.",
+    settingsModelsDesc: "Configure LLM providers and per-browser defaults like the active model and effort level.",
     settingsExtensionsTitle: "Extensions",
     settingsExtensionsDesc: "Capabilities Jarvis loads on top of the built-in tools — runtime MCP servers, skill packs, and bundled plugins.",
     settingsSystemTitle: "System",
@@ -708,6 +713,98 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     colReview: "Review",
     colDone: "Done",
 
+    // ---- Composer session chips ----
+    sessionChipPickWorkspace: "Pick a workspace folder",
+    sessionChipFreeChat: "Free chat",
+    sessionChipProjectOptional: "Project binding is optional",
+    sessionChipAddContext: "Add resources",
+
+    // ComposerProjectRail — popover entries + folder picker copy
+    composerRailNewProject: "+ New project",
+    composerRailNoProjects: "No projects yet",
+    composerRailSetActive: "Set as active workspace",
+    composerRailIsActive: "Active workspace",
+    composerRailAddFolder: "Add folder",
+    composerFolderPickerBrowse: "Browse…",
+    composerFolderPickerUnsupported:
+      "Your browser doesn't support the system file picker — please type the path manually.",
+    composerFolderPickerNoMatch:
+      "Couldn't find «{0}» under common roots — please type the full path.",
+    composerFolderPickerMultiHint: "Multiple matches — pick one:",
+
+    // ---- Resource picker (ResourceManagerDialog) ----
+    // Pure selection surface — pick a project (which owns its folders),
+    // or a recent workspace, or paste a folder path. No "start session"
+    // / "free chat" branching; this dialog only emits a selection.
+    resourceDialogTitle: "Select a project",
+    resourceDialogSubtitle:
+      "A project owns the folders it works on. You can also pick a recent workspace or paste a folder path.",
+    resourceDialogSearch: "Search projects or paste a folder path…",
+    resourceDialogTabRecent: "Recent",
+    resourceDialogTabProjects: "Projects",
+    resourceDialogTabFolders: "Folders",
+    resourceDialogConfirm: "Confirm",
+    resourceDialogCancel: "Cancel",
+    resourceDialogRecentEmpty:
+      "No recent workspaces yet. Open a folder once and it'll show up here.",
+    resourceDialogProjectsEmpty:
+      "No projects yet. Pick a folder in the Folders tab — Jarvis will create one for you.",
+    resourceDialogFoldersLabel: "Workspace folder path",
+    resourceDialogFoldersPlaceholder: "/Users/.../my-project",
+    resourceDialogProbeBtn: "Probe folder",
+    resourceDialogProbeBusy: "Probing…",
+    resourceDialogProbeError: "Probe failed: {0}",
+    resourceDialogVcsGit: "git · branch {0} · {1}",
+    resourceDialogVcsBranchDetached: "(detached)",
+    resourceDialogVcsClean: "clean",
+    resourceDialogVcsDirty: "dirty",
+    resourceDialogMatchPath: "Already linked to {0} — will reuse that project.",
+    resourceDialogMatchName:
+      "Folder name matches project {0} — confirming will add this folder to that project.",
+    resourceDialogMatchAmbiguous:
+      "Multiple projects share this folder name. Pick one below or use a different folder.",
+    resourceDialogMatchNone: "No project matches. Confirming will create project {0}.",
+    resourceDialogPreviewProject: "Project",
+    resourceDialogPreviewFolder: "Folder",
+    resourceDialogProjectNoFolders:
+      "This project has no folders yet. Pick a folder in the Folders tab.",
+    resourceDialogReuseProject: "Reuse project {0}",
+    resourceDialogAddFolderTo: "Add folder to {0}",
+    resourceDialogPickProject: "Pick a project below to disambiguate.",
+    resourceDialogWillCreate: "Will create project {0}",
+    resourceDialogPickHint: "Pick a project, recent workspace, or folder.",
+    resourceDialogProjectFolderCount: "{0} folder · {1}",
+    resourceDialogProjectFolderCountPlural: "{0} folders · {1}",
+    resourceDialogProjectNoFoldersInline: "no folders · {0}",
+    resourceDialogFolderAddRow: "+ Add folder",
+    resourceDialogFolderRemove: "Remove",
+    resourceDialogWillCreateMulti:
+      "Will create project «{0}» with {1} folders",
+
+    // Column editor (custom kanban columns)
+    columnEditorOpenBtn: "Edit columns",
+    columnEditorTitle: "Edit columns",
+    columnEditorHint:
+      "Rename, reorder, add or remove columns. Existing requirements stay on the column whose id matches their saved status.",
+    columnEditorAddRow: "Add column",
+    columnEditorRemoveRow: "Remove column",
+    columnEditorReset: "Reset to defaults",
+    columnEditorLabel: "Label",
+    columnEditorId: "Id",
+    columnEditorIdHint: "Lowercase letters, digits, '_' and '-' only. 1–64 chars.",
+    columnEditorKind: "Kind",
+    columnEditorKindCustom: "Custom",
+    columnEditorMoveUp: "Move up",
+    columnEditorMoveDown: "Move down",
+    columnEditorSave: "Save",
+    columnEditorCancel: "Cancel",
+    columnEditorBlankLabel: "Label must not be blank",
+    columnEditorBadId: "Id is invalid (lowercase / digits / _ / - only)",
+    columnEditorDuplicateId: "Duplicate id — column ids must be unique",
+    columnEditorTooMany: "At most 32 columns are allowed",
+    columnEditorTooFew: "At least one column is required",
+    columnEditorBusy: "Saving…",
+
     // Projects index page
     projectsTitle: "Projects",
     projectsArchiveShow: "Show archived projects",
@@ -805,8 +902,12 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     sessionProjectNoProjects: "No projects yet",
     sessionProjectWorkspaceCount: (n: number) =>
       `${n} workspace${n === 1 ? "" : "s"}`,
+    composerShoulderMultiWorkspaces: (n: number) =>
+      `${n} workspace${n === 1 ? "" : "s"}`,
     sessionLockedExplain: "Locked for this session — start a new chat to switch.",
     sessionLockedNewChat: "New chat",
+    sessionLockedNewChatPreserve: "New chat (keep project)",
+    sessionLockedNewChatClear: "Free chat",
     sessionLockedDefaultRoot: "Server startup root",
     sessionLockedNoWorkspace: "No workspace",
 
@@ -930,9 +1031,9 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     activityAssigneeChange: (from: string, to: string) =>
       `assigned ${from} → ${to}`,
     settingsNavAgents: "Agents",
-    settingsAgentsTitle: "Agents",
+    settingsAgentsTitle: "Subagents",
     settingsAgentsDesc:
-      "Named agent profiles requirements can be assigned to. Each profile picks a provider + model and an optional system prompt prepended to the run manifest.",
+      "Built-in delegated agents the main agent can invoke as `subagent.*` tools, plus your own named profiles requirements can be assigned to.",
     settingsAgentsEmpty: "No agents defined yet.",
     settingsAgentsName: "Name",
     settingsAgentsProvider: "Provider",
@@ -947,6 +1048,11 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsAgentsSave: "Save",
     settingsAgentsCancel: "Cancel",
     settingsAgentsConfirmDelete: "Delete this agent?",
+    settingsAgentsBuiltinTitle: "Built-in subagents",
+    settingsAgentsBuiltinDesc:
+      "Always available — registered automatically by the binary as `subagent.*` tools. Read-only.",
+    settingsAgentsBuiltinGated: "needs approval",
+    settingsAgentsBuiltinAuto: "auto-runs",
     settingsNavDiagnostics: "Diagnostics",
     settingsDiagnosticsTitle: "Diagnostics",
     settingsDiagnosticsDesc:
@@ -1253,6 +1359,17 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     subagentCountLabel: "running / total",
     tasksSubagentSection: "SubAgents",
     tasksToolsSection: "Tool runs",
+
+    // ---- Desktop sidecar overlay ----
+    desktopServerUnavailable: "Local Jarvis server unavailable",
+    desktopServerHint:
+      "The desktop shell could not reach a running Jarvis server. Pick a workspace and retry, or start the server manually with `jarvis serve`.",
+    desktopRetry: "Retry",
+    desktopChooseWorkspace: "Choose workspace…",
+    desktopWorkspaceLabel: "Workspace",
+    desktopShowLogs: "Show recent logs",
+    desktopHideLogs: "Hide logs",
+    desktopRetrying: "Retrying…",
   },
   zh: {
     approvalsEmpty: "敏感工具会在这里暂停，等待你的批准。",
@@ -1409,6 +1526,10 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     groupToday: "今天",
     groupYesterday: "昨天",
     groupOlder: "更早",
+    groupByDate: "按日期",
+    groupByProject: "按项目",
+    groupByLabel: "分组方式",
+    groupNoProject: "自由对话",
     emptyConvoHint: (idShort) => `已开启会话 ${idShort}，在下方输入开始。`,
     resumeFailed: (msg) => `恢复会话失败：${msg}`,
     review: "审批",
@@ -1476,13 +1597,14 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsNavAppearanceLayout: "外观与界面",
     settingsNavPersona: "Jarvis 人格",
     settingsNavModels: "模型",
+    settingsNavSubagents: "子智能体",
     settingsNavExtensions: "扩展",
     settingsNavSystem: "系统",
     // Super-section descriptions
     settingsAppearanceLayoutTitle: "外观与界面",
     settingsAppearanceLayoutDesc: "主题、语言，以及聊天界面里显示哪些面板。",
     settingsModelsTitle: "模型",
-    settingsModelsDesc: "配置 LLM 供应商、命名子智能体，以及当前浏览器的默认模型与思考强度。",
+    settingsModelsDesc: "配置 LLM 供应商，以及当前浏览器的默认模型与思考强度。",
     settingsExtensionsTitle: "扩展",
     settingsExtensionsDesc: "在内置工具之外动态加载的能力 —— 运行时 MCP 服务器、Skills 能力包以及打包的插件。",
     settingsSystemTitle: "系统",
@@ -1923,6 +2045,87 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     colReview: "评审中",
     colDone: "已完成",
 
+    // ---- Composer 会话标签（chips）----
+    sessionChipPickWorkspace: "选择工作区文件夹",
+    sessionChipFreeChat: "自由对话",
+    composerRailNewProject: "+ 新建项目",
+    composerRailNoProjects: "暂无项目",
+    composerRailSetActive: "设为当前工作区",
+    composerRailIsActive: "当前工作区",
+    composerRailAddFolder: "添加文件夹",
+    composerFolderPickerBrowse: "浏览…",
+    composerFolderPickerUnsupported: "当前浏览器不支持系统文件选择器，请手动输入路径。",
+    composerFolderPickerNoMatch: "未在常见目录中找到「{0}」，请补全完整路径。",
+    composerFolderPickerMultiHint: "找到多个匹配，请选择：",
+    sessionChipProjectOptional: "项目绑定是可选的",
+    sessionChipAddContext: "添加资源",
+
+    // ---- 资源选择器（ResourceManagerDialog）----
+    // 纯选择面板 — 挑一个项目（它管理着自己的工作区文件夹），
+    // 或者一个最近的工作区，或者粘贴一个文件夹路径。
+    // 不再有 "开始会话" / "自由对话" 分支：这个弹窗只负责返回一个选择结果。
+    resourceDialogTitle: "选择项目",
+    resourceDialogSubtitle: "项目里管理着对应的工作区文件夹；也可以从最近的工作区里挑，或粘贴一个文件夹路径。",
+    resourceDialogSearch: "搜索项目，或粘贴文件夹路径…",
+    resourceDialogTabRecent: "最近",
+    resourceDialogTabProjects: "项目",
+    resourceDialogTabFolders: "文件夹",
+    resourceDialogConfirm: "确认",
+    resourceDialogCancel: "取消",
+    resourceDialogRecentEmpty: "还没有最近的工作区。第一次打开某个文件夹后会出现在这里。",
+    resourceDialogProjectsEmpty: "还没有项目。在 \"文件夹\" 标签里选一个目录，Jarvis 会自动为你新建项目。",
+    resourceDialogFoldersLabel: "工作区路径",
+    resourceDialogFoldersPlaceholder: "/Users/.../my-project",
+    resourceDialogProbeBtn: "探测文件夹",
+    resourceDialogProbeBusy: "正在探测…",
+    resourceDialogProbeError: "探测失败：{0}",
+    resourceDialogVcsGit: "git · 分支 {0} · {1}",
+    resourceDialogVcsBranchDetached: "（游离）",
+    resourceDialogVcsClean: "干净",
+    resourceDialogVcsDirty: "有改动",
+    resourceDialogMatchPath: "已经关联到「{0}」— 会复用这个项目。",
+    resourceDialogMatchName: "文件夹名与项目「{0}」匹配 — 确认后会把这个文件夹加进该项目。",
+    resourceDialogMatchAmbiguous: "多个项目共用同一个文件夹名，请在下方选一个，或换一个文件夹。",
+    resourceDialogMatchNone: "没有匹配的项目。确认后会新建项目「{0}」。",
+    resourceDialogPreviewProject: "项目",
+    resourceDialogPreviewFolder: "文件夹",
+    resourceDialogProjectNoFolders: "这个项目还没有任何文件夹，到 \"文件夹\" 标签里加一个。",
+    resourceDialogReuseProject: "复用项目「{0}」",
+    resourceDialogAddFolderTo: "把这个文件夹加到「{0}」",
+    resourceDialogPickProject: "请在下方选一个项目以消除歧义。",
+    resourceDialogWillCreate: "将新建项目「{0}」",
+    resourceDialogPickHint: "选一个项目、最近的工作区，或者一个文件夹。",
+    resourceDialogProjectFolderCount: "{0} 个文件夹 · {1}",
+    resourceDialogProjectFolderCountPlural: "{0} 个文件夹 · {1}",
+    resourceDialogProjectNoFoldersInline: "暂无文件夹 · {0}",
+    resourceDialogFolderAddRow: "+ 添加文件夹",
+    resourceDialogFolderRemove: "移除",
+    resourceDialogWillCreateMulti: "将新建项目「{0}」, 包含 {1} 个文件夹",
+
+    // 列编辑器（自定义看板列）
+    columnEditorOpenBtn: "编辑列",
+    columnEditorTitle: "编辑列",
+    columnEditorHint:
+      "重命名、重排、添加或删除列。已存在的需求会保留它们保存的状态值，并显示在对应 id 的列中。",
+    columnEditorAddRow: "添加列",
+    columnEditorRemoveRow: "删除列",
+    columnEditorReset: "恢复默认",
+    columnEditorLabel: "标签",
+    columnEditorId: "Id",
+    columnEditorIdHint: "仅允许小写字母、数字、'_' 和 '-'，长度 1–64。",
+    columnEditorKind: "类型",
+    columnEditorKindCustom: "自定义",
+    columnEditorMoveUp: "上移",
+    columnEditorMoveDown: "下移",
+    columnEditorSave: "保存",
+    columnEditorCancel: "取消",
+    columnEditorBlankLabel: "标签不能为空",
+    columnEditorBadId: "Id 不合法（仅允许小写字母 / 数字 / _ / -）",
+    columnEditorDuplicateId: "Id 重复，列 id 必须唯一",
+    columnEditorTooMany: "最多 32 列",
+    columnEditorTooFew: "至少需要 1 列",
+    columnEditorBusy: "保存中…",
+
     projectsTitle: "项目",
     projectsArchiveShow: "显示已归档项目",
     projectsArchiveHide: "隐藏已归档项目",
@@ -2010,8 +2213,11 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     sessionProjectFreeChatHint: "不绑定项目说明",
     sessionProjectNoProjects: "暂无项目",
     sessionProjectWorkspaceCount: (n: number) => `${n} 个工作区`,
+    composerShoulderMultiWorkspaces: (n: number) => `${n} 个工作区`,
     sessionLockedExplain: "本会话已锁定，开新对话即可切换。",
     sessionLockedNewChat: "新建对话",
+    sessionLockedNewChatPreserve: "新建对话（保留项目）",
+    sessionLockedNewChatClear: "自由对话",
     sessionLockedDefaultRoot: "服务端默认根目录",
     sessionLockedNoWorkspace: "未选择工作区",
 
@@ -2125,9 +2331,9 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     activityAssigneeChange: (from: string, to: string) =>
       `指派 ${from} → ${to}`,
     settingsNavAgents: "Agent",
-    settingsAgentsTitle: "Agent",
+    settingsAgentsTitle: "子智能体",
     settingsAgentsDesc:
-      "命名的 Agent 档案,可以把需求派给某一个。每个档案绑 provider + model,可选 system prompt 会追加到运行 manifest 之前。",
+      "主智能体可以以 `subagent.*` 工具委派的内置子智能体；以及你自己命名的档案，可以把需求派给某一个。",
     settingsAgentsEmpty: "还没有定义 Agent。",
     settingsAgentsName: "名称",
     settingsAgentsProvider: "Provider",
@@ -2142,6 +2348,11 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsAgentsSave: "保存",
     settingsAgentsCancel: "取消",
     settingsAgentsConfirmDelete: "确定删除这个 Agent?",
+    settingsAgentsBuiltinTitle: "内置子智能体",
+    settingsAgentsBuiltinDesc:
+      "始终可用——由二进制启动时自动注册为 `subagent.*` 工具，只读。",
+    settingsAgentsBuiltinGated: "需审批",
+    settingsAgentsBuiltinAuto: "直接运行",
     settingsNavDiagnostics: "诊断",
     settingsDiagnosticsTitle: "诊断",
     settingsDiagnosticsDesc:
@@ -2429,6 +2640,17 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     subagentCountLabel: "执行中 / 总数",
     tasksSubagentSection: "子智能体",
     tasksToolsSection: "工具调用",
+
+    // ---- 桌面 sidecar 覆盖层 ----
+    desktopServerUnavailable: "本地 Jarvis 服务不可用",
+    desktopServerHint:
+      "桌面端未能连接到正在运行的 Jarvis 服务。请选择工作目录后重试，或手动执行 `jarvis serve`。",
+    desktopRetry: "重试",
+    desktopChooseWorkspace: "选择工作目录…",
+    desktopWorkspaceLabel: "工作目录",
+    desktopShowLogs: "查看最近日志",
+    desktopHideLogs: "隐藏日志",
+    desktopRetrying: "重试中…",
   },
 };
 

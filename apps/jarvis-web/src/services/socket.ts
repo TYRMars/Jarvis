@@ -32,6 +32,11 @@ import { handleFrame } from "./frames";
 import { appStore } from "../store/appStore";
 import { showError } from "./status";
 import { t } from "../utils/i18n";
+import {
+  isConversationSocketOpen,
+  requestActiveConversationInterrupt,
+  sendFrameToActiveConversation,
+} from "./conversationSockets";
 
 let socket: WebSocket | null = null;
 let shouldReconnect = true;
@@ -101,7 +106,9 @@ export function connect(): void {
     // The server can't stream into a socket that's gone; whatever
     // turn was in flight when we dropped is over from the client's
     // perspective. Reset so the composer's Send button isn't stuck.
-    setInFlight(false);
+    if (!appStore.getState().isConversationRunning(appStore.getState().activeId)) {
+      setInFlight(false);
+    }
 
     // Re-apply the user's routing first (server starts on its own
     // default after reconnect — same as initial open).
@@ -125,7 +132,9 @@ export function connect(): void {
   });
 
   ws.addEventListener("close", () => {
-    setInFlight(false);
+    if (!appStore.getState().isConversationRunning(appStore.getState().activeId)) {
+      setInFlight(false);
+    }
     if (shouldReconnect) {
       scheduleReconnect();
     } else {
@@ -179,6 +188,9 @@ export function reconnectSocket(): void {
 /// surfaces a banner) when the socket isn't open, so callers can
 /// short-circuit without nesting null checks.
 export function sendFrame(obj: unknown): boolean {
+  if (shouldRouteToActiveConversation(obj) && sendFrameToActiveConversation(obj)) {
+    return true;
+  }
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     showError(t("websocketNotConnected"));
     return false;
@@ -191,7 +203,10 @@ export function sendFrame(obj: unknown): boolean {
 /// right now. Used by callers that want to gate UI without taking
 /// the banner side-effect of `sendFrame`.
 export function isOpen(): boolean {
-  return !!socket && socket.readyState === WebSocket.OPEN;
+  return (
+    isConversationSocketOpen(appStore.getState().activeId) ||
+    (!!socket && socket.readyState === WebSocket.OPEN)
+  );
 }
 
 /// Read the store's current routing and split it into the
@@ -236,6 +251,7 @@ export function selectModel(value: string): void {
 /// in flight — the server would reject a stray interrupt anyway.
 export function requestInterrupt(): void {
   if (!appStore.getState().inFlight) return;
+  if (requestActiveConversationInterrupt()) return;
   sendFrame({ type: "interrupt" });
 }
 
@@ -268,4 +284,16 @@ export function installConnectivityListeners(): void {
       connect();
     }
   });
+}
+
+function shouldRouteToActiveConversation(obj: unknown): boolean {
+  if (!obj || typeof obj !== "object" || !("type" in obj)) return false;
+  const type = (obj as any).type;
+  return (
+    type === "approve" ||
+    type === "deny" ||
+    type === "hitl_response" ||
+    type === "interrupt" ||
+    type === "fork"
+  );
 }

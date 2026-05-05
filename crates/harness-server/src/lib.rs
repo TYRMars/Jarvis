@@ -25,6 +25,7 @@
 mod agent_profiles_routes;
 mod auto_mode;
 mod auto_mode_routes;
+mod chat_runs;
 mod conversations;
 mod diagnostics;
 mod diagnostics_routes;
@@ -40,12 +41,16 @@ mod roadmap_routes;
 mod routes;
 mod skill_routes;
 mod state;
+mod subagents_routes;
 mod todo_binder;
 mod todos_routes;
 mod ui;
 mod verification;
 mod work_overview_routes;
 mod workspace_diff;
+mod workspace_files;
+mod workspace_find;
+mod workspace_terminal;
 mod workspaces_routes;
 mod worktree;
 

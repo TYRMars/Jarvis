@@ -176,8 +176,6 @@ export function WorkspacePanelMenu() {
     { key: "files",        labelKey: "panelFiles",     fallback: "Files",     icon: <FilesIcon />, shortcut: "⇧⌘F" },
     { key: "tasks",        labelKey: "tasks",          fallback: "Tasks",     icon: <TasksIcon /> },
     { key: "plan",         labelKey: "plan",           fallback: "Plan",      icon: <PlanIcon /> },
-    { key: "todos",        labelKey: "panelTodos",     fallback: "TODOs",     icon: <TodosIcon /> },
-    { key: "changeReport", labelKey: "changeReportTitle", fallback: "Change report", icon: <ChangeReportIcon /> },
   ];
 
   return (
@@ -294,23 +292,3 @@ function PlanIcon() {
   );
 }
 
-function ChangeReportIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
-      <line x1="9" y1="13" x2="15" y2="13" />
-      <line x1="9" y1="17" x2="15" y2="17" />
-    </svg>
-  );
-}
-
-function TodosIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="m8 11 2 2 5-5" />
-      <path d="M8 17h9" />
-    </svg>
-  );
-}

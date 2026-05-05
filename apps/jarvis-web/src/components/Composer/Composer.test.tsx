@@ -10,6 +10,7 @@ import { useAppStore } from "../../store/appStore";
 import { Composer } from "./Composer";
 
 const sendMock = vi.hoisted(() => vi.fn(() => true));
+const startTurnMock = vi.hoisted(() => vi.fn(() => true));
 vi.mock("../../services/socket", () => ({
   isOpen: () => true,
   sendFrame: (frame: any) => {
@@ -17,9 +18,16 @@ vi.mock("../../services/socket", () => ({
     return true;
   },
 }));
+vi.mock("../../services/conversationSockets", () => ({
+  startConversationTurn: (opts: any) => {
+    startTurnMock(opts);
+    return true;
+  },
+}));
 
 beforeEach(() => {
   sendMock.mockClear();
+  startTurnMock.mockClear();
 });
 
 function mount() {
@@ -70,9 +78,9 @@ describe("Composer paste folding", () => {
     const placeholder = useAppStore.getState().composerValue;
     act(() => useAppStore.getState().setComposerValue(`${placeholder}\nexplain pls`));
     fireEvent.submit(ta.closest("form")!);
-    expect(sendMock).toHaveBeenCalledTimes(1);
-    expect(sendMock.mock.calls[0][0]).toMatchObject({
-      type: "user",
+    expect(startTurnMock).toHaveBeenCalledTimes(1);
+    expect(startTurnMock.mock.calls[0][0]).toMatchObject({
+      conversationId: "test-active",
       content: `${big}\nexplain pls`,
     });
     // Submit clears both the textarea and the blob sidecar.
@@ -110,12 +118,12 @@ describe("Composer paste folding", () => {
     fireEvent.submit(form);
     fireEvent.submit(form);
     fireEvent.submit(form);
-    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(startTurnMock).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().messages.filter((m) => m.kind === "user")).toHaveLength(1);
     expect(useAppStore.getState().inFlight).toBe(true);
   });
 
-  it("first submit on a fresh persisted session emits new + user frames", () => {
+  it("first submit on a fresh persisted session starts a new conversation turn", () => {
     // Production behaviour: when `persistEnabled && !activeId`,
     // the Composer fires a `new` frame to spin up the persisted
     // row before the user message lands. Verifies the auto-create
@@ -126,11 +134,11 @@ describe("Composer paste folding", () => {
     fireEvent.submit(
       screen.getByPlaceholderText(/Type/i).closest("form")!,
     );
-    expect(sendMock).toHaveBeenCalledTimes(2);
-    expect(sendMock.mock.calls[0][0]).toMatchObject({ type: "new" });
-    expect(sendMock.mock.calls[1][0]).toMatchObject({
-      type: "user",
+    expect(startTurnMock).toHaveBeenCalledTimes(1);
+    expect(startTurnMock.mock.calls[0][0]).toMatchObject({
+      isNew: true,
       content: "hello",
     });
+    expect(typeof startTurnMock.mock.calls[0][0].conversationId).toBe("string");
   });
 });

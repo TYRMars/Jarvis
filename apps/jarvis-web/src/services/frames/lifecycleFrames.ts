@@ -58,7 +58,7 @@ export const lifecycleFrameHandlers: Record<string, (ev: any) => void> = {
     }
   },
   started: (ev) => onStarted(ev),
-  resumed: (ev) => onResumed(ev.id, ev.message_count),
+  resumed: (ev) => onResumed(ev),
   configured: () => {
     showTransientStatus("configured", "connected");
   },
@@ -133,10 +133,21 @@ function onStarted(ev: any): void {
   void refreshConvoList();
 }
 
-function onResumed(id: string, _count: number): void {
+function onResumed(ev: any): void {
+  const id = ev.id as string;
   const store = appStore.getState();
   store.setLoadingConvoId(null);
   store.setActiveId(id);
+  // Rehydrate the conversation's bound project / workspace so the
+  // in-session execution shoulder can find the linked Requirement
+  // immediately after a refresh-and-resume — without these the user
+  // would see a stale or empty shoulder until they navigate elsewhere.
+  if (typeof ev.workspace_path === "string") {
+    store.setSocketWorkspace?.(ev.workspace_path, ev.workspace ?? null);
+  }
+  if (typeof ev.project_id === "string" && ev.project_id) {
+    store.setDraftProjectId?.(ev.project_id);
+  }
   // Restore this conversation's saved routing when the catalog still
   // contains it. Stale entries (provider removed, option gone) are
   // dropped silently — the global default takes over rather than

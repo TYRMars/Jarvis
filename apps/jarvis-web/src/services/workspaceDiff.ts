@@ -38,7 +38,17 @@ export interface WorkspaceDiff {
   behind: number;
   stat: DiffStat;
   files: DiffFileEntry[];
-  uncommitted: DiffStat;
+  uncommitted: UncommittedSummary;
+}
+
+/// Working-tree summary. `entries` is the per-file list (including
+/// untracked files with status `?`); the aggregate counts mirror it.
+/// Older servers may omit `entries` — treat as empty.
+export interface UncommittedSummary {
+  added: number;
+  removed: number;
+  files: number;
+  entries?: DiffFileEntry[];
 }
 
 /// Sentinel value the store uses to mean "feature unavailable on this
@@ -47,6 +57,28 @@ export interface WorkspaceDiff {
 export type WorkspaceDiffState = WorkspaceDiff | "unavailable" | null;
 
 let diffSeq = 0;
+
+/// The active workspace path the user has pinned for the session, or
+/// `null` to fall back to the server-pinned default. Reads the same
+/// state `ComposerSessionContext` resolves for the chip row, so the
+/// diff endpoint sees the same workspace as the tools.
+function activeWorkspaceRoot(): string | null {
+  const s = appStore.getState();
+  return s.draftWorkspacePath ?? s.socketWorkspace ?? null;
+}
+
+function buildQuery(parts: Record<string, string | null | undefined>): string {
+  const entries = Object.entries(parts).filter(
+    ([, v]) => typeof v === "string" && v.length > 0,
+  ) as [string, string][];
+  if (entries.length === 0) return "";
+  return (
+    "?" +
+    entries
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+      .join("&")
+  );
+}
 
 /// Pull the latest diff into the store. Idempotent against rapid
 /// clicks via a sequence guard — a stale response from an in-flight
@@ -57,7 +89,7 @@ export async function refreshWorkspaceDiff(base?: string): Promise<WorkspaceDiff
   const mySeq = ++diffSeq;
   appStore.getState().setWorkspaceDiffLoading(true);
   try {
-    const params = base ? `?base=${encodeURIComponent(base)}` : "";
+    const params = buildQuery({ base, root: activeWorkspaceRoot() });
     const r = await fetch(apiUrl(`/v1/workspace/diff${params}`));
     if (mySeq !== diffSeq) return null;
     if (r.status === 503) {
@@ -87,9 +119,22 @@ export async function refreshWorkspaceDiff(base?: string): Promise<WorkspaceDiff
 /// Fetch one file's unified diff. The card lazy-loads via this when
 /// the user expands a row. Returns `null` on 503 / failure (caller
 /// renders a placeholder).
-export async function fetchFileDiff(base: string, path: string): Promise<string | null> {
+///
+/// `uncommitted=true` flips the server to "working-tree diff for
+/// this file" — used by the rail's "uncommitted files" list.
+export async function fetchFileDiff(
+  base: string,
+  path: string,
+  root?: string,
+  uncommitted = false,
+): Promise<string | null> {
   try {
-    const params = `?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`;
+    const params = buildQuery({
+      base,
+      path,
+      root: root ?? activeWorkspaceRoot(),
+      uncommitted: uncommitted ? "1" : undefined,
+    });
     const r = await fetch(apiUrl(`/v1/workspace/diff/file${params}`));
     if (r.status === 503) return null;
     if (!r.ok) throw new Error(`file diff: ${r.status}`);
@@ -97,6 +142,27 @@ export async function fetchFileDiff(base: string, path: string): Promise<string 
     return typeof body.diff === "string" ? body.diff : null;
   } catch (e: any) {
     console.warn("file diff fetch failed", e);
+    return null;
+  }
+}
+
+/// Stand-alone (no-store) workspace-diff fetch keyed by an explicit
+/// `root`. The multi-folder right-rail card uses this so each folder
+/// section owns its own local state without trampling the appStore's
+/// single-root slot — that one stays bound to the active workspace
+/// for the count badge / composer shoulder integration.
+export async function fetchWorkspaceDiff(
+  root: string | null,
+  base?: string,
+): Promise<WorkspaceDiff | "unavailable" | null> {
+  try {
+    const params = buildQuery({ base, root });
+    const r = await fetch(apiUrl(`/v1/workspace/diff${params}`));
+    if (r.status === 503) return "unavailable";
+    if (!r.ok) throw new Error(`workspace diff: ${r.status}`);
+    return (await r.json()) as WorkspaceDiff;
+  } catch (e: any) {
+    console.warn("workspace diff fetch failed", e);
     return null;
   }
 }
@@ -126,6 +192,7 @@ export async function commitWorkspace(input: CommitInput): Promise<CommitResult>
     body: JSON.stringify({
       message: input.message,
       push: input.push ?? false,
+      root: activeWorkspaceRoot(),
     }),
   });
   const body = await r.json().catch(() => ({} as any));
@@ -150,7 +217,7 @@ export interface PrPreview {
 
 export async function fetchPrPreview(base?: string): Promise<PrPreview | null> {
   try {
-    const params = base ? `?base=${encodeURIComponent(base)}` : "";
+    const params = buildQuery({ base, root: activeWorkspaceRoot() });
     const r = await fetch(apiUrl(`/v1/workspace/pr/preview${params}`));
     if (r.status === 503) return null;
     if (!r.ok) throw new Error(`pr preview: ${r.status}`);
@@ -185,6 +252,7 @@ export async function createPr(input: CreatePrInput): Promise<CreatePrResult> {
       base: input.base,
       draft: input.draft ?? true,
       push: input.push ?? true,
+      root: activeWorkspaceRoot(),
     }),
   });
   const body = await r.json().catch(() => ({} as any));

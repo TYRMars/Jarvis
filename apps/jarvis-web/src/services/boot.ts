@@ -22,6 +22,8 @@ import { connect, installConnectivityListeners } from "./socket";
 import { refreshConvoList } from "./conversations";
 import { loadProviders } from "./providers";
 import { refreshProjects } from "./projects";
+import { refreshChatRuns, startChatRunPolling } from "./chatRuns";
+import { initDesktopRuntime } from "./desktop";
 
 let booted = false;
 
@@ -58,10 +60,18 @@ export function boot(): void {
   installResize("resize-sidebar", "--sidebar-width", "jarvis.layout.sidebar", 200, 520);
   installResize("resize-rail", "--rail-width", "jarvis.layout.rail", 320, 760, /*invert=*/ true);
 
-  // 5. Network + WS — fire-and-forget; failures surface through the
-  //    store's banner.
+  // 5. Network + WS — in Tauri, first ask the desktop shell for the
+  //    sidecar URL; in the browser this resolves immediately.
+  void initDesktopRuntime()
+    .catch((e) => console.warn("desktop runtime init failed", e))
+    .finally(startNetwork);
+}
+
+function startNetwork(): void {
   void loadProviders(apiUrl);
   void refreshConvoList();
+  void refreshChatRuns();
+  startChatRunPolling();
   void refreshProjects();
   installConnectivityListeners();
   connect();

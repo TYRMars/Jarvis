@@ -33,16 +33,26 @@ jobs:
           npm ci
           npm run build
 
+      # `jarvis-desktop` is a Tauri shell that pulls in WebKitGTK +
+      # GObject system libs on Linux (`libgtk-3-dev`,
+      # `libwebkit2gtk-4.1-dev`, `librsvg2-dev`, etc.). We don't
+      # currently ship a Linux desktop build, and installing the
+      # full GTK toolchain would tax every PR by ~1–2 min of apt
+      # time. Excluding the crate keeps Linux CI lean while we
+      # still verify it on contributor macOS machines (and a
+      # future Linux desktop pipeline can install the deps and
+      # drop the exclusion). Whenever you touch this list,
+      # mirror it in every cargo invocation below.
       - name: Cargo check (default features)
-        run: cargo check --workspace
+        run: cargo check --workspace --exclude jarvis-desktop
       - name: Cargo check (--features cloud)
-        run: cargo check --workspace --features cloud
+        run: cargo check --workspace --features cloud --exclude jarvis-desktop
       - name: Cargo clippy (default features)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings
       - name: Cargo clippy (--features cloud)
-        run: cargo clippy --workspace --all-targets --features cloud -- -D warnings
+        run: cargo clippy --workspace --all-targets --features cloud --exclude jarvis-desktop -- -D warnings
       - name: Cargo test
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --exclude jarvis-desktop --verbose
 
       - name: Vitest
         working-directory: apps/jarvis-web

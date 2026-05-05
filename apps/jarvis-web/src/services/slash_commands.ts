@@ -16,7 +16,16 @@ export function slashCommands(): SlashCommand[] {
   // theme toggled, etc.).
   return [
     { cmd: "/help",   descKey: "cmdHelp",   run: () => showHelpOverlay() },
-    { cmd: "/new",    descKey: "cmdNew",    run: () => { newConversation(); } },
+    { cmd: "/new",    descKey: "cmdNew",    run: () => {
+        // Same "preserve project + workspace" semantics as Cmd+K /
+        // Cmd+N — `/new` should start a fresh chat without dropping
+        // the user's deliberate context.
+        const s = appStore.getState();
+        newConversation({
+          projectId: s.draftProjectId ?? null,
+          workspacePath: s.draftWorkspacePath ?? null,
+        });
+      } },
     { cmd: "/reset",  descKey: "cmdReset",  run: () => { sendFrame({ type: "reset" }); } },
     { cmd: "/clear",  descKey: "cmdClear",  run: () => {
         const s = appStore.getState();

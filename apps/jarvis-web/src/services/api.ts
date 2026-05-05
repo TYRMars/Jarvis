@@ -5,14 +5,21 @@
 // those cases we fall back to a saved `jarvis.apiOrigin` (or the
 // hardcoded loopback default) instead of the page origin.
 
+let runtimeOriginOverride: string | null = null;
+
+export function setApiOriginOverride(origin: string | null): void {
+  runtimeOriginOverride = origin ? origin.replace(/\/$/, "") : null;
+}
+
 function originOverride(): string {
+  if (runtimeOriginOverride) return runtimeOriginOverride;
   const saved = localStorage.getItem("jarvis.apiOrigin");
   if (saved) return saved.replace(/\/$/, "");
   return "http://127.0.0.1:7001";
 }
 
 function usesExternalOrigin(): boolean {
-  return location.protocol === "file:" || ["4173", "5173"].includes(location.port);
+  return !!runtimeOriginOverride || location.protocol === "file:" || ["4173", "5173"].includes(location.port);
 }
 
 export function apiUrl(path: string): string {

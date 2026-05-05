@@ -13,7 +13,7 @@
 //!
 //! 1. command-line flags (e.g. `--addr`, `--model`)
 //! 2. environment variables (the existing `JARVIS_*` surface)
-//! 3. config file (TOML — see [`config`])
+//! 3. config file (JSON — see [`config`])
 //! 4. compiled-in defaults
 
 use std::path::PathBuf;
@@ -49,10 +49,11 @@ use config::Config;
     long_about = None,
 )]
 struct Cli {
-    /// Path to a TOML config file. If unset, jarvis searches
-    /// `$JARVIS_CONFIG`, `$XDG_CONFIG_HOME/jarvis/config.toml`,
-    /// `~/.config/jarvis/config.toml`, and (on Windows)
-    /// `%APPDATA%\jarvis\config.toml` in that order.
+    /// Path to a JSON config file. If unset, jarvis searches
+    /// `$JARVIS_CONFIG`, `$JARVIS_CONFIG_HOME/config.json`,
+    /// `$XDG_CONFIG_HOME/jarvis/config.json`, `~/.jarvis/config.json`,
+    /// `~/.config/jarvis/config.json`, and (on Windows)
+    /// `%APPDATA%\jarvis\config.json` in that order.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
@@ -97,7 +98,7 @@ enum Cmd {
         /// browser. Only meaningful for `--provider codex`.
         #[arg(long)]
         device_code: bool,
-        /// Don't update `[provider].name` in `config.toml` after a
+        /// Don't update `default_provider` in `config.json` after a
         /// successful login. By default, `jarvis login --provider X`
         /// makes `X` the active provider so the next `jarvis serve`
         /// uses it without further setup.

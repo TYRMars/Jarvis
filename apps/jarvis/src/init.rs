@@ -769,6 +769,7 @@ pub fn build_config(a: &InitAnswers) -> Config {
             tokens: Some(m.tokens),
             mode: Some(m.mode.clone()),
             model: None,
+            ..MemorySection::default()
         },
         None => MemorySection::default(),
     };

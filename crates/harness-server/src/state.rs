@@ -47,12 +47,21 @@ pub struct ServerInfo {
     /// (any of `fs.edit` / `fs.write` / `fs.patch` / `shell.exec`
     /// is enabled).
     pub coding_mode: bool,
-    /// `true` if the workspace's `AGENTS.md` / `CLAUDE.md` /
-    /// `AGENT.md` instruction files were appended to the system
-    /// prompt at startup.
+    /// `true` if the workspace's agent instruction files
+    /// (`AGENTS.md`, `JARVIS.md`, `.jarvis/JARVIS.md`,
+    /// `.jarvis/rules/*.md`, etc.) were appended to the system prompt
+    /// at startup.
     pub project_context_loaded: bool,
     /// Byte cap that was applied when loading project context.
     pub project_context_bytes_cap: Option<usize>,
+    /// `true` if Claude Code-style file-based project memory was
+    /// appended to the system prompt.
+    pub project_memory_loaded: bool,
+    /// Project memory directory, relative to workspace root unless
+    /// configured as an absolute path.
+    pub project_memory_dir: Option<String>,
+    /// Byte cap applied to the loaded `MEMORY.md` index.
+    pub project_memory_bytes_cap: Option<usize>,
     /// Prefixes of any external MCP servers spawned at startup
     /// (`JARVIS_MCP_SERVERS=github=…,filesystem=…` → `["github", "filesystem"]`).
     pub mcp_prefixes: Vec<String>,
@@ -208,6 +217,10 @@ pub struct AppState {
     /// read/write it. Initial value is set by the binary from
     /// `AutoModeConfig.mode` (i.e. `JARVIS_WORK_MODE`).
     pub auto_mode_runtime: Option<crate::auto_mode::AutoModeRuntime>,
+    /// In-process ledger of active/recent chat turns. Web clients use
+    /// this to recover server-side run status after a sidebar refresh
+    /// or a second browser window opens.
+    pub chat_runs: Arc<crate::chat_runs::ChatRunRegistry>,
 }
 
 impl AppState {
@@ -241,6 +254,7 @@ impl AppState {
             worktree_root: None,
             worktree_allow_dirty: false,
             auto_mode_runtime: None,
+            chat_runs: crate::chat_runs::ChatRunRegistry::new(),
         }
     }
 
@@ -279,6 +293,7 @@ impl AppState {
             worktree_root: None,
             worktree_allow_dirty: false,
             auto_mode_runtime: None,
+            chat_runs: crate::chat_runs::ChatRunRegistry::new(),
         }
     }
 

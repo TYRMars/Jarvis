@@ -13,12 +13,12 @@
 // Code's panels expose. Re-enable from the menu.
 
 import type { ReactNode } from "react";
-import { ChangeReport, ChangeReportCount } from "./Workspace/ChangeReport";
 import { PlanCountSpan, PlanList } from "./Workspace/PlanList";
 import { TaskCountSpan, TasksList } from "./Workspace/TasksRail";
-import { TodosCountSpan, TodosList } from "./Workspace/TodosRail";
 import { WorkspaceDiff, WorkspaceDiffCount } from "./Workspace/WorkspaceDiff";
 import { ClearTasksButton } from "./Workspace/WorkspaceToggles";
+import { FilesSurface } from "./Workspace/FilesSurface";
+import { TerminalSurface } from "./Workspace/TerminalSurface";
 import { useAppStore } from "../store/appStore";
 import type { WorkspacePanelKey } from "../store/persistence";
 import { t } from "../utils/i18n";
@@ -43,7 +43,7 @@ export function AppWorkspaceRail() {
       key: "preview",
       className: "rail-preview",
       title: tx("panelPreview", "Preview"),
-      subtitle: tx("previewSubtitle", "local app surface"),
+      subtitle: tx("previewSubtitleSoon", "coming soon"),
       content: <PreviewPanel />,
     },
     {
@@ -56,17 +56,6 @@ export function AppWorkspaceRail() {
         </>
       ),
       content: <WorkspaceDiff />,
-    },
-    {
-      key: "changeReport",
-      className: "rail-change-report",
-      title: t("changeReportTitle"),
-      subtitle: (
-        <>
-          <ChangeReportCount /> <span>{tx("changeReportCountLabel", "updates")}</span>
-        </>
-      ),
-      content: <ChangeReport />,
     },
     {
       key: "terminal",
@@ -104,18 +93,6 @@ export function AppWorkspaceRail() {
         </>
       ),
       content: <PlanList />,
-    },
-    {
-      key: "todos",
-      className: "rail-todos",
-      title: tx("panelTodos", "TODOs"),
-      subtitle: (
-        <>
-          <TodosCountSpan />{" "}
-          <span>{tx("todosCountLabel", "items in backlog")}</span>
-        </>
-      ),
-      content: <TodosList />,
     },
   ];
 
@@ -197,86 +174,36 @@ function PanelSection({
   );
 }
 
+/// Placeholder card for the not-yet-shipped Preview surface.
+/// Renders a clean "Coming soon" affordance instead of pretending to
+/// be loading — the previous mascot animation gave the (false)
+/// impression a dev-server preview was being booted up.
 function PreviewPanel() {
   return (
-    <div className="preview-surface" aria-live="polite">
-      <div className="preview-pixel-mascot" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-        <span />
-        <span />
-      </div>
-      <div className="preview-loading-row">
-        <span className="preview-spinner" aria-hidden="true" />
-        <span>{tx("previewSettingUp", "Setting up preview")}</span>
-      </div>
+    <div className="rail-coming-soon" aria-live="polite">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="14" rx="2" />
+        <path d="M8 21h8" />
+        <path d="M12 18v3" />
+        <polygon points="10 9 15 11 10 13 10 9" fill="currentColor" stroke="none" />
+      </svg>
+      <strong>{tx("previewComingSoon", "Preview · Coming soon")}</strong>
+      <span>
+        {tx(
+          "previewComingSoonBody",
+          "Live preview of your dev server is on the roadmap. For now, run the app locally and hit the URL in a separate tab.",
+        )}
+      </span>
     </div>
   );
 }
 
 function TerminalPanel() {
-  return (
-    <div className="terminal-surface">
-      <div className="terminal-line">
-        <span className="terminal-muted">(base)</span>
-        <span> jarvis % </span>
-        <span className="terminal-cursor" aria-hidden="true" />
-      </div>
-    </div>
-  );
+  return <TerminalSurface />;
 }
 
 function FilesPanel() {
-  const diff = useAppStore((s) => s.workspaceDiff);
-  const paths = diff && diff !== "unavailable" ? diff.files.map((f) => f.path) : [];
-  const roots = buildFileRoots(paths);
-  return (
-    <div className="files-panel">
-      <label className="files-search">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="8" />
-          <path d="m21 21-4.35-4.35" />
-        </svg>
-        <span className="sr-only">{tx("search", "Search")}</span>
-        <input type="search" placeholder={tx("filesFilterPlaceholder", "Filter files... (?text to search contents)")} />
-      </label>
-      <div className="files-tree" role="tree">
-        {roots.length === 0 ? (
-          <div className="files-empty">{tx("filesEmpty", "No changed files yet.")}</div>
-        ) : (
-          roots.map((root) => <FileTreeRow key={root.name} name={root.name} depth={0} count={root.count} />)
-        )}
-      </div>
-    </div>
-  );
-}
-
-function FileTreeRow({ name, depth, count }: { name: string; depth: number; count?: number }) {
-  return (
-    <div className="files-row" role="treeitem" style={{ paddingLeft: 8 + depth * 16 }}>
-      <svg className="files-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="m9 18 6-6-6-6" />
-      </svg>
-      <svg className="files-folder" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-      </svg>
-      <span>{name}</span>
-      {count ? <em>{count}</em> : null}
-    </div>
-  );
-}
-
-function buildFileRoots(paths: string[]): Array<{ name: string; count: number }> {
-  const counts = new Map<string, number>();
-  for (const path of paths) {
-    const [root] = path.split("/");
-    if (!root) continue;
-    counts.set(root, (counts.get(root) || 0) + 1);
-  }
-  return Array.from(counts.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, count]) => ({ name, count }));
+  return <FilesSurface />;
 }
 
 function tx(key: string, fallback: string): string {

@@ -92,11 +92,97 @@ pub struct Project {
     /// listings but their bound conversations keep working.
     #[serde(default)]
     pub archived: bool,
+    /// Custom kanban columns. When `None`, clients fall back to the
+    /// four built-in defaults (Backlog / In Progress / Review / Done)
+    /// — see [`default_kanban_columns`]. Order is the render order
+    /// on the board, left-to-right. Each column's [`KanbanColumn::id`]
+    /// is what [`Requirement::status`](crate::Requirement::status)
+    /// stores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<KanbanColumn>>,
     /// RFC-3339 / ISO-8601 timestamp of creation.
     pub created_at: String,
     /// RFC-3339 / ISO-8601 timestamp of the last mutation. Bumped by
     /// the `set_*` / `with_*` helpers so callers don't have to.
     pub updated_at: String,
+}
+
+/// One user-configurable column on a project's kanban board. Stored
+/// inline on the [`Project`] (not a separate table) since the
+/// cardinality is tiny (typically 3–6 per project) and edits always go
+/// through the project's PATCH endpoint anyway.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KanbanColumn {
+    /// Stable id; what `Requirement.status` references. Validated as
+    /// non-empty + ≤ 64 bytes by [`validate_column_id`]. Built-in
+    /// defaults use `"backlog"` / `"in_progress"` / `"review"` /
+    /// `"done"` so existing projects upgrade without a data migration.
+    pub id: String,
+    /// Display label. Free-form, language-of-the-user. The Web UI
+    /// renders this verbatim — no i18n lookup once a project has
+    /// customised columns. The i18n fallback only applies when
+    /// `Project.columns` is `None` and the four default ids are used.
+    pub label: String,
+    /// Optional kind hint that drives the icon. Recognised values:
+    /// `"backlog"` / `"in_progress"` / `"review"` / `"done"`. Custom
+    /// columns omit this and get a neutral dot. Storing the kind
+    /// lets a renamed-but-still-Backlog column keep its dashed-circle
+    /// glyph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// The four built-in columns used when a project has no customised
+/// `columns` set. Ids match the legacy `RequirementStatus` wire form
+/// (`"backlog"` / `"in_progress"` / `"review"` / `"done"`) so existing
+/// requirements created before custom columns were a thing land in the
+/// correct slot. Labels are English; the Web UI substitutes localised
+/// labels via i18n keys (`colBacklog` / `colInProgress` / `colReview` /
+/// `colDone`) when this fallback is in effect — once the user
+/// customises any column, the saved labels are rendered verbatim.
+pub fn default_kanban_columns() -> Vec<KanbanColumn> {
+    vec![
+        KanbanColumn {
+            id: "backlog".into(),
+            label: "Backlog".into(),
+            kind: Some("backlog".into()),
+        },
+        KanbanColumn {
+            id: "in_progress".into(),
+            label: "In Progress".into(),
+            kind: Some("in_progress".into()),
+        },
+        KanbanColumn {
+            id: "review".into(),
+            label: "Review".into(),
+            kind: Some("review".into()),
+        },
+        KanbanColumn {
+            id: "done".into(),
+            label: "Done".into(),
+            kind: Some("done".into()),
+        },
+    ]
+}
+
+/// Validate a single column id for shape (not for uniqueness within a
+/// project — the REST layer checks that). Same charset as a slug:
+/// lowercase ASCII / digits / `_` / `-`, 1–64 bytes. Returns a
+/// human-readable reason on failure.
+pub fn validate_column_id(id: &str) -> Result<(), &'static str> {
+    if id.is_empty() {
+        return Err("column id must not be empty");
+    }
+    if id.len() > 64 {
+        return Err("column id must be at most 64 characters");
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    {
+        return Err("column id must contain only lowercase ascii, digits, '_' and '-'");
+    }
+    Ok(())
 }
 
 impl Project {
@@ -115,6 +201,10 @@ impl Project {
             tags: Vec::new(),
             workspaces: Vec::new(),
             archived: false,
+            // `None` means "use the four built-in columns" — see
+            // [`default_kanban_columns`]. Only populated once the
+            // user explicitly customises the board.
+            columns: None,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -394,5 +484,75 @@ mod tests {
         let ws = ProjectWorkspace::new("/c");
         let json = serde_json::to_string(&ws).unwrap();
         assert!(!json.contains("name"));
+    }
+
+    #[test]
+    fn validate_column_id_rules() {
+        assert!(validate_column_id("backlog").is_ok());
+        assert!(validate_column_id("in_progress").is_ok());
+        assert!(validate_column_id("custom-1").is_ok());
+        assert!(validate_column_id("a").is_ok());
+        assert!(validate_column_id("").is_err());
+        assert!(validate_column_id("UPPER").is_err());
+        assert!(validate_column_id("with space").is_err());
+        assert!(validate_column_id("中文").is_err());
+        assert!(validate_column_id(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn default_kanban_columns_match_legacy_ids() {
+        let cols = default_kanban_columns();
+        let ids: Vec<&str> = cols.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["backlog", "in_progress", "review", "done"]);
+        for c in &cols {
+            assert!(c.kind.is_some(), "default columns set kind so the renamed-but-still-backlog case keeps its glyph");
+        }
+    }
+
+    #[test]
+    fn columns_default_none_for_legacy_json() {
+        // A project row written before custom columns existed must
+        // still load — the `Option<Vec<...>>` field carries
+        // `serde(default)` for that reason.
+        let legacy = r#"{
+            "id": "11111111-1111-1111-1111-111111111111",
+            "slug": "legacy",
+            "name": "Legacy",
+            "instructions": "be terse",
+            "tags": [],
+            "archived": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let p: Project = serde_json::from_str(legacy).unwrap();
+        assert!(p.columns.is_none());
+    }
+
+    #[test]
+    fn columns_are_skipped_when_none() {
+        let p = Project::new("n", "i");
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("columns"));
+    }
+
+    #[test]
+    fn columns_round_trip() {
+        let cols = vec![
+            KanbanColumn {
+                id: "triage".into(),
+                label: "Triage".into(),
+                kind: Some("backlog".into()),
+            },
+            KanbanColumn {
+                id: "blocked".into(),
+                label: "Blocked".into(),
+                kind: None,
+            },
+        ];
+        let mut p = Project::new("n", "i");
+        p.columns = Some(cols.clone());
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.columns, Some(cols));
     }
 }

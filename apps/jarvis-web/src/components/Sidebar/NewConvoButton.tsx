@@ -9,14 +9,13 @@ import { t } from "../../utils/i18n";
 
 export function NewConvoButton() {
   const persistEnabled = useAppStore((s) => s.persistEnabled);
-  const inFlight = useAppStore((s) => s.inFlight);
   const activeFilter = useAppStore((s) => s.activeProjectFilter);
   const navigate = useNavigate();
 
   const onClick = () => {
     const store = useAppStore.getState();
-    if (store.inFlight) return;
     void navigate("/");
+    if (store.activeId) store.saveConversationSurface(store.activeId);
     if (!store.persistEnabled) {
       if (sendFrame({ type: "reset" })) {
         store.clearMessages();
@@ -36,7 +35,7 @@ export function NewConvoButton() {
       type="button"
       className="nav-item"
       title={t("newConversation")}
-      disabled={!persistEnabled || inFlight}
+      disabled={!persistEnabled}
       onClick={onClick}
     >
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

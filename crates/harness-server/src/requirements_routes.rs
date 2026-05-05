@@ -497,6 +497,18 @@ async fn update_requirement(
                 )
                 .await;
             }
+            // Auto-fire a background run when the user flips the
+            // status INTO `in_progress` from any other column.
+            // Idempotency (no double-firing on repeated flips) is
+            // enforced inside `spawn_background_run`'s inflight
+            // guard. Re-asserting `in_progress` while already in
+            // progress is a no-op trigger here — the prior_status
+            // gate filters it.
+            if prior_status != RequirementStatus::InProgress
+                && item.status == RequirementStatus::InProgress
+            {
+                crate::auto_mode::spawn_background_run(state.clone(), item.clone());
+            }
             item_json(&item).into_response()
         }
         Err(e) => internal_error(e),
@@ -1456,6 +1468,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Patching a requirement's status from anything to
+    /// `in_progress` must spawn a background run automatically —
+    /// that's the contract the chat header + project board rely
+    /// on so a user dragging a card into the In Progress column
+    /// gets an LLM session without any extra clicks. The
+    /// `spawn_background_run` task is fire-and-forget; we poll the
+    /// run store for the row it creates.
+    #[tokio::test]
+    async fn patch_status_to_in_progress_spawns_background_run() {
+        let (state, run_store) = state_with_run_store();
+        let app = app(state.clone());
+
+        // Seed a Backlog requirement.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/projects/proj-auto/requirements")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"auto-fire on flip"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let v = read_json(resp).await;
+        let req_id = v["id"].as_str().unwrap().to_string();
+        assert_eq!(v["status"], "backlog");
+
+        // Flip to in_progress — this is the trigger.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{req_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"status":"in_progress"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Poll for the spawned run. The StubLlm returns an error,
+        // so the run will quickly land in Failed — what matters is
+        // that a run row appears at all (proves the trigger fired).
+        let mut found = None;
+        for _ in 0..50 {
+            let runs = run_store.list_for_requirement(&req_id).await.unwrap();
+            if let Some(r) = runs.into_iter().next() {
+                found = Some(r);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let run = found.expect("background run should have been spawned");
+        assert_eq!(run.requirement_id, req_id);
+    }
+
+    /// Patching a requirement that's *already* in_progress must
+    /// NOT re-fire the background run — the trigger is the
+    /// transition INTO in_progress, not asserting it.
+    #[tokio::test]
+    async fn patch_in_progress_to_in_progress_does_not_spawn_run() {
+        let (state, run_store) = state_with_run_store();
+        let app = app(state.clone());
+
+        // Seed a requirement and force it to in_progress directly
+        // via the store (so PATCH below does NOT see a transition).
+        let mut req = Requirement::new("proj-no-fire", "no re-fire");
+        req.status = RequirementStatus::InProgress;
+        state.requirements.as_ref().unwrap().upsert(&req).await.unwrap();
+
+        // PATCH that re-asserts in_progress — no transition.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{}", req.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"status":"in_progress"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Give a spawned task more than enough time to surface.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let runs = run_store.list_for_requirement(&req.id).await.unwrap();
+        assert!(runs.is_empty(), "no transition ⇒ no spawned run");
     }
 
     #[tokio::test]

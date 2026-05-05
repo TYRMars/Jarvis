@@ -26,6 +26,7 @@ tokio-stream.workspace = true
 uuid.workspace = true
 include_dir.workspace = true
 thiserror.workspace = true
+portable-pty.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

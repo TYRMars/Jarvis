@@ -16,10 +16,10 @@ describe("searchSettings", () => {
     expect(hits[0].entry.tabId).toBeUndefined();
   });
 
-  it("matches a tab by its primary label", () => {
+  it("matches a top-level capability by its primary label", () => {
     const hits = searchSettings("subagents");
-    expect(hits[0].entry.sectionId).toBe("models");
-    expect(hits[0].entry.tabId).toBe("subagents");
+    expect(hits[0].entry.sectionId).toBe("subagents");
+    expect(hits[0].entry.tabId).toBeUndefined();
   });
 
   it("matches an alias keyword from the field-level synonym list", () => {
@@ -59,6 +59,6 @@ describe("searchSettings", () => {
   it("matches partial substrings inside a token", () => {
     // 'sub' is a substring of 'subagents'.
     const hits = searchSettings("sub");
-    expect(hits.some((h) => h.entry.tabId === "subagents")).toBe(true);
+    expect(hits.some((h) => h.entry.sectionId === "subagents")).toBe(true);
   });
 });

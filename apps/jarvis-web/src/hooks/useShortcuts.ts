@@ -29,7 +29,14 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
       // ---- Cmd/Ctrl + letter ----
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        newConversation();
+        // Preserve the active project + workspace when the user hits
+        // Cmd+K — they expect "new chat in the same context", not a
+        // hard reset. Match the locked-popover "New chat (keep
+        // project)" semantics.
+        newConversation({
+          projectId: store.draftProjectId ?? null,
+          workspacePath: store.draftWorkspacePath ?? null,
+        });
         return;
       }
       // Cmd/Ctrl+N: route-aware "new item" — mirrors the primary
@@ -46,7 +53,12 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
         } else if (path.startsWith("/docs")) {
           window.dispatchEvent(new Event("jarvis:new-doc"));
         } else {
-          newConversation();
+          // Same "preserve context" semantics as Cmd+K above —
+          // keyboard shortcut and locked-popover button stay in sync.
+          newConversation({
+            projectId: store.draftProjectId ?? null,
+            workspacePath: store.draftWorkspacePath ?? null,
+          });
         }
         return;
       }

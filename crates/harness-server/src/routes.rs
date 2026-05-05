@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Query, State,
+        Path, Query, State,
     },
     http::StatusCode,
     response::{
@@ -21,6 +21,7 @@ use harness_core::{
     canonicalize_workspace, ActivityEvent, AgentEvent, AgentProfileEvent, ApprovalDecision,
     Approver, ChannelApprover, Conversation, ConversationMetadata, DocEvent, HitlResponse,
     HitlStatus, Message, PendingHitl, RequirementEvent, RequirementRunEvent, RunOutcome, TodoEvent,
+    ConversationStore,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -47,10 +48,16 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/chat/completions/stream", post(chat_completions_stream))
         .route("/v1/chat/ws", get(chat_ws))
+        .route("/v1/chat/runs", get(list_chat_runs))
+        .route("/v1/chat/runs/:conversation_id/events", get(list_chat_run_events))
+        .route("/v1/chat/runs/:conversation_id/interrupt", post(interrupt_chat_run))
         .merge(conversations::router())
         .merge(projects::router())
         .merge(permissions::router())
         .merge(workspace_diff::router())
+        .merge(crate::workspace_files::router())
+        .merge(crate::workspace_terminal::router())
+        .merge(crate::workspace_find::router())
         .merge(crate::mcp_routes::router())
         .merge(crate::skill_routes::router())
         .merge(crate::plugin_routes::router())
@@ -59,6 +66,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::requirements_routes::router())
         .merge(crate::roadmap_routes::router())
         .merge(crate::agent_profiles_routes::router())
+        .merge(crate::subagents_routes::router())
         .merge(crate::diagnostics_routes::router())
         .merge(crate::auto_mode_routes::router())
         .merge(crate::docs_routes::router())
@@ -69,12 +77,15 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Permissive CORS for loopback origins so `vite dev` (5173/4173)
-/// can hit the API on `:7001` without a same-origin proxy. Echoes
-/// the `Origin` header back when it's `127.0.0.1` / `localhost` on
-/// any port, otherwise the response carries no `Access-Control-*`
-/// headers and same-origin browsers (production) keep working
-/// unchanged. OPTIONS preflights short-circuit to 204.
+/// Permissive CORS for loopback and Tauri webview origins so
+/// `vite dev` (5173/4173) can hit the API on `:7001` without a
+/// same-origin proxy, and the desktop shell (whose webview origin
+/// is `tauri://localhost` on macOS / Linux or `http://tauri.localhost`
+/// on Windows) can reach the same sidecar. Echoes the `Origin`
+/// header back when it's a recognised local origin; otherwise the
+/// response carries no `Access-Control-*` headers and same-origin
+/// browsers (production) keep working unchanged. OPTIONS preflights
+/// short-circuit to 204.
 async fn loopback_cors(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -87,7 +98,7 @@ async fn loopback_cors(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let allowed = origin.as_deref().is_some_and(is_loopback_origin);
+    let allowed = origin.as_deref().is_some_and(is_local_origin);
     let allow_origin =
         allowed.then(|| HeaderValue::from_str(origin.as_deref().unwrap_or("*")).ok()).flatten();
 
@@ -121,18 +132,43 @@ async fn loopback_cors(
     response
 }
 
-fn is_loopback_origin(origin: &str) -> bool {
-    // `Origin: scheme://host[:port]`. We accept loopback hosts on any
-    // port so vite dev (5173) and vite preview (4173) both work, and
-    // future tooling doesn't need a code change to add another port.
+fn is_local_origin(origin: &str) -> bool {
+    // `Origin: scheme://host[:port]`. We accept three families:
+    //
+    // - **Loopback over http(s)**: `127.0.0.1`, `localhost`, `[::1]`
+    //   on any port — covers `vite dev` (5173), `vite preview`
+    //   (4173), and direct same-machine access from another browser.
+    // - **Tauri 2 webview**: `tauri://localhost` (macOS / Linux) and
+    //   `http(s)://tauri.localhost` (Windows). The desktop shell
+    //   loads `dist/index.html` under this origin, so without it
+    //   every fetch from the bundled UI gets blocked by the
+    //   browser's cross-origin policy and the desktop user sees
+    //   "service unavailable" against a perfectly healthy server.
+    // - **`null` origin**: some sandboxed contexts (data: URIs,
+    //   sandboxed iframes) send `Origin: null`. We allow it because
+    //   the API binds to loopback anyway, so the threat model is
+    //   already "anything on this machine".
+    if origin == "null" || origin == "tauri://localhost" {
+        return true;
+    }
     let Some(rest) = origin
         .strip_prefix("http://")
         .or_else(|| origin.strip_prefix("https://"))
     else {
         return false;
     };
-    let host = rest.split(':').next().unwrap_or("");
-    host == "127.0.0.1" || host == "localhost" || host == "[::1]"
+    // IPv6 literals show up in `Origin` as `[::1]:port`; pull the
+    // bracketed segment as a unit so `split(':')` doesn't return
+    // just `[`.
+    let host = if let Some(end) = rest.strip_prefix('[').and_then(|s| s.find(']')) {
+        &rest[..=end + 1]
+    } else {
+        rest.split(':').next().unwrap_or("")
+    };
+    matches!(
+        host,
+        "127.0.0.1" | "localhost" | "[::1]" | "tauri.localhost"
+    )
 }
 
 async fn health() -> impl IntoResponse {
@@ -144,6 +180,48 @@ async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
         "default": state.providers.default_name(),
         "providers": state.providers.list(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatRunsQuery {
+    #[serde(default)]
+    active: bool,
+}
+
+async fn list_chat_runs(
+    State(state): State<AppState>,
+    Query(q): Query<ChatRunsQuery>,
+) -> impl IntoResponse {
+    Json(state.chat_runs.list(q.active))
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatRunEventsQuery {
+    #[serde(default)]
+    after: u64,
+}
+
+async fn list_chat_run_events(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Query(q): Query<ChatRunEventsQuery>,
+) -> impl IntoResponse {
+    Json(state.chat_runs.events(&conversation_id, q.after))
+}
+
+async fn interrupt_chat_run(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+) -> Response {
+    if state.chat_runs.interrupt(&conversation_id) {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no active run for conversation" })),
+        )
+            .into_response()
+    }
 }
 
 /// `GET /v1/workspace` — what root and VCS state am I operating in?
@@ -218,6 +296,7 @@ async fn probe_workspace(Query(q): Query<WorkspaceProbeQuery>) -> Response {
 ///   "approval_mode": "auto" | "deny" | null,
 ///   "coding_mode": true,
 ///   "project_context": { "loaded": true, "max_bytes": 32768 } | null,
+///   "project_memory": { "loaded": true, "dir": ".jarvis/memory", "max_bytes": 25000 },
 ///   "system_prompt": { "length": 1234, "preview": "..." },
 ///   "max_iterations": 30,
 ///   "tools": ["fs.read", "fs.list", ...],
@@ -261,6 +340,11 @@ async fn get_server_info(State(state): State<AppState>) -> Response {
             "max_bytes": info.project_context_bytes_cap,
         })
     };
+    let project_memory = json!({
+        "loaded": info.project_memory_loaded,
+        "dir": info.project_memory_dir,
+        "max_bytes": info.project_memory_bytes_cap,
+    });
 
     let prompt_text = template.system_prompt.as_deref().unwrap_or("");
     let prompt_len = prompt_text.chars().count();
@@ -277,6 +361,7 @@ async fn get_server_info(State(state): State<AppState>) -> Response {
         "approval_mode": info.approval_mode,
         "coding_mode": info.coding_mode,
         "project_context": project_context,
+        "project_memory": project_memory,
         "system_prompt": {
             "length": prompt_len,
             "preview": preview,
@@ -627,6 +712,7 @@ fn client_msg_kind(msg: &WsClientMessage) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone)]
 struct TurnInjection {
     project: crate::project_binder::PreparedConversation,
     /// Prepared TODO injection state. The injection happens *after*
@@ -699,6 +785,61 @@ fn leading_system_count(messages: &[Message]) -> usize {
         .iter()
         .take_while(|m| matches!(m, Message::System { .. }))
         .count()
+}
+
+struct DetachedTurn {
+    agent: Arc<harness_core::Agent>,
+    conversation: Conversation,
+    event_tx: mpsc::Sender<AgentEvent>,
+    chat_runs: Arc<crate::chat_runs::ChatRunRegistry>,
+    persisted_id: Option<String>,
+    persisted_project_id: Option<String>,
+    store: Option<Arc<dyn ConversationStore>>,
+    injection: Option<TurnInjection>,
+}
+
+fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let DetachedTurn {
+            agent,
+            conversation,
+            event_tx,
+            chat_runs,
+            persisted_id,
+            persisted_project_id,
+            store,
+            injection,
+        } = turn;
+        harness_core::todo::with_turn_budget(async move {
+            let mut stream = agent.run_stream(conversation);
+            while let Some(ev) = stream.next().await {
+                let mut ev_to_send = ev;
+                let is_terminal = matches!(
+                    ev_to_send,
+                    AgentEvent::Done { .. } | AgentEvent::Error { .. }
+                );
+                if let AgentEvent::Done { conversation, .. } = &mut ev_to_send {
+                    if let Some(prepared) = injection.as_ref() {
+                        *conversation = strip_turn_injections(conversation.clone(), prepared);
+                    }
+                    if let (Some(id), Some(store)) = (persisted_id.as_ref(), store.as_ref()) {
+                        let metadata = ConversationMetadata {
+                            project_id: persisted_project_id.clone(),
+                        };
+                        if let Err(e) = store.save_envelope(id, conversation, &metadata).await {
+                            warn!(error = %e, %id, "detached turn save failed");
+                        }
+                    }
+                }
+                chat_runs.event(persisted_id.as_deref(), &ev_to_send);
+                let _ = event_tx.send(ev_to_send).await;
+                if is_terminal {
+                    break;
+                }
+            }
+        })
+        .await;
+    })
 }
 
 async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
@@ -1121,8 +1262,15 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
             // ---- native HITL tool → server ----
             Some(p) = pending_hitl_rx.recv() => {
                 let id = p.request.id.clone();
-                let payload = json!({ "type": "hitl_request", "request": p.request }).to_string();
+                let frame = json!({ "type": "hitl_request", "request": p.request });
+                let payload = frame.to_string();
                 pending_hitl.insert(id, p.responder);
+                state.chat_runs.waiting_hitl(persisted_id.as_deref());
+                state.chat_runs.frame(
+                    persisted_id.as_deref(),
+                    Some(crate::chat_runs::ChatRunStatus::WaitingHitl),
+                    frame,
+                );
                 if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
                     return;
                 }
@@ -1164,7 +1312,6 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         conv.messages.pop();
                     }
                 }
-
                 let payload = serde_json::to_string(&ev_to_send).unwrap_or_else(|e| {
                     json!({ "type": "error", "message": format!("serialize: {e}") })
                         .to_string()
@@ -1181,16 +1328,6 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     // stopped so nothing is waiting on them anyway.
                     pending.clear();
                     pending_hitl.clear();
-                    if let (Some(id), Some(store)) =
-                        (persisted_id.as_ref(), state.store.as_ref())
-                    {
-                        let metadata = ConversationMetadata {
-                            project_id: persisted_project_id.clone(),
-                        };
-                        if let Err(e) = store.save_envelope(id, &conv, &metadata).await {
-                            warn!(error = %e, %id, "ws post-run save failed");
-                        }
-                    }
                 }
             }
         }
@@ -1284,6 +1421,12 @@ async fn handle_client_frame(
             };
             if let Some(responder) = pending_hitl.remove(&request_id) {
                 let _ = responder.send(response.clone());
+                state.chat_runs.running(persisted_id.as_deref());
+                state.chat_runs.frame(
+                    persisted_id.as_deref(),
+                    Some(crate::chat_runs::ChatRunStatus::Running),
+                    json!({ "type": "hitl_response", "response": response.clone() }),
+                );
                 let _ = ws_tx
                     .send(WsMessage::Text(
                         json!({ "type": "hitl_response", "response": response }).to_string(),
@@ -1384,24 +1527,30 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            *last_injection = Some(TurnInjection {
+            let injection = TurnInjection {
                 project: prepared,
                 todos: todos_prepared,
                 soul_injected_at,
-            });
+            };
+            *last_injection = Some(injection.clone());
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
-            let handle = tokio::spawn(async move {
-                harness_core::todo::with_turn_budget(async move {
-                    let mut stream = agent.run_stream(snapshot);
-                    while let Some(ev) = stream.next().await {
-                        if event_tx.send(ev).await.is_err() {
-                            return;
-                        }
-                    }
-                })
-                .await;
+            if let Some(id) = persisted_id.as_deref() {
+                state.chat_runs.start(id);
+            }
+            let handle = spawn_detached_turn(DetachedTurn {
+                agent,
+                conversation: snapshot,
+                event_tx,
+                chat_runs: state.chat_runs.clone(),
+                persisted_id: persisted_id.clone(),
+                persisted_project_id: persisted_project_id.clone(),
+                store: state.store.clone(),
+                injection: Some(injection),
             });
+            state
+                .chat_runs
+                .attach_abort_handle(persisted_id.as_deref(), handle.abort_handle());
             *current_task = Some(handle);
         }
         WsClientMessage::Configure { model, provider } => {
@@ -1686,6 +1835,7 @@ async fn handle_client_frame(
             }
             *event_rx = None;
             *last_injection = None;
+            state.chat_runs.cancelled(persisted_id.as_deref());
             // Roll back the trailing user message: the assistant
             // never replied, so leaving it in `conv` would make the
             // next turn look like back-to-back user turns to the
@@ -1695,6 +1845,11 @@ async fn handle_client_frame(
             }
             pending.clear();
             pending_hitl.clear();
+            state.chat_runs.frame(
+                persisted_id.as_deref(),
+                Some(crate::chat_runs::ChatRunStatus::Cancelled),
+                json!({ "type": "interrupted" }),
+            );
             let _ = ws_tx
                 .send(WsMessage::Text(
                     json!({ "type": "interrupted" }).to_string(),
@@ -1824,24 +1979,30 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            *last_injection = Some(TurnInjection {
+            let injection = TurnInjection {
                 project: prepared,
                 todos: todos_prepared,
                 soul_injected_at,
-            });
+            };
+            *last_injection = Some(injection.clone());
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
-            let handle = tokio::spawn(async move {
-                harness_core::todo::with_turn_budget(async move {
-                    let mut stream = agent.run_stream(snapshot);
-                    while let Some(ev) = stream.next().await {
-                        if event_tx.send(ev).await.is_err() {
-                            return;
-                        }
-                    }
-                })
-                .await;
+            if let Some(id) = persisted_id.as_deref() {
+                state.chat_runs.start(id);
+            }
+            let handle = spawn_detached_turn(DetachedTurn {
+                agent,
+                conversation: snapshot,
+                event_tx,
+                chat_runs: state.chat_runs.clone(),
+                persisted_id: persisted_id.clone(),
+                persisted_project_id: persisted_project_id.clone(),
+                store: state.store.clone(),
+                injection: Some(injection),
             });
+            state
+                .chat_runs
+                .attach_abort_handle(persisted_id.as_deref(), handle.abort_handle());
             *current_task = Some(handle);
         }
         WsClientMessage::SetMode { mode } => {
@@ -1960,24 +2121,30 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            *last_injection = Some(TurnInjection {
+            let injection = TurnInjection {
                 project: prepared,
                 todos: todos_prepared,
                 soul_injected_at: None,
-            });
+            };
+            *last_injection = Some(injection.clone());
             let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
             *event_rx = Some(new_rx);
-            let handle = tokio::spawn(async move {
-                harness_core::todo::with_turn_budget(async move {
-                    let mut stream = agent.run_stream(snapshot);
-                    while let Some(ev) = stream.next().await {
-                        if event_tx.send(ev).await.is_err() {
-                            return;
-                        }
-                    }
-                })
-                .await;
+            if let Some(id) = persisted_id.as_deref() {
+                state.chat_runs.start(id);
+            }
+            let handle = spawn_detached_turn(DetachedTurn {
+                agent,
+                conversation: snapshot,
+                event_tx,
+                chat_runs: state.chat_runs.clone(),
+                persisted_id: persisted_id.clone(),
+                persisted_project_id: persisted_project_id.clone(),
+                store: state.store.clone(),
+                injection: Some(injection),
             });
+            state
+                .chat_runs
+                .attach_abort_handle(persisted_id.as_deref(), handle.abort_handle());
             *current_task = Some(handle);
         }
         WsClientMessage::ActivateSkill { name } => {
@@ -2096,4 +2263,38 @@ async fn send_error(ws_tx: &mut SplitSink<WebSocket, WsMessage>, message: &str) 
             json!({ "type": "error", "message": message }).to_string(),
         ))
         .await;
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::is_local_origin;
+
+    #[test]
+    fn allows_loopback_and_vite_dev() {
+        assert!(is_local_origin("http://127.0.0.1:7001"));
+        assert!(is_local_origin("http://localhost:5173"));
+        assert!(is_local_origin("http://localhost:4173"));
+        assert!(is_local_origin("http://[::1]:7001"));
+        assert!(is_local_origin("https://localhost"));
+    }
+
+    #[test]
+    fn allows_tauri_webview_origins() {
+        // macOS / Linux Tauri 2 default
+        assert!(is_local_origin("tauri://localhost"));
+        // Windows Tauri 2 default
+        assert!(is_local_origin("http://tauri.localhost"));
+        assert!(is_local_origin("https://tauri.localhost"));
+        // Sandboxed contexts (data: URIs, sandboxed iframes) — server
+        // is loopback-only, so allowing the null origin is safe.
+        assert!(is_local_origin("null"));
+    }
+
+    #[test]
+    fn rejects_remote_origins() {
+        assert!(!is_local_origin("https://example.com"));
+        assert!(!is_local_origin("http://192.168.1.4"));
+        assert!(!is_local_origin("ftp://localhost"));
+        assert!(!is_local_origin(""));
+    }
 }
