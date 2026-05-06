@@ -81,6 +81,14 @@ pub struct Requirement {
     /// JSON rows without it deserialise as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_plan: Option<VerificationPlan>,
+    /// Structured execution / verification checklist under this
+    /// requirement. These are intentionally more operational than a
+    /// requirement description: CI commands, deploy-preview checks,
+    /// manual QA items, reviewer passes, etc. The auto loop and
+    /// future CI/CD adapters can update `status` + `evidence` here
+    /// so later inspection doesn't depend on reading chat history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<RequirementTodo>,
     /// Triage gate (v1.0). Distinguishes "user-approved work the
     /// auto executor may pick up" from "agent-proposed / scan-
     /// surfaced candidate that must be reviewed first". Auto loop
@@ -128,6 +136,176 @@ pub enum RequirementStatus {
     Review,
     /// Accepted; nothing more to do.
     Done,
+}
+
+/// Structured TODO / check item scoped to one [`Requirement`].
+///
+/// This is the durable execution ledger for a card. It is not a
+/// free-form chat plan: every item has a kind, status, optional
+/// command, dependencies, and evidence so automation can decide what
+/// to run next and humans can audit what happened later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequirementTodo {
+    /// Stable item id (UUID v4).
+    pub id: String,
+    /// Short actionable label.
+    pub title: String,
+    /// Operational category.
+    pub kind: RequirementTodoKind,
+    /// Current state.
+    pub status: RequirementTodoStatus,
+    /// Optional shell command or workflow command. Only meaningful
+    /// for `ci`, `deploy`, and command-backed `check` items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Latest machine-readable proof for this item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<RequirementTodoEvidence>,
+    /// Other TODO ids that must pass before this one is eligible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// Who created the item.
+    pub created_by: RequirementTodoCreator,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl RequirementTodo {
+    pub fn new(title: impl Into<String>, kind: RequirementTodoKind) -> Self {
+        let now = chrono::Utc::now().to_rfc3339();
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: title.into().trim().to_string(),
+            kind,
+            status: RequirementTodoStatus::Pending,
+            command: None,
+            evidence: None,
+            depends_on: Vec::new(),
+            created_by: RequirementTodoCreator::Human,
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementTodoKind {
+    Work,
+    Check,
+    Ci,
+    Deploy,
+    Review,
+    Manual,
+}
+
+impl RequirementTodoKind {
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "work" => Self::Work,
+            "check" => Self::Check,
+            "ci" => Self::Ci,
+            "deploy" => Self::Deploy,
+            "review" => Self::Review,
+            "manual" => Self::Manual,
+            _ => return None,
+        })
+    }
+
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Work => "work",
+            Self::Check => "check",
+            Self::Ci => "ci",
+            Self::Deploy => "deploy",
+            Self::Review => "review",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementTodoStatus {
+    Pending,
+    Running,
+    Passed,
+    Failed,
+    Skipped,
+    Blocked,
+}
+
+impl RequirementTodoStatus {
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending" => Self::Pending,
+            "running" => Self::Running,
+            "passed" => Self::Passed,
+            "failed" => Self::Failed,
+            "skipped" => Self::Skipped,
+            "blocked" => Self::Blocked,
+            _ => return None,
+        })
+    }
+
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementTodoCreator {
+    Human,
+    Agent,
+    Workflow,
+}
+
+impl RequirementTodoCreator {
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "human" => Self::Human,
+            "agent" => Self::Agent,
+            "workflow" => Self::Workflow,
+            _ => return None,
+        })
+    }
+
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Agent => "agent",
+            Self::Workflow => "workflow",
+        }
+    }
+}
+
+/// Latest proof attached to a [`RequirementTodo`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequirementTodoEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl RequirementStatus {
@@ -287,6 +465,7 @@ impl Requirement {
             conversation_ids: Vec::new(),
             assignee_id: None,
             verification_plan: None,
+            todos: Vec::new(),
             triage_state: TriageState::Approved,
             depends_on: Vec::new(),
             acceptance_policy: AcceptancePolicy::Subagent,
@@ -409,9 +588,46 @@ mod tests {
         r.description = Some("Build the kanban view".into());
         r.status = RequirementStatus::Review;
         r.conversation_ids = vec!["c1".into(), "c2".into()];
+        let mut todo = RequirementTodo::new("run CI", RequirementTodoKind::Ci);
+        todo.command = Some("cargo test --workspace".into());
+        r.todos.push(todo);
         let json = serde_json::to_string(&r).unwrap();
         let back: Requirement = serde_json::from_str(&json).unwrap();
         assert_eq!(r, back);
+    }
+
+    #[test]
+    fn legacy_json_without_todos_defaults_to_empty_list() {
+        let raw = serde_json::json!({
+            "id": "r1",
+            "project_id": "p1",
+            "title": "Old row",
+            "status": "backlog",
+            "conversation_ids": [],
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z"
+        });
+        let r: Requirement = serde_json::from_value(raw).unwrap();
+        assert!(r.todos.is_empty());
+    }
+
+    #[test]
+    fn requirement_todo_wire_strings_round_trip() {
+        assert_eq!(RequirementTodoKind::Ci.as_wire(), "ci");
+        assert_eq!(
+            RequirementTodoKind::from_wire("deploy"),
+            Some(RequirementTodoKind::Deploy)
+        );
+        assert_eq!(RequirementTodoStatus::Passed.as_wire(), "passed");
+        assert_eq!(
+            RequirementTodoStatus::from_wire("blocked"),
+            Some(RequirementTodoStatus::Blocked)
+        );
+        assert_eq!(RequirementTodoCreator::Workflow.as_wire(), "workflow");
+        assert_eq!(
+            RequirementTodoCreator::from_wire("agent"),
+            Some(RequirementTodoCreator::Agent)
+        );
     }
 
     #[test]

@@ -15,6 +15,14 @@
 //!   `{title, description, status, conversation_ids}`)
 //! - `POST   /v1/requirements/:id/conversations`
 //!   — link a conversation id (body: `{conversation_id}`); idempotent
+//! - `GET    /v1/requirements/:id/todos`
+//!   — list structured execution/checklist items for one requirement.
+//! - `POST   /v1/requirements/:id/todos`
+//!   — add a TODO/check item (`{title, kind?, command?, depends_on?}`).
+//! - `PATCH  /v1/requirements/:id/todos/:todo_id`
+//!   — update TODO/check status, command, dependencies, or evidence.
+//! - `DELETE /v1/requirements/:id/todos/:todo_id`
+//!   — remove one TODO/check item.
 //! - `POST   /v1/requirements/:id/runs`
 //!   — start a fresh-session run: builds a manifest from the
 //!   workspace, mints a new conversation seeded with the manifest
@@ -63,9 +71,10 @@ use axum::{
 };
 use harness_core::{
     Activity, ActivityActor, ActivityKind, ActivityStore, Conversation, ConversationMetadata,
-    Message, Requirement, RequirementRun, RequirementRunEvent, RequirementRunStatus,
-    RequirementRunStore, RequirementStatus, RequirementStore, TriageState, VerificationPlan,
-    VerificationResult, VerificationStatus,
+    Message, Requirement, RequirementRun, RequirementRunEvent, RequirementRunLogLevel,
+    RequirementRunStatus, RequirementRunStore, RequirementStatus, RequirementStore,
+    RequirementTodo, RequirementTodoCreator, RequirementTodoEvidence, RequirementTodoKind,
+    RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult, VerificationStatus,
 };
 use harness_requirement::{build_default_manifest, render_manifest_summary};
 use serde::Deserialize;
@@ -91,17 +100,22 @@ pub(crate) fn router() -> Router<AppState> {
             post(link_conversation),
         )
         .route(
-            "/v1/requirements/:id/runs",
-            get(list_runs).post(start_run),
+            "/v1/requirements/:id/todos",
+            get(list_requirement_todos).post(create_requirement_todo),
         )
         .route(
-            "/v1/requirements/:id/activities",
-            get(list_activities),
+            "/v1/requirements/:id/todos/:todo_id",
+            patch(update_requirement_todo).delete(delete_requirement_todo),
         )
+        .route("/v1/requirements/:id/runs", get(list_runs).post(start_run))
+        .route("/v1/requirements/:id/activities", get(list_activities))
         .route("/v1/runs/:id", get(get_run).patch(update_run))
         .route("/v1/runs/:id/verification", post(set_run_verification))
         .route("/v1/runs/:id/verify", post(verify_run))
-        .route("/v1/runs/:id/worktree", axum::routing::delete(delete_worktree))
+        .route(
+            "/v1/runs/:id/worktree",
+            axum::routing::delete(delete_worktree),
+        )
 }
 
 #[allow(clippy::result_large_err)]
@@ -250,6 +264,11 @@ struct CreateBody {
     /// reach `done` before the auto executor will pick this one up.
     #[serde(default)]
     depends_on: Option<Vec<String>>,
+    /// Optional structured execution/checklist items to seed with
+    /// the requirement. Useful for CI/CD or inspection gates that
+    /// should survive beyond the chat turn that created the card.
+    #[serde(default)]
+    todos: Option<Vec<CreateRequirementTodoBody>>,
 }
 
 async fn create_requirement(
@@ -280,6 +299,14 @@ async fn create_requirement(
     }
     if let Some(deps) = body.depends_on {
         item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+    }
+    if let Some(todos) = body.todos {
+        for todo_body in todos {
+            match todo_from_create_body(todo_body) {
+                Ok(todo) => item.todos.push(todo),
+                Err(reason) => return bad_request(reason),
+            }
+        }
     }
     item.description = body
         .description
@@ -678,6 +705,290 @@ async fn link_conversation(
     Json(json!({ "appended": appended, "requirement": item })).into_response()
 }
 
+// ----------------------- /v1/requirements/:id/todos ---------------------
+
+#[derive(Debug, Deserialize)]
+struct CreateRequirementTodoBody {
+    title: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    evidence: Option<RequirementTodoEvidence>,
+    #[serde(default)]
+    depends_on: Option<Vec<String>>,
+    #[serde(default)]
+    created_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRequirementTodoBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    /// Present + blank clears the command. Missing leaves as-is.
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    evidence: Option<RequirementTodoEvidence>,
+    /// Present replaces the dependency list.
+    #[serde(default)]
+    depends_on: Option<Vec<String>>,
+}
+
+async fn list_requirement_todos(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    match store.get(&id).await {
+        Ok(Some(item)) => {
+            Json(json!({ "requirement_id": id, "items": item.todos })).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("requirement `{id}` not found") })),
+        )
+            .into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+async fn create_requirement_todo(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateRequirementTodoBody>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let mut item = match store.get(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("requirement `{id}` not found") })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_error(e),
+    };
+    let title = body.title.trim();
+    if title.is_empty() {
+        return bad_request("`title` must not be blank");
+    }
+    let todo = match todo_from_create_body(body) {
+        Ok(todo) => todo,
+        Err(reason) => return bad_request(reason),
+    };
+    item.todos.push(todo.clone());
+    item.touch();
+    match store.upsert(&item).await {
+        Ok(()) => {
+            record_activity(
+                &state,
+                &item.id,
+                ActivityKind::Comment,
+                ActivityActor::Human,
+                json!({
+                    "kind": "requirement_todo_created",
+                    "todo_id": todo.id,
+                    "todo_kind": todo.kind.as_wire(),
+                    "title": todo.title,
+                }),
+            )
+            .await;
+            (
+                StatusCode::CREATED,
+                Json(json!({ "todo": todo, "requirement": item })),
+            )
+                .into_response()
+        }
+        Err(e) => internal_error(e),
+    }
+}
+
+fn todo_from_create_body(body: CreateRequirementTodoBody) -> Result<RequirementTodo, String> {
+    let title = body.title.trim();
+    if title.is_empty() {
+        return Err("`title` must not be blank".to_string());
+    }
+    let kind_wire = body.kind.as_deref().unwrap_or("work");
+    let kind = match RequirementTodoKind::from_wire(kind_wire) {
+        Some(k) => k,
+        None => return Err(format!("unknown todo kind `{kind_wire}`")),
+    };
+    let mut todo = RequirementTodo::new(title, kind);
+    if let Some(s) = body.status.as_deref() {
+        match RequirementTodoStatus::from_wire(s) {
+            Some(status) => todo.status = status,
+            None => return Err(format!("unknown todo status `{s}`")),
+        }
+    }
+    todo.command = body
+        .command
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    todo.evidence = body.evidence;
+    todo.depends_on = body
+        .depends_on
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if let Some(s) = body.created_by.as_deref() {
+        match RequirementTodoCreator::from_wire(s) {
+            Some(c) => todo.created_by = c,
+            None => return Err(format!("unknown todo creator `{s}`")),
+        }
+    }
+    Ok(todo)
+}
+
+async fn update_requirement_todo(
+    State(state): State<AppState>,
+    Path((id, todo_id)): Path<(String, String)>,
+    Json(body): Json<UpdateRequirementTodoBody>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let mut item = match store.get(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("requirement `{id}` not found") })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_error(e),
+    };
+    let Some(idx) = item.todos.iter().position(|t| t.id == todo_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("todo `{todo_id}` not found") })),
+        )
+            .into_response();
+    };
+    let todo = &mut item.todos[idx];
+    if let Some(title) = body.title {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return bad_request("`title` must not be blank");
+        }
+        todo.title = title;
+    }
+    if let Some(s) = body.kind.as_deref() {
+        match RequirementTodoKind::from_wire(s) {
+            Some(kind) => todo.kind = kind,
+            None => return bad_request(format!("unknown todo kind `{s}`")),
+        }
+    }
+    if let Some(s) = body.status.as_deref() {
+        match RequirementTodoStatus::from_wire(s) {
+            Some(status) => todo.status = status,
+            None => return bad_request(format!("unknown todo status `{s}`")),
+        }
+    }
+    if let Some(command) = body.command {
+        let command = command.trim().to_string();
+        todo.command = if command.is_empty() {
+            None
+        } else {
+            Some(command)
+        };
+    }
+    if let Some(evidence) = body.evidence {
+        todo.evidence = Some(evidence);
+    }
+    if let Some(deps) = body.depends_on {
+        todo.depends_on = deps
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    todo.touch();
+    let todo = todo.clone();
+    item.touch();
+    match store.upsert(&item).await {
+        Ok(()) => {
+            record_activity(
+                &state,
+                &item.id,
+                ActivityKind::Comment,
+                ActivityActor::Human,
+                json!({
+                    "kind": "requirement_todo_updated",
+                    "todo_id": todo.id,
+                    "status": todo.status.as_wire(),
+                }),
+            )
+            .await;
+            Json(json!({ "todo": todo, "requirement": item })).into_response()
+        }
+        Err(e) => internal_error(e),
+    }
+}
+
+async fn delete_requirement_todo(
+    State(state): State<AppState>,
+    Path((id, todo_id)): Path<(String, String)>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let mut item = match store.get(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("requirement `{id}` not found") })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_error(e),
+    };
+    let before = item.todos.len();
+    item.todos.retain(|t| t.id != todo_id);
+    if item.todos.len() == before {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "deleted": false, "error": format!("todo `{todo_id}` not found") })),
+        )
+            .into_response();
+    }
+    item.touch();
+    match store.upsert(&item).await {
+        Ok(()) => {
+            record_activity(
+                &state,
+                &item.id,
+                ActivityKind::Comment,
+                ActivityActor::Human,
+                json!({
+                    "kind": "requirement_todo_deleted",
+                    "todo_id": todo_id,
+                }),
+            )
+            .await;
+            Json(json!({ "deleted": true, "requirement": item })).into_response()
+        }
+        Err(e) => internal_error(e),
+    }
+}
+
 // ----------------------- DELETE /v1/requirements/:id ---------------------
 
 async fn delete_requirement(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -755,14 +1066,10 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
         Err(e) => return internal_error(e),
     };
 
-    // 2. Build manifest. Use the server's pinned workspace root;
-    // when none is configured fall back to the current process cwd
-    // (test harnesses typically don't pin one but still want the
-    // endpoint to behave deterministically).
-    let workspace = state
-        .workspace_root
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    // 2. Build manifest. Prefer the parent Project's first workspace
+    // so project-bound runs execute in the repo the project actually
+    // describes; fall back to the server root / cwd for legacy rows.
+    let workspace = resolve_requirement_workspace(&state, &requirement).await;
     let manifest = build_default_manifest(&workspace, &requirement).await;
     let summary = render_manifest_summary(&manifest);
 
@@ -794,7 +1101,11 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
     };
     let composed_summary = match assignee_prompt.as_deref() {
         Some(prompt) if !prompt.trim().is_empty() => {
-            format!("=== assignee instructions ===\n{}\n\n{}", prompt.trim(), summary)
+            format!(
+                "=== assignee instructions ===\n{}\n\n{}",
+                prompt.trim(),
+                summary
+            )
         }
         _ => summary.clone(),
     };
@@ -815,6 +1126,7 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
     {
         return internal_error(e);
     }
+    bind_conversation_workspace(&state, &conversation_id, &workspace);
 
     // 4. Link conversation_id back to the requirement.
     let appended = requirement.link_conversation(conversation_id.clone());
@@ -840,6 +1152,15 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
     // row would be strictly worse than serving the response and
     // continuing.
     let mut run = RequirementRun::new(requirement.id.clone(), conversation_id.clone());
+    run.push_log(
+        RequirementRunLogLevel::Info,
+        "Run created",
+        Some(json!({
+            "workspace": workspace.display().to_string(),
+            "conversation_id": conversation_id.clone(),
+            "project_id": requirement.project_id.clone(),
+        })),
+    );
 
     // Phase 5 — when worktree mode is `PerRun`, mint a fresh
     // git worktree at `<root>/<run_id>`. Refusal (non-git
@@ -859,9 +1180,19 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
             match outcome {
                 crate::worktree::WorktreeOutcome::Created(p) => {
                     run.worktree_path = Some(p.display().to_string());
+                    run.push_log(
+                        RequirementRunLogLevel::Success,
+                        "Worktree created",
+                        Some(json!({ "path": p.display().to_string() })),
+                    );
                 }
                 crate::worktree::WorktreeOutcome::Refused(reason) => {
                     info!(run_id = %run.id, reason = %reason, "worktree creation refused; using main checkout");
+                    run.push_log(
+                        RequirementRunLogLevel::Warn,
+                        "Worktree creation refused; using main checkout",
+                        Some(json!({ "reason": reason })),
+                    );
                 }
             }
         }
@@ -910,6 +1241,98 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
         "requirement": requirement,
     });
     (StatusCode::CREATED, Json(body)).into_response()
+}
+
+async fn resolve_requirement_workspace(
+    state: &AppState,
+    requirement: &Requirement,
+) -> std::path::PathBuf {
+    if let Some(projects) = state.projects.as_ref() {
+        match projects.load(&requirement.project_id).await {
+            Ok(Some(project)) => {
+                if let Some(workspace) = project.workspaces.first() {
+                    return std::path::PathBuf::from(&workspace.path);
+                }
+            }
+            Ok(None) => {
+                warn!(
+                    requirement_id = %requirement.id,
+                    project_id = %requirement.project_id,
+                    "requirement project not found; using server workspace"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    requirement_id = %requirement.id,
+                    error = %e,
+                    "requirement project lookup failed; using server workspace"
+                );
+            }
+        }
+    }
+    state.workspace_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    })
+}
+
+fn bind_conversation_workspace(
+    state: &AppState,
+    conversation_id: &str,
+    workspace: &std::path::Path,
+) {
+    let Some(workspaces) = state.workspaces.as_ref() else {
+        return;
+    };
+    let path = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let path_str = path.display().to_string();
+    let _ = workspaces.touch(&path_str);
+    workspaces.bind(conversation_id, &path_str);
+}
+
+async fn resolve_run_workspace(state: &AppState, run: &RequirementRun) -> std::path::PathBuf {
+    if let Some(wt) = run
+        .worktree_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        return std::path::PathBuf::from(wt);
+    }
+
+    if let Some(bound) = state
+        .workspaces
+        .as_ref()
+        .and_then(|s| s.lookup(&run.conversation_id))
+        .filter(|s| !s.trim().is_empty())
+    {
+        return std::path::PathBuf::from(bound);
+    }
+
+    if let Some(req_store) = state.requirements.as_ref() {
+        match req_store.get(&run.requirement_id).await {
+            Ok(Some(requirement)) => {
+                return resolve_requirement_workspace(state, &requirement).await;
+            }
+            Ok(None) => {
+                warn!(
+                    run_id = %run.id,
+                    requirement_id = %run.requirement_id,
+                    "run requirement not found; using server workspace"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    run_id = %run.id,
+                    requirement_id = %run.requirement_id,
+                    error = %e,
+                    "run requirement lookup failed; using server workspace"
+                );
+            }
+        }
+    }
+
+    state.workspace_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    })
 }
 
 // ----------------------- GET /v1/requirements/:id/activities ------------
@@ -998,6 +1421,7 @@ async fn update_run(
         Err(e) => return internal_error(e),
     };
     let was_terminal = run.status.is_terminal();
+    let prior_status = run.status;
     if let Some(s) = body.status.as_deref() {
         match RequirementRunStatus::from_wire(s) {
             Some(parsed) => {
@@ -1012,6 +1436,16 @@ async fn update_run(
             }
             None => return bad_request(format!("unknown run status `{s}`")),
         }
+    }
+    if run.status != prior_status {
+        run.push_log(
+            RequirementRunLogLevel::Info,
+            "Run status changed",
+            Some(json!({
+                "from": prior_status.as_wire(),
+                "to": run.status.as_wire(),
+            })),
+        );
     }
     if let Some(s) = body.summary {
         run.summary = if s.trim().is_empty() {
@@ -1028,11 +1462,7 @@ async fn update_run(
         };
     }
     if let Some(ts) = body.finished_at {
-        run.finished_at = if ts.trim().is_empty() {
-            None
-        } else {
-            Some(ts)
-        };
+        run.finished_at = if ts.trim().is_empty() { None } else { Some(ts) };
     }
     if let Err(e) = run_store.upsert(&run).await {
         return internal_error(e);
@@ -1113,7 +1543,7 @@ async fn verify_run(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let run = match run_store.get(&id).await {
+    let mut run = match run_store.get(&id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             return (
@@ -1136,20 +1566,26 @@ async fn verify_run(
              without running anything",
         );
     }
-    // Phase 5 — when the run minted a git worktree, route the
-    // verification cwd through it instead of the main checkout
-    // so commands that mutate files / commits / install deps
-    // don't trash the user's working tree. Falls back to the
-    // workspace root when worktree_path is absent.
-    let workspace = if let Some(wt) = run.worktree_path.as_deref() {
-        std::path::PathBuf::from(wt)
-    } else {
-        state
-            .workspace_root
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
-    };
-    let timeout_ms = body.timeout_ms.unwrap_or(crate::verification::DEFAULT_TIMEOUT_MS);
+    // Phase 5/6 — prefer per-run worktrees, then the conversation's
+    // workspace binding, then the parent project's first workspace.
+    // The server root is only the legacy fallback.
+    let workspace = resolve_run_workspace(&state, &run).await;
+    let timeout_ms = body
+        .timeout_ms
+        .unwrap_or(crate::verification::DEFAULT_TIMEOUT_MS);
+    run.push_log(
+        RequirementRunLogLevel::Info,
+        "Verification started",
+        Some(json!({
+            "workspace": workspace.display().to_string(),
+            "commands": plan.commands.len(),
+            "timeout_ms": timeout_ms,
+            "manual": true,
+        })),
+    );
+    if let Err(e) = run_store.upsert(&run).await {
+        return internal_error(e);
+    }
     let result = crate::verification::execute_plan(&workspace, &plan, timeout_ms).await;
 
     // Reuse the existing set_run_verification path so the
@@ -1203,7 +1639,8 @@ async fn delete_worktree(State(state): State<AppState>, Path(id): Path<String>) 
         Err(e) => return internal_error(e),
     };
     let Some(path) = run.worktree_path.clone() else {
-        return Json(json!({ "deleted": false, "reason": "no worktree on this run" })).into_response();
+        return Json(json!({ "deleted": false, "reason": "no worktree on this run" }))
+            .into_response();
     };
     let Some(root) = state.worktree_root.as_ref() else {
         return (
@@ -1212,19 +1649,19 @@ async fn delete_worktree(State(state): State<AppState>, Path(id): Path<String>) 
         )
             .into_response();
     };
-    let workspace = state
-        .workspace_root
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
-    let result = crate::worktree::remove_worktree(
-        &workspace,
-        root,
-        std::path::Path::new(&path),
-    )
-    .await;
+    let workspace = state.workspace_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+    let result =
+        crate::worktree::remove_worktree(&workspace, root, std::path::Path::new(&path)).await;
     match result {
         Ok(()) => {
             run.worktree_path = None;
+            run.push_log(
+                RequirementRunLogLevel::Info,
+                "Worktree removed",
+                Some(json!({ "path": path })),
+            );
             if let Err(e) = run_store.upsert(&run).await {
                 warn!(error = %e, run_id = %run.id, "worktree removed on disk but run upsert failed");
             }
@@ -1257,6 +1694,7 @@ async fn apply_verification(
         }
     }
     run.verification = Some(result.clone());
+    run.push_verification_logs(&result);
     if let Err(e) = run_store.upsert(&run).await {
         return internal_error(e);
     }
@@ -1264,6 +1702,9 @@ async fn apply_verification(
         run_id: run.id.clone(),
         result: result.clone(),
     });
+    if run.status.is_terminal() {
+        run_store.broadcast(RequirementRunEvent::Finished(run.clone()));
+    }
     record_activity(
         state,
         &run.requirement_id,
@@ -1455,6 +1896,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn requirement_todos_crud_round_trip() {
+        let app = app(state_with_store());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/projects/p1/requirements")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"ship","todos":[{"title":"run CI","kind":"ci","command":"cargo test --workspace"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let v = read_json(resp).await;
+        let id = v["id"].as_str().unwrap().to_string();
+        assert_eq!(v["todos"][0]["kind"], "ci");
+        assert_eq!(v["todos"][0]["command"], "cargo test --workspace");
+        let todo_id = v["todos"][0]["id"].as_str().unwrap().to_string();
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{id}/todos/{todo_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"status":"passed","evidence":{"exit_code":0,"note":"green"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["todo"]["status"], "passed");
+        assert_eq!(v["todo"]["evidence"]["exit_code"], 0);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/requirements/{id}/todos"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/requirements/{id}/todos/{todo_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert!(v["requirement"].get("todos").is_none());
+    }
+
+    #[tokio::test]
     async fn create_rejects_blank_title() {
         let resp = app(state_with_store())
             .oneshot(
@@ -1543,7 +2057,13 @@ mod tests {
         // via the store (so PATCH below does NOT see a transition).
         let mut req = Requirement::new("proj-no-fire", "no re-fire");
         req.status = RequirementStatus::InProgress;
-        state.requirements.as_ref().unwrap().upsert(&req).await.unwrap();
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
 
         // PATCH that re-asserts in_progress — no transition.
         let resp = app
@@ -1803,7 +2323,7 @@ mod tests {
 
     use harness_store::{
         MemoryActivityStore, MemoryConversationStore, MemoryProjectStore,
-        MemoryRequirementRunStore,
+        MemoryRequirementRunStore, WorkspaceStore,
     };
 
     fn state_with_runs() -> AppState {
@@ -1830,7 +2350,11 @@ mod tests {
     ) {
         let act_store: Arc<dyn ActivityStore> = Arc::new(MemoryActivityStore::new());
         let (state, run_store) = state_with_run_store();
-        (state.with_activity_store(Arc::clone(&act_store)), run_store, act_store)
+        (
+            state.with_activity_store(Arc::clone(&act_store)),
+            run_store,
+            act_store,
+        )
     }
 
     #[tokio::test]
@@ -2265,9 +2789,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/v1/runs/{run_id}/verification"))
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"status":"passed","command_results":[]}"#,
-                    ))
+                    .body(Body::from(r#"{"status":"passed","command_results":[]}"#))
                     .unwrap(),
             )
             .await
@@ -2355,12 +2877,86 @@ mod tests {
         assert_eq!(cmd_results[0]["exit_code"], 0);
         assert_eq!(cmd_results[1]["exit_code"], 0);
         assert!(cmd_results[1]["stdout"].as_str().unwrap().contains("hi"));
+        let logs = v["logs"].as_array().unwrap();
+        assert!(logs
+            .iter()
+            .any(|log| log["message"] == "Verification started"));
+        assert!(logs.iter().any(|log| log["message"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("Command passed: echo hi"))));
 
         // Activity should include verification_finished + run_finished.
         let acts = act_store.list_for_requirement(&req_id).await.unwrap();
         let kinds: Vec<_> = acts.iter().map(|a| a.kind).collect();
         assert!(kinds.contains(&harness_core::ActivityKind::VerificationFinished));
         assert!(kinds.contains(&harness_core::ActivityKind::RunFinished));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn verify_route_uses_conversation_workspace_binding() {
+        let fallback = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let (state, _, _) = state_with_activities();
+        let state = state
+            .with_workspace_root(fallback.path().to_path_buf())
+            .with_workspaces(Arc::new(WorkspaceStore::open(None)));
+
+        let mut project = harness_core::Project::new("Bound Project", "instructions");
+        project.slug = "bound-project".into();
+        let project_path = std::fs::canonicalize(project_dir.path()).unwrap();
+        project.set_workspaces(vec![harness_core::ProjectWorkspace::new(
+            project_path.display().to_string(),
+        )]);
+        state
+            .projects
+            .as_ref()
+            .unwrap()
+            .save(&project)
+            .await
+            .unwrap();
+        let requirement = Requirement::new(&project.id, "verify cwd");
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&requirement)
+            .await
+            .unwrap();
+
+        let app = app(state.clone());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/requirements/{}/runs", requirement.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let run_id = read_json(resp).await["run"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/runs/{run_id}/verify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"commands":["pwd > manual-cwd.txt"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cwd = std::fs::read_to_string(project_dir.path().join("manual-cwd.txt")).unwrap();
+        assert_eq!(cwd.trim(), project_path.display().to_string());
+        assert!(!fallback.path().join("manual-cwd.txt").exists());
     }
 
     #[tokio::test]

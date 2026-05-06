@@ -184,9 +184,9 @@ impl SubAgent for ClaudeCodeSubAgent {
             model: self.config.model.clone(),
         });
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| -> BoxError { format!("spawn `{}`: {e}", self.config.claude_bin).into() })?;
+        let mut child = cmd.spawn().map_err(|e| -> BoxError {
+            format!("spawn `{}`: {e}", self.config.claude_bin).into()
+        })?;
 
         let stdout = child
             .stdout

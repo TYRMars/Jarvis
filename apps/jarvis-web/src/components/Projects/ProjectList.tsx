@@ -15,11 +15,13 @@ import {
   loadRequirements,
 } from "../../services/requirements";
 import { EmptyState } from "../shared/EmptyState";
+import { Modal } from "../ui";
 import { chipColor } from "../../utils/chipColor";
 import {
   ProjectWorkspacesEditor,
   compactWorkspaces,
 } from "./ProjectWorkspacesEditor";
+import { folderNameFromPath } from "../Composer/resourceSelection";
 
 // Note: `t` is imported above (already used by `projects-row-count`).
 // Recent additions wire it through every user-visible string in this
@@ -303,11 +305,21 @@ export function ProjectUnavailable() {
   );
 }
 
-export function ProjectCreatePanel({ onDone }: { onDone: () => void }) {
+export function ProjectCreatePanel({
+  onDone,
+}: {
+  onDone: (project?: Project) => void;
+}) {
   const [name, setName] = useState("");
+  const [nameTouched, setNameTouched] = useState(false);
   const [description, setDescription] = useState("");
   const [workspaces, setWorkspaces] = useState<ProjectWorkspace[]>([]);
   const [busy, setBusy] = useState(false);
+  const firstWorkspaceName = folderNameFromPath(workspaces[0]?.path?.trim() ?? "");
+
+  useEffect(() => {
+    if (!nameTouched && firstWorkspaceName) setName(firstWorkspaceName);
+  }, [firstWorkspaceName, nameTouched]);
 
   const submit = async () => {
     if (!name.trim() || busy) return;
@@ -318,52 +330,68 @@ export function ProjectCreatePanel({ onDone }: { onDone: () => void }) {
       workspaces: compactWorkspaces(workspaces),
     });
     setBusy(false);
-    if (created) onDone();
+    if (created) onDone(created);
   };
 
   return (
-    <section className="projects-create-panel">
-      <label>
-        <span>{t("projectCreateName")}</span>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          autoFocus
-        />
-      </label>
-      <label>
-        <span>{t("projectCreateDesc")}</span>
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          rows={3}
-        />
-      </label>
-      <div className="projects-create-section">
-        <span className="projects-create-section-title">
-          {t("projectWorkspacesTitle")}
-        </span>
-        <p className="projects-create-section-hint">{t("projectWorkspacesHint")}</p>
-        <ProjectWorkspacesEditor value={workspaces} onChange={setWorkspaces} />
-      </div>
-      <div className="projects-create-actions">
-        <button
-          type="button"
-          className="settings-btn"
-          onClick={onDone}
-          disabled={busy}
-        >
-          {t("projectCreateCancel")}
-        </button>
-        <button
-          type="button"
-          className="projects-new-btn"
-          disabled={busy || !name.trim()}
-          onClick={() => void submit()}
-        >
-          {busy ? t("projectCreateBusy") : t("projectCreateSubmit")}
-        </button>
-      </div>
-    </section>
+    <Modal
+      open
+      onClose={busy ? undefined : () => onDone()}
+      title={t("newProjectHeading")}
+      size="lg"
+      busy={busy}
+    >
+      <form
+        className="projects-create-panel"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <label>
+          <span>{t("projectCreateName")}</span>
+          <input
+            value={name}
+            onChange={(e) => {
+              setNameTouched(true);
+              setName(e.target.value);
+            }}
+            autoFocus
+          />
+        </label>
+        <label>
+          <span>{t("projectCreateDesc")}</span>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+          />
+        </label>
+        <div className="projects-create-section">
+          <span className="projects-create-section-title">
+            {t("projectWorkspacesTitle")}
+          </span>
+          <p className="projects-create-section-hint">{t("projectWorkspacesHint")}</p>
+          <ProjectWorkspacesEditor value={workspaces} onChange={setWorkspaces} />
+        </div>
+        <div className="projects-create-actions">
+          <button
+            type="button"
+            className="settings-btn"
+            onClick={() => onDone()}
+            disabled={busy}
+          >
+            {t("projectCreateCancel")}
+          </button>
+          <button
+            type="submit"
+            className="projects-new-btn"
+            disabled={busy || !name.trim()}
+          >
+            {busy ? t("projectCreateBusy") : t("projectCreateSubmit")}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

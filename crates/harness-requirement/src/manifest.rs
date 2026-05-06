@@ -15,9 +15,7 @@ use std::path::Path;
 
 use harness_core::Requirement;
 
-use crate::model::{
-    ContextKind, ContextRef, RequirementContextManifest, VerificationPlan,
-};
+use crate::model::{ContextKind, ContextRef, RequirementContextManifest, VerificationPlan};
 
 /// Maximum bytes read per instruction file. Files larger than the
 /// cap are read up to the limit and marked `truncated`. 16 KiB is

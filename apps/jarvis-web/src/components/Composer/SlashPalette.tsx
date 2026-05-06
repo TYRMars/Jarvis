@@ -8,7 +8,8 @@ import { t } from "../../utils/i18n";
 export interface SlashCommand {
   cmd: string;
   descKey: string;
-  run: () => void;
+  run?: () => void;
+  insertText?: string;
 }
 
 interface Props {

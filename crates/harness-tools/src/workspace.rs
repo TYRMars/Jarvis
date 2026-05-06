@@ -366,12 +366,8 @@ async fn run_git_capture(root: &Path, args: &[&str]) -> Result<String, BoxError>
 /// - project root: `AGENTS.md`, `JARVIS.md`, `CLAUDE.md`, `AGENT.md`
 /// - project config dir: `.jarvis/JARVIS.md` and aliases
 /// - local rules: `.jarvis/rules/*.md`
-const ROOT_INSTRUCTION_FILES_TO_LOAD: &[&str] = &[
-    "AGENTS.md",
-    "JARVIS.md",
-    "CLAUDE.md",
-    "AGENT.md",
-];
+const ROOT_INSTRUCTION_FILES_TO_LOAD: &[&str] =
+    &["AGENTS.md", "JARVIS.md", "CLAUDE.md", "AGENT.md"];
 const JARVIS_INSTRUCTION_FILES_TO_LOAD: &[&str] = &[
     ".jarvis/JARVIS.md",
     ".jarvis/AGENTS.md",
@@ -495,7 +491,9 @@ fn read_instruction_file(
         return None;
     }
     let body = std::fs::read_to_string(&canonical).ok()?;
-    Some(expand_instruction_includes(root, &canonical, &body, seen, depth))
+    Some(expand_instruction_includes(
+        root, &canonical, &body, seen, depth,
+    ))
 }
 
 fn expand_instruction_includes(
@@ -821,7 +819,11 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join(".jarvis/snippets")).unwrap();
-        std::fs::write(dir.path().join(".jarvis/snippets/style.md"), "style rules\n").unwrap();
+        std::fs::write(
+            dir.path().join(".jarvis/snippets/style.md"),
+            "style rules\n",
+        )
+        .unwrap();
         let out = load_instructions(dir.path(), 32 * 1024).unwrap();
         assert!(out.contains("--- begin include: snippets/style.md ---"));
         assert_eq!(out.matches("style rules").count(), 1, "got: {out}");
@@ -832,7 +834,11 @@ mod tests {
     fn load_instructions_rejects_parent_directory_include() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".jarvis")).unwrap();
-        std::fs::write(dir.path().join(".jarvis/JARVIS.md"), "@include ../secret.md\n").unwrap();
+        std::fs::write(
+            dir.path().join(".jarvis/JARVIS.md"),
+            "@include ../secret.md\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("secret.md"), "do not inject\n").unwrap();
         let out = load_instructions(dir.path(), 32 * 1024).unwrap();
         assert!(!out.contains("do not inject"), "got: {out}");

@@ -203,7 +203,10 @@ mod tests {
             Ok(self.inner.read().await.get(id).cloned())
         }
         async fn upsert(&self, item: &TodoItem) -> Result<(), BoxError> {
-            self.inner.write().await.insert(item.id.clone(), item.clone());
+            self.inner
+                .write()
+                .await
+                .insert(item.id.clone(), item.clone());
             Ok(())
         }
         async fn delete(&self, id: &str) -> Result<bool, BoxError> {

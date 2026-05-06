@@ -164,7 +164,30 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
     if (!id) return false;
     return isRunActive(get().conversationRuns[id]?.status);
   },
-  setConvoRows: (rows) => set({ convoRows: rows, convoListLoading: false }),
+  setConvoRows: (rows) =>
+    set((s) => {
+      const activeRow = s.activeId
+        ? rows.find((r) => r.id === s.activeId)
+        : null;
+      if (!activeRow) return { convoRows: rows, convoListLoading: false };
+      const projectId = activeRow.project_id ?? null;
+      const workspacePath =
+        activeRow.workspace_path ??
+        (projectId ? s.projectsById[projectId]?.workspaces?.[0]?.path ?? null : null);
+      const workspaceChanged = workspacePath !== s.socketWorkspace;
+      return {
+        convoRows: rows,
+        convoListLoading: false,
+        draftProjectId: projectId,
+        socketWorkspace: workspacePath,
+        socketWorkspaceInfo: null,
+        draftWorkspacePath: workspacePath,
+        draftWorkspaceInfo: null,
+        ...(workspaceChanged
+          ? { workspaceDiff: null, workspaceDiffFileCache: {} }
+          : {}),
+      };
+    }),
   setConvoListLoading: (v) => set({ convoListLoading: v }),
   setLoadingConvoId: (id) => set({ loadingConvoId: id }),
 

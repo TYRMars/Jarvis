@@ -496,7 +496,9 @@ impl AgentProfileStore for MemoryAgentProfileStore {
         };
         match removed {
             Some(_) => {
-                let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+                let _ = self
+                    .tx
+                    .send(AgentProfileEvent::Deleted { id: id.to_string() });
                 Ok(true)
             }
             None => Ok(false),
@@ -535,15 +537,9 @@ impl MemoryActivityStore {
 
 #[async_trait]
 impl ActivityStore for MemoryActivityStore {
-    async fn list_for_requirement(
-        &self,
-        requirement_id: &str,
-    ) -> Result<Vec<Activity>, BoxError> {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Activity>, BoxError> {
         let guard = self.inner.read().await;
-        let mut rows = guard
-            .get(requirement_id)
-            .cloned()
-            .unwrap_or_default();
+        let mut rows = guard.get(requirement_id).cloned().unwrap_or_default();
         rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         if rows.len() > 500 {
             tracing::warn!(
@@ -559,9 +555,7 @@ impl ActivityStore for MemoryActivityStore {
     async fn append(&self, activity: &Activity) -> Result<(), BoxError> {
         {
             let mut guard = self.inner.write().await;
-            let list = guard
-                .entry(activity.requirement_id.clone())
-                .or_default();
+            let list = guard.entry(activity.requirement_id.clone()).or_default();
             list.push(activity.clone());
         }
         let _ = self.tx.send(ActivityEvent::Appended(activity.clone()));
@@ -1097,7 +1091,11 @@ mod tests {
         assert_eq!(only_b.len(), 1);
 
         // Empty for unknown.
-        assert!(store.list_for_requirement("never").await.unwrap().is_empty());
+        assert!(store
+            .list_for_requirement("never")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

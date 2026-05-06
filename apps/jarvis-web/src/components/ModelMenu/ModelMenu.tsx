@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react";
 import { useAppStore, type EffortLevel, type ProviderInfo } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { selectModel } from "../../services/socket";
+import { ContextWindowBadge } from "../ContextWindowBadge";
 
 const EFFORT_OPTIONS: { value: EffortLevel; labelKey: string }[] = [
   { value: "low", labelKey: "effortLow" },
@@ -135,6 +136,7 @@ export function ModelMenu() {
           <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
+      <ContextWindowBadge />
       <div id="model-menu" className={"model-menu" + (open ? "" : " hidden")} role="menu">
         <div className="model-menu-section">
           <div className="model-menu-heading">

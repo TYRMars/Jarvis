@@ -22,6 +22,8 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::Usage;
+
 /// One frame in a subagent's execution stream. The `subagent_id` is
 /// a per-invocation uuid (assigned by the harness when the
 /// subagent's `Tool::invoke` starts) so the UI can correlate frames
@@ -68,6 +70,15 @@ pub enum SubAgentEvent {
     /// tool reported — tool errors are surfaced as text here too,
     /// matching the main loop's behaviour.
     ToolEnd { name: String, output: String },
+    /// Token usage reported by the subagent's inner LLM call. This
+    /// is not rendered in the subagent timeline, but the web client
+    /// records it into the same long-running model buckets as the
+    /// main-agent `usage` frame.
+    Usage {
+        model: String,
+        #[serde(flatten)]
+        usage: Usage,
+    },
     /// SDK-style status update — a one-liner the subagent's wrapper
     /// chose to surface (e.g. "Searching files…" from
     /// `@anthropic-ai/claude-agent-sdk`'s structured events). The
@@ -152,7 +163,9 @@ mod tests {
         emit(SubAgentFrame {
             subagent_id: "x".into(),
             subagent_name: "x".into(),
-            event: SubAgentEvent::Status { message: "x".into() },
+            event: SubAgentEvent::Status {
+                message: "x".into(),
+            },
         });
         // The point: this didn't panic.
     }

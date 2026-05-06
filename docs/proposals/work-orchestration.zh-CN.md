@@ -12,6 +12,9 @@ project.create_or_get → requirement.create" 工作流段),以及 `triage.scan_
 另外仍补充借鉴 [Multica](https://github.com/multica-ai/multica) 的 AgentProfile /
 Activity timeline / 持久化 RequirementRun 三个概念(详见下文 "## 借鉴 Multica
 的产品形态")。
+后续常驻调度、外部 issue tracker、repo-owned `WORKFLOW.md`、per-issue workspace、
+retry/reconcile 的细化方案见
+[`symphony-inspired-orchestration.zh-CN.md`](symphony-inspired-orchestration.zh-CN.md)。
 **涉及:** 已新增 `crates/harness-requirement/`(原计划名 `harness-work`,因与
 `harness_core::Project + Requirement` 模型融合而改名);扩展 `harness-core` 的事件
 /工具协作方式但不修改 agent loop 语义;`harness-store` 已增加 Requirement 持久化

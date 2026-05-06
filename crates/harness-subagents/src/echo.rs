@@ -4,8 +4,7 @@
 //! loop → `AgentEvent::SubAgentEvent`) without spinning up an LLM.
 
 use crate::{
-    emit_subagent, Artifact, SubAgent, SubAgentEvent, SubAgentFrame, SubAgentInput,
-    SubAgentOutput,
+    emit_subagent, Artifact, SubAgent, SubAgentEvent, SubAgentFrame, SubAgentInput, SubAgentOutput,
 };
 use async_trait::async_trait;
 use harness_core::BoxError;
@@ -68,7 +67,9 @@ impl SubAgent for EchoSubAgent {
             emit_subagent(SubAgentFrame {
                 subagent_id: id.clone(),
                 subagent_name: self.name.clone(),
-                event: SubAgentEvent::Delta { text: c.to_string() },
+                event: SubAgentEvent::Delta {
+                    text: c.to_string(),
+                },
             });
         }
         let final_message = format!("echoed: {}", input.task);
@@ -135,10 +136,7 @@ mod tests {
     /// Tiny helper to scope a sender over an async block — sugar for
     /// the harness-core `with_subagent` re-export. Tests want a value
     /// out of the future, so we wrap.
-    async fn with_subagent_scope<F, R>(
-        tx: mpsc::UnboundedSender<SubAgentFrame>,
-        fut: F,
-    ) -> R
+    async fn with_subagent_scope<F, R>(tx: mpsc::UnboundedSender<SubAgentFrame>, fut: F) -> R
     where
         F: std::future::Future<Output = R>,
     {

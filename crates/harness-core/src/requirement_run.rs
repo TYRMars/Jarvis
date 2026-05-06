@@ -56,6 +56,12 @@ pub struct RequirementRun {
     /// run skipped verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationResult>,
+    /// Chronological, durable run log. This intentionally records
+    /// orchestration milestones and command outcomes at run scope,
+    /// while the conversation row remains authoritative for model
+    /// messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<RequirementRunLog>,
     /// Phase 5 — absolute path to the per-run git worktree, if
     /// one was minted at start. `None` means the run uses the
     /// main workspace checkout (worktree mode disabled, or the
@@ -83,6 +89,7 @@ impl RequirementRun {
             summary: None,
             error: None,
             verification: None,
+            logs: Vec::new(),
             worktree_path: None,
             started_at: chrono::Utc::now().to_rfc3339(),
             finished_at: None,
@@ -98,6 +105,109 @@ impl RequirementRun {
         }
         self.finished_at = Some(chrono::Utc::now().to_rfc3339());
     }
+
+    /// Append one durable operator-facing log line.
+    pub fn push_log(
+        &mut self,
+        level: RequirementRunLogLevel,
+        message: impl Into<String>,
+        data: Option<serde_json::Value>,
+    ) {
+        self.logs.push(RequirementRunLog {
+            id: uuid::Uuid::new_v4().to_string(),
+            level,
+            message: message.into(),
+            data,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+
+    /// Append summary + per-command log lines for a completed
+    /// verification result.
+    pub fn push_verification_logs(&mut self, result: &VerificationResult) {
+        let level = match result.status {
+            VerificationStatus::Passed | VerificationStatus::NeedsReview => {
+                RequirementRunLogLevel::Success
+            }
+            VerificationStatus::Failed => RequirementRunLogLevel::Error,
+            VerificationStatus::Skipped => RequirementRunLogLevel::Warn,
+        };
+        self.push_log(
+            level,
+            format!("Verification {}", result.status.as_wire()),
+            Some(serde_json::json!({
+                "status": result.status.as_wire(),
+                "commands": result.command_results.len(),
+                "notes": result.notes,
+            })),
+        );
+        for command in &result.command_results {
+            let passed = command.exit_code == Some(0);
+            self.push_log(
+                if passed {
+                    RequirementRunLogLevel::Success
+                } else {
+                    RequirementRunLogLevel::Error
+                },
+                if passed {
+                    format!("Command passed: {}", command.command)
+                } else {
+                    format!("Command failed: {}", command.command)
+                },
+                Some(command_log_data(command)),
+            );
+        }
+    }
+}
+
+fn command_log_data(command: &CommandResult) -> serde_json::Value {
+    serde_json::json!({
+        "command": command.command,
+        "exit_code": command.exit_code,
+        "duration_ms": command.duration_ms,
+        "stdout_excerpt": excerpt(&command.stdout),
+        "stderr_excerpt": excerpt(&command.stderr),
+    })
+}
+
+fn excerpt(s: &str) -> String {
+    const CAP: usize = 2_000;
+    if s.len() <= CAP {
+        return s.to_string();
+    }
+    let mut end = CAP;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[... truncated ...]", &s[..end])
+}
+
+/// One durable operator-facing log line for a [`RequirementRun`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequirementRunLog {
+    /// Stable identifier so clients can render logs without
+    /// index-based keys.
+    pub id: String,
+    /// Severity / semantic class for UI styling.
+    pub level: RequirementRunLogLevel,
+    /// Human-readable message.
+    pub message: String,
+    /// Optional structured details (workspace, command, exit code,
+    /// duration, short output excerpts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    /// RFC-3339 / ISO-8601 timestamp.
+    pub created_at: String,
+}
+
+/// Severity / semantic class for [`RequirementRunLog`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementRunLogLevel {
+    Info,
+    Warn,
+    Error,
+    Success,
 }
 
 /// Lifecycle of a [`RequirementRun`]. Serialised snake_case wire

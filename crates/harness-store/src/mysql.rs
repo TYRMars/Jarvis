@@ -10,9 +10,9 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    DocDraft, DocEvent, DocKind, DocProject, DocStore, ProjectStore, Requirement, RequirementEvent,
+    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
+    DocEvent, DocKind, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
     RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStatus, RequirementStore,
     TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
@@ -576,8 +576,7 @@ impl MysqlProjectStore {
 impl ProjectStore for MysqlProjectStore {
     async fn save(&self, project: &Project) -> Result<(), BoxError> {
         let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
-        let workspaces =
-            serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
+        let workspaces = serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
         let archived: i8 = if project.archived { 1 } else { 0 };
         sqlx::query(
             r#"
@@ -1048,10 +1047,7 @@ impl RequirementRunStore for MysqlRequirementRunStore {
         .await
         .map_err(StoreError::from)?;
         if rows.len() == 200 {
-            tracing::warn!(
-                requirement_id,
-                "requirement run list hit 200-item soft cap"
-            );
+            tracing::warn!(requirement_id, "requirement run list hit 200-item soft cap");
         }
         rows.into_iter()
             .map(|(payload,)| {
@@ -1210,7 +1206,9 @@ impl AgentProfileStore for MysqlAgentProfileStore {
             .await
             .map_err(StoreError::from)?;
         if res.rows_affected() > 0 {
-            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+            let _ = self
+                .tx
+                .send(AgentProfileEvent::Deleted { id: id.to_string() });
             Ok(true)
         } else {
             Ok(false)
@@ -1238,10 +1236,7 @@ impl MysqlActivityStore {
 
 #[async_trait]
 impl ActivityStore for MysqlActivityStore {
-    async fn list_for_requirement(
-        &self,
-        requirement_id: &str,
-    ) -> Result<Vec<Activity>, BoxError> {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Activity>, BoxError> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"SELECT payload
                  FROM activities
@@ -1258,8 +1253,7 @@ impl ActivityStore for MysqlActivityStore {
         }
         rows.into_iter()
             .map(|(payload,)| {
-                serde_json::from_str::<Activity>(&payload)
-                    .map_err(|e| -> BoxError { Box::new(e) })
+                serde_json::from_str::<Activity>(&payload).map_err(|e| -> BoxError { Box::new(e) })
             })
             .collect()
     }

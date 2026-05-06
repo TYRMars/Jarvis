@@ -1032,7 +1032,7 @@ mod tests {
                         arguments: json!({"path": "x"}),
                     }],
                     reasoning_content: None,
-                cache: None,
+                    cache: None,
                 },
             ],
             tools: vec![ToolSpec {
@@ -1076,7 +1076,7 @@ mod tests {
                         arguments: json!({"path": "x"}),
                     }],
                     reasoning_content: None,
-                cache: None,
+                    cache: None,
                 },
             ],
             tools: Vec::new(),

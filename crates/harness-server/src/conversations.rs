@@ -276,6 +276,7 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
                     "message_count": r.message_count,
                     "title": title,
                     "project_id": r.project_id,
+                    "workspace_path": conversation_workspace(&state, &r.id),
                 }));
             }
             Json(out).into_response()
@@ -560,11 +561,16 @@ async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> Respo
             "id": id,
             "messages": conv.messages,
             "project_id": meta.project_id,
+            "workspace_path": conversation_workspace(&state, &id),
         }))
         .into_response(),
         Ok(None) => not_found(),
         Err(e) => internal_error(e),
     }
+}
+
+fn conversation_workspace(state: &AppState, id: &str) -> Option<String> {
+    state.workspaces.as_ref().and_then(|s| s.lookup(id))
 }
 
 // ----------------------- delete -----------------------
@@ -641,6 +647,7 @@ async fn post_message(
     // propagates without persisting a stale snapshot.
     let prepared = match materialise(
         state.projects.as_ref(),
+        state.project_memory.as_ref(),
         conv.clone(),
         metadata.project_id.as_deref(),
     )
@@ -743,6 +750,7 @@ async fn stream_message(
     };
     let prepared = match materialise(
         state.projects.as_ref(),
+        state.project_memory.as_ref(),
         conv,
         metadata.project_id.as_deref(),
     )
@@ -1157,8 +1165,7 @@ mod tests {
         let app = full_router(state);
 
         // Seed project.
-        let mut p = harness_core::Project::new("Customer Support", "tone: terse")
-            .with_slug("cs");
+        let mut p = harness_core::Project::new("Customer Support", "tone: terse").with_slug("cs");
         proj_store.save(&p).await.unwrap();
 
         // Create a bound conversation.
@@ -1248,9 +1255,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_with_unknown_project_id_returns_404() {
-        let app = full_router(make_state(true).with_project_store(Arc::new(
-            harness_store::MemoryProjectStore::new(),
-        )));
+        let app = full_router(
+            make_state(true).with_project_store(Arc::new(harness_store::MemoryProjectStore::new())),
+        );
         let resp = app
             .oneshot(json_post(
                 "/v1/conversations",
@@ -1263,9 +1270,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_filter_by_project_id_works() {
-        let state = make_state(true).with_project_store(Arc::new(
-            harness_store::MemoryProjectStore::new(),
-        ));
+        let state =
+            make_state(true).with_project_store(Arc::new(harness_store::MemoryProjectStore::new()));
         let proj_store = state.projects.clone().unwrap();
         let p = harness_core::Project::new("P", "x").with_slug("p");
         proj_store.save(&p).await.unwrap();
@@ -1392,10 +1398,7 @@ mod tests {
         let store = state.store.clone().unwrap();
         let mut conv = Conversation::new();
         conv.push(Message::system("internal cache mentions FOOBAR"));
-        store
-            .save("__memory__.summary:abc", &conv)
-            .await
-            .unwrap();
+        store.save("__memory__.summary:abc", &conv).await.unwrap();
 
         let app = full_router(state);
         let resp = app

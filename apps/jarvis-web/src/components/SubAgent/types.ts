@@ -9,6 +9,14 @@ export type SubAgentEvent =
   | { kind: "delta"; text: string }
   | { kind: "tool_start"; name: string; arguments: unknown }
   | { kind: "tool_end"; name: string; output: string }
+  | {
+      kind: "usage";
+      model: string;
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      cached_prompt_tokens?: number;
+      reasoning_tokens?: number;
+    }
   | { kind: "status"; message: string }
   | { kind: "done"; final_message: string }
   | { kind: "error"; message: string };
@@ -91,6 +99,8 @@ export function applyFrame(run: SubAgentRun, frame: SubAgentFrame, now: number):
       }
       break;
     }
+    case "usage":
+      break;
     case "status":
       next.timeline.push({ kind: "status", message: frame.event.message, t: now });
       break;

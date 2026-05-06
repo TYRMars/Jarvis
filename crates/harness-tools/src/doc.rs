@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_core::{
-    active_workspace_or, canonicalize_workspace, BoxError, DocDraft, DocKind, DocProject,
-    DocStore, Tool, ToolCategory,
+    active_workspace_or, canonicalize_workspace, BoxError, DocDraft, DocKind, DocProject, DocStore,
+    Tool, ToolCategory,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -606,11 +606,9 @@ impl Tool for DocDraftSaveTool {
         // Confirm the parent project exists; otherwise the orphan draft
         // would clutter the store and never be visible in the UI.
         if self.store.get_project(&parsed.project_id).await?.is_none() {
-            return Err(format!(
-                "doc.draft.save: project `{}` not found",
-                parsed.project_id
-            )
-            .into());
+            return Err(
+                format!("doc.draft.save: project `{}` not found", parsed.project_id).into(),
+            );
         }
         let mut draft = DocDraft::new(parsed.project_id, parsed.content);
         if let Some(f) = parsed.format {
@@ -675,10 +673,7 @@ mod tests {
         async fn delete_project(&self, id: &str) -> Result<bool, BoxError> {
             let project = self.projects.write().await.remove(id);
             if let Some(p) = project {
-                self.drafts
-                    .write()
-                    .await
-                    .retain(|_, d| d.project_id != id);
+                self.drafts.write().await.retain(|_, d| d.project_id != id);
                 let _ = self.tx.send(DocEvent::ProjectDeleted {
                     workspace: p.workspace,
                     id: id.to_string(),
@@ -832,10 +827,7 @@ mod tests {
             .await
             .unwrap();
 
-        let latest = get
-            .invoke(json!({ "project_id": &id }))
-            .await
-            .unwrap();
+        let latest = get.invoke(json!({ "project_id": &id })).await.unwrap();
         let v: Value = serde_json::from_str(&latest).unwrap();
         assert_eq!(v["content"], "v2");
 

@@ -96,11 +96,15 @@ function onStarted(ev: any): void {
   const store = appStore.getState();
   store.setLoadingConvoId(null);
   store.setActiveId(id);
-  if (typeof ev.workspace_path === "string") {
-    store.setSocketWorkspace?.(ev.workspace_path, ev.workspace ?? null);
+  if ("project_id" in ev) {
+    store.setDraftProjectId?.(ev.project_id ?? null);
   }
-  if (typeof ev.project_id === "string") {
-    store.setDraftProjectId?.(ev.project_id);
+  if ("workspace_path" in ev) {
+    const projectId = typeof ev.project_id === "string" ? ev.project_id : null;
+    store.setSocketWorkspace?.(
+      ev.workspace_path ?? defaultProjectWorkspace(store, projectId),
+      ev.workspace ?? null,
+    );
   }
   // Brand-new conversation — pin the current routing so a future
   // resume restores the same model+provider it started under.
@@ -122,6 +126,7 @@ function onStarted(ev: any): void {
         created_at: now,
         updated_at: now,
         project_id: ev.project_id ?? null,
+        workspace_path: ev.workspace_path ?? null,
       },
       ...rows,
     ]);
@@ -142,11 +147,15 @@ function onResumed(ev: any): void {
   // in-session execution shoulder can find the linked Requirement
   // immediately after a refresh-and-resume — without these the user
   // would see a stale or empty shoulder until they navigate elsewhere.
-  if (typeof ev.workspace_path === "string") {
-    store.setSocketWorkspace?.(ev.workspace_path, ev.workspace ?? null);
+  if ("project_id" in ev) {
+    store.setDraftProjectId?.(ev.project_id ?? null);
   }
-  if (typeof ev.project_id === "string" && ev.project_id) {
-    store.setDraftProjectId?.(ev.project_id);
+  if ("workspace_path" in ev) {
+    const projectId = typeof ev.project_id === "string" ? ev.project_id : null;
+    store.setSocketWorkspace?.(
+      ev.workspace_path ?? defaultProjectWorkspace(store, projectId),
+      ev.workspace ?? null,
+    );
   }
   // Restore this conversation's saved routing when the catalog still
   // contains it. Stale entries (provider removed, option gone) are
@@ -166,4 +175,12 @@ function onResumed(ev: any): void {
     // restore it.
     store.setConvoRoutingFor(id, store.routing);
   }
+}
+
+function defaultProjectWorkspace(
+  store: ReturnType<typeof appStore.getState>,
+  projectId: string | null,
+): string | null {
+  if (!projectId) return null;
+  return store.projectsById?.[projectId]?.workspaces?.[0]?.path ?? null;
 }

@@ -76,12 +76,16 @@ impl ServerManager {
     pub fn ensure_server(&mut self) {
         if health_ok(&self.api_origin) {
             self.kind = ServerKind::External;
-            self.logs.push(format!("Using existing Jarvis server at {}", self.api_origin));
+            self.logs.push(format!(
+                "Using existing Jarvis server at {}",
+                self.api_origin
+            ));
             return;
         }
         if let Err(e) = self.start_sidecar(self.workspace.clone()) {
             self.last_error = Some(e.to_string());
-            self.logs.push(format!("Failed to start Jarvis server: {e}"));
+            self.logs
+                .push(format!("Failed to start Jarvis server: {e}"));
         }
     }
 
@@ -105,7 +109,8 @@ impl ServerManager {
         self.last_error = None;
         if let Err(e) = self.start_sidecar(self.workspace.clone()) {
             self.last_error = Some(e.to_string());
-            self.logs.push(format!("Failed to restart Jarvis server: {e}"));
+            self.logs
+                .push(format!("Failed to restart Jarvis server: {e}"));
         }
         self.status()
     }
@@ -115,7 +120,8 @@ impl ServerManager {
         let port = pick_port()?;
         let addr = format!("127.0.0.1:{port}");
         let api_origin = format!("http://{addr}");
-        let workspace = workspace.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let workspace =
+            workspace.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         self.record_workspace_pref(&workspace);
 
         self.logs.push(format!(
@@ -154,7 +160,8 @@ impl ServerManager {
         // out the full window.
         for _ in 0..60 {
             if health_ok(&self.api_origin) {
-                self.logs.push(format!("Jarvis sidecar ready at {}", self.api_origin));
+                self.logs
+                    .push(format!("Jarvis sidecar ready at {}", self.api_origin));
                 return Ok(());
             }
             if let Some(child) = self.child.as_mut() {
@@ -222,7 +229,8 @@ impl ServerManager {
         };
         match child.try_wait() {
             Ok(Some(status)) => {
-                self.logs.push(format!("Jarvis sidecar exited with {status}"));
+                self.logs
+                    .push(format!("Jarvis sidecar exited with {status}"));
                 self.child = None;
                 self.kind = ServerKind::Stopped;
             }
@@ -245,14 +253,17 @@ fn health_ok(origin: &str) -> bool {
         return false;
     };
     let Ok(mut stream) = TcpStream::connect_timeout(
-        &addr.parse().unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap()),
+        &addr
+            .parse()
+            .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap()),
         Duration::from_millis(180),
     ) else {
         return false;
     };
     use std::io::{Read, Write};
     let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
-    let _ = stream.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let _ =
+        stream.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     let mut buf = [0u8; 64];
     matches!(stream.read(&mut buf), Ok(n) if std::str::from_utf8(&buf[..n]).unwrap_or("").contains("200 OK"))
 }
@@ -285,15 +296,21 @@ fn locate_jarvis_binary() -> Result<PathBuf> {
     let workspace_root = manifest.parent().and_then(|p| p.parent());
     if let Some(root) = workspace_root {
         for profile in ["debug", "release"] {
-            let candidate = root.join("target").join(profile).join(binary_name("jarvis"));
+            let candidate = root
+                .join("target")
+                .join(profile)
+                .join(binary_name("jarvis"));
             if candidate.exists() {
                 return Ok(candidate);
             }
         }
     }
 
-    let workspace_target = workspace_root
-        .map(|root| root.join("target").join("debug").join(binary_name("jarvis")));
+    let workspace_target = workspace_root.map(|root| {
+        root.join("target")
+            .join("debug")
+            .join(binary_name("jarvis"))
+    });
     if let Some(path) = workspace_target {
         if path.exists() {
             return Ok(path);
@@ -321,5 +338,10 @@ fn binary_name(name: &str) -> String {
 fn default_workspace() -> Option<PathBuf> {
     env::var_os("JARVIS_DESKTOP_WORKSPACE")
         .map(PathBuf::from)
-        .or_else(|| env::current_dir().ok())
+        .or_else(|| {
+            env::current_dir()
+                .ok()
+                .filter(|path| path != Path::new("/"))
+        })
+        .or_else(|| env::var_os("HOME").map(PathBuf::from))
 }

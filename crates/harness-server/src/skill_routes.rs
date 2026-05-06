@@ -129,7 +129,11 @@ async fn reload(State(state): State<AppState>) -> Response {
     // semantics are pinned down.
     info!("skills/reload received (no-op stub)");
     let count = cat.read().map(|g| g.len()).unwrap_or(0);
-    (StatusCode::OK, Json(json!({ "count": count, "reloaded": false }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({ "count": count, "reloaded": false })),
+    )
+        .into_response()
 }
 
 /// Helper used by the binary at startup: build the canonical roots

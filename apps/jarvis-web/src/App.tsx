@@ -12,7 +12,7 @@
 // hash-based shim.
 
 import { useEffect } from "react";
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter, HashRouter, Route, Routes, Navigate } from "react-router-dom";
 import { AppSidebar } from "./components/AppSidebar";
 import { AppChatPane } from "./components/AppChatPane";
 import { AppWorkspaceRail } from "./components/AppWorkspaceRail";
@@ -26,6 +26,7 @@ import { SubAgentDemoPage } from "./components/SubAgent/SubAgentDemoPage";
 import { DesktopStartupOverlay } from "./components/Desktop/DesktopStartupOverlay";
 import { useAppStore, appStore } from "./store/appStore";
 import { boot, applyI18n } from "./services/boot";
+import { isDesktopRuntime } from "./services/desktop";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { showHelpOverlay } from "./services/slash_commands";
 import { loadProviders } from "./services/providers";
@@ -63,8 +64,10 @@ export function App() {
   // jumps you to a conversation.
   useShortcuts({ showHelp: showHelpOverlay });
 
+  const Router = isDesktopRuntime() ? HashRouter : BrowserRouter;
+
   return (
-    <BrowserRouter>
+    <Router>
       <DesktopStartupOverlay />
       <Routes>
         <Route path="/" element={<ChatLayout />} />
@@ -92,7 +95,7 @@ export function App() {
             index.html for these, so this is the client-side mirror. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </BrowserRouter>
+    </Router>
   );
 }
 

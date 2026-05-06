@@ -524,11 +524,7 @@ pub trait PermissionStore: Send + Sync {
     /// table's `default_mode` always reflects the highest-priority
     /// scope that has it set (User > Project > Session); see your
     /// store impl for the exact merge.
-    async fn set_default_mode(
-        &self,
-        scope: Scope,
-        mode: PermissionMode,
-    ) -> Result<(), BoxError>;
+    async fn set_default_mode(&self, scope: Scope, mode: PermissionMode) -> Result<(), BoxError>;
 
     /// Broadcast channel that fires once whenever the table changes
     /// (mutation through this store, or external file edit detected
@@ -586,8 +582,7 @@ mod tests {
 
     #[test]
     fn matcher_pointer_resolves_into_args() {
-        let r = PermissionRule::whole_tool("shell.exec")
-            .with_matcher("/command", "npm test");
+        let r = PermissionRule::whole_tool("shell.exec").with_matcher("/command", "npm test");
         assert!(r.matches("shell.exec", &json!({"command": "npm test"})));
         assert!(!r.matches("shell.exec", &json!({"command": "rm -rf /"})));
         assert!(!r.matches("shell.exec", &json!({"cmd": "npm test"})));
@@ -616,8 +611,7 @@ mod tests {
             default_mode: PermissionMode::Ask,
             deny: vec![ScopedRule {
                 scope: Scope::User,
-                rule: PermissionRule::whole_tool("shell.exec")
-                    .with_matcher("/command", "rm *"),
+                rule: PermissionRule::whole_tool("shell.exec").with_matcher("/command", "rm *"),
             }],
             ask: vec![],
             allow: vec![ScopedRule {
@@ -633,7 +627,13 @@ mod tests {
             PermissionMode::Auto,
         );
         assert_eq!(hit.decision, Decision::Deny);
-        assert!(matches!(hit.source, HitSource::Rule { bucket: Decision::Deny, .. }));
+        assert!(matches!(
+            hit.source,
+            HitSource::Rule {
+                bucket: Decision::Deny,
+                ..
+            }
+        ));
 
         // Same command without matching deny → allow rule wins.
         let hit = table.evaluate(
@@ -650,7 +650,12 @@ mod tests {
         let table = PermissionTable::default();
         let hit = table.evaluate("fs.edit", &json!({}), Decision::Ask, PermissionMode::Ask);
         assert_eq!(hit.decision, Decision::Ask);
-        assert!(matches!(hit.source, HitSource::ModeDefault { mode: PermissionMode::Ask }));
+        assert!(matches!(
+            hit.source,
+            HitSource::ModeDefault {
+                mode: PermissionMode::Ask
+            }
+        ));
     }
 
     #[test]

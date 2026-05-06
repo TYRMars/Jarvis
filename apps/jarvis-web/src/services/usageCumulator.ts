@@ -8,7 +8,8 @@
 // - Provider-reported tokens vary in completeness; cached counts are
 //   only present on providers that emit `cached_prompt_tokens`.
 // - Cost is estimated from a hardcoded price table keyed by model
-//   name. Unknown models report `null` cost (panel shows "—").
+//   name. Unknown models are tracked separately and make the full
+//   cost estimate partial rather than crashing the panel.
 
 import { appStore } from "../store/appStore";
 
@@ -19,6 +20,7 @@ const STORAGE_KEY = "jarvis.usage.daily.v1";
 const MAX_DAYS = 100;
 
 interface UsageFrameLike {
+  model?: string;
   prompt_tokens?: number;
   completion_tokens?: number;
   cached_prompt_tokens?: number;
@@ -28,6 +30,8 @@ interface UsageFrameLike {
 export interface DailyBucket {
   /// `YYYY-MM-DD` (local timezone).
   date: string;
+  /// Concrete model that produced this usage frame.
+  model: string;
   prompt: number;
   completion: number;
   cached: number;
@@ -63,6 +67,7 @@ function hydrate(): void {
       // Defensive: coerce missing numerics to 0 so sums never NaN.
       .map((b) => ({
         date: b.date,
+        model: typeof b.model === "string" && b.model.trim() ? b.model : "(legacy unknown)",
         prompt: b.prompt ?? 0,
         completion: b.completion ?? 0,
         cached: b.cached ?? 0,
@@ -114,10 +119,12 @@ function todayKey(): string {
 export function recordUsageDaily(ev: UsageFrameLike): void {
   hydrate();
   const today = todayKey();
-  let bucket = buckets.find((b) => b.date === today);
+  const model = normaliseModel(ev.model);
+  let bucket = buckets.find((b) => b.date === today && b.model === model);
   if (!bucket) {
     bucket = {
       date: today,
+      model,
       prompt: 0,
       completion: 0,
       cached: 0,
@@ -157,13 +164,12 @@ export interface WindowTotals {
   total: number;
 }
 
-export function totalsForWindow(days: number): WindowTotals {
-  hydrate();
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - (days - 1));
-  cutoff.setHours(0, 0, 0, 0);
-  const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
-  const totals: WindowTotals = {
+export interface ModelWindowTotals extends WindowTotals {
+  model: string;
+}
+
+function emptyTotals(): WindowTotals {
+  return {
     prompt: 0,
     completion: 0,
     cached: 0,
@@ -171,6 +177,19 @@ export function totalsForWindow(days: number): WindowTotals {
     calls: 0,
     total: 0,
   };
+}
+
+function cutoffKeyForWindow(days: number): string {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - (days - 1));
+  cutoff.setHours(0, 0, 0, 0);
+  return `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
+}
+
+export function totalsForWindow(days: number): WindowTotals {
+  hydrate();
+  const cutoffKey = cutoffKeyForWindow(days);
+  const totals = emptyTotals();
   for (const b of buckets) {
     if (b.date < cutoffKey) continue;
     totals.prompt += b.prompt;
@@ -183,23 +202,50 @@ export function totalsForWindow(days: number): WindowTotals {
   return totals;
 }
 
+export function totalsByModelForWindow(days: number): ModelWindowTotals[] {
+  hydrate();
+  const cutoffKey = cutoffKeyForWindow(days);
+  const byModel = new Map<string, ModelWindowTotals>();
+  for (const b of buckets) {
+    if (b.date < cutoffKey) continue;
+    const model = normaliseModel(b.model);
+    let totals = byModel.get(model);
+    if (!totals) {
+      totals = { model, ...emptyTotals() };
+      byModel.set(model, totals);
+    }
+    totals.prompt += b.prompt;
+    totals.completion += b.completion;
+    totals.cached += b.cached;
+    totals.reasoning += b.reasoning;
+    totals.calls += b.calls;
+  }
+  for (const totals of byModel.values()) {
+    totals.total = totals.prompt + totals.completion;
+  }
+  return Array.from(byModel.values()).sort((a, b) => b.total - a.total || a.model.localeCompare(b.model));
+}
+
 /// Today's bucket only. Returns zero-valued bucket when nothing
 /// recorded yet (so callers don't need null-check every field).
 export function todaysTotals(): WindowTotals {
   hydrate();
   const today = todayKey();
-  const b = buckets.find((x) => x.date === today);
-  if (!b) {
-    return { prompt: 0, completion: 0, cached: 0, reasoning: 0, calls: 0, total: 0 };
+  const totals = emptyTotals();
+  for (const b of buckets) {
+    if (b.date !== today) continue;
+    totals.prompt += b.prompt;
+    totals.completion += b.completion;
+    totals.cached += b.cached;
+    totals.reasoning += b.reasoning;
+    totals.calls += b.calls;
   }
-  return {
-    prompt: b.prompt,
-    completion: b.completion,
-    cached: b.cached,
-    reasoning: b.reasoning,
-    calls: b.calls,
-    total: b.prompt + b.completion,
-  };
+  totals.total = totals.prompt + totals.completion;
+  return totals;
+}
+
+export function todaysTotalsByModel(): ModelWindowTotals[] {
+  return totalsByModelForWindow(1);
 }
 
 export function resetUsageHistory(): void {
@@ -269,6 +315,33 @@ export function estimateCostUSD(
     (totals.cached * price.in * cachedDiscount) / 1_000_000 +
     (totals.completion * price.out) / 1_000_000;
   return cost;
+}
+
+export interface CostEstimate {
+  knownUSD: number;
+  unknownModels: string[];
+}
+
+export function estimateCostByModel(rows: ModelWindowTotals[]): CostEstimate {
+  let knownUSD = 0;
+  const unknownModels: string[] = [];
+  for (const row of rows) {
+    if (row.total <= 0) continue;
+    const cost = estimateCostUSD(row.model, row);
+    if (cost === null) {
+      unknownModels.push(row.model);
+    } else {
+      knownUSD += cost;
+    }
+  }
+  return { knownUSD, unknownModels };
+}
+
+function normaliseModel(model: string | undefined): string {
+  const trimmed = model?.trim();
+  if (trimmed) return trimmed;
+  const active = activeModelLabel().trim();
+  return active && active !== "(unknown)" ? active : "(unknown)";
 }
 
 // ---------- store integration -------------------------------------

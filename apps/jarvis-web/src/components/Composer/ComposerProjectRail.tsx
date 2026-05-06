@@ -31,9 +31,7 @@ import { chipColor } from "../../utils/chipColor";
 import { folderNameFromPath, samePath } from "./resourceSelection";
 import { BranchPopover } from "./BranchPopover";
 import { AddFolderDialog } from "./AddFolderDialog";
-import { ResourceManagerDialog } from "./ResourceManagerDialog";
-import { createProject } from "../../services/projects";
-import type { NewSessionResourceSelection } from "./resourceSelectionTypes";
+import { ProjectCreatePanel } from "../Projects/ProjectList";
 import { t } from "../../utils/i18n";
 import type { ProjectWorkspace } from "../../types/frames";
 
@@ -133,9 +131,9 @@ export function ComposerProjectRail() {
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [branchPopoverFor, setBranchPopoverFor] = useState<string | null>(null);
   const [addFolderOpen, setAddFolderOpen] = useState(false);
-  // Drives the ResourceManagerDialog opened from "+ 新建项目" in the
-  // project picker popover. Keeps state local because that popover
-  // doesn't otherwise know about the dialog.
+  // Drives the shared ProjectCreatePanel opened from "+ 新建项目" in
+  // the project picker popover. This is intentionally the same
+  // creation flow used by the Projects page.
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
@@ -281,12 +279,10 @@ export function ComposerProjectRail() {
                 <span>{p.name}</span>
               </button>
             ))}
-            {/* Separator + "+ 新建项目" entry. Reuses the existing
-                ResourceManagerDialog folders tab, which already
-                supports both "find existing project from folder
-                name" and "create fresh project from N folders". So
-                this is a one-click entry into the multi-folder
-                quick-create flow without duplicating its UI. */}
+            {/* Separator + "+ 新建项目" entry. Opens the same shared
+                create dialog used by the Projects page so both
+                surfaces collect name / description / workspace
+                folders consistently. */}
             <div className="composer-project-popover-divider" aria-hidden="true" />
             <button
               type="button"
@@ -399,48 +395,16 @@ export function ComposerProjectRail() {
         </>
       ) : null}
 
-      {/* "+ 新建项目" entry from the project picker popover lands
-          here. The dialog is portal-mounted, so depth in the rail's
-          JSX tree doesn't matter; rendering it once at the end keeps
-          the lifecycle attached to the rail's mount/unmount. */}
-      <ResourceManagerDialog
-        open={newProjectDialogOpen}
-        onClose={() => setNewProjectDialogOpen(false)}
-        onConfirm={(sel) => void onNewProjectConfirm(sel)}
-        initialTab="folders"
-      />
+      {newProjectDialogOpen ? (
+        <ProjectCreatePanel
+          onDone={(created) => {
+            setNewProjectDialogOpen(false);
+            if (!created) return;
+            setDraftProjectId(created.id);
+            setDraftWorkspace(created.workspaces?.[0]?.path ?? null, null);
+          }}
+        />
+      ) : null}
     </div>
   );
-
-  /// Selection handler for the "+ 新建项目" dialog. Reuses the same
-  /// shape `applyNewSessionResourceSelection` consumed in the older
-  /// ComposerSessionContext — the dialog returns a discriminated
-  /// union; we map each variant onto draft state + project create.
-  async function onNewProjectConfirm(sel: NewSessionResourceSelection) {
-    if (sel.mode === "free_chat") {
-      // The picker can still emit free_chat (e.g. user clicks Cancel
-      // implicitly via a different path); treat as "no binding".
-      setDraftProjectId(null);
-      setDraftWorkspace(sel.workspacePath, null);
-      return;
-    }
-    if (sel.mode === "existing_project") {
-      // User pasted a folder path that matched an existing project —
-      // bind to that project, no new row created.
-      setDraftProjectId(sel.projectId);
-      setDraftWorkspace(sel.workspacePath, null);
-      return;
-    }
-    // new_project_from_folder — create the project bundling all
-    // chosen folders, then bind. Server canonicalises + dedupes the
-    // path list, so duplicates collapse silently.
-    const created = await createProject({
-      name: sel.projectDraft.name,
-      slug: sel.projectDraft.slug,
-      instructions: sel.projectDraft.instructions,
-      workspaces: sel.workspacePaths.map((p) => ({ path: p })),
-    });
-    if (created) setDraftProjectId(created.id);
-    setDraftWorkspace(sel.workspacePaths[0] ?? null, null);
-  }
 }

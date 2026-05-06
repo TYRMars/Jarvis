@@ -98,10 +98,7 @@ pub async fn run(args: DoctorArgs, cfg: Option<&Config>) -> Result<()> {
         let report = cleanup(&client, &base).await?;
         eprintln!(
             "cleanup attempted={} removed={}",
-            report
-                .get("attempted")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
+            report.get("attempted").and_then(Value::as_u64).unwrap_or(0),
             report.get("removed").and_then(Value::as_u64).unwrap_or(0)
         );
         if let Some(errs) = report.get("errors").and_then(Value::as_array) {
@@ -227,10 +224,7 @@ fn print_failed(failed: &Option<Value>) {
             .and_then(Value::as_str)
             .map(|s| s.split('-').next().unwrap_or(s))
             .unwrap_or("?");
-        let finished = it
-            .get("finished_at")
-            .and_then(Value::as_str)
-            .unwrap_or("?");
+        let finished = it.get("finished_at").and_then(Value::as_str).unwrap_or("?");
         println!("  {id}  req {req}  finished {finished}");
         if let Some(err) = it.get("error").and_then(Value::as_str) {
             // First line of the error keeps the table compact.

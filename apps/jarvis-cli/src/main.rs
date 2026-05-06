@@ -114,6 +114,21 @@ pub struct Args {
     /// only use inside isolated sandboxes.
     #[arg(long)]
     pub dangerously_skip_permissions: bool,
+
+    /// Persistence URL for `/save` and `/load`. Uses the same
+    /// scheme-based backend selection as `JARVIS_DB_URL`
+    /// (`json:`, `sqlite:`, `postgres://`, `mysql://`).
+    #[arg(long, value_name = "URL")]
+    pub db: Option<String>,
+
+    /// Enable short-term memory with a token budget of N.
+    /// Without this flag the full conversation is sent every turn.
+    #[arg(long, value_name = "N")]
+    pub memory_tokens: Option<usize>,
+
+    /// Memory backend: `window` (default) or `summary`.
+    #[arg(long, value_name = "MODE", default_value = "window")]
+    pub memory_mode: String,
 }
 
 #[tokio::main]

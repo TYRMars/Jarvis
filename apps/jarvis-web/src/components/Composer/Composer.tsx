@@ -49,6 +49,7 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
   const clearPaste = useAppStore((s) => s.clearPastedBlobs);
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const composingRef = useRef(false);
   const [slashIdx, setSlashIdx] = useState(0);
 
   // Auto-grow textarea height with content.
@@ -65,6 +66,9 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
   const filtered = (() => {
     if (!value.startsWith("/")) return [] as SlashCommand[];
     const prefix = value.split(/\s/, 1)[0].toLowerCase();
+    if (value.length > prefix.length && /\s/.test(value[prefix.length] ?? "")) {
+      return [] as SlashCommand[];
+    }
     return slashCommands().filter((c) => c.cmd.startsWith(prefix));
   })();
   const slashOpen = filtered.length > 0;
@@ -75,8 +79,17 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
   }, [filtered.length, slashIdx]);
 
   const acceptSlash = (cmd: SlashCommand) => {
+    if (cmd.insertText != null) {
+      setValue(cmd.insertText);
+      requestAnimationFrame(() => {
+        taRef.current?.focus();
+        const pos = cmd.insertText?.length ?? 0;
+        taRef.current?.setSelectionRange(pos, pos);
+      });
+      return;
+    }
     setValue("");
-    try { cmd.run(); }
+    try { cmd.run?.(); }
     catch (e: any) { showBanner(String(e?.message || e)); }
   };
 
@@ -158,6 +171,12 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
           placeholder={t("inputPlaceholder")}
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
           onPaste={(e) => {
             const text = e.clipboardData?.getData("text") || "";
             if (text.length < PASTE_THRESHOLD_BYTES) return;
@@ -178,6 +197,9 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
             });
           }}
           onKeyDown={(e) => {
+            if (composingRef.current || e.nativeEvent.isComposing) {
+              return;
+            }
             if (slashOpen) {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
@@ -196,6 +218,9 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
               }
             }
             if (e.key === "Enter" && !e.shiftKey) {
+              if (useAppStore.getState().inFlight) {
+                return;
+              }
               e.preventDefault();
               submit();
             }

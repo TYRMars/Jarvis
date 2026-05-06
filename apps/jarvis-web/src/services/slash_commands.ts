@@ -16,6 +16,7 @@ export function slashCommands(): SlashCommand[] {
   // theme toggled, etc.).
   return [
     { cmd: "/help",   descKey: "cmdHelp",   run: () => showHelpOverlay() },
+    { cmd: "/goal",   descKey: "cmdGoal",   insertText: "/goal " },
     { cmd: "/new",    descKey: "cmdNew",    run: () => {
         // Same "preserve project + workspace" semantics as Cmd+K /
         // Cmd+N — `/new` should start a fresh chat without dropping

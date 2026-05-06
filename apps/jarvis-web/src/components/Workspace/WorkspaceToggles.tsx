@@ -175,6 +175,7 @@ export function WorkspacePanelMenu() {
     { key: "terminal",     labelKey: "panelTerminal",  fallback: "Terminal",  icon: <TerminalIcon />, shortcut: "^`" },
     { key: "files",        labelKey: "panelFiles",     fallback: "Files",     icon: <FilesIcon />, shortcut: "⇧⌘F" },
     { key: "tasks",        labelKey: "tasks",          fallback: "Tasks",     icon: <TasksIcon /> },
+    { key: "changeReport", labelKey: "changeReportTitle", fallback: "Change report", icon: <ReportIcon /> },
     { key: "plan",         labelKey: "plan",           fallback: "Plan",      icon: <PlanIcon /> },
   ];
 
@@ -281,6 +282,17 @@ function TasksIcon() {
   );
 }
 
+function ReportIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 3h10l4 4v14H5z" />
+      <path d="M14 3v5h5" />
+      <path d="M8 13h8" />
+      <path d="M8 17h5" />
+    </svg>
+  );
+}
+
 function PlanIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -291,4 +303,3 @@ function PlanIcon() {
     </svg>
   );
 }
-

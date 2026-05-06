@@ -31,8 +31,12 @@ use harness_core::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::error;
+use tracing::{error, warn};
 
+use crate::project_memory::{
+    delete_project_memory_file, snapshot_project_memory, sync_project_memory,
+    write_project_memory_file,
+};
 use crate::routes::workspace_snapshot;
 use crate::state::AppState;
 use crate::worktree::{create_worktree_for_branch, WorktreeOutcome};
@@ -64,6 +68,14 @@ pub(crate) fn router() -> Router<AppState> {
             "/v1/projects/:id_or_slug/workspaces/switch",
             post(workspace_switch),
         )
+        .route("/v1/projects/:id_or_slug/memory", get(get_memory))
+        .route("/v1/projects/:id_or_slug/memory/sync", post(sync_memory))
+        .route(
+            "/v1/projects/:id_or_slug/memory/files/:file",
+            get(get_memory_file)
+                .put(update_memory_file)
+                .delete(delete_memory_file),
+        )
 }
 
 #[allow(clippy::result_large_err)]
@@ -94,6 +106,43 @@ fn not_found() -> Response {
         Json(json!({ "error": "project not found" })),
     )
         .into_response()
+}
+
+#[allow(clippy::result_large_err)]
+fn require_memory_config(
+    state: &AppState,
+) -> Result<crate::project_memory::ProjectMemoryConfig, Response> {
+    state.project_memory.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "project memory not configured" })),
+        )
+            .into_response()
+    })
+}
+
+#[allow(clippy::result_large_err)]
+fn require_requirement_store(
+    state: &AppState,
+) -> Result<Arc<dyn harness_core::RequirementStore>, Response> {
+    state.requirements.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "requirement store not configured" })),
+        )
+            .into_response()
+    })
+}
+
+async fn load_project_or_404(
+    store: &Arc<dyn ProjectStore>,
+    id_or_slug: &str,
+) -> Result<Project, Response> {
+    match load_by_id_or_slug(&**store, id_or_slug).await {
+        Ok(Some(project)) => Ok(project),
+        Ok(None) => Err(not_found()),
+        Err(e) => Err(internal_error(e)),
+    }
 }
 
 // ----------------------- create -----------------------
@@ -164,6 +213,7 @@ async fn create(State(state): State<AppState>, Json(req): Json<CreateRequest>) -
     if let Err(e) = store.save(&p).await {
         return internal_error(e);
     }
+    sync_project_memory_later(&state, store.clone(), p.id.clone());
     (StatusCode::CREATED, Json(project_to_json(&p))).into_response()
 }
 
@@ -475,7 +525,156 @@ async fn update(
     if let Err(e) = store.save(&p).await {
         return internal_error(e);
     }
+    sync_project_memory_later(&state, store.clone(), p.id.clone());
     Json(project_to_json(&p)).into_response()
+}
+
+fn sync_project_memory_later(
+    state: &AppState,
+    projects: Arc<dyn ProjectStore>,
+    project_id: String,
+) {
+    let (Some(config), Some(requirements)) =
+        (state.project_memory.clone(), state.requirements.clone())
+    else {
+        return;
+    };
+    tokio::spawn(async move {
+        if let Err(e) = sync_project_memory(&config, &projects, &requirements, &project_id).await {
+            warn!(error = %e, project_id, "project memory sync after project update failed");
+        }
+    });
+}
+
+// ----------------------- project memory -----------------------
+
+async fn get_memory(State(state): State<AppState>, Path(id_or_slug): Path<String>) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let config = match require_memory_config(&state) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if let Some(requirements) = state.requirements.as_ref() {
+        if let Err(e) = sync_project_memory(&config, &store, requirements, &project.id).await {
+            warn!(error = %e, project_id = %project.id, "project memory sync before read failed");
+        }
+    }
+    match snapshot_project_memory(&config, &project) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+async fn sync_memory(State(state): State<AppState>, Path(id_or_slug): Path<String>) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let config = match require_memory_config(&state) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let requirements = match require_requirement_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if let Err(e) = sync_project_memory(&config, &store, &requirements, &project.id).await {
+        return internal_error(e);
+    }
+    match snapshot_project_memory(&config, &project) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+async fn get_memory_file(
+    State(state): State<AppState>,
+    Path((id_or_slug, file)): Path<(String, String)>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let config = match require_memory_config(&state) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match snapshot_project_memory(&config, &project) {
+        Ok(snapshot) => match snapshot.files.into_iter().find(|f| f.name == file) {
+            Some(file) => Json(file).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "memory file not found" })),
+            )
+                .into_response(),
+        },
+        Err(e) => internal_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MemoryFileBody {
+    content: String,
+}
+
+async fn update_memory_file(
+    State(state): State<AppState>,
+    Path((id_or_slug, file)): Path<(String, String)>,
+    Json(body): Json<MemoryFileBody>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let config = match require_memory_config(&state) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match write_project_memory_file(&config, &project, &file, &body.content) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(e) => bad_request(&e.to_string()),
+    }
+}
+
+async fn delete_memory_file(
+    State(state): State<AppState>,
+    Path((id_or_slug, file)): Path<(String, String)>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let config = match require_memory_config(&state) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match delete_project_memory_file(&config, &project, &file) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(e) => bad_request(&e.to_string()),
+    }
 }
 
 /// Validate a column list submitted by the client. Returns an error
@@ -588,6 +787,7 @@ async fn restore(State(state): State<AppState>, Path(id): Path<String>) -> Respo
     if let Err(e) = store.save(&p).await {
         return internal_error(e);
     }
+    sync_project_memory_later(&state, store.clone(), p.id.clone());
     Json(project_to_json(&p)).into_response()
 }
 
@@ -635,34 +835,32 @@ async fn workspaces_status(
             (idx, ws, snap)
         })
         .collect();
-    let collected = match tokio::time::timeout(
-        WORKSPACES_STATUS_TIMEOUT,
-        futures::future::join_all(probes),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(_) => {
-            // Total timeout — return one synthetic row per workspace so
-            // the UI still gets a stable shape and can retry.
-            let rows: Vec<Value> = project
-                .workspaces
-                .iter()
-                .map(|ws| {
-                    let mut entry = json!({
-                        "path": ws.path,
-                        "vcs": "unknown",
-                        "error": "git probe timed out",
-                    });
-                    if let Some(name) = &ws.name {
-                        entry["name"] = json!(name);
-                    }
-                    entry
-                })
-                .collect();
-            return Json(rows).into_response();
-        }
-    };
+    let collected =
+        match tokio::time::timeout(WORKSPACES_STATUS_TIMEOUT, futures::future::join_all(probes))
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => {
+                // Total timeout — return one synthetic row per workspace so
+                // the UI still gets a stable shape and can retry.
+                let rows: Vec<Value> = project
+                    .workspaces
+                    .iter()
+                    .map(|ws| {
+                        let mut entry = json!({
+                            "path": ws.path,
+                            "vcs": "unknown",
+                            "error": "git probe timed out",
+                        });
+                        if let Some(name) = &ws.name {
+                            entry["name"] = json!(name);
+                        }
+                        entry
+                    })
+                    .collect();
+                return Json(rows).into_response();
+            }
+        };
 
     let mut rows: Vec<Value> = Vec::with_capacity(collected.len());
     for (_idx, ws, snap) in collected {

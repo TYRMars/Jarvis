@@ -33,8 +33,8 @@ mod plugin_cli;
 mod project_cmd;
 mod serve;
 mod skill_cli;
-mod subagents;
 mod status;
+mod subagents;
 
 #[cfg(test)]
 mod test_env;

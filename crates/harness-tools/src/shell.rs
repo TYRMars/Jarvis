@@ -20,9 +20,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use harness_core::{
-    emit_progress_to, progress_sender, BoxError, Tool, ToolCategory, ToolProgress,
-};
+use harness_core::{emit_progress_to, progress_sender, BoxError, Tool, ToolCategory, ToolProgress};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;

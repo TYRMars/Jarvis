@@ -474,8 +474,7 @@ impl SqliteProjectStore {
 impl ProjectStore for SqliteProjectStore {
     async fn save(&self, project: &Project) -> Result<(), BoxError> {
         let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
-        let workspaces =
-            serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
+        let workspaces = serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
         let archived: i64 = if project.archived { 1 } else { 0 };
         sqlx::query(
             r#"
@@ -841,7 +840,9 @@ impl RequirementStore for SqliteRequirementStore {
         if rows.len() == 500 {
             tracing::warn!(project_id, "requirement list hit 500-item soft cap");
         }
-        rows.into_iter().map(RequirementRow::into_requirement).collect()
+        rows.into_iter()
+            .map(RequirementRow::into_requirement)
+            .collect()
     }
 
     async fn get(&self, id: &str) -> Result<Option<Requirement>, BoxError> {
@@ -958,10 +959,7 @@ impl RequirementRunStore for SqliteRequirementRunStore {
         .await
         .map_err(StoreError::from)?;
         if rows.len() == 200 {
-            tracing::warn!(
-                requirement_id,
-                "requirement run list hit 200-item soft cap"
-            );
+            tracing::warn!(requirement_id, "requirement run list hit 200-item soft cap");
         }
         rows.into_iter()
             .map(|(payload,)| {
@@ -1060,12 +1058,11 @@ impl SqliteAgentProfileStore {
 #[async_trait]
 impl AgentProfileStore for SqliteAgentProfileStore {
     async fn list(&self) -> Result<Vec<AgentProfile>, BoxError> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            r#"SELECT payload FROM agent_profiles ORDER BY name ASC LIMIT 200"#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StoreError::from)?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as(r#"SELECT payload FROM agent_profiles ORDER BY name ASC LIMIT 200"#)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
         if rows.len() == 200 {
             tracing::warn!("agent profile list hit 200-item soft cap");
         }
@@ -1121,7 +1118,9 @@ impl AgentProfileStore for SqliteAgentProfileStore {
             .await
             .map_err(StoreError::from)?;
         if res.rows_affected() > 0 {
-            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+            let _ = self
+                .tx
+                .send(AgentProfileEvent::Deleted { id: id.to_string() });
             Ok(true)
         } else {
             Ok(false)
@@ -1149,10 +1148,7 @@ impl SqliteActivityStore {
 
 #[async_trait]
 impl ActivityStore for SqliteActivityStore {
-    async fn list_for_requirement(
-        &self,
-        requirement_id: &str,
-    ) -> Result<Vec<Activity>, BoxError> {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Activity>, BoxError> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"SELECT payload
                  FROM activities
@@ -1165,15 +1161,11 @@ impl ActivityStore for SqliteActivityStore {
         .await
         .map_err(StoreError::from)?;
         if rows.len() == 500 {
-            tracing::warn!(
-                requirement_id,
-                "activity list hit 500-item soft cap"
-            );
+            tracing::warn!(requirement_id, "activity list hit 500-item soft cap");
         }
         rows.into_iter()
             .map(|(payload,)| {
-                serde_json::from_str::<Activity>(&payload)
-                    .map_err(|e| -> BoxError { Box::new(e) })
+                serde_json::from_str::<Activity>(&payload).map_err(|e| -> BoxError { Box::new(e) })
             })
             .collect()
     }

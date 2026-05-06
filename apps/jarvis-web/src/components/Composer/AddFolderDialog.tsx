@@ -9,23 +9,15 @@
 // label; when blank the rail falls back to the folder basename.
 
 import { useEffect, useRef, useState } from "react";
-import { findWorkspaceByName, probeWorkspace } from "../../services/workspace";
+import { probeWorkspace } from "../../services/workspace";
+import {
+  pickWorkspaceFolder,
+  supportsWorkspaceFolderPicker,
+} from "../../services/folderPicker";
 import { updateProject } from "../../services/projects";
 import type { Project, ProjectWorkspace } from "../../types/frames";
 import { t } from "../../utils/i18n";
 import { samePath } from "./resourceSelection";
-
-/// True when the browser exposes `window.showDirectoryPicker` (Chrome
-/// / Edge / Opera). Firefox + Safari fall back to manual path input —
-/// we hide the Browse button there so users don't get a confusing
-/// no-op click.
-function supportsDirectoryPicker(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof (window as unknown as { showDirectoryPicker?: unknown })
-      .showDirectoryPicker === "function"
-  );
-}
 
 interface Props {
   project: Project;
@@ -48,7 +40,7 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
   /// under the path input. Cleared once the user picks one.
   const [candidates, setCandidates] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const browseSupported = supportsDirectoryPicker();
+  const browseSupported = supportsWorkspaceFolderPicker();
 
   // Reset form whenever the dialog opens.
   useEffect(() => {
@@ -60,10 +52,9 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [open]);
 
-  /// "Browse…" — call the OS folder picker, then ask the backend to
-  /// resolve the picked basename into absolute paths. The browser
-  /// API itself never exposes the absolute path (security); we use
-  /// the basename + a server-side search to bridge.
+  /// "Browse…" — call the system folder picker. Desktop returns an
+  /// absolute path directly; browser builds fall back to basename
+  /// resolution through the backend.
   const onBrowse = async () => {
     if (!browseSupported) {
       setError(t("composerFolderPickerUnsupported"));
@@ -71,31 +62,20 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
     }
     setError(null);
     try {
-      // The TS lib types lag the actual API surface — narrow via
-      // `unknown` then call. The real signature returns a
-      // `FileSystemDirectoryHandle` with a `name` field.
-      const picker = (window as unknown as {
-        showDirectoryPicker: () => Promise<{ name: string }>;
-      }).showDirectoryPicker;
-      const handle = await picker();
-      const found = await findWorkspaceByName(handle.name);
-      if (found.length === 0) {
-        // No match in common roots — pre-fill with `~/<name>` so the
-        // user can finish typing the parent path without retyping
-        // the basename.
-        setPath(`~/${handle.name}`);
+      const picked = await pickWorkspaceFolder();
+      if (!picked.path) return;
+      setPath(picked.path);
+      if (picked.unresolvedName) {
         setError(
-          t("composerFolderPickerNoMatch").replace("{0}", handle.name),
+          t("composerFolderPickerNoMatch").replace("{0}", picked.unresolvedName),
         );
         setCandidates([]);
-      } else if (found.length === 1) {
-        setPath(found[0]);
+      } else if (picked.candidates.length <= 1) {
         setCandidates([]);
       } else {
-        setCandidates(found);
+        setCandidates(picked.candidates);
         // Pre-fill the first candidate so a user who hits Add
         // without picking still gets a sensible value.
-        setPath(found[0]);
       }
     } catch {
       // User cancelled the OS dialog — no-op, no error.

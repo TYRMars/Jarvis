@@ -41,10 +41,7 @@ impl Tool for HttpFetchTool {
     }
 
     fn summary_for_audit(&self, args: &Value) -> Option<String> {
-        let method = args
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("GET");
+        let method = args.get("method").and_then(Value::as_str).unwrap_or("GET");
         args.get("url")
             .and_then(Value::as_str)
             .map(|u| format!("{method} {u}"))

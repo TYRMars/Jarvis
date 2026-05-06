@@ -20,6 +20,7 @@ use anyhow::Result;
 
 use crate::auth_store;
 use crate::config::Config;
+use crate::serve::default_jarvis_workspace_root;
 
 pub fn run(explicit: Option<&Path>) -> Result<()> {
     // Re-do config discovery so a `--config` flag passes through.
@@ -82,7 +83,7 @@ pub fn run(explicit: Option<&Path>) -> Result<()> {
 
     // ---- tools ----
     let fs_root = pick_string_opt("JARVIS_FS_ROOT", cfg.tools.fs_root.as_deref().map(path_str))
-        .unwrap_or_else(|| ".".to_string());
+        .unwrap_or_else(|| default_jarvis_workspace_root().display().to_string());
     let fs_write = pick_bool("JARVIS_ENABLE_FS_WRITE", cfg.tools.enable_fs_write);
     let fs_edit = pick_bool("JARVIS_ENABLE_FS_EDIT", cfg.tools.enable_fs_edit);
     let fs_patch = pick_bool("JARVIS_ENABLE_FS_PATCH", cfg.tools.enable_fs_patch);

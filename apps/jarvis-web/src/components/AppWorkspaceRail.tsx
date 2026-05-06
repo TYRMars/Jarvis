@@ -17,6 +17,7 @@ import { PlanCountSpan, PlanList } from "./Workspace/PlanList";
 import { TaskCountSpan, TasksList } from "./Workspace/TasksRail";
 import { WorkspaceDiff, WorkspaceDiffCount } from "./Workspace/WorkspaceDiff";
 import { ClearTasksButton } from "./Workspace/WorkspaceToggles";
+import { ChangeReport, ChangeReportCount } from "./Workspace/ChangeReport";
 import { FilesSurface } from "./Workspace/FilesSurface";
 import { TerminalSurface } from "./Workspace/TerminalSurface";
 import { useAppStore } from "../store/appStore";
@@ -82,6 +83,17 @@ export function AppWorkspaceRail() {
       ),
       extraActions: <ClearTasksButton />,
       content: <TasksList />,
+    },
+    {
+      key: "changeReport",
+      className: "rail-change-report",
+      title: t("changeReportTitle"),
+      subtitle: (
+        <>
+          <ChangeReportCount /> <span>{tx("changeReportCountLabel", "change(s) so far")}</span>
+        </>
+      ),
+      content: <ChangeReport />,
     },
     {
       key: "plan",

@@ -266,7 +266,10 @@ mod tests {
         registry.register(NamedTool("fs.read"));
         let mut removed = registry.unregister_prefix("git");
         removed.sort();
-        assert_eq!(removed, vec!["git.diff".to_string(), "git.status".to_string()]);
+        assert_eq!(
+            removed,
+            vec!["git.diff".to_string(), "git.status".to_string()]
+        );
         assert!(!registry.contains("git.status"));
         assert!(registry.contains("fs.read"));
     }

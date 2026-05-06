@@ -104,10 +104,7 @@ impl SkillCatalog {
     /// [`Self::merge_disk`] calls can shadow it.
     pub fn merge_bundled(&mut self, dir: &'static include_dir::Dir<'static>) {
         for sub in dir.dirs() {
-            let Some(file) = sub.get_file(format!(
-                "{}/{SKILL_FILE}",
-                sub.path().display()
-            )) else {
+            let Some(file) = sub.get_file(format!("{}/{SKILL_FILE}", sub.path().display())) else {
                 continue;
             };
             let Some(text) = file.contents_utf8() else {
@@ -227,7 +224,12 @@ mod tests {
     #[test]
     fn loads_skills_from_one_root() {
         let tmp = tempfile::tempdir().unwrap();
-        write(tmp.path(), "alpha", "name: alpha\ndescription: a\n", "Body A");
+        write(
+            tmp.path(),
+            "alpha",
+            "name: alpha\ndescription: a\n",
+            "Body A",
+        );
         write(tmp.path(), "beta", "name: beta\ndescription: b\n", "Body B");
         let cat = SkillCatalog::load([(tmp.path().to_path_buf(), SkillSource::User)]);
         assert_eq!(cat.len(), 2);
@@ -240,8 +242,18 @@ mod tests {
     fn workspace_shadows_user() {
         let user = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        write(user.path(), "shared", "name: shared\ndescription: user one\n", "USER");
-        write(project.path(), "shared", "name: shared\ndescription: project one\n", "PROJECT");
+        write(
+            user.path(),
+            "shared",
+            "name: shared\ndescription: user one\n",
+            "USER",
+        );
+        write(
+            project.path(),
+            "shared",
+            "name: shared\ndescription: project one\n",
+            "PROJECT",
+        );
 
         let cat = SkillCatalog::load([
             (user.path().to_path_buf(), SkillSource::User),
@@ -271,10 +283,8 @@ mod tests {
 
     #[test]
     fn missing_root_is_silent() {
-        let cat = SkillCatalog::load([(
-            PathBuf::from("/nonexistent/path/skills"),
-            SkillSource::User,
-        )]);
+        let cat =
+            SkillCatalog::load([(PathBuf::from("/nonexistent/path/skills"), SkillSource::User)]);
         assert!(cat.is_empty());
     }
 

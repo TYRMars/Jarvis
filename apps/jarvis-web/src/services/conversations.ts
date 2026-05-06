@@ -88,11 +88,14 @@ export async function resumeConversation(id: string): Promise<void> {
   store.setLoadingConvoId(id);
   try {
     const restored = store.restoreConversationSurface(id);
+    const row = store.convoRows.find((r) => r.id === id);
+    hydrateBinding(row?.project_id ?? null, row?.workspace_path ?? null);
     if (!restored) {
       const r = await fetch(apiUrl(`/v1/conversations/${encodeURIComponent(id)}`));
       if (!r.ok) throw new Error(`get: ${r.status}`);
       const body = await r.json();
       store.loadHistory(body.messages || []);
+      hydrateBinding(body.project_id ?? null, body.workspace_path ?? null);
       store.saveConversationSurface(id);
     }
     // Restore this conversation's saved provider+model first so the
@@ -157,4 +160,15 @@ function pickedRouting(): { provider: string | null; model: string | null } {
   const idx = v.indexOf("|");
   if (idx < 0) return { provider: v, model: null };
   return { provider: v.slice(0, idx) || null, model: v.slice(idx + 1) || null };
+}
+
+function hydrateBinding(
+  projectId: string | null,
+  workspacePath: string | null,
+): void {
+  const store = appStore.getState();
+  store.setDraftProjectId(projectId);
+  const fallbackWorkspace =
+    projectId ? store.projectsById[projectId]?.workspaces?.[0]?.path ?? null : null;
+  store.setSocketWorkspace(workspacePath ?? fallbackWorkspace, null);
 }

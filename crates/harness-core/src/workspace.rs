@@ -39,10 +39,7 @@ where
 /// `None` outside an `with_session_workspace` scope or when the
 /// active scope was started with `None`.
 pub fn active_workspace() -> Option<PathBuf> {
-    SESSION_WORKSPACE
-        .try_with(|p| p.clone())
-        .ok()
-        .flatten()
+    SESSION_WORKSPACE.try_with(|p| p.clone()).ok().flatten()
 }
 
 /// Convenience: prefer the session-level override, fall back to
@@ -77,17 +74,14 @@ mod tests {
     #[tokio::test]
     async fn override_visible_inside_scope() {
         let custom = PathBuf::from("/tmp/custom");
-        let observed = with_session_workspace(Some(custom.clone()), async {
-            active_workspace()
-        })
-        .await;
+        let observed =
+            with_session_workspace(Some(custom.clone()), async { active_workspace() }).await;
         assert_eq!(observed, Some(custom));
     }
 
     #[tokio::test]
     async fn none_scope_clears_override() {
-        let observed =
-            with_session_workspace(None, async { active_workspace() }).await;
+        let observed = with_session_workspace(None, async { active_workspace() }).await;
         assert!(observed.is_none());
     }
 

@@ -776,9 +776,7 @@ impl Tool for GitMergeTool {
 
         if abort {
             if branch.is_some() || no_ff || message.is_some() {
-                return Err(
-                    "`abort` is mutually exclusive with branch / no_ff / message".into(),
-                );
+                return Err("`abort` is mutually exclusive with branch / no_ff / message".into());
             }
             return run_git(
                 &root,
@@ -787,7 +785,13 @@ impl Tool for GitMergeTool {
                 self.timeout_ms,
             )
             .await
-            .map(|s| if s.is_empty() { "merge aborted.".to_string() } else { s });
+            .map(|s| {
+                if s.is_empty() {
+                    "merge aborted.".to_string()
+                } else {
+                    s
+                }
+            });
         }
 
         let branch = branch.ok_or_else(|| -> BoxError { "missing `branch` argument".into() })?;
@@ -993,10 +997,7 @@ mod tests {
         std::fs::write(dir.path().join("note.txt"), "hi\n").unwrap();
 
         let add = GitAddTool::new(dir.path());
-        let added = add
-            .invoke(json!({ "paths": ["note.txt"] }))
-            .await
-            .unwrap();
+        let added = add.invoke(json!({ "paths": ["note.txt"] })).await.unwrap();
         assert!(added.contains("note.txt"), "got: {added}");
 
         let commit = GitCommitTool::new(dir.path());
@@ -1092,7 +1093,11 @@ mod tests {
                 .args(args)
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         g(&["checkout", "-q", "-b", "feat"]);
         std::fs::write(dir.path().join("feat.txt"), "feat\n").unwrap();
@@ -1122,7 +1127,11 @@ mod tests {
                 .args(args)
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         // Two divergent edits to README.md.
         g(&["checkout", "-q", "-b", "feat"]);

@@ -8,11 +8,9 @@ import { useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { resolveTitle } from "../../store/persistence";
 import { t } from "../../utils/i18n";
-import { relTime } from "../../utils/time";
 import { resumeConversation, deleteConversation } from "../../services/conversations";
 import { exportConversationMarkdown } from "../../services/export";
 import type { ConvoListRow } from "../../types/frames";
-import { chipColor } from "../../utils/chipColor";
 
 interface Props {
   row: ConvoListRow;
@@ -24,18 +22,12 @@ export function ConvoRow({ row, isPinned }: Props) {
   const runtime = useAppStore((s) => s.conversationRuns[row.id]);
   const togglePin = useAppStore((s) => s.togglePin);
   const setTitleOverride = useAppStore((s) => s.setTitleOverride);
-  const projectsById = useAppStore((s) => s.projectsById);
-  const project = row.project_id ? projectsById[row.project_id] : null;
   // Subscribing to titleOverrides triggers a re-render after rename.
   useAppStore((s) => s.titleOverrides);
 
   const [editing, setEditing] = useState(false);
   const titleText = resolveTitle(row);
 
-  const onConfirmDelete = () => {
-    if (!confirm(t("deleteConfirm", row.id.slice(0, 8)))) return;
-    void deleteConversation(row.id);
-  };
   const status = runtime?.status ?? "idle";
   const isActiveRun =
     status === "running" || status === "waiting_approval" || status === "waiting_hitl";
@@ -108,33 +100,9 @@ export function ConvoRow({ row, isPinned }: Props) {
             className="convo-action delete"
             title={t("delete")}
             aria-label={t("delete")}
-            onClick={(e) => { e.stopPropagation(); onConfirmDelete(); }}
+            onClick={(e) => { e.stopPropagation(); void deleteConversation(row.id); }}
           >×</button>
         </div>
-      </div>
-      <div className="convo-sub">
-        {project && (
-          <span
-            className="convo-project-chip"
-            title={`Project: ${project.name}`}
-            style={{ ['--chip-color' as any]: chipColor(project.slug) }}
-          >
-            <span className="convo-project-chip-dot" aria-hidden="true" />
-            {project.name}
-          </span>
-        )}
-        <span className="meta count">{t("msgCount", row.message_count)}</span>
-        {isActiveRun ? (
-          <span className="meta run">
-            {status === "waiting_approval"
-              ? t("approve")
-              : status === "waiting_hitl"
-                ? t("submitted")
-                : t("running")}
-          </span>
-        ) : null}
-        <span className="meta time">{relTime(row.updated_at || row.created_at)}</span>
-        <span className="id">{row.id.slice(0, 8)}</span>
       </div>
     </li>
   );

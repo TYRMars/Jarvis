@@ -413,8 +413,8 @@ mod tests {
         // Breakpoint sits on a Tool reply inside the recent turn. The
         // tool exchange must still be atomic — the assistant tool-call
         // and the matching tool-result must both survive (or both drop).
-        let tool_reply_with_hint = Message::tool_result("call_1", "file contents")
-            .with_cache(CacheHint::Ephemeral);
+        let tool_reply_with_hint =
+            Message::tool_result("call_1", "file contents").with_cache(CacheHint::Ephemeral);
         let msgs = vec![
             system("sys"),
             user("old"),

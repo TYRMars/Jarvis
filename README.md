@@ -63,6 +63,7 @@ Jarvis exposes OpenAI-shaped and Jarvis-native endpoints:
 - `GET /v1/projects`
 - `GET /v1/projects/:id/requirements?triage_state=approved|proposed_by_*|proposed`
 - `POST /v1/requirements/:id/{approve,reject,runs}` — Triage approve / reject (with `reason`) / mint a fresh-session run
+- `GET/POST /v1/requirements/:id/todos`, `PATCH/DELETE /v1/requirements/:id/todos/:todo_id` — structured execution/checklist items, including CI/CD commands and evidence
 - `GET /v1/diagnostics/{worktrees/orphans, runs/stuck, runs/failed}` — doctor / forensics
 - `GET /v1/server/info`
 
@@ -77,7 +78,7 @@ The flow:
 1. **Capture** — talk to Jarvis in chat ("read `docs/avatar-upload.md` and lay out the work"). The agent calls `workspace.context` + `fs.read`, drafts a breakdown via `plan.update`, and after user confirmation calls `project.create_or_get` + `requirement.create` per item.
 2. **Triage** — agent-created and scan-surfaced rows default to `triage_state=proposed_by_*` and land in the **Triage drawer** above the kanban. A human clicks **通过 / 拒绝** (the latter requires a free-text reason that lands on the activity timeline). User-typed REST creates default to `triage_state=approved` for back-compat.
 3. **Execute** — open any approved Backlog card and click **新建一次运行 / Start fresh run** in the detail panel. The button mints a new conversation tied to the requirement, flips status to `in_progress`, and jumps you into chat.
-4. **Auto** — set an `assignee_id` on a card and start the binary with `JARVIS_WORK_MODE=auto`. The background scheduler picks `Approved` rows whose `depends_on` are all `done`, drives one run per tick (configurable via `JARVIS_WORK_MAX_UNITS_PER_TICK`), and runs the per-requirement `verification_plan.commands` after each agent loop. Runs that need worktree isolation are scoped through `git worktree add` (`JARVIS_WORKTREE_MODE=per_run`).
+4. **Auto** — set an `assignee_id` on a card and start the binary with `JARVIS_WORK_MODE=auto`, or opt into unassigned work via `JARVIS_WORK_ALLOW_UNASSIGNED=1`. The background scheduler picks `Approved` rows whose `depends_on` are all `done`, drives one run per tick (configurable via `JARVIS_WORK_MAX_UNITS_PER_TICK`), includes the card's structured TODO/checklist items in the run prompt, and runs the per-requirement `verification_plan.commands` after each agent loop. Runs that need worktree isolation are scoped through `git worktree add` (`JARVIS_WORKTREE_MODE=per_run`).
 5. **Verify** — every `RequirementRun` carries its `verification` result (stdout / stderr / exit_code per command, aggregate `passed/failed/needs_review`). Failed runs flip the card back to Backlog up to `JARVIS_WORK_MAX_RETRIES` times before writing a `Blocked` activity.
 
 The full spec is in [docs/proposals/work-orchestration.zh-CN.md](docs/proposals/work-orchestration.zh-CN.md).
@@ -180,6 +181,10 @@ Important environment variables:
 | `JARVIS_PROJECT_MEMORY_DIR`, `JARVIS_PROJECT_MEMORY_BYTES` | Override the project memory directory and loaded `MEMORY.md` byte cap. |
 | `JARVIS_PERMISSION_MODE` | `ask` / `accept-edits` / `plan` / `auto` / `bypass`. (Replaces the deprecated `JARVIS_APPROVAL_MODE`.) |
 | `JARVIS_WORK_MODE` | `off` (default) or `auto`. When `auto`, the background scheduler drives Approved Requirements with an assignee. |
+| `JARVIS_WORKFLOW_PATH` | Optional Symphony-style workflow file. Defaults to `<workspace>/WORKFLOW.md` when present. |
+| `JARVIS_WORK_ALLOW_UNASSIGNED` | Allow auto mode to run Approved Requirements without `assignee_id`, using `JARVIS_WORK_DEFAULT_ASSIGNEE` or the server default route. |
+| `JARVIS_WORK_DEFAULT_ASSIGNEE` | AgentProfile id or display name used for unassigned auto runs. |
+| `JARVIS_WORK_PROMPT` | Override the unattended run seed prompt. Supports `{{ requirement.title }}` and Symphony aliases such as `{{ issue.title }}`. |
 | `JARVIS_WORK_MAX_UNITS_PER_TICK` | Cap on Requirements picked per scheduler tick (default `1`). |
 | `JARVIS_WORK_MAX_RETRIES` | Retry cap per Requirement before the loop stops re-picking it (default `1`). |
 | `JARVIS_WORK_TICK_SECONDS` | Scheduler tick interval (default `30`). |

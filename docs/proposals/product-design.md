@@ -1,6 +1,6 @@
 # Jarvis Product Design: Chat / Work / Doc and Capability Packs
 
-**Status:** Proposed
+**Status:** Adopted
 **Translation:** Chinese version lives at
 [`product-design.zh-CN.md`](product-design.zh-CN.md). When this
 document changes, update the Chinese translation in the same PR.

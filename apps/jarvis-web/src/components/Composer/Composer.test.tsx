@@ -123,6 +123,34 @@ describe("Composer paste folding", () => {
     expect(useAppStore.getState().inFlight).toBe(true);
   });
 
+  it("Enter submits when idle, but IME composition Enter does not", () => {
+    act(() => useAppStore.getState().setActiveId("test-active"));
+    mount();
+    const ta = screen.getByPlaceholderText(/Type/i);
+    act(() => useAppStore.getState().setComposerValue("你好"));
+
+    fireEvent.compositionStart(ta);
+    expect(fireEvent.keyDown(ta, { key: "Enter" })).toBe(true);
+    expect(startTurnMock).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(ta);
+    expect(fireEvent.keyDown(ta, { key: "Enter" })).toBe(false);
+    expect(startTurnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("Enter while a turn is running keeps textarea newline behavior", () => {
+    mount();
+    const ta = screen.getByPlaceholderText(/Type/i);
+    act(() => {
+      useAppStore.getState().setInFlight(true);
+      useAppStore.getState().setComposerValue("next thought");
+    });
+
+    expect(fireEvent.keyDown(ta, { key: "Enter" })).toBe(true);
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(startTurnMock).not.toHaveBeenCalled();
+  });
+
   it("first submit on a fresh persisted session starts a new conversation turn", () => {
     // Production behaviour: when `persistEnabled && !activeId`,
     // the Composer fires a `new` frame to spin up the persisted

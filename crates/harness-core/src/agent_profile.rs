@@ -82,7 +82,11 @@ impl AgentProfile {
     /// Mint a new profile with a fresh UUID and current
     /// timestamps. Trims `name` for safety; callers should still
     /// reject blank names at the REST layer.
-    pub fn new(name: impl Into<String>, provider: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
             id: uuid::Uuid::new_v4().to_string(),

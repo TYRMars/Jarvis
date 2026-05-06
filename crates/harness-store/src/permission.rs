@@ -179,11 +179,7 @@ impl PermissionStore for JsonFilePermissionStore {
         Ok(())
     }
 
-    async fn set_default_mode(
-        &self,
-        scope: Scope,
-        mode: PermissionMode,
-    ) -> Result<(), BoxError> {
+    async fn set_default_mode(&self, scope: Scope, mode: PermissionMode) -> Result<(), BoxError> {
         {
             let mut state = self.state.lock().await;
             let target = mut_scope(&mut state, scope);
@@ -437,13 +433,9 @@ mod tests {
         for i in 0..16 {
             let s = s.clone();
             handles.push(tokio::spawn(async move {
-                s.append_rule(
-                    Scope::Session,
-                    Decision::Allow,
-                    rule(&format!("tool-{i}")),
-                )
-                .await
-                .unwrap();
+                s.append_rule(Scope::Session, Decision::Allow, rule(&format!("tool-{i}")))
+                    .await
+                    .unwrap();
             }));
         }
         for h in handles {

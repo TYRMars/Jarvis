@@ -31,6 +31,7 @@ use crate::config::{
     ApprovalSection, Config, MemorySection, PersistenceSection, ProviderConfig, ServerSection,
     ToolsSection,
 };
+use crate::serve::default_jarvis_workspace_root;
 
 /// Provider catalogue — ordered the way the wizard's MultiSelect
 /// presents them. The description after `—` is what the user sees;
@@ -413,10 +414,10 @@ pub fn run(force: bool) -> Result<()> {
     };
 
     // ---- fs_root ----
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let default_fs_root = default_jarvis_workspace_root();
     let fs_root_str: String = Input::with_theme(&theme)
         .with_prompt(s.fs_root_prompt())
-        .default(cwd.display().to_string())
+        .default(default_fs_root.display().to_string())
         .interact_text()
         .context("fs_root prompt")?;
     let fs_root = PathBuf::from(fs_root_str);

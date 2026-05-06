@@ -16,28 +16,33 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { setSocketMode, type PermissionMode } from "../../services/permissions";
 import { isOpen } from "../../services/socket";
-import { t } from "../../utils/i18n";
+import { messages, t, type Lang } from "../../utils/i18n";
 
 interface ModeOption {
   mode: PermissionMode;
   labelKey: string;
   descKey: string;
-  /// What the badge looks like when this mode is active. Plain
-  /// glyphs only — no SVG — so the chrome stays compact and lines
-  /// up with neighbouring `acceptEdits` / dot separators.
-  glyph: string;
 }
 
 const OPTIONS: ModeOption[] = [
-  { mode: "ask", labelKey: "permModeAsk", descKey: "permModeAskDesc", glyph: "⏵" },
-  { mode: "accept-edits", labelKey: "permModeAcceptEdits", descKey: "permModeAcceptEditsDesc", glyph: "⏵⏵" },
-  { mode: "plan", labelKey: "permModePlan", descKey: "permModePlanDesc", glyph: "📋" },
-  { mode: "auto", labelKey: "permModeAuto", descKey: "permModeAutoDesc", glyph: "🚀" },
-  { mode: "bypass", labelKey: "permModeBypass", descKey: "permModeBypassDesc", glyph: "⚠" },
+  { mode: "ask", labelKey: "permModeAsk", descKey: "permModeAskDesc" },
+  { mode: "accept-edits", labelKey: "permModeAcceptEdits", descKey: "permModeAcceptEditsDesc" },
+  { mode: "plan", labelKey: "permModePlan", descKey: "permModePlanDesc" },
+  { mode: "auto", labelKey: "permModeAuto", descKey: "permModeAutoDesc" },
+  { mode: "bypass", labelKey: "permModeBypass", descKey: "permModeBypassDesc" },
 ];
+
+function optionLabel(opt: ModeOption, lang: Lang) {
+  const label = t(opt.labelKey);
+  if (lang !== "zh") return label;
+
+  const english = messages.en[opt.labelKey];
+  return typeof english === "string" ? `${label}（${english}）` : label;
+}
 
 export function ModeBadge() {
   const mode = useAppStore((s) => s.permissionMode);
+  const lang = useAppStore((s) => s.lang);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const socketReady = isOpen();
@@ -67,12 +72,13 @@ export function ModeBadge() {
         aria-haspopup="menu"
         aria-expanded={open ? true : false}
       >
-        <span className="mode-badge-glyph" aria-hidden="true">{active.glyph}</span>
         <span className="mode-badge-label">{t(active.labelKey)}</span>
+        <svg className="mode-badge-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
       </button>
       {open ? (
         <div className="mode-badge-menu" role="menu">
-          <div className="mode-badge-menu-title">{t("permModePicker")}</div>
           {OPTIONS.map((opt) => {
             const selected = opt.mode === mode;
             const disabled = !socketReady;
@@ -104,10 +110,12 @@ export function ModeBadge() {
                   }
                 }}
               >
-                <span className="mode-badge-option-glyph" aria-hidden="true">{opt.glyph}</span>
-                <span className="mode-badge-option-text">
-                  <span className="mode-badge-option-label">{t(opt.labelKey)}</span>
-                  <span className="mode-badge-option-desc">{t(opt.descKey)}</span>
+                <span className="mode-badge-option-label">{optionLabel(opt, lang)}</span>
+                <span className="mode-badge-option-check" aria-hidden="true">
+                  {selected ? "✓" : ""}
+                </span>
+                <span className="mode-badge-option-key" aria-hidden="true">
+                  {OPTIONS.indexOf(opt) + 1}
                 </span>
               </button>
             );

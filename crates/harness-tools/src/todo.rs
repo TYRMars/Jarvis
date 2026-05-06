@@ -26,8 +26,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_core::{
-    active_workspace_or, canonicalize_workspace, BoxError, Tool, ToolCategory, TodoItem,
-    TodoPriority, TodoStatus, TodoStore,
+    active_workspace_or, canonicalize_workspace, BoxError, TodoItem, TodoPriority, TodoStatus,
+    TodoStore, Tool, ToolCategory,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -227,7 +227,10 @@ impl Tool for TodoAddTool {
         if let Some(p) = parsed.priority.as_deref() {
             item.priority = Some(parse_priority(p)?);
         }
-        item.notes = parsed.notes.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        item.notes = parsed
+            .notes
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
         harness_core::todo::count_mutation()?;
         self.store.upsert(&item).await?;
         Ok(item_to_json(&item).to_string())
@@ -454,8 +457,13 @@ mod tests {
             Ok(self.inner.read().await.get(id).cloned())
         }
         async fn upsert(&self, item: &TodoItem) -> Result<(), BoxError> {
-            self.inner.write().await.insert(item.id.clone(), item.clone());
-            let _ = self.tx.send(harness_core::TodoEvent::Upserted(item.clone()));
+            self.inner
+                .write()
+                .await
+                .insert(item.id.clone(), item.clone());
+            let _ = self
+                .tx
+                .send(harness_core::TodoEvent::Upserted(item.clone()));
             Ok(())
         }
         async fn delete(&self, id: &str) -> Result<bool, BoxError> {
@@ -539,10 +547,7 @@ mod tests {
             .unwrap()
             .to_string();
         let upd = TodoUpdateTool::new(store);
-        let after = upd
-            .invoke(json!({ "id": id, "notes": "" }))
-            .await
-            .unwrap();
+        let after = upd.invoke(json!({ "id": id, "notes": "" })).await.unwrap();
         let v: Value = serde_json::from_str(&after).unwrap();
         assert!(v.get("notes").is_none() || v["notes"].is_null());
     }
@@ -590,10 +595,7 @@ mod tests {
             .unwrap()
             .to_string();
         let del = TodoDeleteTool::new(store);
-        let res = del
-            .invoke(json!({ "ids": [id, "ghost"] }))
-            .await
-            .unwrap();
+        let res = del.invoke(json!({ "ids": [id, "ghost"] })).await.unwrap();
         let v: Value = serde_json::from_str(&res).unwrap();
         assert_eq!(v["deleted_count"], 1);
     }

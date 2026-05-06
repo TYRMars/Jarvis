@@ -75,8 +75,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_core::{
-    Activity, ActivityActor, ActivityKind, ActivityStore, BoxError, Requirement,
-    RequirementStatus, RequirementStore, Tool, ToolCategory, TriageState, VerificationPlan,
+    Activity, ActivityActor, ActivityKind, ActivityStore, BoxError, Requirement, RequirementStatus,
+    RequirementStore, RequirementTodo, RequirementTodoCreator, RequirementTodoEvidence,
+    RequirementTodoKind, RequirementTodoStatus, Tool, ToolCategory, TriageState, VerificationPlan,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -195,11 +196,7 @@ impl Tool for RequirementListTool {
         if project_id.is_empty() {
             return Err("requirement.list: `project_id` must not be blank".into());
         }
-        let status_filter = parsed
-            .status
-            .as_deref()
-            .map(parse_status)
-            .transpose()?;
+        let status_filter = parsed.status.as_deref().map(parse_status).transpose()?;
         let limit = parsed
             .limit
             .unwrap_or(DEFAULT_LIST_LIMIT)
@@ -617,9 +614,7 @@ impl Tool for RequirementReviewVerdictTool {
         })?;
         let commentary = parsed.commentary.trim().to_owned();
         if commentary.is_empty() {
-            return Err(
-                "requirement.review_verdict: `commentary` must not be blank".into(),
-            );
+            return Err("requirement.review_verdict: `commentary` must not be blank".into());
         }
         let pass = match parsed.verdict.as_str() {
             "pass" => true,
@@ -687,7 +682,10 @@ impl Tool for RequirementReviewVerdictTool {
 
 /// Helper: parse a string `triage_state` argument into the enum, or
 /// fall back to a context-appropriate default.
-fn parse_triage_state(raw: Option<&str>, default_when_missing: TriageState) -> Result<TriageState, BoxError> {
+fn parse_triage_state(
+    raw: Option<&str>,
+    default_when_missing: TriageState,
+) -> Result<TriageState, BoxError> {
     match raw {
         None => Ok(default_when_missing),
         Some(s) => TriageState::from_wire(s.trim()).ok_or_else(|| -> BoxError {
@@ -698,6 +696,58 @@ fn parse_triage_state(raw: Option<&str>, default_when_missing: TriageState) -> R
             .into()
         }),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct RequirementTodoInput {
+    title: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    evidence: Option<RequirementTodoEvidence>,
+    #[serde(default)]
+    depends_on: Option<Vec<String>>,
+    #[serde(default)]
+    created_by: Option<String>,
+}
+
+fn todo_from_input(input: RequirementTodoInput) -> Result<RequirementTodo, BoxError> {
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err("requirement todo `title` must not be blank".into());
+    }
+    let kind_wire = input.kind.as_deref().unwrap_or("work");
+    let kind = RequirementTodoKind::from_wire(kind_wire).ok_or_else(|| -> BoxError {
+        format!("unknown requirement todo kind `{kind_wire}`").into()
+    })?;
+    let mut todo = RequirementTodo::new(title, kind);
+    if let Some(s) = input.status.as_deref() {
+        todo.status = RequirementTodoStatus::from_wire(s).ok_or_else(|| -> BoxError {
+            format!("unknown requirement todo status `{s}`").into()
+        })?;
+    }
+    todo.command = input
+        .command
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    todo.evidence = input.evidence;
+    todo.depends_on = input
+        .depends_on
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if let Some(s) = input.created_by.as_deref() {
+        todo.created_by = RequirementTodoCreator::from_wire(s).ok_or_else(|| -> BoxError {
+            format!("unknown requirement todo creator `{s}`").into()
+        })?;
+    }
+    Ok(todo)
 }
 
 pub struct RequirementCreateTool {
@@ -733,7 +783,9 @@ impl Tool for RequirementCreateTool {
          Optional `verification_plan.commands` (e.g. \
          [\"cargo test\"]) pin the verification gate that runs after \
          each agent run finishes. Optional `depends_on` lists other \
-         requirement ids that must reach `done` first."
+         requirement ids that must reach `done` first. Optional \
+         `todos` stores structured work/check/ci/deploy/review/manual \
+         checklist items with command and evidence fields."
     }
 
     fn parameters(&self) -> Value {
@@ -758,6 +810,23 @@ impl Tool for RequirementCreateTool {
                     "items": { "type": "string" },
                     "description": "Other requirement ids that must reach `done` before this one is auto-eligible."
                 },
+                "todos": {
+                    "type": "array",
+                    "description": "Structured execution/checklist items for this requirement. Use for CI/CD commands, deploy checks, manual QA, or review gates that should be inspectable later.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string" },
+                            "kind": { "type": "string", "enum": ["work", "check", "ci", "deploy", "review", "manual"] },
+                            "status": { "type": "string", "enum": ["pending", "running", "passed", "failed", "skipped", "blocked"] },
+                            "command": { "type": "string" },
+                            "depends_on": { "type": "array", "items": { "type": "string" } },
+                            "created_by": { "type": "string", "enum": ["human", "agent", "workflow"] },
+                            "evidence": { "type": "object" }
+                        },
+                        "required": ["title"]
+                    }
+                },
                 "assignee_id": { "type": "string", "description": "Optional AgentProfile id to pin." },
                 "triage_state": {
                     "type": "string",
@@ -770,7 +839,9 @@ impl Tool for RequirementCreateTool {
     }
 
     fn summary_for_audit(&self, args: &Value) -> Option<String> {
-        args.get("title").and_then(|v| v.as_str()).map(str::to_string)
+        args.get("title")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
     }
 
     async fn invoke(&self, args: Value) -> Result<String, BoxError> {
@@ -784,6 +855,8 @@ impl Tool for RequirementCreateTool {
             verification_plan: Option<VerificationPlan>,
             #[serde(default)]
             depends_on: Option<Vec<String>>,
+            #[serde(default)]
+            todos: Option<Vec<RequirementTodoInput>>,
             #[serde(default)]
             assignee_id: Option<String>,
             #[serde(default)]
@@ -805,7 +878,12 @@ impl Tool for RequirementCreateTool {
             parse_triage_state(parsed.triage_state.as_deref(), TriageState::ProposedByAgent)?;
 
         let mut req = Requirement::new(&project_id, &title);
-        if let Some(d) = parsed.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(d) = parsed
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             req.description = Some(d.to_string());
         }
         if let Some(plan) = parsed.verification_plan {
@@ -814,7 +892,17 @@ impl Tool for RequirementCreateTool {
         if let Some(deps) = parsed.depends_on {
             req.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
         }
-        if let Some(a) = parsed.assignee_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(todos) = parsed.todos {
+            for todo in todos {
+                req.todos.push(todo_from_input(todo)?);
+            }
+        }
+        if let Some(a) = parsed
+            .assignee_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             req.assignee_id = Some(a.to_string());
         }
         req.triage_state = triage_state;
@@ -863,7 +951,7 @@ impl Tool for RequirementUpdateTool {
     fn description(&self) -> &str {
         "Update mutable metadata on an existing requirement. Pass any \
          subset of {title, description, verification_plan, depends_on, \
-         assignee_id, triage_state} — omitted fields keep their current \
+         todos, assignee_id, triage_state} — omitted fields keep their current \
          value. To clear `description`, pass an empty string. To clear \
          `assignee_id` pass an empty string. Status transitions go \
          through requirement.{start,complete,block} instead, not this \
@@ -879,6 +967,11 @@ impl Tool for RequirementUpdateTool {
                 "description": { "type": "string", "description": "Empty string clears." },
                 "verification_plan": { "type": "object" },
                 "depends_on": { "type": "array", "items": { "type": "string" } },
+                "todos": {
+                    "type": "array",
+                    "description": "Replace the full structured TODO/checklist list. Each item supports title, kind, status, command, evidence, depends_on, created_by.",
+                    "items": { "type": "object" }
+                },
                 "assignee_id": { "type": "string", "description": "Empty string clears." },
                 "triage_state": {
                     "type": "string",
@@ -905,6 +998,8 @@ impl Tool for RequirementUpdateTool {
             verification_plan: Option<VerificationPlan>,
             #[serde(default)]
             depends_on: Option<Vec<String>>,
+            #[serde(default)]
+            todos: Option<Vec<RequirementTodoInput>>,
             #[serde(default)]
             assignee_id: Option<String>,
             #[serde(default)]
@@ -933,7 +1028,11 @@ impl Tool for RequirementUpdateTool {
         }
         if let Some(d) = parsed.description {
             let trimmed = d.trim().to_string();
-            let new_desc = if trimmed.is_empty() { None } else { Some(trimmed) };
+            let new_desc = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
             if item.description != new_desc {
                 item.description = new_desc;
                 changed = true;
@@ -944,16 +1043,27 @@ impl Tool for RequirementUpdateTool {
             changed = true;
         }
         if let Some(deps) = parsed.depends_on {
-            let cleaned: Vec<String> =
-                deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+            let cleaned: Vec<String> = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
             if item.depends_on != cleaned {
                 item.depends_on = cleaned;
                 changed = true;
             }
         }
+        if let Some(todos) = parsed.todos {
+            let mut parsed_todos = Vec::with_capacity(todos.len());
+            for todo in todos {
+                parsed_todos.push(todo_from_input(todo)?);
+            }
+            item.todos = parsed_todos;
+            changed = true;
+        }
         if let Some(a) = parsed.assignee_id {
             let trimmed = a.trim().to_string();
-            let new_assignee = if trimmed.is_empty() { None } else { Some(trimmed) };
+            let new_assignee = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
             if item.assignee_id != new_assignee {
                 item.assignee_id = new_assignee;
                 changed = true;
@@ -1261,8 +1371,9 @@ mod tests {
         let timeline = acts.snapshot().await;
         // status_change + comment.
         assert_eq!(timeline.len(), 2);
-        assert!(timeline.iter().any(|a| a.kind == ActivityKind::Comment
-            && a.body["text"] == "picking this up"));
+        assert!(timeline
+            .iter()
+            .any(|a| a.kind == ActivityKind::Comment && a.body["text"] == "picking this up"));
     }
 
     #[tokio::test]
@@ -1294,10 +1405,7 @@ mod tests {
     async fn start_errors_on_unknown_id() {
         let (rs, acts) = fixtures();
         let start = RequirementStartTool::new(rs, acts);
-        let err = start
-            .invoke(json!({ "id": "no-such" }))
-            .await
-            .unwrap_err();
+        let err = start.invoke(json!({ "id": "no-such" })).await.unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 
@@ -1355,8 +1463,9 @@ mod tests {
         assert!(timeline
             .iter()
             .any(|a| a.kind == ActivityKind::StatusChange && a.body["to"] == "review"));
-        assert!(timeline.iter().any(|a| a.kind == ActivityKind::Comment
-            && a.body["kind"] == "completion_summary"));
+        assert!(timeline
+            .iter()
+            .any(|a| a.kind == ActivityKind::Comment && a.body["kind"] == "completion_summary"));
     }
 
     #[tokio::test]
@@ -1433,7 +1542,9 @@ mod tests {
         assert!(!RequirementListTool::new(rs_dyn.clone()).requires_approval());
         assert!(!RequirementStartTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
         assert!(!RequirementBlockTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
-        assert!(!RequirementCompleteTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
+        assert!(
+            !RequirementCompleteTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval()
+        );
         assert!(!RequirementCreateTool::new(rs_dyn.clone(), acts_dyn.clone()).requires_approval());
         assert!(!RequirementUpdateTool::new(rs_dyn.clone(), acts_dyn).requires_approval());
         assert!(RequirementDeleteTool::new(rs_dyn).requires_approval());
@@ -1497,7 +1608,15 @@ mod tests {
                     "commands": ["cargo test -p foo"],
                     "require_tests": true
                 },
-                "depends_on": ["dep-1", "dep-2", "  "]
+                "depends_on": ["dep-1", "dep-2", "  "],
+                "todos": [
+                    {
+                        "title": "Run workspace CI",
+                        "kind": "ci",
+                        "command": "cargo test --workspace",
+                        "created_by": "workflow"
+                    }
+                ]
             }))
             .await
             .unwrap();
@@ -1505,9 +1624,19 @@ mod tests {
         let id = v["id"].as_str().unwrap();
         let arc: Arc<dyn RequirementStore> = rs;
         let stored = arc.get(id).await.unwrap().unwrap();
-        assert_eq!(stored.depends_on, vec!["dep-1".to_string(), "dep-2".to_string()]);
+        assert_eq!(
+            stored.depends_on,
+            vec!["dep-1".to_string(), "dep-2".to_string()]
+        );
         assert!(stored.verification_plan.is_some());
         assert!(stored.verification_plan.as_ref().unwrap().require_tests);
+        assert_eq!(stored.todos.len(), 1);
+        assert_eq!(stored.todos[0].kind, RequirementTodoKind::Ci);
+        assert_eq!(
+            stored.todos[0].command.as_deref(),
+            Some("cargo test --workspace")
+        );
+        assert_eq!(stored.todos[0].created_by, RequirementTodoCreator::Workflow);
     }
 
     #[tokio::test]
@@ -1578,7 +1707,10 @@ mod tests {
         update.invoke(json!({ "id": r.id })).await.unwrap();
         let arc: Arc<dyn RequirementStore> = rs;
         let after = arc.get(&r.id).await.unwrap().unwrap();
-        assert_eq!(after.updated_at, baseline, "no-op should not touch updated_at");
+        assert_eq!(
+            after.updated_at, baseline,
+            "no-op should not touch updated_at"
+        );
     }
 
     #[tokio::test]

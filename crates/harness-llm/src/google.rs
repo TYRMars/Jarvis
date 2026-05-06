@@ -698,7 +698,7 @@ mod tests {
                     arguments: json!({"text": "hi"}),
                 }],
                 reasoning_content: None,
-            cache: None,
+                cache: None,
             },
         ]);
         let body = GoogleRequest::from_request(&r);
@@ -722,7 +722,7 @@ mod tests {
                     arguments: json!({}),
                 }],
                 reasoning_content: None,
-            cache: None,
+                cache: None,
             },
             Message::tool_result("abc", "got it"),
         ]);
@@ -753,7 +753,7 @@ mod tests {
                     },
                 ],
                 reasoning_content: None,
-            cache: None,
+                cache: None,
             },
             Message::tool_result("a", "first"),
             Message::tool_result("b", "second"),
@@ -790,7 +790,7 @@ mod tests {
                 content,
                 tool_calls,
                 reasoning_content: _,
-            cache: None,
+                cache: None,
             } => {
                 assert_eq!(content.as_deref(), Some("thinking..."));
                 assert_eq!(tool_calls.len(), 1);
@@ -891,7 +891,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
-                    cache: None,
+                        cache: None,
                     } => {
                         assert_eq!(content.as_deref(), Some("Hello world"));
                         assert!(tool_calls.is_empty());
@@ -990,7 +990,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
-                    cache: None,
+                        cache: None,
                     } => {
                         assert_eq!(content.as_deref(), Some("thinking..."));
                         assert_eq!(tool_calls.len(), 1);
@@ -1018,7 +1018,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
-                    cache: None,
+                        cache: None,
                     } => {
                         assert!(content.is_none());
                         assert!(tool_calls.is_empty());

@@ -15,6 +15,19 @@ const renderWithRouter = (ui: ReactElement, initialEntries = ["/"]) =>
 afterEach(() => {
   // Reset toggle state so cross-test ordering doesn't leak.
   useAppStore.getState().setSidebarOpen(true);
+  useAppStore.getState().setActiveId(null);
+  useAppStore.getState().setPersistEnabled(true);
+  useAppStore.getState().setConvoRows([]);
+  useAppStore.getState().setQuickOpen(false);
+  useAppStore.getState().setProjects([]);
+  useAppStore.getState().setActiveProjectFilter(null);
+  useAppStore.getState().setDraftProjectId(null);
+  useAppStore.getState().setDraftWorkspace(null);
+  useAppStore.setState({
+    messages: [],
+    conversationRuns: {},
+    conversationSurfaces: {},
+  });
 });
 
 describe("AppSidebar search", () => {
@@ -22,7 +35,21 @@ describe("AppSidebar search", () => {
     // The inline title-prefix filter has moved into the QuickSwitcher
     // modal — the sidebar list itself is now a plain "show every
     // conversation we know about" surface. This test pins that
-    // contract: both rows show, no input box exists.
+    // contract: both rows show, no input box exists, and rows stay
+    // compact without project chips or message counts.
+    useAppStore.getState().setConvoGroupBy("date");
+    useAppStore.getState().setProjects([
+      {
+        id: "proj-1",
+        slug: "svelte-learn",
+        name: "Svelte Learn",
+        instructions: "",
+        tags: [],
+        archived: false,
+        created_at: "2026-04-26T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+    ]);
     useAppStore.getState().setConvoRows([
       {
         id: "alpha-12345678",
@@ -30,6 +57,7 @@ describe("AppSidebar search", () => {
         message_count: 2,
         created_at: "2026-04-26T00:00:00Z",
         updated_at: "2026-04-26T00:00:00Z",
+        project_id: "proj-1",
       },
       {
         id: "beta-12345678",
@@ -47,6 +75,8 @@ describe("AppSidebar search", () => {
     expect(
       screen.queryByRole("searchbox", { name: /search conversations/i }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText("Svelte Learn")).not.toBeInTheDocument();
+    expect(screen.queryByText("2 msg")).not.toBeInTheDocument();
   });
 
   it("opens the QuickSwitcher modal from the topbar search button", () => {
@@ -82,8 +112,28 @@ describe("AppSidebar search", () => {
     renderWithRouter(<AppSidebar />);
 
     const runningSection = document.querySelector("#running-section")!;
+    const recentsSection = document.querySelector(".recents-section")!;
     expect(within(runningSection as HTMLElement).getByText("Background build")).toBeInTheDocument();
     expect(within(runningSection as HTMLElement).queryByText("Idle notes")).not.toBeInTheDocument();
+    expect(within(recentsSection as HTMLElement).queryByText("Background build")).not.toBeInTheDocument();
+  });
+
+  it("starts a draft conversation from the sidebar and preserves the current context", () => {
+    useAppStore.getState().setActiveId("active-12345678");
+    useAppStore.getState().pushUserMessage("old visible message");
+    useAppStore.getState().setDraftProjectId("proj-current");
+    useAppStore.getState().setDraftWorkspace("/Users/x/code/current", null);
+    useAppStore.getState().setActiveProjectFilter("proj-filtered");
+
+    renderWithRouter(<AppSidebar />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+
+    const s = useAppStore.getState();
+    expect(s.activeId).toBeNull();
+    expect(s.messages).toEqual([]);
+    expect(s.draftProjectId).toBe("proj-filtered");
+    expect(s.draftWorkspacePath).toBe("/Users/x/code/current");
   });
 
   it("renders Projects as a primary active tab", () => {

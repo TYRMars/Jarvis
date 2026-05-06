@@ -29,6 +29,19 @@ export interface ProjectWorkspaceStatus {
   error?: string | null;
 }
 
+export interface ProjectMemoryFile {
+  name: string;
+  content: string;
+  generated: boolean;
+  bytes: number;
+}
+
+export interface ProjectMemorySnapshot {
+  project_id: string;
+  dir: string;
+  files: ProjectMemoryFile[];
+}
+
 let projectsListSeq = 0;
 const LOCAL_PROJECTS_KEY = "jarvis.productProjects.v1";
 export const LOCAL_PROJECT_PREFIX = "product-";
@@ -206,6 +219,92 @@ export async function restoreProject(idOrSlug: string): Promise<boolean> {
   } catch (e: any) {
     showError(`Restore project: ${e.message ?? e}`);
     return false;
+  }
+}
+
+export async function loadProjectMemory(
+  idOrSlug: string,
+): Promise<ProjectMemorySnapshot | null> {
+  try {
+    const r = await fetch(
+      apiUrl(`/v1/projects/${encodeURIComponent(idOrSlug)}/memory`),
+    );
+    if (!r.ok) {
+      const body = await safeBody(r);
+      throw new Error(body?.error ?? `memory: ${r.status}`);
+    }
+    return (await r.json()) as ProjectMemorySnapshot;
+  } catch (e: any) {
+    showError(`Project memory: ${e.message ?? e}`);
+    return null;
+  }
+}
+
+export async function syncProjectMemory(
+  idOrSlug: string,
+): Promise<ProjectMemorySnapshot | null> {
+  try {
+    const r = await fetch(
+      apiUrl(`/v1/projects/${encodeURIComponent(idOrSlug)}/memory/sync`),
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const body = await safeBody(r);
+      throw new Error(body?.error ?? `memory sync: ${r.status}`);
+    }
+    return (await r.json()) as ProjectMemorySnapshot;
+  } catch (e: any) {
+    showError(`Sync memory: ${e.message ?? e}`);
+    return null;
+  }
+}
+
+export async function saveProjectMemoryFile(
+  idOrSlug: string,
+  file: string,
+  content: string,
+): Promise<ProjectMemorySnapshot | null> {
+  try {
+    const r = await fetch(
+      apiUrl(
+        `/v1/projects/${encodeURIComponent(idOrSlug)}/memory/files/${encodeURIComponent(file)}`,
+      ),
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    );
+    if (!r.ok) {
+      const body = await safeBody(r);
+      throw new Error(body?.error ?? `memory save: ${r.status}`);
+    }
+    return (await r.json()) as ProjectMemorySnapshot;
+  } catch (e: any) {
+    showError(`Save memory: ${e.message ?? e}`);
+    return null;
+  }
+}
+
+export async function deleteProjectMemoryFile(
+  idOrSlug: string,
+  file: string,
+): Promise<ProjectMemorySnapshot | null> {
+  try {
+    const r = await fetch(
+      apiUrl(
+        `/v1/projects/${encodeURIComponent(idOrSlug)}/memory/files/${encodeURIComponent(file)}`,
+      ),
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      const body = await safeBody(r);
+      throw new Error(body?.error ?? `memory delete: ${r.status}`);
+    }
+    return (await r.json()) as ProjectMemorySnapshot;
+  } catch (e: any) {
+    showError(`Delete memory: ${e.message ?? e}`);
+    return null;
   }
 }
 

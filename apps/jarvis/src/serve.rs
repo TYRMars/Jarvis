@@ -6,13 +6,15 @@
 //! via the `pick_*` helpers.
 //!
 //! Backwards compatibility: when no config file is present and no new
-//! flags are passed, behaviour is identical to the old env-var-only
-//! surface — every `pick_*` helper falls through to the same default
-//! the old code used.
+//! flags are passed, the env-var-only surface is preserved. The
+//! workspace root is the one intentional exception: without any user
+//! choice it now lands under `~/.jarvis/workspace` instead of the
+//! process cwd.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use harness_core::{AgentConfig, AlwaysApprove, AlwaysDeny, Approver, Memory, ToolRegistry};
@@ -20,22 +22,24 @@ use harness_llm::{
     AnthropicConfig, AnthropicProvider, CodexAuth, GoogleConfig, GoogleProvider, OpenAiConfig,
     OpenAiProvider, ResponsesConfig, ResponsesProvider,
 };
-use harness_mcp::{
-    serve_registry_stdio, McpClientConfig, McpManager, McpTransport,
-};
+use harness_mcp::{serve_registry_stdio, McpClientConfig, McpManager, McpTransport};
 use harness_memory::{SlidingWindowMemory, SummarizingMemory};
-use harness_server::{
-    default_skill_roots, serve, AppState, PermissionMode, ProviderRegistry, ServerInfo,
-};
 use harness_plugin::PluginManager;
+use harness_server::{
+    default_skill_roots, serve, AppState, PermissionMode, ProjectMemoryConfig, ProviderRegistry,
+    ServerInfo,
+};
 use harness_skill::SkillCatalog;
 use harness_store::{default_workspaces_path, WorkspaceStore};
 use harness_tools::{register_builtins, BuiltinsConfig, Sandbox, ShellLimits};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::auth_store;
 use crate::config::Config;
 use crate::ServeArgs;
+
+const PROJECT_CONTEXT_LOAD_TIMEOUT_MS: u64 = 1_500;
+const SKILL_CATALOG_LOAD_TIMEOUT_MS: u64 = 1_500;
 
 /// `jarvis serve` (default subcommand).
 pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathBuf>) -> Result<()> {
@@ -107,7 +111,11 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     // even when a DB is configured. Useful for shared deployments
     // that want todos managed elsewhere.
     let todos_disabled = std::env::var_os("JARVIS_DISABLE_TODOS").is_some();
-    let active_todo_store = if todos_disabled { None } else { todo_store.clone() };
+    let active_todo_store = if todos_disabled {
+        None
+    } else {
+        todo_store.clone()
+    };
     bcfg.todo_store = active_todo_store.clone();
     if active_todo_store.is_some() {
         info!("persistent TODO store active (todo.* tools registered)");
@@ -208,10 +216,7 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     }
     let mcp_running = mcp_manager.list().await;
     let mcp_prefixes: Vec<String> = mcp_running.iter().map(|s| s.prefix.clone()).collect();
-    let registered = canonical_tools
-        .read()
-        .map(|r| r.len())
-        .unwrap_or_default();
+    let registered = canonical_tools.read().map(|r| r.len()).unwrap_or_default();
     info!(
         provider = %provider_name,
         model = %model,
@@ -243,10 +248,7 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     let project_ctx_cap = project_context_max_bytes(&cfg);
     let mut project_context_loaded = false;
     if include_project_context(&cfg) {
-        if let Some(extra) = harness_tools::workspace::load_instructions(
-            &workspace_root,
-            project_ctx_cap,
-        ) {
+        if let Some(extra) = load_instructions_bounded(workspace_root.clone(), project_ctx_cap) {
             info!(
                 bytes = extra.len(),
                 "loaded project instructions (AGENTS.md / JARVIS.md / CLAUDE.md / .jarvis)"
@@ -259,6 +261,13 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     let project_memory_dir = project_memory_dir(&cfg);
     let project_memory_cap = project_memory_max_bytes(&cfg);
     let project_memory_setting = project_memory_enabled_setting(&cfg);
+    let project_memory_runtime = (project_memory_setting != Some(false)).then(|| {
+        ProjectMemoryConfig::new(
+            workspace_root.clone(),
+            project_memory_dir.clone(),
+            project_memory_cap,
+        )
+    });
     let mut project_memory_loaded = false;
     if include_project_memory(&workspace_root, &project_memory_dir, project_memory_setting) {
         if let Some(extra) = harness_tools::workspace::load_project_memory(
@@ -333,26 +342,25 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     // the WS handler wraps `ChannelApprover` in. Failures fall back
     // to a session-only store so a misconfigured filesystem doesn't
     // crash startup.
-    let user_perm_path = dirs_user_config()
-        .ok()
-        .map(|d| d.join("permissions.json"));
+    let user_perm_path = dirs_user_config().ok().map(|d| d.join("permissions.json"));
     let project_perm_path = Some(workspace_root.join(".jarvis").join("permissions.json"));
-    let permission_store: std::sync::Arc<dyn harness_server::PermissionStore> = match harness_store::JsonFilePermissionStore::open(
-        user_perm_path.clone(),
-        project_perm_path.clone(),
-    )
-    .await
-    {
-        Ok(s) => std::sync::Arc::new(s),
-        Err(e) => {
-            tracing::warn!(error = %e, "permission store open failed; falling back to session-only");
-            std::sync::Arc::new(
-                harness_store::JsonFilePermissionStore::open(None, None)
-                    .await
-                    .expect("session-only store can't fail"),
-            )
-        }
-    };
+    let permission_store: std::sync::Arc<dyn harness_server::PermissionStore> =
+        match harness_store::JsonFilePermissionStore::open(
+            user_perm_path.clone(),
+            project_perm_path.clone(),
+        )
+        .await
+        {
+            Ok(s) => std::sync::Arc::new(s),
+            Err(e) => {
+                tracing::warn!(error = %e, "permission store open failed; falling back to session-only");
+                std::sync::Arc::new(
+                    harness_store::JsonFilePermissionStore::open(None, None)
+                        .await
+                        .expect("session-only store can't fail"),
+                )
+            }
+        };
     let permission_mode = pick_permission_mode(&cfg, &args)?;
     info!(
         mode = %permission_mode.as_str(),
@@ -377,9 +385,7 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     let skill_roots = default_skill_roots(user_skills_dir, workspace_skills_dir);
     let mut catalog = SkillCatalog::new();
     catalog.merge_bundled(harness_skill::bundled_defaults());
-    for (root, source) in skill_roots {
-        catalog.merge_disk(&root, source);
-    }
+    catalog = merge_skill_roots_bounded(catalog, skill_roots);
     let skill_catalog = Arc::new(RwLock::new(catalog));
     let initial_skill_count = skill_catalog.read().map(|g| g.len()).unwrap_or(0);
     info!(skills = initial_skill_count, "skill catalog loaded");
@@ -404,8 +410,10 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
             // server still comes up; install / uninstall will
             // surface the real error when they try to write.
             let tmp = std::env::temp_dir().join("jarvis-plugins-fallback");
-            Arc::new(PluginManager::new(tmp, Arc::clone(&skill_catalog), Arc::clone(&mcp_manager))
-                .expect("fallback temp-dir plugin manager"))
+            Arc::new(
+                PluginManager::new(tmp, Arc::clone(&skill_catalog), Arc::clone(&mcp_manager))
+                    .expect("fallback temp-dir plugin manager"),
+            )
         }
     };
     if let Err(e) = plugin_manager.reattach_installed().await {
@@ -459,6 +467,9 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         .with_plugins(Arc::clone(&plugin_manager))
         .with_workspaces(Arc::clone(&workspaces))
         .with_worktree_config(worktree_mode, worktree_root, worktree_allow_dirty);
+    if let Some(pm) = project_memory_runtime.clone() {
+        state = state.with_project_memory(pm);
+    }
     if let Some(s) = store {
         state = state.with_store(s);
     }
@@ -508,15 +519,15 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     // / config plumbing used above, but stay strictly informational —
     // never include the persistence URL credentials, API keys, or
     // OAuth tokens.
-    let memory_mode = if cfg.memory.tokens.is_some() || std::env::var("JARVIS_MEMORY_TOKENS").is_ok()
-    {
-        Some(
-            pick_string_opt("JARVIS_MEMORY_MODE", cfg.memory.mode.as_deref())
-                .unwrap_or_else(|| "window".to_string()),
-        )
-    } else {
-        None
-    };
+    let memory_mode =
+        if cfg.memory.tokens.is_some() || std::env::var("JARVIS_MEMORY_TOKENS").is_ok() {
+            Some(
+                pick_string_opt("JARVIS_MEMORY_MODE", cfg.memory.mode.as_deref())
+                    .unwrap_or_else(|| "window".to_string()),
+            )
+        } else {
+            None
+        };
     let memory_budget = std::env::var("JARVIS_MEMORY_TOKENS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -542,43 +553,132 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     state = state.with_server_info(server_info);
 
     // Phase 6 — auto mode scheduler. Off by default; opt in via
-    // `JARVIS_WORK_MODE=auto`. v1.0: the spawned loop polls a shared
-    // [`AutoModeRuntime`] flag each tick so the operator can flip
-    // the scheduler on/off at runtime via `POST /v1/auto-mode`
-    // without rebooting the binary. Initial value comes from the
-    // env var.
-    let auto_cfg = harness_server::AutoModeConfig {
-        mode: std::env::var("JARVIS_WORK_MODE")
-            .ok()
-            .as_deref()
-            .and_then(harness_server::AutoMode::from_wire)
-            .unwrap_or_default(),
-        tick_seconds: std::env::var("JARVIS_WORK_TICK_SECONDS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30),
-        max_units_per_tick: std::env::var("JARVIS_WORK_MAX_UNITS_PER_TICK")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1),
-        max_retries: std::env::var("JARVIS_WORK_MAX_RETRIES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1),
-        run_timeout_ms: std::env::var("JARVIS_WORK_RUN_TIMEOUT_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(5 * 60 * 1000),
-    };
+    // `JARVIS_WORK_MODE=auto` or a workspace `WORKFLOW.md`. The
+    // workflow file intentionally mirrors Symphony's shape where it
+    // helps: YAML front matter carries scheduler policy, Markdown
+    // body becomes the unattended run prompt. Env vars still win so
+    // operators can override a repo default in CI / SSH sessions.
+    let mut auto_cfg = harness_server::AutoModeConfig::default();
+    let workflow_path = std::env::var_os("JARVIS_WORKFLOW_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("WORKFLOW.md"));
+    match harness_server::AutoWorkflow::load(&workflow_path) {
+        Ok(Some(workflow)) => {
+            workflow.apply_to(&mut auto_cfg);
+            info!(path = %workflow_path.display(), "auto workflow loaded");
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, path = %workflow_path.display(), "auto workflow ignored");
+        }
+    }
+    if let Ok(s) = std::env::var("JARVIS_WORK_MODE") {
+        match harness_server::AutoMode::from_wire(&s) {
+            Some(mode) => auto_cfg.mode = mode,
+            None => tracing::warn!(value = %s, "JARVIS_WORK_MODE ignored; expected off or auto"),
+        }
+    }
+    if let Ok(v) = std::env::var("JARVIS_WORK_TICK_SECONDS")
+        .and_then(|s| s.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        auto_cfg.tick_seconds = v.max(1);
+    }
+    if let Ok(v) = std::env::var("JARVIS_WORK_MAX_UNITS_PER_TICK").and_then(|s| {
+        s.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
+        auto_cfg.max_units_per_tick = v.max(1);
+    }
+    if let Ok(v) = std::env::var("JARVIS_WORK_MAX_RETRIES").and_then(|s| {
+        s.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
+        auto_cfg.max_retries = v;
+    }
+    if let Ok(v) = std::env::var("JARVIS_WORK_RUN_TIMEOUT_MS")
+        .and_then(|s| s.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+    {
+        auto_cfg.run_timeout_ms = v.max(1);
+    }
+    if std::env::var_os("JARVIS_WORK_ALLOW_UNASSIGNED").is_some() {
+        auto_cfg.allow_unassigned = true;
+    }
+    if let Ok(s) = std::env::var("JARVIS_WORK_DEFAULT_ASSIGNEE") {
+        let s = s.trim();
+        if !s.is_empty() {
+            auto_cfg.default_assignee = Some(s.to_string());
+        }
+    }
+    if let Ok(s) = std::env::var("JARVIS_WORK_PROMPT") {
+        let s = s.trim();
+        if !s.is_empty() {
+            auto_cfg.workflow_prompt = Some(s.to_string());
+        }
+    }
     let auto_runtime = harness_server::AutoModeRuntime::new(auto_cfg.mode);
     state = state.with_auto_mode_runtime(auto_runtime);
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
+    if let (Some(pm), Some(projects), Some(requirements)) = (
+        project_memory_runtime,
+        state.projects.clone(),
+        state.requirements.clone(),
+    ) {
+        harness_server::spawn_project_memory_sync(pm, projects, requirements);
+        info!("project memory sync active (kanban.md + calendar.md update after board mutations)");
+    }
 
     info!(%addr, "jarvis listening");
     serve(addr, state).await?;
 
     drop(mcp_manager);
     Ok(())
+}
+
+fn load_instructions_bounded(workspace_root: PathBuf, max_bytes: usize) -> Option<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(harness_tools::workspace::load_instructions(
+            &workspace_root,
+            max_bytes,
+        ));
+    });
+    match rx.recv_timeout(Duration::from_millis(PROJECT_CONTEXT_LOAD_TIMEOUT_MS)) {
+        Ok(extra) => extra,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            warn!(
+                timeout_ms = PROJECT_CONTEXT_LOAD_TIMEOUT_MS,
+                "loading project instructions timed out; starting without injected project context"
+            );
+            None
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => None,
+    }
+}
+
+fn merge_skill_roots_bounded(
+    catalog: SkillCatalog,
+    skill_roots: Vec<(PathBuf, harness_skill::SkillSource)>,
+) -> SkillCatalog {
+    let fallback = catalog.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut catalog = catalog;
+        for (root, source) in skill_roots {
+            catalog.merge_disk(&root, source);
+        }
+        let _ = tx.send(catalog);
+    });
+    match rx.recv_timeout(Duration::from_millis(SKILL_CATALOG_LOAD_TIMEOUT_MS)) {
+        Ok(catalog) => catalog,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            warn!(
+                timeout_ms = SKILL_CATALOG_LOAD_TIMEOUT_MS,
+                "loading disk skills timed out; starting with bundled skill catalog"
+            );
+            fallback
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => fallback,
+    }
 }
 
 /// `jarvis mcp-serve` — stdio MCP server. No LLM provider needed.
@@ -594,7 +694,7 @@ pub async fn run_mcp(cfg: Option<Config>) -> Result<()> {
 /// `jarvis workspace` — print the resolved workspace root + git
 /// state. Mirrors `GET /v1/workspace` so scripts and humans see the
 /// same answer. Resolution mirrors `serve` exactly:
-/// `--workspace > JARVIS_FS_ROOT > [tools].fs_root > .`.
+/// `--workspace > JARVIS_FS_ROOT > [tools].fs_root > ~/.jarvis/workspace`.
 pub async fn run_workspace(
     cfg: Option<Config>,
     workspace_override: Option<PathBuf>,
@@ -681,7 +781,8 @@ fn builtins_config(cfg: &Config) -> BuiltinsConfig {
 
 /// Same as [`builtins_config`] but lets the caller force a specific
 /// workspace (the `--workspace` / `--fs-root` CLI flag). Resolution
-/// order: CLI flag > `JARVIS_FS_ROOT` > `[tools].fs_root` > `.`.
+/// order: CLI flag > `JARVIS_FS_ROOT` > `[tools].fs_root` >
+/// `~/.jarvis/workspace`.
 fn builtins_config_with_workspace(
     cfg: &Config,
     workspace_override: Option<&std::path::Path>,
@@ -690,7 +791,7 @@ fn builtins_config_with_workspace(
     let fs_root = match workspace_override {
         Some(p) => p.to_path_buf(),
         None => pick_path("JARVIS_FS_ROOT", cfg.tools.fs_root.as_deref(), || {
-            PathBuf::from(".")
+            ensure_default_workspace_root(default_jarvis_workspace_root())
         }),
     };
     BuiltinsConfig {
@@ -718,6 +819,30 @@ fn builtins_config_with_workspace(
         shell_limits: pick_shell_limits(),
         ..defaults
     }
+}
+
+pub(crate) fn default_jarvis_workspace_root() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".jarvis")
+        .join("workspace")
+}
+
+fn ensure_default_workspace_root(path: PathBuf) -> PathBuf {
+    if let Err(error) = std::fs::create_dir_all(&path) {
+        warn!(
+            error = %error,
+            path = %path.display(),
+            "default workspace directory could not be created"
+        );
+    }
+    path
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
 /// Read `JARVIS_SHELL_LIMITS=safe` to opt into the
@@ -1354,6 +1479,11 @@ roadmap project for the current workspace (look for tags including \"roadmap\" �
 ends in `-roadmap`), then requirement.list and group by status. If no such project exists and \
 roadmap.import is available, suggest running it to bootstrap one from docs/proposals/ or \
 ROADMAP.md. \
+If the user invokes `/goal` or describes a long-running coding objective, act as the session/project \
+coordinator: orient in the workspace, maintain durable TODOs / Requirements when those tools are \
+available, and delegate focused implementation slices to subagent.codex when a fresh coding context \
+would help. Keep the main conversation responsible for sequencing, approvals, blockers, review, and \
+the final status report. \
 \
 Spec → Project workflow: when the user describes new work — either inline (\"add a user-avatar \
 upload\") or by pointing at a doc (\"read docs/feature-x.md and lay out the work\") — drive the \

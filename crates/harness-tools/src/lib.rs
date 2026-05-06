@@ -66,7 +66,9 @@ pub use todo::{TodoAddTool, TodoDeleteTool, TodoListTool, TodoUpdateTool};
 pub use triage_scan::TriageScanTool;
 pub use workspace::WorkspaceContextTool;
 
-use harness_core::{ActivityStore, DocStore, ProjectStore, RequirementStore, TodoStore, ToolRegistry};
+use harness_core::{
+    ActivityStore, DocStore, ProjectStore, RequirementStore, TodoStore, ToolRegistry,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -282,10 +284,22 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     // which is strictly worse than not exposing the tools at all.
     if let (Some(req_store), Some(act_store)) = (cfg.requirement_store, cfg.activity_store) {
         registry.register(RequirementListTool::new(req_store.clone()));
-        registry.register(RequirementStartTool::new(req_store.clone(), act_store.clone()));
-        registry.register(RequirementBlockTool::new(req_store.clone(), act_store.clone()));
-        registry.register(RequirementCompleteTool::new(req_store.clone(), act_store.clone()));
-        registry.register(RequirementCreateTool::new(req_store.clone(), act_store.clone()));
+        registry.register(RequirementStartTool::new(
+            req_store.clone(),
+            act_store.clone(),
+        ));
+        registry.register(RequirementBlockTool::new(
+            req_store.clone(),
+            act_store.clone(),
+        ));
+        registry.register(RequirementCompleteTool::new(
+            req_store.clone(),
+            act_store.clone(),
+        ));
+        registry.register(RequirementCreateTool::new(
+            req_store.clone(),
+            act_store.clone(),
+        ));
         registry.register(RequirementUpdateTool::new(req_store.clone(), act_store));
         registry.register(RequirementDeleteTool::new(req_store));
     }

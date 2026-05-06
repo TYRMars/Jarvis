@@ -240,11 +240,7 @@ pub async fn create_worktree_for_branch(
 /// `worktree_root` are permitted — anything else is an error.
 /// Forces removal (`--force`) so a worktree that has accumulated
 /// build artifacts / untracked files can still be cleaned up.
-pub async fn remove_worktree(
-    repo: &Path,
-    worktree_root: &Path,
-    path: &Path,
-) -> Result<(), String> {
+pub async fn remove_worktree(repo: &Path, worktree_root: &Path, path: &Path) -> Result<(), String> {
     let canon_root = match worktree_root.canonicalize() {
         Ok(p) => p,
         Err(e) => return Err(format!("worktree root canonicalize: {e}")),
@@ -300,10 +296,7 @@ mod tests {
             assert!(out.status.success(), "git {args:?} failed: {out:?}");
         }
         std::fs::write(dir.join("seed.txt"), "hello").unwrap();
-        for args in [
-            vec!["add", "."],
-            vec!["commit", "-m", "seed"],
-        ] {
+        for args in [vec!["add", "."], vec!["commit", "-m", "seed"]] {
             let out = Command::new("git")
                 .args(["-C"])
                 .arg(dir)
@@ -319,7 +312,10 @@ mod tests {
     fn parse_wire_modes() {
         assert_eq!(WorktreeMode::from_wire(""), Some(WorktreeMode::Off));
         assert_eq!(WorktreeMode::from_wire("off"), Some(WorktreeMode::Off));
-        assert_eq!(WorktreeMode::from_wire("per_run"), Some(WorktreeMode::PerRun));
+        assert_eq!(
+            WorktreeMode::from_wire("per_run"),
+            Some(WorktreeMode::PerRun)
+        );
         assert_eq!(WorktreeMode::from_wire("nonsense"), None);
     }
 
@@ -345,7 +341,10 @@ mod tests {
         match outcome {
             WorktreeOutcome::Created(p) => {
                 assert!(p.exists());
-                assert!(p.join("seed.txt").exists(), "worktree should have seed file");
+                assert!(
+                    p.join("seed.txt").exists(),
+                    "worktree should have seed file"
+                );
             }
             WorktreeOutcome::Refused(r) => panic!("expected Created, got Refused: {r}"),
         }

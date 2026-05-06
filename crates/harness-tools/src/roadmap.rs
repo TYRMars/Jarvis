@@ -113,9 +113,8 @@ impl Tool for RoadmapImportTool {
         let opts: ImportOptions = if args.is_null() {
             ImportOptions::default()
         } else {
-            serde_json::from_value(args).map_err(|e| -> BoxError {
-                format!("roadmap.import: bad args: {e}").into()
-            })?
+            serde_json::from_value(args)
+                .map_err(|e| -> BoxError { format!("roadmap.import: bad args: {e}").into() })?
         };
         let workspace = harness_core::active_workspace_or(&self.workspace_root);
         let summary =
@@ -146,8 +145,7 @@ mod tests {
         let requirements: Arc<dyn RequirementStore> = Arc::new(MemoryRequirementStore::new());
         let tool = RoadmapImportTool::new(projects.clone(), requirements.clone(), workspace);
 
-        let out: Value =
-            serde_json::from_str(&tool.invoke(json!({})).await.unwrap()).unwrap();
+        let out: Value = serde_json::from_str(&tool.invoke(json!({})).await.unwrap()).unwrap();
         assert_eq!(out["slug"], "acme-roadmap");
         assert_eq!(out["created"], 1);
         let req = &requirements

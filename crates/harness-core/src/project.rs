@@ -505,7 +505,10 @@ mod tests {
         let ids: Vec<&str> = cols.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["backlog", "in_progress", "review", "done"]);
         for c in &cols {
-            assert!(c.kind.is_some(), "default columns set kind so the renamed-but-still-backlog case keeps its glyph");
+            assert!(
+                c.kind.is_some(),
+                "default columns set kind so the renamed-but-still-backlog case keeps its glyph"
+            );
         }
     }
 

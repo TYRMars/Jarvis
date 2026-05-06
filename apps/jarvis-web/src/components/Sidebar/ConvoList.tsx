@@ -31,13 +31,16 @@ export function ConvoList() {
   const setConvoGroupBy = useAppStore((s) => s.setConvoGroupBy);
   const projectsById = useAppStore((s) => s.projectsById);
 
-  const pinnedRows = rows.filter((r) => pinned.has(r.id));
-  const recentRows = rows.filter((r) => !pinned.has(r.id));
   const rowsById = new Map(rows.map((r) => [r.id, r]));
-  const runningRows = Object.entries(conversationRuns)
+  const runningEntries = Object.entries(conversationRuns)
     .filter(([, runtime]) => isRunActive(runtime.status))
-    .sort((a, b) => (b[1].startedAt ?? 0) - (a[1].startedAt ?? 0))
-    .map(([id]) => rowsById.get(id) ?? makeFallbackRow(id, conversationSurfaces[id]));
+    .sort((a, b) => (b[1].startedAt ?? 0) - (a[1].startedAt ?? 0));
+  const runningIds = new Set(runningEntries.map(([id]) => id));
+  const pinnedRows = rows.filter((r) => pinned.has(r.id) && !runningIds.has(r.id));
+  const recentRows = rows.filter((r) => !pinned.has(r.id) && !runningIds.has(r.id));
+  const runningRows = runningEntries.map(
+    ([id]) => rowsById.get(id) ?? makeFallbackRow(id, conversationSurfaces[id]),
+  );
 
   // ↑/↓ to walk the conversation list — mirrors the docs / projects
   // pattern so the same muscle memory works across all three

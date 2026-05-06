@@ -191,7 +191,10 @@ fn scan_todo_comments(
             let Some(caps) = regex.captures(line) else {
                 continue;
             };
-            let marker = caps.get(1).map(|m| m.as_str().to_uppercase()).unwrap_or_default();
+            let marker = caps
+                .get(1)
+                .map(|m| m.as_str().to_uppercase())
+                .unwrap_or_default();
             let body = caps
                 .get(2)
                 .map(|m| m.as_str().trim().to_string())
@@ -280,10 +283,7 @@ mod tests {
             &dir.path().join("ignored/skipped.rs"),
             "// TODO: should not appear\n",
         );
-        write(
-            &dir.path().join("kept.rs"),
-            "// TODO: should appear\n",
-        );
+        write(&dir.path().join("kept.rs"), "// TODO: should appear\n");
         let tool = TriageScanTool::new(dir.path().to_path_buf());
         let out = tool.invoke(json!({})).await.unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();

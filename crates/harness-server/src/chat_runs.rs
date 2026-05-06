@@ -126,30 +126,22 @@ impl ChatRunRegistry {
             AgentEvent::ApprovalRequest { .. } => {
                 Some((ChatRunStatus::WaitingApproval, None, None))
             }
-            AgentEvent::ApprovalDecision { .. } => {
-                Some((ChatRunStatus::Running, None, None))
-            }
+            AgentEvent::ApprovalDecision { .. } => Some((ChatRunStatus::Running, None, None)),
             AgentEvent::ToolStart { name, .. } => {
                 Some((ChatRunStatus::Running, Some(Some(name.clone())), None))
             }
-            AgentEvent::ToolEnd { .. } => {
-                Some((ChatRunStatus::Running, Some(None), None))
-            }
-            AgentEvent::Done { .. } => {
-                Some((ChatRunStatus::Completed, Some(None), Some(None)))
-            }
-            AgentEvent::Error { message } => {
-                Some((
-                    ChatRunStatus::Failed,
-                    Some(None),
-                    Some(Some(message.clone())),
-                ))
-            }
+            AgentEvent::ToolEnd { .. } => Some((ChatRunStatus::Running, Some(None), None)),
+            AgentEvent::Done { .. } => Some((ChatRunStatus::Completed, Some(None), Some(None))),
+            AgentEvent::Error { message } => Some((
+                ChatRunStatus::Failed,
+                Some(None),
+                Some(Some(message.clone())),
+            )),
             _ => None,
         };
-        let frame = serde_json::to_value(event).unwrap_or_else(|e| {
-            serde_json::json!({ "type": "error", "message": format!("serialize: {e}") })
-        });
+        let frame = serde_json::to_value(event).unwrap_or_else(
+            |e| serde_json::json!({ "type": "error", "message": format!("serialize: {e}") }),
+        );
         self.push_frame(id, status, frame);
     }
 
@@ -202,13 +194,7 @@ impl ChatRunRegistry {
         };
         guard
             .get(conversation_id)
-            .map(|s| {
-                s.events
-                    .iter()
-                    .filter(|e| e.seq > after)
-                    .cloned()
-                    .collect()
-            })
+            .map(|s| s.events.iter().filter(|e| e.seq > after).cloned().collect())
             .unwrap_or_default()
     }
 
@@ -221,23 +207,22 @@ impl ChatRunRegistry {
     ) {
         let now = now_ms();
         if let Ok(mut guard) = self.inner.write() {
-            let state =
-                guard.entry(conversation_id.to_string()).or_insert_with(|| {
-                    let record = ChatRunRecord {
-                        conversation_id: conversation_id.to_string(),
-                        status,
-                        started_at: now,
-                        updated_at: now,
-                        latest_seq: 0,
-                        current_tool: None,
-                        last_error: None,
-                    };
-                    ChatRunState {
-                        record,
-                        events: Vec::new(),
-                        next_seq: 1,
-                    }
-                });
+            let state = guard.entry(conversation_id.to_string()).or_insert_with(|| {
+                let record = ChatRunRecord {
+                    conversation_id: conversation_id.to_string(),
+                    status,
+                    started_at: now,
+                    updated_at: now,
+                    latest_seq: 0,
+                    current_tool: None,
+                    last_error: None,
+                };
+                ChatRunState {
+                    record,
+                    events: Vec::new(),
+                    next_seq: 1,
+                }
+            });
             state.record.status = status;
             state.record.updated_at = now;
             if let Some(tool) = current_tool {
@@ -253,31 +238,34 @@ impl ChatRunRegistry {
     fn push_frame(
         &self,
         conversation_id: &str,
-        status: Option<(ChatRunStatus, Option<Option<String>>, Option<Option<String>>)>,
+        status: Option<(
+            ChatRunStatus,
+            Option<Option<String>>,
+            Option<Option<String>>,
+        )>,
         frame: Value,
     ) {
         let now = now_ms();
         if let Ok(mut guard) = self.inner.write() {
-            let state =
-                guard.entry(conversation_id.to_string()).or_insert_with(|| {
-                    let record = ChatRunRecord {
-                        conversation_id: conversation_id.to_string(),
-                        status: status
-                            .as_ref()
-                            .map(|(s, _, _)| *s)
-                            .unwrap_or(ChatRunStatus::Running),
-                        started_at: now,
-                        updated_at: now,
-                        latest_seq: 0,
-                        current_tool: None,
-                        last_error: None,
-                    };
-                    ChatRunState {
-                        record,
-                        events: Vec::new(),
-                        next_seq: 1,
-                    }
-                });
+            let state = guard.entry(conversation_id.to_string()).or_insert_with(|| {
+                let record = ChatRunRecord {
+                    conversation_id: conversation_id.to_string(),
+                    status: status
+                        .as_ref()
+                        .map(|(s, _, _)| *s)
+                        .unwrap_or(ChatRunStatus::Running),
+                    started_at: now,
+                    updated_at: now,
+                    latest_seq: 0,
+                    current_tool: None,
+                    last_error: None,
+                };
+                ChatRunState {
+                    record,
+                    events: Vec::new(),
+                    next_seq: 1,
+                }
+            });
 
             if let Some((next_status, current_tool, last_error)) = status {
                 state.record.status = next_status;

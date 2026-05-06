@@ -21,9 +21,7 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use harness_core::permission::{
-    Decision, PermissionMode, PermissionRule, PermissionStore, Scope,
-};
+use harness_core::permission::{Decision, PermissionMode, PermissionRule, PermissionStore, Scope};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::error;
@@ -116,10 +114,7 @@ struct DeleteRuleQuery {
     index: usize,
 }
 
-async fn delete_rule(
-    State(state): State<AppState>,
-    Query(q): Query<DeleteRuleQuery>,
-) -> Response {
+async fn delete_rule(State(state): State<AppState>, Query(q): Query<DeleteRuleQuery>) -> Response {
     let store = match require_store(&state) {
         Ok(s) => s,
         Err(r) => return r,

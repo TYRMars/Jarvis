@@ -19,14 +19,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../../../utils/i18n";
 import {
-  activeModelLabel,
+  estimateCostByModel,
   estimateCostUSD,
   listDailyBuckets,
   resetUsageHistory,
   subscribeUsageCumulator,
   todaysTotals,
+  todaysTotalsByModel,
+  totalsByModelForWindow,
   totalsForWindow,
+  type CostEstimate,
   type DailyBucket,
+  type ModelWindowTotals,
 } from "../../../services/usageCumulator";
 import type { WindowDays } from "../../../services/workOverview";
 
@@ -53,21 +57,25 @@ function buildSpark(buckets: DailyBucket[], windowDays: number): SparkPoint[] {
   cutoff.setDate(cutoff.getDate() - (windowDays - 1));
   cutoff.setHours(0, 0, 0, 0);
   const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
-  const filtered = buckets
-    .filter((b) => b.date >= cutoffKey)
+  const byDate = new Map<string, number>();
+  for (const b of buckets) {
+    if (b.date < cutoffKey) continue;
+    byDate.set(b.date, (byDate.get(b.date) ?? 0) + b.prompt + b.completion);
+  }
+  const filtered = Array.from(byDate.entries())
+    .map(([date, total]) => ({ date, total }))
     .sort((a, b) => a.date.localeCompare(b.date));
   if (filtered.length === 0) return [];
-  const max = Math.max(1, ...filtered.map((b) => b.prompt + b.completion));
+  const max = Math.max(1, ...filtered.map((b) => b.total));
   const innerW = SPARK_W - SPARK_PAD * 2;
   const innerH = SPARK_H - SPARK_PAD * 2;
   const step = filtered.length > 1 ? innerW / (filtered.length - 1) : 0;
   return filtered.map((b, i) => {
-    const total = b.prompt + b.completion;
     return {
       x: SPARK_PAD + step * i,
-      y: SPARK_PAD + innerH - (total / max) * innerH,
+      y: SPARK_PAD + innerH - (b.total / max) * innerH,
       date: b.date,
-      total,
+      total: b.total,
     };
   });
 }
@@ -87,6 +95,14 @@ function fmtCost(usd: number | null): string {
   return `$${usd.toFixed(2)}`;
 }
 
+function fmtCostEstimate(cost: CostEstimate): string {
+  if (cost.unknownModels.length > 0) {
+    if (cost.knownUSD > 0) return `${fmtCost(cost.knownUSD)}+`;
+    return "—";
+  }
+  return fmtCost(cost.knownUSD);
+}
+
 export function UsagePanel({ windowDays }: Props) {
   // Re-render on every cumulator mutation. The cumulator already
   // batches per-frame so this is cheap.
@@ -96,9 +112,10 @@ export function UsagePanel({ windowDays }: Props) {
   const today = todaysTotals();
   // Renamed from `window` to avoid shadowing the global object.
   const windowTotals = totalsForWindow(windowDays);
-  const model = activeModelLabel();
-  const todayCost = estimateCostUSD(model, today);
-  const windowCost = estimateCostUSD(model, windowTotals);
+  const todayByModel = todaysTotalsByModel();
+  const windowByModel = totalsByModelForWindow(windowDays);
+  const todayCost = estimateCostByModel(todayByModel);
+  const windowCost = estimateCostByModel(windowByModel);
 
   const buckets = listDailyBuckets();
   const spark = useMemo(
@@ -167,7 +184,7 @@ export function UsagePanel({ windowDays }: Props) {
             {fmtTokens(today.total)}
           </div>
           <div className="usage-headline-cost tabular-nums">
-            {fmtCost(todayCost)}
+            {fmtCostEstimate(todayCost)}
           </div>
         </div>
         <div className="usage-headline-block">
@@ -178,10 +195,18 @@ export function UsagePanel({ windowDays }: Props) {
             {fmtTokens(windowTotals.total)}
           </div>
           <div className="usage-headline-cost tabular-nums">
-            {fmtCost(windowCost)}
+            {fmtCostEstimate(windowCost)}
           </div>
         </div>
       </div>
+
+      {windowByModel.length > 0 && (
+        <div className="usage-models" aria-label={t("usagePanelModelsLabel")}>
+          {windowByModel.slice(0, 5).map((row) => (
+            <ModelUsageRow key={row.model} row={row} />
+          ))}
+        </div>
+      )}
 
       {/* Token-type breakdown */}
       <div className="usage-breakdown">
@@ -276,12 +301,26 @@ export function UsagePanel({ windowDays }: Props) {
       {/* Footer: model + caveat */}
       <footer className="usage-footnote">
         <span>
-          {t("usagePanelCostBasis", model)}
-          {todayCost === null && (
-            <span className="usage-unknown-model"> · {t("usagePanelUnknownModel")}</span>
+          {t("usagePanelCostBasis")}
+          {windowCost.unknownModels.length > 0 && (
+            <span className="usage-unknown-model">
+              {" · "}
+              {t("usagePanelUnknownModels", windowCost.unknownModels.slice(0, 3).join(", "))}
+            </span>
           )}
         </span>
       </footer>
+    </div>
+  );
+}
+
+function ModelUsageRow({ row }: { row: ModelWindowTotals }) {
+  const cost = estimateCostUSD(row.model, row);
+  return (
+    <div className="usage-model-row">
+      <span className="usage-model-name" title={row.model}>{row.model}</span>
+      <span className="usage-model-tokens tabular-nums">{fmtTokens(row.total)}</span>
+      <span className="usage-model-cost tabular-nums">{fmtCost(cost)}</span>
     </div>
   );
 }
