@@ -19,9 +19,9 @@ use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use harness_core::{
     canonicalize_workspace, ActivityEvent, AgentEvent, AgentProfileEvent, ApprovalDecision,
-    Approver, ChannelApprover, Conversation, ConversationMetadata, DocEvent, HitlResponse,
-    HitlStatus, Message, PendingHitl, RequirementEvent, RequirementRunEvent, RunOutcome, TodoEvent,
-    ConversationStore,
+    Approver, ChannelApprover, Conversation, ConversationMetadata, ConversationStore, DocEvent,
+    HitlResponse, HitlStatus, Message, PendingHitl, RequirementEvent, RequirementRunEvent,
+    RunOutcome, TodoEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -49,8 +49,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions/stream", post(chat_completions_stream))
         .route("/v1/chat/ws", get(chat_ws))
         .route("/v1/chat/runs", get(list_chat_runs))
-        .route("/v1/chat/runs/:conversation_id/events", get(list_chat_run_events))
-        .route("/v1/chat/runs/:conversation_id/interrupt", post(interrupt_chat_run))
+        .route(
+            "/v1/chat/runs/:conversation_id/events",
+            get(list_chat_run_events),
+        )
+        .route(
+            "/v1/chat/runs/:conversation_id/interrupt",
+            post(interrupt_chat_run),
+        )
         .merge(conversations::router())
         .merge(projects::router())
         .merge(permissions::router())
@@ -99,8 +105,9 @@ async fn loopback_cors(
         .map(|s| s.to_string());
 
     let allowed = origin.as_deref().is_some_and(is_local_origin);
-    let allow_origin =
-        allowed.then(|| HeaderValue::from_str(origin.as_deref().unwrap_or("*")).ok()).flatten();
+    let allow_origin = allowed
+        .then(|| HeaderValue::from_str(origin.as_deref().unwrap_or("*")).ok())
+        .flatten();
 
     if req.method() == Method::OPTIONS && allowed {
         let mut resp = Response::builder()
@@ -472,7 +479,7 @@ async fn chat_completions(
     Json(req): Json<ChatCompletionsRequest>,
 ) -> Response {
     let mut conv = Conversation {
-        messages: req.messages,
+        messages: expand_goal_in_messages(req.messages),
         ..Default::default()
     };
     let agent = match state.build_agent(req.provider.as_deref(), req.model.as_deref()) {
@@ -521,7 +528,7 @@ async fn chat_completions_stream(
     Json(req): Json<ChatCompletionsRequest>,
 ) -> Response {
     let conv = Conversation {
-        messages: req.messages,
+        messages: expand_goal_in_messages(req.messages),
         ..Default::default()
     };
     let agent = match state.build_agent(req.provider.as_deref(), req.model.as_deref()) {
@@ -1446,6 +1453,7 @@ async fn handle_client_frame(
                 send_error(ws_tx, "turn already in progress").await;
                 return true;
             }
+            let content = expand_goal_command(&content).unwrap_or(content);
             // Per-turn override falls back to socket-level sticky.
             let provider_pick = provider.as_deref().or(sticky_provider.as_deref());
             let model_pick = model.as_deref().or(sticky_model.as_deref());
@@ -1495,6 +1503,7 @@ async fn handle_client_frame(
             // Late-bind the project (no-op for free-chat sessions).
             let prepared = match materialise(
                 state.projects.as_ref(),
+                state.project_memory.as_ref(),
                 soul_conv,
                 persisted_project_id.as_deref(),
             )
@@ -1510,8 +1519,7 @@ async fn handle_client_frame(
             };
             // Late-bind the persistent TODO list (no-op when no
             // store / no workspace / opt-out).
-            let workspace_key =
-                active_workspace_key(state, socket_workspace.as_deref());
+            let workspace_key = active_workspace_key(state, socket_workspace.as_deref());
             let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
                 state.todos.as_ref(),
                 prepared.conversation.clone(),
@@ -1867,6 +1875,7 @@ async fn handle_client_frame(
                 send_error(ws_tx, "turn already in progress").await;
                 return true;
             }
+            let content = expand_goal_command(&content).unwrap_or(content);
             // Resolve user_ordinal → raw conversation index by
             // counting `Message::User` entries from the start.
             // Anything else (system / assistant / tool) is skipped
@@ -1950,6 +1959,7 @@ async fn handle_client_frame(
             // Same late-binding dance as `User`.
             let prepared = match materialise(
                 state.projects.as_ref(),
+                state.project_memory.as_ref(),
                 soul_conv,
                 persisted_project_id.as_deref(),
             )
@@ -1962,8 +1972,7 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            let workspace_key =
-                active_workspace_key(state, socket_workspace.as_deref());
+            let workspace_key = active_workspace_key(state, socket_workspace.as_deref());
             let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
                 state.todos.as_ref(),
                 prepared.conversation.clone(),
@@ -2092,6 +2101,7 @@ async fn handle_client_frame(
             conv.push(Message::user(feedback));
             let prepared = match materialise(
                 state.projects.as_ref(),
+                state.project_memory.as_ref(),
                 conv.clone(),
                 persisted_project_id.as_deref(),
             )
@@ -2104,8 +2114,7 @@ async fn handle_client_frame(
                     return true;
                 }
             };
-            let workspace_key =
-                active_workspace_key(state, socket_workspace.as_deref());
+            let workspace_key = active_workspace_key(state, socket_workspace.as_deref());
             let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
                 state.todos.as_ref(),
                 prepared.conversation.clone(),
@@ -2257,6 +2266,50 @@ fn plan_mode_tool_filter() -> Arc<harness_core::agent::ToolFilter> {
     Arc::new(|t| matches!(t.category(), ToolCategory::Read))
 }
 
+/// Expand `/goal ...` into an explicit coordinator instruction before
+/// the turn reaches the model. The raw slash command is intentionally
+/// handled server-side so every client (web, desktop, direct WS) gets
+/// the same long-running-goal semantics without inventing a new frame.
+fn expand_goal_command(content: &str) -> Option<String> {
+    let goal = slash_command_arg(content, "/goal")?;
+    if goal.is_empty() {
+        return Some(
+            "The user invoked `/goal` without a goal. Ask one concise follow-up for the \
+             long-running goal they want Jarvis to pursue."
+                .to_string(),
+        );
+    }
+
+    Some(format!(
+        "The user invoked `/goal`, which means this is a long-running session/project goal.\n\n\
+Goal:\n{goal}\n\n\
+Act as the coordinator for this goal:\n\
+1. Orient in the workspace and current project/session context before editing.\n\
+2. Create or update durable TODOs / Requirements when those tools are available; otherwise keep a visible plan for this session.\n\
+3. Prefer delegating implementation slices to `subagent.codex` when coding work benefits from a fresh context. Use focused task strings and keep the main conversation as scheduler/reviewer.\n\
+4. Use `subagent.read_doc` or `subagent.review` for reading and verification work when useful.\n\
+5. Continue until the goal is done, blocked on a human decision, or needs approval. Report progress, blockers, files changed, and checks run."
+    ))
+}
+
+fn expand_goal_in_messages(mut messages: Vec<Message>) -> Vec<Message> {
+    if let Some(Message::User { content, .. }) = messages.last_mut() {
+        if let Some(expanded) = expand_goal_command(content) {
+            *content = expanded;
+        }
+    }
+    messages
+}
+
+fn slash_command_arg<'a>(content: &'a str, command: &str) -> Option<&'a str> {
+    let trimmed = content.trim_start();
+    let rest = trimmed.strip_prefix(command)?;
+    match rest.chars().next() {
+        Some(ch) if !ch.is_whitespace() => None,
+        _ => Some(rest.trim()),
+    }
+}
+
 async fn send_error(ws_tx: &mut SplitSink<WebSocket, WsMessage>, message: &str) {
     let _ = ws_tx
         .send(WsMessage::Text(
@@ -2296,5 +2349,49 @@ mod cors_tests {
         assert!(!is_local_origin("http://192.168.1.4"));
         assert!(!is_local_origin("ftp://localhost"));
         assert!(!is_local_origin(""));
+    }
+}
+
+#[cfg(test)]
+mod goal_command_tests {
+    use super::{expand_goal_command, expand_goal_in_messages, slash_command_arg};
+    use harness_core::Message;
+
+    #[test]
+    fn goal_command_expands_to_scheduler_instruction() {
+        let expanded = expand_goal_command("/goal add a codex subagent scheduler").unwrap();
+        assert!(expanded.contains("long-running session/project goal"));
+        assert!(expanded.contains("add a codex subagent scheduler"));
+        assert!(expanded.contains("subagent.codex"));
+    }
+
+    #[test]
+    fn goal_command_requires_command_boundary() {
+        assert!(expand_goal_command("/goals should stay ordinary").is_none());
+        assert_eq!(
+            slash_command_arg("  /goal   ship it  ", "/goal"),
+            Some("ship it")
+        );
+    }
+
+    #[test]
+    fn empty_goal_asks_for_follow_up() {
+        let expanded = expand_goal_command("/goal").unwrap();
+        assert!(expanded.contains("without a goal"));
+    }
+
+    #[test]
+    fn rest_messages_expand_last_user_goal() {
+        let messages = expand_goal_in_messages(vec![
+            Message::system("rules"),
+            Message::user("/goal finish the roadmap"),
+        ]);
+        match messages.last().unwrap() {
+            Message::User { content, .. } => {
+                assert!(content.contains("finish the roadmap"));
+                assert!(content.contains("subagent.codex"));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
     }
 }

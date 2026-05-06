@@ -24,12 +24,13 @@ Status legend in each doc's header:
 | [token-estimation.md](token-estimation.md) | Per-provider tokenisers (replace `chars/4`) | Proposed |
 | [client-sdks.md](client-sdks.md) | TypeScript + Python SDKs over HTTP/WS | Proposed |
 | [sandboxing.md](sandboxing.md) | OS-level isolation for `shell.exec` | Proposed |
-| [product-design.md](product-design.md) / [zh-CN](product-design.zh-CN.md) | Chat / Work / Doc product design and capability-pack model | Proposed |
+| [product-design.md](product-design.md) / [zh-CN](product-design.zh-CN.md) | Chat / Work / Doc product design and capability-pack model | Adopted |
 | [aicoding-agent.md](aicoding-agent.md) | Coding capability pack and Codex / Claude Code style workflow | Proposed |
 | [aicoding-agent.zh-CN.md](aicoding-agent.zh-CN.md) | Coding 基础能力与 Codex / Claude Code 风格工作流 | Proposed |
 | [persistent-todos.md](persistent-todos.md) | Persistent TODO board as the lightweight Work backlog | Adopted |
 | [cloud-capabilities.zh-CN.md](cloud-capabilities.zh-CN.md) | 云端能力包、端云协同与多云厂商适配 | Proposed |
 | [work-orchestration.zh-CN.md](work-orchestration.zh-CN.md) | Work 编排、自动执行、验证门禁、GSD 2 + Multica 参考吸收 | Adopted partial — Phase 0/1/2/3 落地; Multica 启发的 AgentProfile / Activity / Run 持久化是新 Phase 3.5/3.6/3.7 |
+| [symphony-inspired-orchestration.zh-CN.md](symphony-inspired-orchestration.zh-CN.md) | 借鉴 Symphony SPEC 的常驻 Work 调度、`WORKFLOW.md` 契约、tracker adapter、per-issue workspace、retry/reconcile | Proposed |
 | [cloud-blueprint.zh-CN.md](cloud-blueprint.zh-CN.md) | Cloud / Edge 落地蓝图：看板 10 条 Requirement 的 PR 拆分、验收与依赖图 | In progress — Phase 0/1 文档化 |
 | [permission-modes.md](permission-modes.md) | Five permission modes (`ask` / `accept-edits` / `plan` / `auto` / `bypass`) + rule engine | Adopted (backend); Web UI follow-up |
 | [new-session-resource-manager.zh-CN.md](new-session-resource-manager.zh-CN.md) | 新建会话资源管理弹框：选择项目/文件夹、自动创建项目、多工作区绑定 | Proposed |

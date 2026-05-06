@@ -71,7 +71,7 @@ pub enum FinishReason {
 /// it as [`crate::AgentEvent::Usage`] so transports can show context
 /// budget + cache hit savings without each transport re-deriving
 /// counts.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens billed for this request, including any cached portion.
     #[serde(default, skip_serializing_if = "Option::is_none")]

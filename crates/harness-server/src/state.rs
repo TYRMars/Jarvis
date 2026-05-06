@@ -2,15 +2,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use harness_core::{
-    Agent, AgentConfig, ActivityStore, AgentProfileStore, ConversationStore, DocStore,
-    LlmProvider, PermissionMode, PermissionStore, ProjectStore, RequirementRunStore,
-    RequirementStore, TodoStore, ToolRegistry,
+    ActivityStore, Agent, AgentConfig, AgentProfileStore, ConversationStore, DocStore, LlmProvider,
+    PermissionMode, PermissionStore, ProjectStore, RequirementRunStore, RequirementStore,
+    TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
 use harness_skill::SkillCatalog;
 use harness_store::WorkspaceStore;
 
+use crate::project_memory::ProjectMemoryConfig;
 use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
 use crate::worktree::WorktreeMode;
 
@@ -93,6 +94,12 @@ pub struct AppState {
     /// means the `/v1/projects` routes return `503` and conversation
     /// creation can't bind to a project (free chat still works).
     pub projects: Option<Arc<dyn ProjectStore>>,
+    /// Optional file-based project memory runtime. When set, project-
+    /// bound conversations receive the project's generated memory
+    /// files (`MEMORY.md`, `kanban.md`, `calendar.md`) as a synthetic
+    /// system block, and the binary may run a RequirementStore
+    /// subscriber that keeps those files fresh after board changes.
+    pub project_memory: Option<ProjectMemoryConfig>,
     /// The resolved workspace root — same path that all `fs.*` /
     /// `git.*` / `code.grep` / `shell.exec` tools are scoped to.
     /// Set by the binary at startup; surfaced via `GET /v1/workspace`
@@ -234,6 +241,7 @@ impl AppState {
             agent_template: template,
             store: None,
             projects: None,
+            project_memory: None,
             workspace_root: None,
             server_info: ServerInfo::default(),
             permission_store: None,
@@ -273,6 +281,7 @@ impl AppState {
             agent_template: agent.config.clone(),
             store: None,
             projects: None,
+            project_memory: None,
             workspace_root: None,
             server_info: ServerInfo::default(),
             permission_store: None,
@@ -307,6 +316,12 @@ impl AppState {
     /// project halves of the same backend are wired up together.
     pub fn with_project_store(mut self, projects: Arc<dyn ProjectStore>) -> Self {
         self.projects = Some(projects);
+        self
+    }
+
+    /// Attach file-based project memory configuration.
+    pub fn with_project_memory(mut self, config: ProjectMemoryConfig) -> Self {
+        self.project_memory = Some(config);
         self
     }
 

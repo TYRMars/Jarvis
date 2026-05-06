@@ -234,13 +234,10 @@ mod tests {
     async fn stdout_truncation_marker_present_when_oversize() {
         let dir = std::env::temp_dir();
         // Print 32 KiB of `a` so we go past the 16 KiB cap.
-        let res = execute_plan(
-            &dir,
-            &plan(&["yes a | head -c 32768"]),
-            5_000,
-        )
-        .await;
+        let res = execute_plan(&dir, &plan(&["yes a | head -c 32768"]), 5_000).await;
         assert_eq!(res.command_results[0].exit_code, Some(0));
-        assert!(res.command_results[0].stdout.contains("[... truncated ...]"));
+        assert!(res.command_results[0]
+            .stdout
+            .contains("[... truncated ...]"));
     }
 }

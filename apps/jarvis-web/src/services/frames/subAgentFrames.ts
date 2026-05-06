@@ -11,11 +11,17 @@
 
 import { appStore } from "../../store/appStore";
 import type { SubAgentFrame } from "../../components/SubAgent/types";
+import { recordUsage } from "../usage";
+import { recordUsageDaily } from "../usageCumulator";
 
 export const subAgentFrameHandlers: Record<string, (ev: any) => void> = {
   sub_agent_event: (ev) => {
     const frame = (ev && ev.frame) as SubAgentFrame | undefined;
     if (!frame || !frame.subagent_id || !frame.event) return;
+    if (frame.event.kind === "usage") {
+      recordUsage(frame.event);
+      recordUsageDaily(frame.event);
+    }
     appStore.getState().applySubAgentFrame(frame);
   },
 };

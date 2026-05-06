@@ -216,24 +216,22 @@ impl Tool for CodexRunTool {
             .stdin(Stdio::null())
             .kill_on_drop(true);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| -> BoxError { format!("failed to spawn `{}`: {e}", self.binary.display()).into() })?;
+        let child = cmd.spawn().map_err(|e| -> BoxError {
+            format!("failed to spawn `{}`: {e}", self.binary.display()).into()
+        })?;
 
-        let output = match tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            child.wait_with_output(),
-        )
-        .await
-        {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(format!("codex process error: {e}").into()),
-            Err(_) => {
-                // tokio::time::timeout drops the child future, which fires
-                // `kill_on_drop`. No further cleanup needed here.
-                return Err(format!("codex timed out after {timeout_ms} ms").into());
-            }
-        };
+        let output =
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
+                .await
+            {
+                Ok(Ok(out)) => out,
+                Ok(Err(e)) => return Err(format!("codex process error: {e}").into()),
+                Err(_) => {
+                    // tokio::time::timeout drops the child future, which fires
+                    // `kill_on_drop`. No further cleanup needed here.
+                    return Err(format!("codex timed out after {timeout_ms} ms").into());
+                }
+            };
 
         if !output.status.success() {
             let exit = output
@@ -242,10 +240,7 @@ impl Tool for CodexRunTool {
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".to_string());
             let stderr_tail = truncate_utf8(&output.stderr, self.max_stderr_bytes);
-            return Err(format!(
-                "codex exec exit={exit}: {stderr_tail}"
-            )
-            .into());
+            return Err(format!("codex exec exit={exit}: {stderr_tail}").into());
         }
 
         let stdout = truncate_utf8(&output.stdout, self.max_stdout_bytes);
@@ -322,17 +317,10 @@ mod tests {
     #[tokio::test]
     async fn surfaces_nonzero_exit_with_stderr_tail() {
         let dir = tempdir().unwrap();
-        let fake = write_fake_binary(
-            dir.path(),
-            "fake-codex",
-            "echo 'oops' 1>&2; exit 7",
-        );
+        let fake = write_fake_binary(dir.path(), "fake-codex", "echo 'oops' 1>&2; exit 7");
         let tool = CodexRunTool::new(dir.path()).with_binary(&fake);
 
-        let err = tool
-            .invoke(json!({ "task": "x" }))
-            .await
-            .unwrap_err();
+        let err = tool.invoke(json!({ "task": "x" })).await.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("exit=7"), "got: {msg}");
         assert!(msg.contains("oops"), "got: {msg}");

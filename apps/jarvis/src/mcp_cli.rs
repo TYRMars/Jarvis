@@ -130,7 +130,10 @@ async fn list(args: ListArgs, cfg: Option<&Config>) -> Result<()> {
         return Ok(());
     }
     let empty = Vec::new();
-    let servers = body.get("servers").and_then(Value::as_array).unwrap_or(&empty);
+    let servers = body
+        .get("servers")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if servers.is_empty() {
         println!("(no mcp servers registered)");
         return Ok(());
@@ -163,7 +166,10 @@ async fn add(args: AddArgs, cfg: Option<&Config>) -> Result<()> {
     let base = server_url(&args.server, cfg);
     let cfg_body = build_client_config(&args)?;
     let body: Value = http_json("POST", &format!("{base}/v1/mcp/servers"), Some(&cfg_body)).await?;
-    let prefix = body.get("prefix").and_then(Value::as_str).unwrap_or(&args.prefix);
+    let prefix = body
+        .get("prefix")
+        .and_then(Value::as_str)
+        .unwrap_or(&args.prefix);
     let tools_empty = Vec::new();
     let tools = body
         .get("tools")
@@ -205,7 +211,10 @@ async fn test(args: TestArgs, cfg: Option<&Config>) -> Result<()> {
         println!("✓ `{}` healthy ({tools} tools, {latency}ms)", args.prefix);
         Ok(())
     } else {
-        let err = body.get("error").and_then(Value::as_str).unwrap_or("unknown error");
+        let err = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
         anyhow::bail!("`{}` unhealthy ({latency}ms): {err}", args.prefix)
     }
 }
@@ -221,7 +230,10 @@ fn build_client_config(args: &AddArgs) -> Result<McpClientConfig> {
         let env = args
             .env
             .iter()
-            .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+            .filter_map(|kv| {
+                kv.split_once('=')
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+            })
             .collect();
         McpTransport::Stdio {
             command: cmd.clone(),
@@ -272,7 +284,11 @@ async fn http_get(url: &str) -> Result<Value> {
     serde_json::from_str(&text).with_context(|| format!("parse JSON from {url}"))
 }
 
-async fn http_json<B: serde::Serialize>(method: &str, url: &str, body: Option<&B>) -> Result<Value> {
+async fn http_json<B: serde::Serialize>(
+    method: &str,
+    url: &str,
+    body: Option<&B>,
+) -> Result<Value> {
     let client = reqwest::Client::new();
     let mut req = match method {
         "POST" => client.post(url),
@@ -286,7 +302,10 @@ async fn http_json<B: serde::Serialize>(method: &str, url: &str, body: Option<&B
         // Some endpoints expect an empty JSON body for POST/DELETE.
         req = req.json(&json!({}));
     }
-    let res = req.send().await.with_context(|| format!("{method} {url}"))?;
+    let res = req
+        .send()
+        .await
+        .with_context(|| format!("{method} {url}"))?;
     let status = res.status();
     let text = res.text().await.unwrap_or_default();
     if !status.is_success() {

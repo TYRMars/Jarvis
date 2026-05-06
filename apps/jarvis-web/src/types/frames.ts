@@ -7,6 +7,7 @@
 
 export interface UsageFrame {
   type: "usage";
+  model?: string;
   prompt_tokens?: number;
   completion_tokens?: number;
   cached_prompt_tokens?: number;
@@ -265,12 +266,17 @@ export interface ConvoListRow {
   /// the server has projects configured. Free-chat conversations omit
   /// this field. Resolve to a name by looking up `appStore.projectsById`.
   project_id?: string | null;
+  /// Workspace root bound to this conversation, when known. Older
+  /// servers omit this; clients can fall back to the bound project's
+  /// first workspace.
+  workspace_path?: string | null;
 }
 
 export interface ConvoDetail {
   id: string;
   messages: AnyMessage[];
   project_id?: string | null;
+  workspace_path?: string | null;
 }
 
 /// One workspace folder a [`Project`] knows about. Mirrors
@@ -353,6 +359,49 @@ export interface Requirement {
    *  "Run verification" form) executes after each RequirementRun.
    *  Server-side type: `Option<VerificationPlan>`. */
   verification_plan?: VerificationPlan | null;
+  /** Structured per-requirement checklist / execution items. These
+   *  are distinct from the workspace-wide TODO rail: they travel with
+   *  the requirement and can represent CI/CD commands, manual review
+   *  gates, or workflow steps. */
+  todos?: RequirementTodo[];
+  created_at: string;
+  updated_at: string;
+}
+
+export type RequirementTodoKind =
+  | "work"
+  | "check"
+  | "ci"
+  | "deploy"
+  | "review"
+  | "manual";
+
+export type RequirementTodoStatus =
+  | "pending"
+  | "running"
+  | "passed"
+  | "failed"
+  | "skipped"
+  | "blocked";
+
+export interface RequirementTodoEvidence {
+  run_id?: string | null;
+  exit_code?: number | null;
+  stdout_excerpt?: string | null;
+  stderr_excerpt?: string | null;
+  artifact_url?: string | null;
+  note?: string | null;
+}
+
+export interface RequirementTodo {
+  id: string;
+  title: string;
+  kind: RequirementTodoKind;
+  status: RequirementTodoStatus;
+  command?: string | null;
+  evidence?: RequirementTodoEvidence | null;
+  depends_on?: string[];
+  created_by: "human" | "agent" | "workflow";
   created_at: string;
   updated_at: string;
 }
@@ -419,6 +468,16 @@ export interface VerificationResult {
   notes?: string | null;
 }
 
+export type RequirementRunLogLevel = "info" | "warn" | "error" | "success";
+
+export interface RequirementRunLog {
+  id: string;
+  level: RequirementRunLogLevel;
+  message: string;
+  data?: Record<string, unknown> | null;
+  created_at: string;
+}
+
 /// One execution attempt against a Requirement. Mirrors
 /// `harness_core::RequirementRun`.
 export interface RequirementRun {
@@ -429,6 +488,7 @@ export interface RequirementRun {
   summary?: string | null;
   error?: string | null;
   verification?: VerificationResult | null;
+  logs?: RequirementRunLog[];
   /** Phase 5 — absolute path to the per-run git worktree, when
    *  the server's `JARVIS_WORKTREE_MODE=per_run` is on and the
    *  workspace was a clean git repo at start time. `null` /

@@ -9,10 +9,13 @@
 // the live scroll-back; once `output` arrives the formatted summary
 // takes over.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ToolBlockEntry } from "../../store/appStore";
+import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { DecisionSourceChip } from "../Approvals/DecisionSourceChip";
+import { SubAgentCard } from "../SubAgent/SubAgentCard";
+import type { SubAgentRun } from "../SubAgent/types";
 import {
   APPROVAL_GATED_TOOLS,
   SUMMARISABLE_TOOLS,
@@ -35,8 +38,13 @@ interface ToolBlockProps {
 
 export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const subAgentRuns = useAppStore((s) => s.subAgentRuns);
   const status = entry.status;
   const streaming = status === "running" && entry.progress.length > 0;
+  const subAgentRun = useMemo(
+    () => findSubAgentRun(entry, subAgentRuns),
+    [entry, subAgentRuns],
+  );
   // Four-tier default for the open state, overridable by user click:
   //   • errored / denied → open (user needs to debug the failure)
   //   • streaming → open (live scroll-back is the point)
@@ -120,7 +128,13 @@ export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
               <ToolStreamingOutput content={entry.progress} />
             </div>
           )}
-          {entry.output != null && (
+          {subAgentRun ? (
+            <div className="tool-section">
+              <div className="tool-label">{t("tasksSubagentSection")}</div>
+              <SubAgentCard run={subAgentRun} expanded={forceOpen ? true : undefined} />
+            </div>
+          ) : null}
+          {entry.output != null && !subAgentRun && (
             <div className="tool-section">
               <div className="tool-label">{t("output")}</div>
               {renderOutputBody(entry.name, entry.output)}
@@ -130,4 +144,22 @@ export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
       )}
     </div>
   );
+}
+
+function findSubAgentRun(
+  entry: ToolBlockEntry,
+  runs: Record<string, SubAgentRun>,
+): SubAgentRun | null {
+  if (!entry.name.startsWith("subagent.")) return null;
+  const subName = entry.name.slice("subagent.".length);
+  const startedAt = entry.startedAt || 0;
+  const finishedAt = entry.finishedAt ?? Date.now();
+  const candidates = Object.values(runs)
+    .filter((run) => {
+      if (run.name !== subName) return false;
+      if (!startedAt) return true;
+      return run.startedAt >= startedAt - 250 && run.startedAt <= finishedAt + 1000;
+    })
+    .sort((a, b) => Math.abs(a.startedAt - startedAt) - Math.abs(b.startedAt - startedAt));
+  return candidates[0] ?? null;
 }

@@ -594,7 +594,9 @@ mod tests {
         async fn save(&self, project: &Project) -> Result<(), BoxError> {
             let mut g = self.inner.write().await;
             // Reject duplicate slugs (matching by slug across rows whose id differs).
-            if g.values().any(|p| p.slug == project.slug && p.id != project.id) {
+            if g.values()
+                .any(|p| p.slug == project.slug && p.id != project.id)
+            {
                 return Err(format!("slug `{}` already in use", project.slug).into());
             }
             g.insert(project.id.clone(), project.clone());
@@ -612,11 +614,7 @@ mod tests {
                 .find(|p| p.slug == slug)
                 .cloned())
         }
-        async fn list(
-            &self,
-            include_archived: bool,
-            limit: u32,
-        ) -> Result<Vec<Project>, BoxError> {
+        async fn list(&self, include_archived: bool, limit: u32) -> Result<Vec<Project>, BoxError> {
             let mut rows: Vec<Project> = self
                 .inner
                 .read()
@@ -722,16 +720,10 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         let id = v["id"].as_str().unwrap().to_string();
 
-        let by_id = get
-            .invoke(json!({ "id_or_slug": id }))
-            .await
-            .unwrap();
+        let by_id = get.invoke(json!({ "id_or_slug": id })).await.unwrap();
         assert!(by_id.contains("Demo X"));
 
-        let by_slug = get
-            .invoke(json!({ "id_or_slug": "demo-x" }))
-            .await
-            .unwrap();
+        let by_slug = get.invoke(json!({ "id_or_slug": "demo-x" })).await.unwrap();
         assert!(by_slug.contains("Demo X"));
 
         let missing = get

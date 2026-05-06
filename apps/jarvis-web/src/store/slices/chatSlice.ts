@@ -147,6 +147,8 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
 
   finalizeAssistant: (msg) => {
     const msgs = get().messages.slice();
+    const incomingContent = msg.content || "";
+    const incomingReasoning = msg.reasoning_content || "";
     let lastIdx = -1;
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].kind === "assistant") {
@@ -170,25 +172,56 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
     // `appendDelta` already applies the same tail-finalised rule;
     // matching it here keeps the two entry-points symmetric.
     if (!trailing || trailing.finalised) {
+      const prev = msgs[msgs.length - 1];
+      if (
+        prev?.kind === "assistant" &&
+        sameAssistantContent(prev.content, incomingContent)
+      ) {
+        msgs[msgs.length - 1] = {
+          ...prev,
+          reasoning: incomingReasoning || prev.reasoning,
+          finalised: true,
+        };
+        set({ messages: msgs });
+        return;
+      }
       msgs.push({
         uid: nextUid("a"),
         kind: "assistant",
-        content: msg.content || "",
-        reasoning: msg.reasoning_content || "",
+        content: incomingContent,
+        reasoning: incomingReasoning,
         toolCallIds: [],
         finalised: true,
       });
       set({ messages: msgs });
       return;
     }
+
+    const prev = msgs[lastIdx - 1];
+    const finalContent = incomingContent || trailing.content;
+    if (
+      prev?.kind === "assistant" &&
+      trailing.toolCallIds.length === 0 &&
+      sameAssistantContent(prev.content, finalContent)
+    ) {
+      msgs[lastIdx - 1] = {
+        ...prev,
+        reasoning: incomingReasoning || prev.reasoning,
+        finalised: true,
+      };
+      msgs.splice(lastIdx, 1);
+      set({ messages: msgs });
+      return;
+    }
+
     msgs[lastIdx] = {
       ...trailing,
-      // Prefer the streamed text — `finalize.message.content` is the
-      // server's full version and matches what we accumulated; the
-      // OR keeps us safe for tool-call-only turns where content is
-      // empty but reasoning may be present.
-      content: trailing.content || msg.content || "",
-      reasoning: msg.reasoning_content || trailing.reasoning,
+      // Prefer the server's final full message when it is present.
+      // Some OpenAI-compatible gateways stream cumulative snapshots
+      // rather than true deltas; using the final message repairs that
+      // without changing providers that stream normal deltas.
+      content: incomingContent || trailing.content,
+      reasoning: incomingReasoning || trailing.reasoning,
       finalised: true,
     };
     set({ messages: msgs });
@@ -321,3 +354,7 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
   },
 });
 
+function sameAssistantContent(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+}

@@ -162,6 +162,9 @@ impl SubAgent for InternalSubAgent {
                         output: content,
                     });
                 }
+                AgentEvent::Usage { model, usage } => {
+                    push(SubAgentEvent::Usage { model, usage });
+                }
                 AgentEvent::Error { message } => {
                     error_message = Some(message);
                     break;

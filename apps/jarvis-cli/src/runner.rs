@@ -101,9 +101,7 @@ pub(crate) fn resolve_initial_mode(args: &Args) -> Result<harness_core::Permissi
             anyhow::anyhow!("permission_mode=`{s}` not recognised; use ask / accept-edits / plan / auto / bypass")
         })?,
     };
-    if matches!(mode, harness_core::PermissionMode::Bypass)
-        && !args.dangerously_skip_permissions
-    {
+    if matches!(mode, harness_core::PermissionMode::Bypass) && !args.dangerously_skip_permissions {
         anyhow::bail!("permission_mode=bypass requires --dangerously-skip-permissions");
     }
     Ok(mode)
@@ -115,7 +113,9 @@ pub(crate) fn resolve_initial_mode(args: &Args) -> Result<harness_core::Permissi
 /// project mid-session and have it propagate"; if you need that,
 /// restart `jarvis-cli`).
 pub(crate) async fn load_project_prelude(needle: &str) -> Result<String> {
-    let url = std::env::var("JARVIS_DB_URL").ok().filter(|s| !s.is_empty());
+    let url = std::env::var("JARVIS_DB_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
     let url = url.ok_or_else(|| {
         anyhow::anyhow!(
             "--project requires JARVIS_DB_URL to be set so the project can be loaded from the store"
@@ -125,7 +125,11 @@ pub(crate) async fn load_project_prelude(needle: &str) -> Result<String> {
         .await
         .with_context(|| format!("opening db url `{url}`"))?;
     let store = bundle.projects;
-    let project = if let Some(p) = store.load(needle).await.map_err(|e| anyhow::anyhow!("{e}"))? {
+    let project = if let Some(p) = store
+        .load(needle)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    {
         p
     } else if let Some(p) = store
         .find_by_slug(needle)
@@ -183,7 +187,7 @@ fn build_agent(
     let (channel_approver, pending_rx) = ChannelApprover::new(8);
     let approver: Arc<dyn Approver> = Arc::new(channel_approver);
     let prompt = resolve_system_prompt(args, workspace, project_prelude);
-    let mut cfg = AgentConfig::new(model)
+    let mut cfg = AgentConfig::new(model.clone())
         .with_system_prompt(prompt)
         .with_tools(tools)
         .with_approver(approver)
@@ -193,9 +197,19 @@ fn build_agent(
     // because it's `ToolCategory::Read`.
     if matches!(permission_mode, harness_core::PermissionMode::Plan) {
         use harness_core::ToolCategory;
-        cfg = cfg.with_tool_filter(Arc::new(|t| {
-            matches!(t.category(), ToolCategory::Read)
-        }));
+        cfg = cfg.with_tool_filter(Arc::new(|t| matches!(t.category(), ToolCategory::Read)));
+    }
+    // Optional short-term memory.
+    if let Some(tokens) = args.memory_tokens {
+        let memory: Arc<dyn harness_core::Memory> = match args.memory_mode.as_str() {
+            "summary" => Arc::new(harness_memory::SummarizingMemory::new(
+                llm.clone(),
+                model,
+                tokens,
+            )),
+            _ => Arc::new(harness_memory::SlidingWindowMemory::new(tokens)),
+        };
+        cfg = cfg.with_memory(memory);
     }
     Ok((Arc::new(Agent::new(llm, cfg)), pending_rx))
 }
@@ -216,7 +230,10 @@ pub async fn run_repl(args: Args, workspace: PathBuf) -> Result<()> {
         // already names the project and the body lands in the system
         // prompt anyway.
         if let Some(first_line) = prelude.lines().next() {
-            println!("{}", dim(&format!("({first_line} loaded into system prompt)")));
+            println!(
+                "{}",
+                dim(&format!("({first_line} loaded into system prompt)"))
+            );
         }
     }
 
@@ -259,10 +276,13 @@ pub async fn run_repl(args: Args, workspace: PathBuf) -> Result<()> {
         if let Some(rest) = line.strip_prefix("/mode") {
             let arg = rest.trim();
             if arg.is_empty() {
-                println!("{}", dim(&format!(
-                    "current mode: {}; usage: /mode <ask|accept-edits|plan|auto>",
-                    permission_mode.as_str()
-                )));
+                println!(
+                    "{}",
+                    dim(&format!(
+                        "current mode: {}; usage: /mode <ask|accept-edits|plan|auto>",
+                        permission_mode.as_str()
+                    ))
+                );
                 continue;
             }
             match harness_core::PermissionMode::parse(arg) {
@@ -470,6 +490,10 @@ async fn run_one_turn(
                             harness_core::SubAgentEvent::Status { message } => {
                                 println!("{} {}", dim(&label), dim(&message));
                             }
+                            harness_core::SubAgentEvent::Usage { .. } => {
+                                // Accounted for by usage aggregation; keep
+                                // the subagent trace readable in the CLI.
+                            }
                             harness_core::SubAgentEvent::Done { final_message } => {
                                 println!("{} ✓ {}", dim(&label), final_message);
                             }
@@ -591,9 +615,7 @@ pub async fn run_pipe(args: Args, workspace: PathBuf) -> Result<()> {
         .with_max_iterations(args.max_iterations);
     if matches!(permission_mode, harness_core::PermissionMode::Plan) {
         use harness_core::ToolCategory;
-        cfg = cfg.with_tool_filter(Arc::new(|t| {
-            matches!(t.category(), ToolCategory::Read)
-        }));
+        cfg = cfg.with_tool_filter(Arc::new(|t| matches!(t.category(), ToolCategory::Read)));
     }
     let agent = Agent::new(llm, cfg);
 

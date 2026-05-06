@@ -404,10 +404,7 @@ pub trait ActivityStore: Send + Sync {
     /// by `created_at` descending (newest first). Implementations
     /// should `tracing::warn!` when the cap is hit so operators
     /// notice runaway audit logs.
-    async fn list_for_requirement(
-        &self,
-        requirement_id: &str,
-    ) -> Result<Vec<Activity>, BoxError>;
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Activity>, BoxError>;
 
     /// Append a single activity row. Implementations must
     /// broadcast [`ActivityEvent::Appended`] after a successful

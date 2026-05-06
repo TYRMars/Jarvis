@@ -101,10 +101,7 @@ fn server_error(msg: impl std::fmt::Display) -> Response {
 /// so this module doesn't reach into a sibling module's privates.
 /// Keeps the security policy explicit at each entry point.
 #[allow(clippy::result_large_err)]
-fn resolve_workspace(
-    state: &AppState,
-    override_root: Option<&str>,
-) -> Result<PathBuf, Response> {
+fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<PathBuf, Response> {
     if let Some(raw) = override_root {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -210,24 +207,31 @@ async fn list_dir(State(state): State<AppState>, Query(q): Query<ListQuery>) -> 
         } else {
             "other"
         };
-        let size = if meta.is_file() { Some(meta.len()) } else { None };
+        let size = if meta.is_file() {
+            Some(meta.len())
+        } else {
+            None
+        };
         let mtime = meta
             .modified()
             .ok()
             .and_then(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339().into());
-        entries.push(Entry { name, kind, size, mtime });
+        entries.push(Entry {
+            name,
+            kind,
+            size,
+            mtime,
+        });
     }
     if read_dir.next_entry().await.ok().flatten().is_some() {
         truncated = true;
     }
 
     // Sort: directories first, then alphabetically, case-insensitive.
-    entries.sort_by(|a, b| {
-        match (a.kind, b.kind) {
-            ("dir", k) if k != "dir" => std::cmp::Ordering::Less,
-            (k, "dir") if k != "dir" => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.kind, b.kind) {
+        ("dir", k) if k != "dir" => std::cmp::Ordering::Less,
+        (k, "dir") if k != "dir" => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     let parent = if dir_rel.is_empty() {
@@ -294,7 +298,11 @@ async fn read_file(State(state): State<AppState>, Query(q): Query<ReadQuery>) ->
     }
 
     let truncated = bytes.len() > MAX_READ_BYTES;
-    let slice = if truncated { &bytes[..MAX_READ_BYTES] } else { &bytes[..] };
+    let slice = if truncated {
+        &bytes[..MAX_READ_BYTES]
+    } else {
+        &bytes[..]
+    };
     // Lossy is safe here: we already proved there are no NUL bytes
     // in the sniff window, but trailing UTF-8 multibyte sequences
     // can still split at the truncation boundary.

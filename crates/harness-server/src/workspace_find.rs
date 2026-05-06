@@ -83,10 +83,7 @@ struct FindQuery {
     name: String,
 }
 
-async fn find_workspace(
-    State(state): State<AppState>,
-    Query(q): Query<FindQuery>,
-) -> Response {
+async fn find_workspace(State(state): State<AppState>, Query(q): Query<FindQuery>) -> Response {
     let needle = q.name.trim();
     if needle.is_empty() {
         return bad_request("name parameter is required");
@@ -120,18 +117,14 @@ async fn find_workspace(
         let needle = needle.to_string();
         move || resolve_candidates(&home, &needle)
     });
-    let candidates = match tokio::time::timeout(
-        GLOBAL_BUDGET + Duration::from_millis(200),
-        blocking,
-    )
-    .await
-    {
-        Ok(Ok(out)) => out,
-        // Timeout, panic, or join error — return empty rather than
-        // 500 so the UI's fallback path ("type the path manually")
-        // still works.
-        Ok(Err(_)) | Err(_) => Vec::new(),
-    };
+    let candidates =
+        match tokio::time::timeout(GLOBAL_BUDGET + Duration::from_millis(200), blocking).await {
+            Ok(Ok(out)) => out,
+            // Timeout, panic, or join error — return empty rather than
+            // 500 so the UI's fallback path ("type the path manually")
+            // still works.
+            Ok(Err(_)) | Err(_) => Vec::new(),
+        };
 
     // Augment with recent workspaces — paths the user has already
     // opened are by definition canonical, so they rank highest.
@@ -377,10 +370,7 @@ mod tests {
         // the basename matches.
         fs::create_dir_all(home.join(".cache/target-name")).unwrap();
         let out = resolve_candidates(&home, "target-name");
-        assert!(
-            out.is_empty(),
-            "dot-directory descendants must be skipped"
-        );
+        assert!(out.is_empty(), "dot-directory descendants must be skipped");
     }
 
     #[test]

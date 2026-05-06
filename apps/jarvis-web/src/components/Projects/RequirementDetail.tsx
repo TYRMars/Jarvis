@@ -1,11 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type {
   Activity,
   AgentProfile,
   Requirement,
   RequirementRun,
+  RequirementRunLog,
   RequirementRunStatus,
   RequirementStatus,
+  RequirementTodo,
+  RequirementTodoKind,
+  RequirementTodoStatus,
   VerificationStatus,
 } from "../../types/frames";
 import { t } from "../../utils/i18n";
@@ -16,22 +20,29 @@ import {
   subscribeAgentProfiles,
 } from "../../services/agentProfiles";
 import { appStore } from "../../store/appStore";
+import { currentJarvisSoulPrompt } from "../../store/persistence";
+import { startConversationTurn } from "../../services/conversationSockets";
 import {
-  linkRequirementConversation,
   listActivitiesForRequirement,
   listRunsForRequirement,
   loadActivitiesForRequirement,
   loadRunsForRequirement,
+  createRequirementTodo,
+  deleteRequirementTodo,
   rejectRequirement,
   startRequirementRun,
   subscribeRequirementActivities,
   subscribeRequirementRuns,
+  updateRequirementTodo,
   updateRequirement,
   verifyRunByCommands,
 } from "../../services/requirements";
+import { pickedRouting } from "../../services/socket";
+import { Select } from "../ui";
 import type { BoardColumn } from "./columns";
 import { MarkdownLite } from "./MarkdownLite";
 import { ActivityList } from "./activityRow";
+import { parseRoadmapDescription } from "./roadmapDescription";
 
 // Right-side slide-in panel that replaces the previous in-place
 // expand interaction. The card surface stays compact (single
@@ -44,14 +55,12 @@ import { ActivityList } from "./activityRow";
 export function RequirementDetail({
   requirement,
   columns,
-  activeConversationId,
   onClose,
   onChanged,
   onOpenConversation,
 }: {
   requirement: Requirement | null;
   columns: BoardColumn[];
-  activeConversationId: string | null;
   onClose: () => void;
   onChanged: () => void;
   onOpenConversation: (id: string) => void;
@@ -109,12 +118,10 @@ export function RequirementDetail({
   void actsTick;
   void profilesTick;
 
-  const desc = requirement.description?.trim() ?? "";
+  const parsedDescription = parseRoadmapDescription(requirement.description);
+  const desc = parsedDescription.text;
   const sessions = requirement.conversation_ids.length;
   const idShort = requirement.id.replace(/-/g, "").slice(0, 6).toUpperCase();
-  const canLink =
-    !!activeConversationId &&
-    !requirement.conversation_ids.includes(activeConversationId);
   const statusCol = columns.find((c) => c.id === requirement.status);
   const statusLabel = statusCol ? statusCol.label : requirement.status;
   // Use the column's `kind` (when set) so the chip's pill class still
@@ -133,12 +140,6 @@ export function RequirementDetail({
     updateRequirement(requirement.id, {
       assignee_id: assigneeId === "" ? null : assigneeId,
     });
-    onChanged();
-  };
-
-  const linkCurrent = () => {
-    if (!activeConversationId) return;
-    linkRequirementConversation(requirement.id, activeConversationId);
     onChanged();
   };
 
@@ -170,6 +171,19 @@ export function RequirementDetail({
   // activity timeline and soft-deletes the row.
   const isProposed = requirement.triage_state === "proposed_by_agent" ||
     requirement.triage_state === "proposed_by_scan";
+  const latestRun = runs[0] ?? null;
+  const latestConversationId =
+    latestRun?.conversation_id ?? requirement.conversation_ids[0] ?? null;
+  const assignedProfile = getAgentProfileFromCache(
+    requirement.assignee_id ?? null,
+  );
+  const agentName = assignedProfile?.name ?? null;
+  const todos = requirement.todos ?? [];
+  const firstActionableTodo =
+    todos.find((todo) => todo.status === "failed" || todo.status === "blocked") ??
+    todos.find((todo) => todo.status === "pending" || todo.status === "running") ??
+    todos[0] ??
+    null;
 
   const handleReject = async () => {
     const raw = window.prompt(t("triageRejectPrompt"));
@@ -185,35 +199,68 @@ export function RequirementDetail({
     }
   };
 
-  const handleStartRun = async () => {
-    if (startDisabled) return;
+  const seedBackgroundConversationSurface = (
+    conversationId: string,
+    content: string,
+  ) => {
+    const store = appStore.getState();
+    const activeBefore = store.activeId;
+    if (activeBefore) store.saveConversationSurface(activeBefore);
+    const hadSurface = store.restoreConversationSurface(conversationId);
+    if (!hadSurface) {
+      store.clearMessages();
+      store.clearApprovals();
+      store.clearHitls();
+      store.clearTasks();
+      store.setPlan([]);
+      store.setProposedPlan(null);
+      store.clearSubAgentRuns();
+    }
+    store.pushUserMessage(content);
+    store.saveConversationSurface(conversationId);
+    if (activeBefore) {
+      store.restoreConversationSurface(activeBefore);
+    } else {
+      store.clearMessages();
+      store.clearApprovals();
+      store.clearHitls();
+      store.clearTasks();
+      store.setPlan([]);
+      store.setProposedPlan(null);
+      store.clearSubAgentRuns();
+    }
+  };
+
+  const handleAgentWork = async (prompt?: string) => {
+    if (startDisabled && !latestConversationId) return;
     setStartError(null);
     setStarting(true);
+    const content = prompt ?? t("detailStartPromptPrefill", requirement.title);
     try {
-      const { conversation_id } = await startRequirementRun(requirement.id);
+      if (inFlightRun) return;
+      if (startDisabled) return;
+      const { run, conversation_id } = await startRequirementRun(requirement.id);
       onChanged();
-      // Jump straight into the freshly-minted conversation. The chat
-      // pane already knows how to surface a new id; resume / focus
-      // is the caller's job.
-      onOpenConversation(conversation_id);
-      // v1.0 polish — pre-fill the composer so the user lands on a
-      // populated textarea instead of an empty box. The starter
-      // prompt is editable, not auto-sent. Reads from i18n so the
-      // wording follows the active locale.
-      const starter = t("detailStartPromptPrefill", requirement.title);
-      appStore.getState().setComposerValue(starter);
-      // Focus the textarea so the user can edit / send immediately.
-      // The element id `input` is the historical hook (see
-      // Composer.tsx).
-      window.setTimeout(() => {
-        document.getElementById("input")?.focus();
-      }, 50);
-      onClose();
+      const ok = startConversationTurn({
+        conversationId: conversation_id,
+        content,
+        routing: pickedRouting(),
+        isNew: false,
+        soulPrompt: currentJarvisSoulPrompt(),
+        requirementRunId: run.id,
+        verificationCommands: requirement.verification_plan?.commands ?? [],
+      });
+      if (ok) seedBackgroundConversationSurface(conversation_id, content);
     } catch (e) {
       setStartError(e instanceof Error ? e.message : String(e));
     } finally {
       setStarting(false);
     }
+  };
+
+  const handleTodoPrompt = () => {
+    if (!firstActionableTodo) return;
+    void handleAgentWork(formatTodoInjection(requirement, firstActionableTodo));
   };
 
   return (
@@ -232,21 +279,20 @@ export function RequirementDetail({
         <header className="requirement-detail-head">
           <div className="requirement-detail-meta">
             <span className="requirement-card-id">REQ-{idShort}</span>
-            <select
+            <Select
               className={
                 "requirement-status-pill" +
                 (pillKind ? " status-" + pillKind : " status-custom")
               }
               value={requirement.status}
-              onChange={(e) => setStatus(e.target.value)}
-              aria-label={t("reqStatusAria", statusLabel)}
-            >
-              {columns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
+              onChange={setStatus}
+              options={columns.map((c) => ({
+                value: c.id,
+                label: c.label,
+                searchText: c.label,
+              }))}
+              ariaLabel={t("reqStatusAria", statusLabel)}
+            />
           </div>
           <button
             type="button"
@@ -272,85 +318,230 @@ export function RequirementDetail({
           </button>
         </header>
 
-        <h2
-          id="requirement-detail-title"
-          className="requirement-detail-title"
-        >
-          {requirement.title}
-        </h2>
+        <div className="requirement-detail-content">
+          <h2
+            id="requirement-detail-title"
+            className="requirement-detail-title"
+          >
+            {requirement.title}
+          </h2>
 
-        <AssigneePicker
-          assigneeId={requirement.assignee_id ?? null}
-          profiles={profiles}
-          onChange={setAssignee}
-        />
+          <RequirementNextStep
+            latestRun={latestRun}
+            todos={todos}
+            agentName={agentName}
+            agentControl={
+              <AssigneePicker
+                assigneeId={requirement.assignee_id ?? null}
+                profiles={profiles}
+                onChange={setAssignee}
+              />
+            }
+            startDisabled={startDisabled}
+            starting={starting}
+            inFlightRun={Boolean(inFlightRun)}
+            isLocalOnly={isLocalOnly}
+            isDone={requirement.status === "done"}
+            onStart={() => void handleAgentWork()}
+            onTodoPrompt={firstActionableTodo ? handleTodoPrompt : undefined}
+            onOpenLatest={
+              latestConversationId
+                ? () => onOpenConversation(latestConversationId)
+                : undefined
+            }
+          />
 
-        {desc ? (
-          <div className="requirement-detail-body">
-            <MarkdownLite text={desc} />
-          </div>
-        ) : (
-          <p className="requirement-detail-empty">{t("detailEmptyDesc")}</p>
+          <section className="requirement-detail-topic">
+            <h3 className="requirement-detail-section-heading">
+              {t("detailTopicHeading")}
+            </h3>
+            {desc ? (
+              <div className="requirement-detail-body">
+                {parsedDescription.source && (
+                  <div
+                    className="requirement-detail-source"
+                    title={parsedDescription.source}
+                  >
+                    <span>{t("roadmapSourceLabel")}</span>
+                    <code>{parsedDescription.source}</code>
+                  </div>
+                )}
+                <MarkdownLite text={desc} />
+              </div>
+            ) : (
+              <>
+                {parsedDescription.source && (
+                  <div
+                    className="requirement-detail-source"
+                    title={parsedDescription.source}
+                  >
+                    <span>{t("roadmapSourceLabel")}</span>
+                    <code>{parsedDescription.source}</code>
+                  </div>
+                )}
+                <p className="requirement-detail-empty">
+                  {t("detailEmptyDesc")}
+                </p>
+              </>
+            )}
+          </section>
+
+          <RequirementTodosSection
+            requirement={requirement}
+            onChanged={onChanged}
+            onHandleTodo={(todo) =>
+              void handleAgentWork(formatTodoInjection(requirement, todo))
+            }
+          />
+          <RunsSection runs={runs} requirement={requirement} />
+          <ActivitySection activities={activities} />
+        </div>
+
+        {(sessions > 0 || startError || isProposed) && (
+          <footer className="requirement-detail-footer">
+            {sessions > 0 && (
+              <span className="requirement-detail-sessions">
+                {t("reqSessions", sessions)}
+              </span>
+            )}
+            {startError && (
+              <span
+                className="requirement-detail-start-error"
+                role="alert"
+                title={startError}
+              >
+                {t("detailStartFailed")}
+              </span>
+            )}
+            <span className="flex-1" />
+            {isProposed && (
+              <button
+                type="button"
+                className="triage-btn triage-btn-reject"
+                onClick={() => void handleReject()}
+                title={t("triageReject")}
+              >
+                {t("triageReject")}
+              </button>
+            )}
+          </footer>
         )}
+      </aside>
+    </>
+  );
+}
 
-        <RunsSection runs={runs} requirement={requirement} />
-        <ActivitySection activities={activities} />
+const TODO_KINDS: RequirementTodoKind[] = [
+  "work",
+  "check",
+  "ci",
+  "deploy",
+  "review",
+  "manual",
+];
 
-        <footer className="requirement-detail-footer">
-          {sessions > 0 && (
-            <span className="requirement-detail-sessions">
-              {t("reqSessions", sessions)}
-            </span>
-          )}
-          {startError && (
-            <span
-              className="requirement-detail-start-error"
-              role="alert"
-              title={startError}
-            >
-              {t("detailStartFailed")}
-            </span>
-          )}
-          <span className="flex-1" />
-          {requirement.conversation_ids[0] && (
-            <button
-              type="button"
-              className="requirement-link-btn"
-              onClick={() =>
-                onOpenConversation(requirement.conversation_ids[0])
-              }
-            >
-              {t("detailOpenLatest")}
-            </button>
-          )}
-          {canLink && (
-            <button
-              type="button"
-              className="requirement-link-btn"
-              onClick={linkCurrent}
-            >
-              {t("detailLinkCurrent")}
-            </button>
-          )}
-          {isProposed && (
-            <button
-              type="button"
-              className="triage-btn triage-btn-reject"
-              onClick={() => void handleReject()}
-              title={t("triageReject")}
-            >
-              {t("triageReject")}
-            </button>
-          )}
+const TODO_STATUSES: RequirementTodoStatus[] = [
+  "pending",
+  "running",
+  "passed",
+  "failed",
+  "skipped",
+  "blocked",
+];
+
+function RequirementNextStep({
+  latestRun,
+  todos,
+  agentName,
+  agentControl,
+  startDisabled,
+  starting,
+  inFlightRun,
+  isLocalOnly,
+  isDone,
+  onStart,
+  onTodoPrompt,
+  onOpenLatest,
+}: {
+  latestRun: RequirementRun | null;
+  todos: RequirementTodo[];
+  agentName: string | null;
+  agentControl: ReactNode;
+  startDisabled: boolean;
+  starting: boolean;
+  inFlightRun: boolean;
+  isLocalOnly: boolean;
+  isDone: boolean;
+  onStart: () => void;
+  onTodoPrompt?: () => void;
+  onOpenLatest?: () => void;
+}) {
+  const failedTodos = todos.filter((todo) =>
+    todo.status === "failed" || todo.status === "blocked",
+  );
+  const verification = latestRun?.verification?.status ?? null;
+  const tone =
+    verification === "failed" || latestRun?.status === "failed" || failedTodos.length > 0
+      ? "failed"
+      : verification === "passed"
+        ? "passed"
+        : latestRun?.status === "running" || latestRun?.status === "pending" || inFlightRun
+          ? "running"
+          : "idle";
+
+  const title =
+    tone === "failed"
+      ? t("detailProgressFailedTitle")
+      : tone === "passed"
+        ? t("detailProgressPassedTitle")
+        : tone === "running"
+          ? t("detailProgressRunningTitle")
+          : t("detailProgressIdleTitle");
+
+  const detail =
+    tone === "failed"
+      ? t("detailProgressFailedDetail", failedTodos.length || 1)
+      : tone === "passed"
+        ? t("detailProgressPassedDetail")
+        : tone === "running"
+          ? t("detailProgressRunningDetail")
+          : todos.length > 0
+            ? t("detailProgressIdleWithChecks", todos.length)
+            : t("detailProgressIdleNoChecks");
+  const startLabel = agentName
+    ? t("detailProgressStartWithAgent", agentName)
+    : t("detailProgressStart");
+
+  return (
+    <section className={"requirement-next-step tone-" + tone}>
+      <div className="requirement-next-copy">
+        <span className="requirement-next-kicker">
+          {t("detailProgressHeading")}
+        </span>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+      </div>
+      {agentControl}
+      <div className="requirement-next-actions">
+        {tone === "failed" && onTodoPrompt && (
           <button
             type="button"
-            className="requirement-detail-start-btn"
-            onClick={() => void handleStartRun()}
+            className="requirement-next-btn primary"
+            onClick={onTodoPrompt}
+          >
+            {t("detailProgressFixFailed")}
+          </button>
+        )}
+        {tone !== "running" && (
+          <button
+            type="button"
+            className={"requirement-next-btn" + (tone !== "failed" ? " primary" : "")}
+            onClick={onStart}
             disabled={startDisabled}
             title={
               isLocalOnly
                 ? t("detailStartHintLocal")
-                : requirement.status === "done"
+                : isDone
                   ? t("detailStartHintDone")
                   : inFlightRun
                     ? t("detailStartHintInflight")
@@ -359,14 +550,414 @@ export function RequirementDetail({
           >
             {starting
               ? t("detailStartPending")
-              : inFlightRun
-                ? t("detailStartInflight")
-                : t("detailStartFresh")}
+              : tone === "failed"
+                ? t("detailProgressRerun")
+                : startLabel}
           </button>
-        </footer>
-      </aside>
-    </>
+        )}
+        {onOpenLatest && (
+          <button
+            type="button"
+            className={"requirement-next-btn" + (tone === "running" ? " primary" : "")}
+            onClick={onOpenLatest}
+          >
+            {tone === "running"
+              ? t("detailProgressOpenRun")
+              : t("detailOpenLatest")}
+          </button>
+        )}
+      </div>
+    </section>
   );
+}
+
+function RequirementTodosSection({
+  requirement,
+  onChanged,
+  onHandleTodo,
+}: {
+  requirement: Requirement;
+  onChanged: () => void;
+  onHandleTodo: (todo: RequirementTodo) => void;
+}) {
+  const todos = requirement.todos ?? [];
+  const [title, setTitle] = useState("");
+  const [kind, setKind] = useState<RequirementTodoKind>("ci");
+  const [command, setCommand] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [sectionOpen, setSectionOpen] = useState(() => todos.length > 0);
+  const kindOptions = todoKindOptions();
+
+  useEffect(() => {
+    if (todos.length > 0) setSectionOpen(true);
+  }, [todos.length]);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    void createTodo();
+  };
+
+  const createTodo = async () => {
+    const nextTitle = title.trim();
+    if (!nextTitle || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await createRequirementTodo(requirement.id, {
+        title: nextTitle,
+        kind,
+        command: command.trim() || null,
+        created_by: "human",
+      });
+      setTitle("");
+      setCommand("");
+      setAdding(false);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <details
+      className="requirement-detail-todos"
+      open={sectionOpen}
+      onToggle={(e) => setSectionOpen(e.currentTarget.open)}
+    >
+      <summary className="requirement-detail-record-summary">
+        <div className="requirement-detail-todos-title">
+          <h3 className="requirement-detail-runs-heading">
+            {t("reqTodoHeading")}
+          </h3>
+          <p>
+            {todos.length === 0
+              ? t("reqTodoOptionalHint")
+              : t("reqTodoHeadingHint")}
+          </p>
+        </div>
+        <span className="requirement-detail-todos-count">{todos.length}</span>
+      </summary>
+      {!adding && (
+        <button
+          type="button"
+          className="requirement-detail-todo-add requirement-detail-todo-add-toggle"
+          onClick={() => {
+            setSectionOpen(true);
+            setAdding(true);
+          }}
+        >
+          {t("reqTodoAddStep")}
+        </button>
+      )}
+      {adding && (
+        <form className="requirement-detail-todo-form" onSubmit={submit}>
+          <input
+            className="requirement-detail-todo-input"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={t("reqTodoAddPlaceholder")}
+            aria-label={t("reqTodoTitleAria")}
+            autoFocus
+          />
+          <Select<RequirementTodoKind>
+            className="requirement-detail-todo-select"
+            value={kind}
+            onChange={setKind}
+            options={kindOptions}
+            ariaLabel={t("reqTodoKindAria")}
+          />
+          <input
+            className="requirement-detail-todo-command-input"
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            placeholder={t("reqTodoCommandPlaceholder")}
+            aria-label={t("reqTodoCommandAria")}
+          />
+          <button
+            type="submit"
+            className="requirement-detail-todo-add"
+            disabled={busy || title.trim().length === 0}
+          >
+            {busy ? t("reqTodoAdding") : t("reqTodoAdd")}
+          </button>
+          <button
+            type="button"
+            className="requirement-detail-todo-edit"
+            onClick={() => {
+              setAdding(false);
+              setTitle("");
+              setCommand("");
+              setError(null);
+            }}
+            disabled={busy}
+          >
+            {t("reqTodoCancelEdit")}
+          </button>
+        </form>
+      )}
+      {error && (
+        <p className="requirement-detail-todo-error" role="alert">
+          {error}
+        </p>
+      )}
+      {todos.length === 0 ? (
+        <p className="requirement-detail-empty">{t("reqTodoEmpty")}</p>
+      ) : (
+        <ul className="requirement-detail-todo-list">
+          {todos.map((todo) => (
+            <RequirementTodoRow
+              key={todo.id}
+              requirementId={requirement.id}
+              todo={todo}
+              onChanged={onChanged}
+              onHandleTodo={onHandleTodo}
+            />
+          ))}
+        </ul>
+      )}
+    </details>
+  );
+}
+
+function RequirementTodoRow({
+  requirementId,
+  todo,
+  onChanged,
+  onHandleTodo,
+}: {
+  requirementId: string;
+  todo: RequirementTodo;
+  onChanged: () => void;
+  onHandleTodo: (todo: RequirementTodo) => void;
+}) {
+  const [title, setTitle] = useState(todo.title);
+  const [kind, setKind] = useState<RequirementTodoKind>(todo.kind);
+  const [status, setStatus] = useState<RequirementTodoStatus>(todo.status);
+  const [command, setCommand] = useState(todo.command ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [injected, setInjected] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const kindOptions = todoKindOptions();
+  const statusOptions = todoStatusOptions();
+
+  useEffect(() => {
+    setTitle(todo.title);
+    setKind(todo.kind);
+    setStatus(todo.status);
+    setCommand(todo.command ?? "");
+  }, [todo.id, todo.title, todo.kind, todo.status, todo.command]);
+
+  const changed =
+    title.trim() !== todo.title ||
+    kind !== todo.kind ||
+    status !== todo.status ||
+    command.trim() !== (todo.command ?? "");
+
+  const save = async () => {
+    const nextTitle = title.trim();
+    if (!nextTitle || !changed || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateRequirementTodo(requirementId, todo.id, {
+        title: nextTitle,
+        kind,
+        status,
+        command: command.trim() || null,
+      });
+      onChanged();
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (busy) return;
+    const ok = window.confirm(t("reqTodoDeleteConfirm", todo.title));
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteRequirementTodo(requirementId, todo.id);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  const inject = () => {
+    onHandleTodo(todo);
+    setInjected(true);
+    window.setTimeout(() => setInjected(false), 1400);
+  };
+
+  return (
+    <li className={"requirement-detail-todo todo-status-" + todo.status}>
+      <div className="requirement-detail-todo-summary">
+        <span className={"requirement-detail-todo-status status-" + todo.status}>
+          {todoStatusGlyph(todo.status)} {t(`reqTodoStatus_${todo.status}`)}
+        </span>
+        <strong>{todo.title}</strong>
+        <span className="requirement-detail-todo-kind">
+          {t(`reqTodoKind_${todo.kind}`)}
+        </span>
+      </div>
+      {todo.command && (
+        <code className="requirement-detail-todo-command">{todo.command}</code>
+      )}
+      {todo.evidence?.note && (
+        <span className="requirement-detail-todo-evidence">
+          {todo.evidence.note}
+        </span>
+      )}
+      {editing && (
+        <div className="requirement-detail-todo-editor">
+          <div className="requirement-detail-todo-edit-grid">
+            <input
+              className="requirement-detail-todo-title-input"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              aria-label={t("reqTodoTitleAria")}
+            />
+            <Select<RequirementTodoKind>
+              className="requirement-detail-todo-select"
+              value={kind}
+              onChange={setKind}
+              options={kindOptions}
+              ariaLabel={t("reqTodoKindAria")}
+            />
+            <Select<RequirementTodoStatus>
+              className="requirement-detail-todo-select"
+              value={status}
+              onChange={setStatus}
+              options={statusOptions}
+              ariaLabel={t("reqTodoStatusAria")}
+            />
+          </div>
+          <input
+            className="requirement-detail-todo-command-input"
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            placeholder={t("reqTodoCommandPlaceholder")}
+            aria-label={t("reqTodoCommandAria")}
+          />
+        </div>
+      )}
+      {error && (
+        <p className="requirement-detail-todo-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="requirement-detail-todo-actions">
+        <button
+          type="button"
+          className={
+            "requirement-detail-todo-inject" +
+            (todo.status === "failed" || todo.status === "blocked" ? " primary" : "")
+          }
+          onClick={inject}
+          title={t("reqTodoInjectTitle")}
+        >
+          {injected ? t("reqTodoInjected") : t("reqTodoInject")}
+        </button>
+        {!editing && (
+          <button
+            type="button"
+            className="requirement-detail-todo-edit"
+            onClick={() => setEditing(true)}
+          >
+            {t("reqTodoEdit")}
+          </button>
+        )}
+        {editing && (
+          <button
+            type="button"
+            className="requirement-detail-todo-edit"
+            onClick={() => {
+              setTitle(todo.title);
+              setKind(todo.kind);
+              setStatus(todo.status);
+              setCommand(todo.command ?? "");
+              setEditing(false);
+              setError(null);
+            }}
+            disabled={busy}
+          >
+            {t("reqTodoCancelEdit")}
+          </button>
+        )}
+        <button
+          type="button"
+          className="requirement-detail-todo-save"
+          onClick={() => void save()}
+          disabled={!editing || busy || !changed || title.trim().length === 0}
+        >
+          {busy ? t("reqTodoSaving") : t("reqTodoSave")}
+        </button>
+        <button
+          type="button"
+          className="requirement-detail-todo-delete"
+          onClick={() => void remove()}
+          disabled={busy}
+        >
+          {t("reqTodoDelete")}
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function todoStatusGlyph(status: RequirementTodoStatus): string {
+  if (status === "passed") return "✓";
+  if (status === "failed" || status === "blocked") return "×";
+  if (status === "running") return "…";
+  if (status === "skipped") return "−";
+  return "○";
+}
+
+function todoKindOptions() {
+  return TODO_KINDS.map((value) => ({
+    value,
+    label: t(`reqTodoKind_${value}`),
+    searchText: t(`reqTodoKind_${value}`),
+  }));
+}
+
+function todoStatusOptions() {
+  return TODO_STATUSES.map((value) => ({
+    value,
+    label: t(`reqTodoStatus_${value}`),
+    searchText: t(`reqTodoStatus_${value}`),
+  }));
+}
+
+function formatTodoInjection(req: Requirement, todo: RequirementTodo): string {
+  const lines = [
+    t("reqTodoInjectPromptHeader"),
+    "",
+    t("reqTodoInjectPromptRequirement", req.title),
+    t("reqTodoInjectPromptRequirementId", req.id),
+    t("reqTodoInjectPromptTodo", todo.title),
+    `${t("reqTodoKindAria")}: ${t(`reqTodoKind_${todo.kind}`)}`,
+    `${t("reqTodoStatusAria")}: ${t(`reqTodoStatus_${todo.status}`)}`,
+  ];
+  if (todo.command?.trim()) {
+    lines.push(t("reqTodoInjectPromptCommand", todo.command.trim()));
+  }
+  if (todo.evidence?.note) {
+    lines.push(t("reqTodoInjectPromptEvidence", todo.evidence.note));
+  }
+  lines.push("", t("reqTodoInjectPromptAsk"));
+  return lines.join("\n");
 }
 
 // =============================================================
@@ -391,9 +982,36 @@ function RunsSection({
   requirement: Requirement;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const latest = runs[0] ?? null;
+  const latestIsRunning =
+    latest?.status === "pending" || latest?.status === "running";
+  const [sectionOpen, setSectionOpen] = useState(latestIsRunning);
+  useEffect(() => {
+    if (latestIsRunning) {
+      setSectionOpen(true);
+      setExpanded((current) => current ?? latest?.id ?? null);
+    }
+  }, [latest?.id, latestIsRunning]);
   return (
-    <section className="requirement-detail-runs">
-      <h3 className="requirement-detail-runs-heading">{t("runsHeading")}</h3>
+    <details
+      className="requirement-detail-runs"
+      open={sectionOpen}
+      onToggle={(e) => setSectionOpen(e.currentTarget.open)}
+    >
+      <summary className="requirement-detail-record-summary">
+        <span className="requirement-detail-runs-heading">
+          {t("runsHeading")}
+        </span>
+        <span className="requirement-detail-record-meta">
+          {runs.length === 0
+            ? t("runsEmpty")
+            : t(
+                "runsSummary",
+                runs.length,
+                latest ? t(runStatusKey(latest.status)) : "",
+              )}
+        </span>
+      </summary>
       {runs.length === 0 ? (
         <p className="requirement-detail-empty">{t("runsEmpty")}</p>
       ) : (
@@ -417,7 +1035,7 @@ function RunsSection({
                   aria-expanded={isOpen}
                 >
                   <span className="requirement-detail-run-num">
-                    Run #{displayNumber}
+                    {t("runDisplayName", displayNumber)}
                   </span>
                   <RunStatusPill status={run.status} />
                   <span className="requirement-detail-run-times">
@@ -435,23 +1053,27 @@ function RunsSection({
           })}
         </ol>
       )}
-    </section>
+    </details>
   );
 }
 
 function RunStatusPill({ status }: { status: RequirementRunStatus }) {
-  const labelKey = {
+  const labelKey = runStatusKey(status);
+  return (
+    <span className={"requirement-run-pill run-status-" + status}>
+      {t(labelKey)}
+    </span>
+  );
+}
+
+function runStatusKey(status: RequirementRunStatus) {
+  return {
     pending: "runStatusPending",
     running: "runStatusRunning",
     completed: "runStatusCompleted",
     failed: "runStatusFailed",
     cancelled: "runStatusCancelled",
   }[status];
-  return (
-    <span className={"requirement-run-pill run-status-" + status}>
-      {t(labelKey)}
-    </span>
-  );
 }
 
 function VerificationBadge({ status }: { status: VerificationStatus }) {
@@ -512,9 +1134,92 @@ function RunDetail({
             ))}
           </ul>
         )}
+      {run.logs && run.logs.length > 0 && <RunLogs logs={run.logs} />}
       <VerifyRunForm run={run} requirement={requirement} />
     </div>
   );
+}
+
+function RunLogs({ logs }: { logs: RequirementRunLog[] }) {
+  return (
+    <section className="requirement-detail-run-logs">
+      <h4 className="requirement-detail-run-logs-heading">
+        {t("runLogsHeading")}
+      </h4>
+      <ol className="requirement-detail-run-logs-list">
+        {logs.map((log) => {
+          const details = formatRunLogData(log.data);
+          return (
+            <li
+              key={log.id}
+              className={
+                "requirement-detail-run-log run-log-level-" + log.level
+              }
+            >
+              <div className="requirement-detail-run-log-head">
+                <span className="requirement-detail-run-log-level">
+                  {t(runLogLevelLabel(log.level))}
+                </span>
+                <span className="requirement-detail-run-log-time">
+                  {formatTime(log.created_at)}
+                </span>
+              </div>
+              <p className="requirement-detail-run-log-message">
+                {log.message}
+              </p>
+              {details && (
+                <pre className="requirement-detail-run-log-data">
+                  {details}
+                </pre>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+function runLogLevelLabel(level: RequirementRunLog["level"]): string {
+  return {
+    info: "runLogLevelInfo",
+    warn: "runLogLevelWarn",
+    error: "runLogLevelError",
+    success: "runLogLevelSuccess",
+  }[level];
+}
+
+function formatRunLogData(data: RequirementRunLog["data"]): string {
+  if (!data || typeof data !== "object") return "";
+  const record = data;
+  const lines: string[] = [];
+  const add = (label: string, value: unknown) => {
+    if (value === undefined || value === null || value === "") return;
+    const text = formatLogValue(value);
+    lines.push(`${label}: ${text}`);
+  };
+  add(t("runLogDataCommand"), record.command);
+  add(t("runLogDataExit"), record.exit_code);
+  add(t("runLogDataDuration"), record.duration_ms);
+  add(t("runLogDataCommands"), record.commands);
+  add(t("runLogDataTimeout"), record.timeout_ms);
+  add(t("runLogDataWorkspace"), record.workspace);
+  add(t("runLogDataPath"), record.path);
+  add(t("runLogDataReason"), record.reason);
+  add(t("runLogDataStatus"), record.status);
+  add(t("runLogDataConversation"), record.conversation_id);
+  add(t("runLogDataProfile"), record.profile_id);
+  add(t("runLogDataStdout"), record.stdout_excerpt);
+  add(t("runLogDataStderr"), record.stderr_excerpt);
+  return lines.join("\n");
+}
+
+function formatLogValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value.toString();
+  }
+  return JSON.stringify(value);
 }
 
 // Phase 4 — inline "Run verification" form. Runs sequentially
@@ -646,10 +1351,17 @@ function formatTime(iso: string): string {
 
 function ActivitySection({ activities }: { activities: Activity[] }) {
   return (
-    <section className="requirement-detail-activities">
-      <h3 className="requirement-detail-runs-heading">{t("activityHeading")}</h3>
+    <details className="requirement-detail-activities">
+      <summary className="requirement-detail-record-summary">
+        <span className="requirement-detail-runs-heading">
+          {t("activityHeading")}
+        </span>
+        <span className="requirement-detail-record-meta">
+          {t("activitySummary", activities.length)}
+        </span>
+      </summary>
       <ActivityList activities={activities} />
-    </section>
+    </details>
   );
 }
 
@@ -659,14 +1371,14 @@ function shortenId(id: string | undefined): string {
 }
 
 // =============================================================
-// Assignee picker — Phase 3.6.
+// Handling agent picker — Phase 3.6.
 // =============================================================
 //
-// Compact <select> rendered above the description in the detail
-// panel. Empty option = unassigned; remaining options come from
-// the cached AgentProfile list. When the cache is empty (no
-// profiles yet, or `agent_profiles` store not configured) the
-// row collapses to a tiny hint text linking to the Settings tab.
+// Compact shared Select rendered inside the progress panel. Empty
+// option = the default Jarvis execution path; remaining options come
+// from the cached AgentProfile list. The selected id is still persisted
+// as `assignee_id` because the scheduler/backend already consumes that
+// field to choose the Agent profile for requirement work.
 
 function AssigneePicker({
   assigneeId,
@@ -684,29 +1396,41 @@ function AssigneePicker({
   const hasUnknownAssignee =
     assigneeId !== null && !profiles.some((p) => p.id === assigneeId);
   const shown = getAgentProfileFromCache(assigneeId);
+  const options = [
+    {
+      value: "",
+      label: t("detailAssigneeUnassigned"),
+      searchText: t("detailAssigneeUnassigned"),
+    },
+    ...profiles.map((p) => ({
+      value: p.id,
+      label: p.avatar ? `${p.avatar} ${p.name}` : p.name,
+      searchText: p.name,
+    })),
+    ...(hasUnknownAssignee
+      ? [
+          {
+            value: assigneeId,
+            label: `(unknown ${shortenId(assigneeId)})`,
+            searchText: shortenId(assigneeId),
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div className="requirement-detail-assignee">
       <label className="requirement-detail-assignee-label">
         {t("detailAssigneeLabel")}
       </label>
-      <select
+      <Select
         className="requirement-detail-assignee-select"
         value={assigneeId ?? ""}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        <option value="">{t("detailAssigneeUnassigned")}</option>
-        {profiles.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.avatar ? `${p.avatar} ${p.name}` : p.name}
-          </option>
-        ))}
-        {hasUnknownAssignee && (
-          <option value={assigneeId}>{`(unknown ${shortenId(
-            assigneeId,
-          )})`}</option>
-        )}
-      </select>
+        onChange={onChange}
+        options={options}
+        ariaLabel={t("detailAssigneeLabel")}
+        searchable={profiles.length > 8}
+      />
       {shown?.system_prompt && (
         <p
           className="requirement-detail-assignee-prompt"

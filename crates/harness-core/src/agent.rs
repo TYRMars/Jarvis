@@ -220,7 +220,9 @@ pub enum AgentEvent {
     /// an inline collapsible card in the main message stream **and**
     /// a side-panel "running subagents" view, so users can watch
     /// the delegated work as it happens.
-    SubAgentEvent { frame: crate::subagent::SubAgentFrame },
+    SubAgentEvent {
+        frame: crate::subagent::SubAgentFrame,
+    },
     /// In Plan Mode, the agent finished its read-only investigation
     /// and called the terminal `exit_plan` tool with the plan body.
     /// Transports surface this as a "review the plan" card with
@@ -236,6 +238,11 @@ pub enum AgentEvent {
     /// `{"type":"usage","prompt_tokens":...,...}` rather than nested
     /// under a tuple-style key.
     Usage {
+        /// Concrete model this LLM call was routed to. The frontend
+        /// records long-running totals by model so cost estimates
+        /// don't get recomputed under whatever model happens to be
+        /// selected later.
+        model: String,
         #[serde(flatten)]
         usage: Usage,
     },
@@ -384,7 +391,10 @@ impl Agent {
                             // rather than streaming partial arguments.
                         }
                         Ok(LlmChunk::Usage(usage)) => {
-                            yield AgentEvent::Usage { usage };
+                            yield AgentEvent::Usage {
+                                model: agent.config.model.clone(),
+                                usage,
+                            };
                         }
                         Ok(LlmChunk::Finish { message, finish_reason, response_id }) => {
                             finish = Some((message, finish_reason, response_id));
@@ -929,6 +939,7 @@ mod tests {
     #[test]
     fn usage_event_serialises_flat_with_optional_fields_skipped() {
         let ev = AgentEvent::Usage {
+            model: "gpt-test".into(),
             usage: Usage {
                 prompt_tokens: Some(1234),
                 completion_tokens: Some(56),
@@ -939,6 +950,7 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
         assert_eq!(v["type"], "usage");
+        assert_eq!(v["model"], "gpt-test");
         assert_eq!(v["prompt_tokens"], 1234);
         assert_eq!(v["completion_tokens"], 56);
         assert_eq!(v["cached_prompt_tokens"], 800);
@@ -949,12 +961,13 @@ mod tests {
     #[test]
     fn usage_event_with_all_none_still_emits_type_tag() {
         let ev = AgentEvent::Usage {
+            model: "gpt-test".into(),
             usage: Usage::default(),
         };
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
         assert_eq!(v["type"], "usage");
-        // Object should be exactly `{type: "usage"}` — every field None.
-        assert_eq!(v.as_object().unwrap().len(), 1);
+        // Object should be exactly `{type, model}` — every count field None.
+        assert_eq!(v.as_object().unwrap().len(), 2);
     }
 }

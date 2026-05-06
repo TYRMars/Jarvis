@@ -3,7 +3,7 @@
 // and the "+ folder" / "+ 新建项目" actions.
 //
 // jsdom + @testing-library/react. We mock the heavyweight children
-// (`BranchPopover`, `AddFolderDialog`, `ResourceManagerDialog`) to
+// (`BranchPopover`, `AddFolderDialog`, `ProjectCreatePanel`) to
 // stubs that render an identifiable marker so the rail's wiring can
 // be asserted without standing up their full UI.
 
@@ -28,17 +28,8 @@ vi.mock("./AddFolderDialog", () => ({
     open ? <div data-testid="add-folder-dialog" /> : null,
 }));
 
-vi.mock("./ResourceManagerDialog", () => ({
-  ResourceManagerDialog: ({
-    open,
-    initialTab,
-  }: {
-    open: boolean;
-    initialTab?: string;
-  }) =>
-    open ? (
-      <div data-testid="resource-manager-dialog" data-tab={initialTab} />
-    ) : null,
+vi.mock("../Projects/ProjectList", () => ({
+  ProjectCreatePanel: () => <div data-testid="project-create-panel" />,
 }));
 
 const PROJ_A: Project = {
@@ -98,9 +89,9 @@ describe("ComposerProjectRail — render gates", () => {
   it("renders the placeholder chip when no project is bound", () => {
     render(<ComposerProjectRail />);
     // Empty-state copy is the i18n key 'sessionChipFreeChat' →
-    // "自由对话" / "Free chat" depending on language.
+    // "对话" / "Free chat" depending on language.
     const chip = screen.getByRole("button", {
-      name: /Project binding is optional|项目绑定是可选的|Free chat|自由对话/,
+      name: /Project binding is optional|项目绑定是可选的|Free chat|对话/,
     });
     expect(chip).toBeInTheDocument();
   });
@@ -109,30 +100,30 @@ describe("ComposerProjectRail — render gates", () => {
 describe("ComposerProjectRail — project picker", () => {
   it("toggles the popover open / closed on chip click", () => {
     render(<ComposerProjectRail />);
-    const chip = screen.getByRole("button", { name: /Free chat|自由对话|Project binding is optional|项目绑定是可选的/ });
+    const chip = screen.getByRole("button", { name: /Free chat|对话|Project binding is optional|项目绑定是可选的/ });
     fireEvent.click(chip);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     fireEvent.click(chip);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("popover does NOT contain a 自由对话 / Free chat row (regression for B.1)", () => {
+  it("popover does NOT contain a 对话 / Free chat row (regression for B.1)", () => {
     render(<ComposerProjectRail />);
-    fireEvent.click(screen.getByRole("button", { name: /Free chat|自由对话|Project binding is optional|项目绑定是可选的/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Free chat|对话|Project binding is optional|项目绑定是可选的/ }));
     const menu = screen.getByRole("menu");
     // Free chat is NOT a project — listing it as a row was redundant.
     // Only project rows + the create-new row should be present.
     const rows = within(menu).getAllByRole("button");
     const labels = rows.map((r) => r.textContent ?? "");
     for (const l of labels) {
-      expect(l).not.toBe("自由对话");
+      expect(l).not.toBe("对话");
       expect(l).not.toBe("Free chat");
     }
   });
 
   it("popover contains a + 新建项目 / + New project row at the bottom (regression for B.2)", () => {
     render(<ComposerProjectRail />);
-    fireEvent.click(screen.getByRole("button", { name: /Free chat|自由对话|Project binding is optional|项目绑定是可选的/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Free chat|对话|Project binding is optional|项目绑定是可选的/ }));
     const menu = screen.getByRole("menu");
     const rows = within(menu).getAllByRole("button");
     const last = rows[rows.length - 1];
@@ -141,7 +132,7 @@ describe("ComposerProjectRail — project picker", () => {
 
   it("clicking a project row sets draftProjectId + closes the popover", () => {
     render(<ComposerProjectRail />);
-    fireEvent.click(screen.getByRole("button", { name: /Free chat|自由对话|Project binding is optional|项目绑定是可选的/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Free chat|对话|Project binding is optional|项目绑定是可选的/ }));
     fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
     // Popover closes
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -149,13 +140,11 @@ describe("ComposerProjectRail — project picker", () => {
     expect(useAppStore.getState().draftProjectId).toBe("proj-a");
   });
 
-  it("+ 新建项目 click opens ResourceManagerDialog on the folders tab", () => {
+  it("+ 新建项目 click opens the shared ProjectCreatePanel", () => {
     render(<ComposerProjectRail />);
-    fireEvent.click(screen.getByRole("button", { name: /Free chat|自由对话|Project binding is optional|项目绑定是可选的/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Free chat|对话|Project binding is optional|项目绑定是可选的/ }));
     fireEvent.click(screen.getByRole("button", { name: /新建项目|New project/ }));
-    const dlg = screen.getByTestId("resource-manager-dialog");
-    expect(dlg).toBeInTheDocument();
-    expect(dlg.getAttribute("data-tab")).toBe("folders");
+    expect(screen.getByTestId("project-create-panel")).toBeInTheDocument();
   });
 });
 

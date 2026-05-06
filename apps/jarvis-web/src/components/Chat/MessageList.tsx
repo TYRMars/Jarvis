@@ -12,7 +12,6 @@ import { AgentLoadingFooter } from "./AgentLoadingFooter";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { EmptyConvoHint } from "./EmptyConvoHint";
 import { MarkdownView } from "./MarkdownView";
-import { SubAgentInlineList } from "../SubAgent/SubAgentInline";
 import { t } from "../../utils/i18n";
 
 export function MessageList() {
@@ -75,13 +74,6 @@ export function MessageList() {
         }
         return null;
       })}
-      {/* SubAgent runs the main agent dispatched in this conversation.
-          Renders inline as a stack of collapsible cards just below
-          the latest message, complementing the workspace rail's
-          global "running + recent" view. v1.0 doesn't try to nail
-          the exact assistant message that triggered each dispatch;
-          the cards stack at the end and stay there. */}
-      <SubAgentInlineList />
       {/* Pinned to the bottom of the scroller. Self-hides when no
        * turn is in flight — covers the silent gaps between LLM
        * iterations and during long tool execution that the

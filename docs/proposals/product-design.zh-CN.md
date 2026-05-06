@@ -1,6 +1,6 @@
 # Jarvis 产品设计：Chat / Work / Doc 与基础能力层
 
-**状态：** Proposed
+**状态：** Adopted
 **翻译：** 本文是 [`product-design.md`](product-design.md) 的中文翻译。英文版是主文档；
 英文主文档变更时，必须在同一个 PR 中同步更新本文。
 **涉及：** 产品信息架构、`apps/jarvis-web` 顶层导航、能力编排模型、`harness-skill` /

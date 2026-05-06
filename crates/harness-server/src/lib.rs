@@ -34,6 +34,7 @@ mod mcp_routes;
 mod permissions;
 mod plugin_routes;
 mod project_binder;
+mod project_memory;
 mod projects;
 mod provider_registry;
 mod requirements_routes;
@@ -56,14 +57,17 @@ mod worktree;
 
 pub use skill_routes::default_roots as default_skill_roots;
 
+pub use project_memory::{spawn_project_memory_sync, ProjectMemoryConfig};
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
 pub use routes::router;
 pub use state::{AppState, ServerInfo};
 
 // Re-export so binaries can construct stores / modes without depending
 // on harness-core directly when they only need the permission types.
+pub use auto_mode::{
+    spawn as spawn_auto_mode, AutoMode, AutoModeConfig, AutoModeRuntime, AutoWorkflow,
+};
 pub use harness_core::{PermissionMode, PermissionStore};
-pub use auto_mode::{spawn as spawn_auto_mode, AutoMode, AutoModeConfig, AutoModeRuntime};
 pub use worktree::WorktreeMode;
 
 use std::net::SocketAddr;

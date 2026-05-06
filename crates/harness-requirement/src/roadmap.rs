@@ -151,9 +151,8 @@ pub async fn import_proposals(
         .slug
         .clone()
         .unwrap_or_else(|| format!("{derived_slug_base}-roadmap"));
-    harness_core::validate_slug(&slug).map_err(|e| -> BoxError {
-        format!("invalid slug `{slug}`: {e}").into()
-    })?;
+    harness_core::validate_slug(&slug)
+        .map_err(|e| -> BoxError { format!("invalid slug `{slug}`: {e}").into() })?;
     let name = opts
         .name
         .clone()
@@ -178,11 +177,13 @@ pub async fn import_proposals(
     let project_name = project.name.clone();
 
     // Parse-then-discover source.
-    let (source_root, source_kind, source_display) =
-        match resolve_source(&workspace_canon, opts.source_subdir.as_deref()) {
-            Some(found) => found,
-            None => {
-                return Ok(ImportSummary {
+    let (source_root, source_kind, source_display) = match resolve_source(
+        &workspace_canon,
+        opts.source_subdir.as_deref(),
+    ) {
+        Some(found) => found,
+        None => {
+            return Ok(ImportSummary {
                     project_id,
                     slug: project_slug,
                     name: project_name,
@@ -198,8 +199,8 @@ pub async fn import_proposals(
                          use requirement.create to populate this Project, or set `source_subdir` explicitly".into(),
                     ),
                 });
-            }
-        };
+        }
+    };
 
     let parsed = match source_kind {
         SourceKind::Directory => collect_directory(&source_root)?,
@@ -406,10 +407,18 @@ fn resolve_source(
         }
         let abs = workspace.join(rel);
         if abs.is_dir() {
-            return Some((abs, SourceKind::Directory, rel.to_string_lossy().into_owned()));
+            return Some((
+                abs,
+                SourceKind::Directory,
+                rel.to_string_lossy().into_owned(),
+            ));
         }
         if abs.is_file() {
-            return Some((abs, SourceKind::SingleFile, rel.to_string_lossy().into_owned()));
+            return Some((
+                abs,
+                SourceKind::SingleFile,
+                rel.to_string_lossy().into_owned(),
+            ));
         }
         return None;
     }
@@ -812,17 +821,25 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let (projects, requirements) = make_stores();
 
-        let summary =
-            import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-                .await
-                .unwrap();
+        let summary = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(summary.slug, "acme-roadmap");
         assert_eq!(summary.name, "Acme Roadmap");
         assert_eq!(summary.created, 0);
         assert_eq!(summary.total, 0);
         assert!(summary.note.as_ref().unwrap().contains("no roadmap source"));
-        assert!(projects.find_by_slug("acme-roadmap").await.unwrap().is_some());
+        assert!(projects
+            .find_by_slug("acme-roadmap")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -831,15 +848,27 @@ mod tests {
         let workspace = outer.path().join("jarvis");
         let proposals = workspace.join("docs/proposals");
         std::fs::create_dir_all(&proposals).unwrap();
-        write_proposal(&proposals, "alpha.md", "# Alpha\n\n**Status:** Adopted (shipped)\n\nFirst para of alpha.\n");
-        write_proposal(&proposals, "beta.md", "# Beta\n\n**Status:** Proposed\n\nFirst para of beta.\n");
+        write_proposal(
+            &proposals,
+            "alpha.md",
+            "# Alpha\n\n**Status:** Adopted (shipped)\n\nFirst para of alpha.\n",
+        );
+        write_proposal(
+            &proposals,
+            "beta.md",
+            "# Beta\n\n**Status:** Proposed\n\nFirst para of beta.\n",
+        );
         write_proposal(&proposals, "README.md", "# Index\n\nSkip me.\n");
 
         let (projects, requirements) = make_stores();
-        let summary =
-            import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-                .await
-                .unwrap();
+        let summary = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(summary.created, 2);
         assert_eq!(summary.total, 2);
@@ -865,17 +894,31 @@ mod tests {
         let workspace = outer.path().join("jarvis");
         let proposals = workspace.join("docs/proposals");
         std::fs::create_dir_all(&proposals).unwrap();
-        write_proposal(&proposals, "alpha.md", "# Alpha\n\n**Status:** Adopted\n\nBody.\n");
+        write_proposal(
+            &proposals,
+            "alpha.md",
+            "# Alpha\n\n**Status:** Adopted\n\nBody.\n",
+        );
 
         let (projects, requirements) = make_stores();
-        let s1 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s1 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(s1.created, 1);
 
-        let s2 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s2 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(s2.created, 0);
         assert_eq!(s2.updated, 0);
         assert_eq!(s2.unchanged, 1);
@@ -890,18 +933,30 @@ mod tests {
         write_proposal(&proposals, "alpha.md", "# Alpha\n\n**Status:** Proposed\n");
 
         let (projects, requirements) = make_stores();
-        let s1 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s1 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(s1.created, 1);
-        let req_id = requirements.list(&s1.project_id).await.unwrap()[0].id.clone();
+        let req_id = requirements.list(&s1.project_id).await.unwrap()[0]
+            .id
+            .clone();
 
         // Edit the doc.
         write_proposal(&proposals, "alpha.md", "# Alpha\n\n**Status:** Adopted\n");
 
-        let s2 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s2 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(s2.updated, 1);
         assert_eq!(s2.created, 0);
         assert_eq!(s2.unchanged, 0);
@@ -916,14 +971,25 @@ mod tests {
         let proposals = workspace.join("docs/proposals");
         std::fs::create_dir_all(&proposals).unwrap();
         write_proposal(&proposals, "alpha.md", "# Alpha\n\n**Status:** Proposed\n");
-        write_proposal(&proposals, "alpha.zh-CN.md", "# 阿尔法\n\n**状态：** 提议\n");
+        write_proposal(
+            &proposals,
+            "alpha.zh-CN.md",
+            "# 阿尔法\n\n**状态：** 提议\n",
+        );
 
         let (projects, requirements) = make_stores();
-        let summary =
-            import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-                .await
-                .unwrap();
-        assert_eq!(summary.created, 1, "zh-CN should not create a second requirement");
+        let summary = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            summary.created, 1,
+            "zh-CN should not create a second requirement"
+        );
         let req = &requirements.list(&summary.project_id).await.unwrap()[0];
         assert_eq!(req.title, "Alpha");
         let desc = req.description.as_ref().unwrap();
@@ -936,13 +1002,21 @@ mod tests {
         let workspace = outer.path().join("jarvis");
         let proposals = workspace.join("docs/proposals");
         std::fs::create_dir_all(&proposals).unwrap();
-        write_proposal(&proposals, "work.zh-CN.md", "# 工作编排\n\n**状态：** Adopted partial — phase 0 done\n");
+        write_proposal(
+            &proposals,
+            "work.zh-CN.md",
+            "# 工作编排\n\n**状态：** Adopted partial — phase 0 done\n",
+        );
 
         let (projects, requirements) = make_stores();
-        let summary =
-            import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-                .await
-                .unwrap();
+        let summary = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.created, 1);
         let req = &requirements.list(&summary.project_id).await.unwrap()[0];
         assert_eq!(req.status, RequirementStatus::InProgress);
@@ -956,10 +1030,14 @@ mod tests {
         let workspace = outer.path().join("My Project!");
         std::fs::create_dir_all(&workspace).unwrap();
         let (projects, requirements) = make_stores();
-        let summary =
-            import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-                .await
-                .unwrap();
+        let summary = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.slug, "my-project-roadmap");
         assert_eq!(summary.name, "My Project! Roadmap");
     }
@@ -994,10 +1072,14 @@ mod tests {
         .unwrap();
 
         let (projects, requirements) = make_stores();
-        let summary =
-            import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-                .await
-                .unwrap();
+        let summary = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.created, 1);
         assert_eq!(summary.source.as_deref(), Some("ROADMAP.md"));
         assert!(summary.note.as_ref().unwrap().contains("single file"));
@@ -1015,23 +1097,36 @@ mod tests {
         write_proposal(&proposals, "beta.md", "# Beta\n\n**Status:** Proposed\n");
 
         let (projects, requirements) = make_stores();
-        let s1 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s1 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(s1.created, 2);
 
         // Remove beta.md.
         std::fs::remove_file(proposals.join("beta.md")).unwrap();
 
         // Without prune: beta stays around.
-        let s2 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s2 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(s2.removed, 0);
         assert_eq!(requirements.list(&s2.project_id).await.unwrap().len(), 2);
 
         // With prune: beta gets deleted.
-        let opts = ImportOptions { prune: true, ..Default::default() };
+        let opts = ImportOptions {
+            prune: true,
+            ..Default::default()
+        };
         let s3 = import_proposals(&workspace, &projects, &requirements, opts)
             .await
             .unwrap();
@@ -1048,16 +1143,24 @@ mod tests {
         write_proposal(&proposals, "alpha.md", "# Alpha\n\n**Status:** Proposed\n");
 
         let (projects, requirements) = make_stores();
-        let s1 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s1 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         // Add a manual Requirement (no marker).
         let mut manual = Requirement::new(&s1.project_id, "Hand-rolled");
         manual.description = Some("No marker here.".into());
         requirements.upsert(&manual).await.unwrap();
 
         // Re-import with prune=true: only the orphan-marker rule applies; this one stays.
-        let opts = ImportOptions { prune: true, ..Default::default() };
+        let opts = ImportOptions {
+            prune: true,
+            ..Default::default()
+        };
         let s2 = import_proposals(&workspace, &projects, &requirements, opts)
             .await
             .unwrap();
@@ -1075,12 +1178,24 @@ mod tests {
 
     #[test]
     fn classify_status_priority() {
-        assert_eq!(classify_status("Adopted partial — phase 1"), RequirementStatus::InProgress);
-        assert_eq!(classify_status("Adopted (shipped)"), RequirementStatus::Done);
+        assert_eq!(
+            classify_status("Adopted partial — phase 1"),
+            RequirementStatus::InProgress
+        );
+        assert_eq!(
+            classify_status("Adopted (shipped)"),
+            RequirementStatus::Done
+        );
         assert_eq!(classify_status("Proposed"), RequirementStatus::Backlog);
-        assert_eq!(classify_status("In progress"), RequirementStatus::InProgress);
+        assert_eq!(
+            classify_status("In progress"),
+            RequirementStatus::InProgress
+        );
         assert_eq!(classify_status("review pending"), RequirementStatus::Review);
-        assert_eq!(classify_status("Superseded by other.md"), RequirementStatus::Done);
+        assert_eq!(
+            classify_status("Superseded by other.md"),
+            RequirementStatus::Done
+        );
         assert_eq!(classify_status("已采纳"), RequirementStatus::Done);
         assert_eq!(classify_status("提议中"), RequirementStatus::Backlog);
         assert_eq!(classify_status("进行中"), RequirementStatus::InProgress);
@@ -1156,9 +1271,14 @@ mod tests {
         write_proposal(&proposals, "alpha.md", "# Alpha\n\n**Status:** Adopted\n");
 
         let (projects, requirements) = make_stores();
-        let s1 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s1 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         let proj_after_first = projects.load(&s1.project_id).await.unwrap().unwrap();
         let first_updated = proj_after_first.updated_at;
 
@@ -1167,9 +1287,14 @@ mod tests {
         // an unwanted touch.
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 
-        let s2 = import_proposals(&workspace, &projects, &requirements, ImportOptions::default())
-            .await
-            .unwrap();
+        let s2 = import_proposals(
+            &workspace,
+            &projects,
+            &requirements,
+            ImportOptions::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(s2.unchanged, 1);
         let proj_after_second = projects.load(&s1.project_id).await.unwrap().unwrap();
         assert_eq!(

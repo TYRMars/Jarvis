@@ -125,12 +125,12 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let todos = Arc::new(JsonFileTodoStore::open(&path)?) as Arc<dyn TodoStore>;
             let requirements =
                 Arc::new(JsonFileRequirementStore::open(&path)?) as Arc<dyn RequirementStore>;
-            let requirement_runs = Arc::new(JsonFileRequirementRunStore::open(&path)?)
-                as Arc<dyn RequirementRunStore>;
+            let requirement_runs =
+                Arc::new(JsonFileRequirementRunStore::open(&path)?) as Arc<dyn RequirementRunStore>;
             let activities =
                 Arc::new(JsonFileActivityStore::open(&path)?) as Arc<dyn ActivityStore>;
-            let agent_profiles = Arc::new(JsonFileAgentProfileStore::open(&path)?)
-                as Arc<dyn AgentProfileStore>;
+            let agent_profiles =
+                Arc::new(JsonFileAgentProfileStore::open(&path)?) as Arc<dyn AgentProfileStore>;
             let docs = Arc::new(JsonFileDocStore::open(&path)?) as Arc<dyn DocStore>;
             Ok(StoreBundle {
                 conversations,
@@ -252,9 +252,7 @@ pub async fn connect_activities(url: &str) -> Result<Arc<dyn ActivityStore>, Sto
 
 /// Open just the agent-profile store for a given URL. Equivalent
 /// to `connect_all(url).await?.agent_profiles`.
-pub async fn connect_agent_profiles(
-    url: &str,
-) -> Result<Arc<dyn AgentProfileStore>, StoreError> {
+pub async fn connect_agent_profiles(url: &str) -> Result<Arc<dyn AgentProfileStore>, StoreError> {
     Ok(connect_all(url).await?.agent_profiles)
 }
 

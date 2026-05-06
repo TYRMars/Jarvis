@@ -151,7 +151,10 @@ fn pick_db_url(cfg: &Config) -> Option<String> {
 async fn list(store: &dyn ProjectStore, args: ListArgs) -> Result<()> {
     let rows = store.list(args.all, args.limit).await.map_err(boxed)?;
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&rows.iter().map(project_json).collect::<Vec<_>>())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows.iter().map(project_json).collect::<Vec<_>>())?
+        );
         return Ok(());
     }
     if rows.is_empty() {
@@ -199,14 +202,16 @@ async fn show(store: &dyn ProjectStore, target: &str, json: bool) -> Result<()> 
 
 async fn create(store: &dyn ProjectStore, args: CreateArgs) -> Result<()> {
     let instructions = read_instructions(args.instructions, args.instructions_file)?;
-    let slug_seed = args
-        .slug
-        .clone()
-        .unwrap_or_else(|| derive_slug(&args.name));
+    let slug_seed = args.slug.clone().unwrap_or_else(|| derive_slug(&args.name));
     validate_slug(&slug_seed).map_err(|e| anyhow!("invalid slug: {e}"))?;
     let slug = if args.slug.is_some() {
         // Caller-pinned slug: hard-fail on conflict.
-        if store.find_by_slug(&slug_seed).await.map_err(boxed)?.is_some() {
+        if store
+            .find_by_slug(&slug_seed)
+            .await
+            .map_err(boxed)?
+            .is_some()
+        {
             bail!("slug `{slug_seed}` already in use");
         }
         slug_seed
@@ -303,12 +308,7 @@ async fn edit(store: &dyn ProjectStore, args: EditArgs) -> Result<()> {
 
 // ---------- delete / restore ----------
 
-async fn delete(
-    store: &dyn ProjectStore,
-    cfg: &Config,
-    target: &str,
-    hard: bool,
-) -> Result<()> {
+async fn delete(store: &dyn ProjectStore, cfg: &Config, target: &str, hard: bool) -> Result<()> {
     let p = lookup(store, target).await?;
     if !hard {
         store.archive(&p.id).await.map_err(boxed)?;

@@ -14,6 +14,8 @@ export interface StartConversationTurnOptions {
   projectId?: string | null;
   workspacePath?: string | null;
   soulPrompt?: string | null;
+  requirementRunId?: string | null;
+  verificationCommands?: string[];
 }
 
 type ManagedSocket = {
@@ -21,6 +23,11 @@ type ManagedSocket = {
   socket: WebSocket;
   open: boolean;
   terminal: boolean;
+};
+
+type TerminalFrame = {
+  type?: string;
+  message?: unknown;
 };
 
 const sockets = new Map<string, ManagedSocket>();
@@ -45,6 +52,13 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
     startedAt: Date.now(),
     lastError: null,
   });
+  if (opts.requirementRunId) {
+    void import("./requirements")
+      .then(({ updateRequirementRun }) =>
+        updateRequirementRun(opts.requirementRunId!, { status: "running" }),
+      )
+      .catch((err) => console.warn("requirement run mark running failed", err));
+  }
 
   ws.addEventListener("open", () => {
     managed.open = true;
@@ -75,6 +89,9 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
     if (isTerminalFrame(frame)) managed.terminal = true;
     handleFrameForConversation(opts.conversationId, frame);
     if (isTerminalFrame(frame)) {
+      if (opts.requirementRunId) {
+        void reconcileRequirementRun(opts.requirementRunId, frame, opts.verificationCommands);
+      }
       closeConversationSocket(opts.conversationId);
       void import("./conversations").then(({ refreshConvoList }) => refreshConvoList());
     }
@@ -133,6 +150,39 @@ export function closeConversationSocket(conversationId: string): void {
   }
 }
 
-function isTerminalFrame(frame: any): boolean {
-  return frame?.type === "done" || frame?.type === "error" || frame?.type === "interrupted";
+function isTerminalFrame(frame: unknown): frame is TerminalFrame {
+  const type = (frame as TerminalFrame | null)?.type;
+  return type === "done" || type === "error" || type === "interrupted";
+}
+
+async function reconcileRequirementRun(
+  runId: string,
+  frame: TerminalFrame,
+  verificationCommands?: string[],
+): Promise<void> {
+  try {
+    const { updateRequirementRun, verifyRunByCommands } = await import("./requirements");
+    if (frame?.type === "done") {
+      const commands = (verificationCommands ?? []).map((s) => s.trim()).filter(Boolean);
+      if (commands.length > 0) {
+        await verifyRunByCommands(runId, commands);
+      } else {
+        await updateRequirementRun(runId, { status: "completed" });
+      }
+      return;
+    }
+    if (frame?.type === "interrupted") {
+      await updateRequirementRun(runId, {
+        status: "cancelled",
+        error: "conversation interrupted",
+      });
+      return;
+    }
+    await updateRequirementRun(runId, {
+      status: "failed",
+      error: typeof frame?.message === "string" ? frame.message : "conversation failed",
+    });
+  } catch (err) {
+    console.warn("requirement run terminal reconciliation failed", err);
+  }
 }

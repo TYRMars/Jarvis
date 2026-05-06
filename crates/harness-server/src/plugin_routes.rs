@@ -190,10 +190,7 @@ mod tests {
         let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         let plugins = body["plugins"].as_array().expect("plugins array");
-        let names: Vec<&str> = plugins
-            .iter()
-            .filter_map(|p| p["name"].as_str())
-            .collect();
+        let names: Vec<&str> = plugins.iter().filter_map(|p| p["name"].as_str()).collect();
         assert!(names.contains(&"code-review-pack"), "names={names:?}");
         assert!(names.contains(&"gitnexus"), "names={names:?}");
 

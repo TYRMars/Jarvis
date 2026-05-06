@@ -8,12 +8,15 @@ export default defineConfig({
   // `base` at the default "/" so vite emits absolute asset paths
   // (`/assets/foo.js`) that work both behind the bundled
   // `harness-server` binary and from `vite preview` directly.
+  // Desktop/Tauri builds load through the app asset protocol instead
+  // of a normal HTTP origin, so use relative asset URLs there.
   //
   // Tailwind v4 ships its own Vite plugin; no `tailwind.config.js` /
   // PostCSS / `content` glob needed — utilities are JIT-scanned from
   // `src/**` automatically. The legacy `styles.css` continues to work
   // alongside Tailwind utilities (we layer Tailwind under the existing
   // base layer via `@import "tailwindcss"` at the top of styles.css).
+  base: process.env.JARVIS_DESKTOP_BUILD ? "./" : "/",
   plugins: [react(), tailwindcss()],
   define: {
     // Surfaced in the Settings → About section so users can confirm

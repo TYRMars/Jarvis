@@ -501,8 +501,7 @@ mod tests {
     }
 
     fn make_mcp_manager() -> Arc<McpManager> {
-        let registry =
-            Arc::new(std::sync::RwLock::new(harness_core::ToolRegistry::new()));
+        let registry = Arc::new(std::sync::RwLock::new(harness_core::ToolRegistry::new()));
         Arc::new(McpManager::new(registry))
     }
 
@@ -615,10 +614,7 @@ mod tests {
         let err = mgr.install_from_path(&plugin_src).await.unwrap_err();
         assert!(matches!(
             err,
-            PluginManagerError::Conflict {
-                kind: "skill",
-                ..
-            }
+            PluginManagerError::Conflict { kind: "skill", .. }
         ));
         // Catalog still has the original; no plugin entry inserted.
         assert!(cat.read().unwrap().get("hello").is_some());

@@ -143,7 +143,8 @@ impl WorkspaceStore {
     /// active, or when `New { workspace_path }` lands.
     pub fn bind(&self, conv_id: &str, path: &str) {
         if let Ok(mut g) = self.state.write() {
-            g.by_conversation.insert(conv_id.to_string(), path.to_string());
+            g.by_conversation
+                .insert(conv_id.to_string(), path.to_string());
         }
         self.flush();
     }
@@ -159,7 +160,10 @@ impl WorkspaceStore {
     /// Look up a conversation's bound workspace, if any. Used on
     /// `Resume` to restore the per-session pin.
     pub fn lookup(&self, conv_id: &str) -> Option<String> {
-        self.state.read().ok().and_then(|g| g.by_conversation.get(conv_id).cloned())
+        self.state
+            .read()
+            .ok()
+            .and_then(|g| g.by_conversation.get(conv_id).cloned())
     }
 
     fn flush(&self) {

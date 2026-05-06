@@ -243,18 +243,16 @@ impl Tool for ClaudeCodeRunTool {
             format!("failed to spawn `{}`: {e}", self.binary.display()).into()
         })?;
 
-        let output = match tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            child.wait_with_output(),
-        )
-        .await
-        {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(format!("claude process error: {e}").into()),
-            Err(_) => {
-                return Err(format!("claude timed out after {timeout_ms} ms").into());
-            }
-        };
+        let output =
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
+                .await
+            {
+                Ok(Ok(out)) => out,
+                Ok(Err(e)) => return Err(format!("claude process error: {e}").into()),
+                Err(_) => {
+                    return Err(format!("claude timed out after {timeout_ms} ms").into());
+                }
+            };
 
         if !output.status.success() {
             let exit = output
@@ -332,11 +330,7 @@ mod tests {
     #[tokio::test]
     async fn surfaces_nonzero_exit_with_stderr_tail() {
         let dir = tempdir().unwrap();
-        let fake = write_fake_binary(
-            dir.path(),
-            "fake-claude",
-            "echo 'oops' 1>&2; exit 7",
-        );
+        let fake = write_fake_binary(dir.path(), "fake-claude", "echo 'oops' 1>&2; exit 7");
         let tool = ClaudeCodeRunTool::new(dir.path()).with_binary(&fake);
 
         let err = tool.invoke(json!({ "task": "x" })).await.unwrap_err();

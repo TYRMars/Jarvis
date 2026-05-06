@@ -31,10 +31,13 @@ import {
   type RecentWorkspace,
 } from "../../services/workspaces";
 import {
-  findWorkspaceByName,
   probeWorkspace,
   type WorkspaceInfo,
 } from "../../services/workspace";
+import {
+  pickWorkspaceFolder,
+  supportsWorkspaceFolderPicker,
+} from "../../services/folderPicker";
 import { useAppStore } from "../../store/appStore";
 import {
   compactResourceLabel,
@@ -156,11 +159,44 @@ export function ResourceManagerDialog({
       const info = await probeWorkspace(trimmedFolder);
       setProbedFolder(info);
       setSelectedWorkspacePath(info.root);
-    } catch (e: any) {
-      setProbeError(String(e?.message ?? e));
+    } catch (e: unknown) {
+      setProbeError(errorMessage(e));
       setProbedFolder(null);
     } finally {
       setProbing(false);
+    }
+  };
+
+  const probeExtraRow = async (key: number) => {
+    const row = extraFolderRows.find((r) => r.key === key);
+    if (!row || !row.input.trim()) return;
+    setExtraFolderRows((rows) =>
+      rows.map((r) =>
+        r.key === key ? { ...r, probing: true, error: null } : r,
+      ),
+    );
+    try {
+      const info = await probeWorkspace(row.input.trim());
+      setExtraFolderRows((rows) =>
+        rows.map((r) =>
+          r.key === key
+            ? { ...r, probed: info, probing: false, error: null }
+            : r,
+        ),
+      );
+    } catch (e: unknown) {
+      setExtraFolderRows((rows) =>
+        rows.map((r) =>
+          r.key === key
+            ? {
+                ...r,
+                probed: null,
+                probing: false,
+                error: errorMessage(e),
+              }
+            : r,
+        ),
+      );
     }
   };
 
@@ -174,42 +210,31 @@ export function ResourceManagerDialog({
   };
 
   /// "Browse…" handler shared between the primary input and each
-  /// extra-folder row. Opens the OS folder picker, asks the backend
-  /// to resolve the basename into an absolute path, and writes the
-  /// result via `setOnResolved(path)`. When multiple matches come
-  /// back, the first wins — the multi-folder dialog isn't the right
-  /// place for an inline disambiguation list (rows already let the
-  /// user adjust by hand). The picker stays a single-shot
-  /// "translate basename → absolute path" action here.
+  /// extra-folder row. Desktop returns an absolute path directly;
+  /// browser builds fall back to basename resolution. When multiple
+  /// matches come back, the first wins — rows already let the user
+  /// adjust by hand.
   const browseFolder = async (
     setOnResolved: (path: string) => void,
   ): Promise<void> => {
-    const w = window as unknown as {
-      showDirectoryPicker?: () => Promise<{ name: string }>;
-    };
-    if (typeof w.showDirectoryPicker !== "function") {
+    if (!supportsWorkspaceFolderPicker()) {
       setProbeError(t("composerFolderPickerUnsupported"));
       return;
     }
     try {
-      const handle = await w.showDirectoryPicker();
-      const found = await findWorkspaceByName(handle.name);
-      if (found.length === 0) {
-        setOnResolved(`~/${handle.name}`);
+      const picked = await pickWorkspaceFolder();
+      if (!picked.path) return;
+      setOnResolved(picked.path);
+      if (picked.unresolvedName) {
         setProbeError(
-          t("composerFolderPickerNoMatch").replace("{0}", handle.name),
+          t("composerFolderPickerNoMatch").replace("{0}", picked.unresolvedName),
         );
-      } else {
-        setOnResolved(found[0]);
       }
     } catch {
       // User cancelled — no-op.
     }
   };
-  const browseSupported =
-    typeof window !== "undefined" &&
-    typeof (window as unknown as { showDirectoryPicker?: unknown })
-      .showDirectoryPicker === "function";
+  const browseSupported = supportsWorkspaceFolderPicker();
 
   const folderMatch: WorkspaceMatch = useMemo(() => {
     if (!probedFolder) return { kind: "none" };
@@ -442,40 +467,7 @@ export function ResourceManagerDialog({
                     rows.filter((r) => r.key !== key),
                   );
                 }}
-                onExtraRowProbe={async (key) => {
-                  const row = extraFolderRows.find((r) => r.key === key);
-                  if (!row || !row.input.trim()) return;
-                  setExtraFolderRows((rows) =>
-                    rows.map((r) =>
-                      r.key === key
-                        ? { ...r, probing: true, error: null }
-                        : r,
-                    ),
-                  );
-                  try {
-                    const info = await probeWorkspace(row.input.trim());
-                    setExtraFolderRows((rows) =>
-                      rows.map((r) =>
-                        r.key === key
-                          ? { ...r, probed: info, probing: false, error: null }
-                          : r,
-                      ),
-                    );
-                  } catch (e: any) {
-                    setExtraFolderRows((rows) =>
-                      rows.map((r) =>
-                        r.key === key
-                          ? {
-                              ...r,
-                              probed: null,
-                              probing: false,
-                              error: String(e?.message ?? e),
-                            }
-                          : r,
-                      ),
-                    );
-                  }
-                }}
+                onExtraRowProbe={(key) => void probeExtraRow(key)}
                 totalProbedCount={totalProbedFolders.length}
                 onExtraRowBrowse={
                   browseSupported
@@ -489,7 +481,6 @@ export function ResourceManagerDialog({
                         })
                     : undefined
                 }
-                browseSupported={browseSupported}
               />
             )}
           </div>
@@ -546,6 +537,10 @@ function tabLabel(k: ResourceDialogTab): string {
     case "folders":
       return t("resourceDialogTabFolders");
   }
+}
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 function RecentList({
@@ -661,7 +656,6 @@ function FolderTab({
   onExtraRowRemove,
   onExtraRowProbe,
   onExtraRowBrowse,
-  browseSupported,
   totalProbedCount,
 }: {
   folderInput: string;
@@ -691,7 +685,6 @@ function FolderTab({
   /// Same gate as `onBrowse`: undefined hides the per-row Browse
   /// button on browsers without the OS picker API.
   onExtraRowBrowse?: (key: number) => void;
-  browseSupported: boolean;
   totalProbedCount: number;
 }) {
   return (

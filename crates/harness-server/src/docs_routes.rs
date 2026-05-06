@@ -44,18 +44,14 @@ use crate::state::AppState;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/v1/doc-projects",
-            get(list_projects).post(create_project),
-        )
+        .route("/v1/doc-projects", get(list_projects).post(create_project))
         .route(
             "/v1/doc-projects/:id",
-            patch(update_project).delete(delete_project).get(get_project),
+            patch(update_project)
+                .delete(delete_project)
+                .get(get_project),
         )
-        .route(
-            "/v1/doc-projects/:id/draft",
-            get(get_draft).put(put_draft),
-        )
+        .route("/v1/doc-projects/:id/draft", get(get_draft).put(put_draft))
 }
 
 #[allow(clippy::result_large_err)]
@@ -277,10 +273,10 @@ async fn get_draft(State(state): State<AppState>, Path(id): Path<String>) -> Res
         Err(r) => return r,
     };
     match store.latest_draft(&id).await {
-        Ok(Some(d)) => Json(serde_json::to_value(&d).unwrap_or_else(|e| {
-            json!({ "error": e.to_string() })
-        }))
-        .into_response(),
+        Ok(Some(d)) => {
+            Json(serde_json::to_value(&d).unwrap_or_else(|e| json!({ "error": e.to_string() })))
+                .into_response()
+        }
         Ok(None) => Json(serde_json::Value::Null).into_response(),
         Err(e) => internal_error(e),
     }
@@ -318,7 +314,9 @@ async fn put_draft(
     match store.upsert_draft(&draft).await {
         Ok(()) => (
             StatusCode::CREATED,
-            Json(serde_json::to_value(&draft).unwrap_or_else(|e| json!({ "error": e.to_string() }))),
+            Json(
+                serde_json::to_value(&draft).unwrap_or_else(|e| json!({ "error": e.to_string() })),
+            ),
         )
             .into_response(),
         Err(e) => internal_error(e),

@@ -111,11 +111,13 @@ pub fn parse_skill(text: &str) -> Result<ParsedSkill, SkillError> {
         .or_else(|| trimmed.strip_prefix("---\r\n"))
         .ok_or(SkillError::NoFrontmatter)?;
     let (yaml, body) = split_at_close_fence(rest).ok_or(SkillError::UnterminatedFrontmatter)?;
-    let manifest: SkillManifest = serde_yaml::from_str(yaml).map_err(|e| {
-        SkillError::InvalidYaml(e.to_string())
-    })?;
+    let manifest: SkillManifest =
+        serde_yaml::from_str(yaml).map_err(|e| SkillError::InvalidYaml(e.to_string()))?;
     validate_manifest(&manifest)?;
-    let body = body.trim_start_matches('\n').trim_start_matches('\r').to_string();
+    let body = body
+        .trim_start_matches('\n')
+        .trim_start_matches('\r')
+        .to_string();
     Ok(ParsedSkill { manifest, body })
 }
 
@@ -169,7 +171,8 @@ fn is_kebab_name(s: &str) -> bool {
     if s.starts_with('-') || s.ends_with('-') {
         return false;
     }
-    s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    s.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 #[cfg(test)]

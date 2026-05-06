@@ -1246,7 +1246,7 @@ mod tests {
                         arguments: json!({"text": "hi"}),
                     }],
                     reasoning_content: None,
-                cache: None,
+                    cache: None,
                 },
             ]),
             &default_codex_cfg(),
@@ -1278,7 +1278,7 @@ mod tests {
                         arguments: json!({}),
                     }],
                     reasoning_content: None,
-                cache: None,
+                    cache: None,
                 },
             ]),
             &default_codex_cfg(),
@@ -1304,7 +1304,7 @@ mod tests {
                         arguments: json!({}),
                     }],
                     reasoning_content: None,
-                cache: None,
+                    cache: None,
                 },
                 Message::tool_result("fc_1", "the output"),
             ]),
@@ -1368,7 +1368,7 @@ mod tests {
                             arguments: json!({"path": "x"}),
                         }],
                         reasoning_content: None,
-                    cache: None,
+                        cache: None,
                     },
                 ],
                 tools: vec![
@@ -1583,7 +1583,11 @@ mod tests {
         let cfg = ResponsesConfig::openai_responses("sk-abc");
         let body = build(
             chained_req(
-                vec![Message::system("sys"), Message::user("u1"), Message::user("u2")],
+                vec![
+                    Message::system("sys"),
+                    Message::user("u1"),
+                    Message::user("u2"),
+                ],
                 "resp_prior",
                 2,
             ),
@@ -1662,7 +1666,11 @@ mod tests {
         let cfg = default_codex_cfg().with_chain_responses(false);
         let body = build(
             chained_req(
-                vec![Message::system("sys"), Message::user("u1"), Message::user("u2")],
+                vec![
+                    Message::system("sys"),
+                    Message::user("u1"),
+                    Message::user("u2"),
+                ],
                 "resp_prior",
                 2,
             ),
@@ -1819,7 +1827,7 @@ mod tests {
                 content,
                 tool_calls,
                 reasoning_content: _,
-            cache: None,
+                cache: None,
             } => {
                 assert_eq!(content.as_deref(), Some("hello world"));
                 assert_eq!(tool_calls.len(), 1);
@@ -1920,7 +1928,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
-                    cache: None,
+                        cache: None,
                     } => {
                         assert_eq!(content.as_deref(), Some("Hello"));
                         assert!(tool_calls.is_empty());
@@ -2076,7 +2084,7 @@ mod tests {
                         content,
                         tool_calls,
                         reasoning_content: _,
-                    cache: None,
+                        cache: None,
                     } => {
                         assert!(content.is_none());
                         assert!(tool_calls.is_empty());

@@ -17,6 +17,7 @@ async-stream.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 uuid.workspace = true
 chrono.workspace = true
+utoipa.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }

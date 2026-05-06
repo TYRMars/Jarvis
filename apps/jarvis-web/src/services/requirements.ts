@@ -34,6 +34,9 @@ import type {
   Requirement,
   RequirementRun,
   RequirementStatus,
+  RequirementTodo,
+  RequirementTodoKind,
+  RequirementTodoStatus,
   VerificationResult,
 } from "../types/frames";
 import { apiUrl } from "./api";
@@ -415,6 +418,99 @@ export function linkRequirementConversation(
   return next;
 }
 
+// ---------- structured Requirement TODOs --------------------------
+
+export interface CreateRequirementTodoInput {
+  title: string;
+  kind?: RequirementTodoKind;
+  status?: RequirementTodoStatus;
+  command?: string | null;
+  created_by?: "human" | "agent" | "workflow";
+}
+
+export interface UpdateRequirementTodoInput {
+  title?: string;
+  kind?: RequirementTodoKind;
+  status?: RequirementTodoStatus;
+  command?: string | null;
+}
+
+interface RequirementTodoMutationResponse {
+  todo?: RequirementTodo;
+  requirement: Requirement;
+  deleted?: boolean;
+}
+
+export async function createRequirementTodo(
+  requirementId: string,
+  input: CreateRequirementTodoInput,
+): Promise<RequirementTodoMutationResponse> {
+  const r = await fetch(
+    apiUrl(`/v1/requirements/${encodeURIComponent(requirementId)}/todos`),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: input.title,
+        kind: input.kind ?? "work",
+        status: input.status ?? "pending",
+        command: input.command ?? undefined,
+        created_by: input.created_by ?? "human",
+      }),
+    },
+  );
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`create TODO ${r.status}: ${text || r.statusText}`);
+  }
+  const body = (await r.json()) as RequirementTodoMutationResponse;
+  upsertLocal(body.requirement);
+  return body;
+}
+
+export async function updateRequirementTodo(
+  requirementId: string,
+  todoId: string,
+  patch: UpdateRequirementTodoInput,
+): Promise<RequirementTodoMutationResponse> {
+  const r = await fetch(
+    apiUrl(
+      `/v1/requirements/${encodeURIComponent(requirementId)}/todos/${encodeURIComponent(todoId)}`,
+    ),
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`update TODO ${r.status}: ${text || r.statusText}`);
+  }
+  const body = (await r.json()) as RequirementTodoMutationResponse;
+  upsertLocal(body.requirement);
+  return body;
+}
+
+export async function deleteRequirementTodo(
+  requirementId: string,
+  todoId: string,
+): Promise<RequirementTodoMutationResponse> {
+  const r = await fetch(
+    apiUrl(
+      `/v1/requirements/${encodeURIComponent(requirementId)}/todos/${encodeURIComponent(todoId)}`,
+    ),
+    { method: "DELETE" },
+  );
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`delete TODO ${r.status}: ${text || r.statusText}`);
+  }
+  const body = (await r.json()) as RequirementTodoMutationResponse;
+  upsertLocal(body.requirement);
+  return body;
+}
+
 // ---------- WS frame appliers (called from frames.ts) -------------
 
 /// Apply a server-side `requirement_upserted` frame to the cache.
@@ -630,7 +726,31 @@ export async function verifyRunByCommands(
     const text = await r.text();
     throw new Error(`verify ${r.status}: ${text}`);
   }
-  return (await r.json()) as RequirementRun;
+  const run = (await r.json()) as RequirementRun;
+  upsertRunLocal(run);
+  return run;
+}
+
+export async function updateRequirementRun(
+  runId: string,
+  patch: {
+    status?: RequirementRun["status"];
+    summary?: string | null;
+    error?: string | null;
+  },
+): Promise<RequirementRun> {
+  const r = await fetch(apiUrl(`/v1/runs/${encodeURIComponent(runId)}`), {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`update run ${r.status}: ${text || r.statusText}`);
+  }
+  const run = (await r.json()) as RequirementRun;
+  upsertRunLocal(run);
+  return run;
 }
 
 // =============================================================

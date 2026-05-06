@@ -85,7 +85,10 @@ async fn list(args: ListArgs, cfg: Option<&Config>) -> Result<()> {
         return Ok(());
     }
     let empty = Vec::new();
-    let skills = body.get("skills").and_then(Value::as_array).unwrap_or(&empty);
+    let skills = body
+        .get("skills")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if skills.is_empty() {
         println!("(no skills loaded — drop a SKILL.md under ~/.config/jarvis/skills/<name>/)");
         return Ok(());
@@ -114,14 +117,19 @@ async fn list(args: ListArgs, cfg: Option<&Config>) -> Result<()> {
 
 async fn show(args: ShowArgs, cfg: Option<&Config>) -> Result<()> {
     let base = server_url(&args.server, cfg);
-    let body: Value =
-        http_get(&format!("{base}/v1/skills/{}", urlencoding(&args.name))).await?;
+    let body: Value = http_get(&format!("{base}/v1/skills/{}", urlencoding(&args.name))).await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&body)?);
         return Ok(());
     }
-    let name = body.get("name").and_then(Value::as_str).unwrap_or(&args.name);
-    let desc = body.get("description").and_then(Value::as_str).unwrap_or("");
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(&args.name);
+    let desc = body
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let source = body.get("source").and_then(Value::as_str).unwrap_or("?");
     let path = body.get("path").and_then(Value::as_str).unwrap_or("?");
     let body_md = body.get("body").and_then(Value::as_str).unwrap_or("");

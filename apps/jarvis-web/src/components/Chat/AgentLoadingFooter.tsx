@@ -1,13 +1,15 @@
-// Claude Code-style loading footer.
+// Jarvis loading footer.
 //
 // Pinned to the bottom of `<MessageList>` whenever the agent loop
-// is running. Visual matches the reference closely:
+// is running. Visual keeps the compact timer from the previous
+// footer, but swaps the generic sparkle for a tiny Lottie mascot
+// based on the Jarvis app icon:
 //
-//   ✻ 3m 1s · ↓ 2.4k tokens
+//   [Jarvis thinking] 3m 1s · ↓ 2.4k tokens
 //
 // where:
-//   - ✻ is an 8-point sparkle in the brand accent colour, gently
-//     rotating + pulsing while the turn is in flight
+//   - the mascot wiggles, blinks, and fires little thought sparks
+//     while the turn is in flight
 //   - "3m 1s" is the elapsed wall-clock since the user pressed
 //     Send (sourced from `appStore.turnStartedAt`)
 //   - "↓ 2.4k tokens" is the cumulative LLM-generated token count
@@ -24,6 +26,7 @@
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../../store/appStore";
+import { JarvisThinkingLottie } from "./JarvisThinkingLottie";
 
 export function AgentLoadingFooter() {
   const inFlight = useAppStore((s) => s.inFlight);
@@ -55,8 +58,8 @@ export function AgentLoadingFooter() {
   const tokensLabel = formatTokens(tokensIn);
 
   return (
-    <div className="agent-loading" role="status" aria-live="polite">
-      <SparkleSpinner />
+    <div className="agent-loading" role="status" aria-live="polite" aria-label="Jarvis is thinking">
+      <JarvisThinkingLottie />
       <span className="agent-loading-text">
         <span className="agent-loading-elapsed">{elapsedLabel}</span>
         {tokensIn > 0 ? (
@@ -70,25 +73,6 @@ export function AgentLoadingFooter() {
         ) : null}
       </span>
     </div>
-  );
-}
-
-/// 4-point sparkle (Lucide-style) that gently rotates + pulses
-/// while the agent is working. The single concave-diamond path
-/// reads cleanly at 14px — my previous attempt at a hand-rolled
-/// 8-petal asterisk produced overlapping paths that rendered as
-/// an × rather than a sparkle. CSS controls animation so reduced-
-/// motion preferences disable it cleanly.
-function SparkleSpinner() {
-  return (
-    <span className="agent-loading-spark" aria-hidden="true">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-        {/* Lucide sparkle: a 4-point star whose sides curve inward,
-         * creating the classic "twinkle" silhouette. Single closed
-         * path — no overlap, no rendering ambiguity. */}
-        <path d="M12 3 L13.9 10.1 A2 2 0 0 0 15.4 11.6 L21 12 L15.4 12.4 A2 2 0 0 0 13.9 13.9 L12 21 L10.1 13.9 A2 2 0 0 0 8.6 12.4 L3 12 L8.6 11.6 A2 2 0 0 0 10.1 10.1 Z" />
-      </svg>
-    </span>
   );
 }
 

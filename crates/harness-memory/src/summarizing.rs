@@ -331,9 +331,7 @@ impl SummarizingMemory {
                 match primary.or(fallback) {
                     Some(t) => t,
                     None => {
-                        return Err(
-                            "summariser returned empty content and reasoning".into(),
-                        );
+                        return Err("summariser returned empty content and reasoning".into());
                     }
                 }
             }
@@ -584,17 +582,24 @@ mod tests {
 
         // First two messages must still be the leading systems, in
         // the original order.
-        assert!(matches!(&out[0], Message::System { content, .. } if content == "base agent prompt"));
+        assert!(
+            matches!(&out[0], Message::System { content, .. } if content == "base agent prompt")
+        );
         assert!(matches!(&out[1], Message::System { content, .. }
             if content.contains("=== project: Writing ===") && content.contains("be lyrical")));
         // The summary lands somewhere AFTER the project block.
         let summary_idx = out
             .iter()
-            .position(|m| matches!(m,
-                Message::System { content, .. } if content.contains("OLD STUFF SUMMARISED")
-            ))
+            .position(|m| {
+                matches!(m,
+                    Message::System { content, .. } if content.contains("OLD STUFF SUMMARISED")
+                )
+            })
             .expect("summary system not found in output");
-        assert!(summary_idx >= 2, "summary must come after the leading systems");
+        assert!(
+            summary_idx >= 2,
+            "summary must come after the leading systems"
+        );
     }
 
     #[tokio::test]

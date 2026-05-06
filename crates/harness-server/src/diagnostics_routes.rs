@@ -112,10 +112,7 @@ fn default_scan_limit() -> u32 {
     500
 }
 
-async fn list_stuck_runs(
-    State(state): State<AppState>,
-    Query(q): Query<StuckQuery>,
-) -> Response {
+async fn list_stuck_runs(State(state): State<AppState>, Query(q): Query<StuckQuery>) -> Response {
     let runs = match require_run_store(&state) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -139,10 +136,7 @@ fn default_failed_limit() -> u32 {
     20
 }
 
-async fn list_failed_runs(
-    State(state): State<AppState>,
-    Query(q): Query<FailedQuery>,
-) -> Response {
+async fn list_failed_runs(State(state): State<AppState>, Query(q): Query<FailedQuery>) -> Response {
     let runs = match require_run_store(&state) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -164,10 +158,9 @@ async fn cleanup_orphan_worktrees(State(state): State<AppState>) -> Response {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let workspace = state
-        .workspace_root
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let workspace = state.workspace_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
     let orphans = match diagnostics::find_orphan_worktrees(&root, runs.as_ref()).await {
         Ok(items) => items,
         Err(e) => return internal_error(e),

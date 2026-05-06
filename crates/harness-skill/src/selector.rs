@@ -16,9 +16,8 @@ const KEYWORD_WEIGHT: usize = 4;
 const DESC_TOKEN_WEIGHT: usize = 1;
 const NAME_TOKEN_WEIGHT: usize = 2;
 const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "that", "this", "have", "from", "you", "use",
-    "are", "is", "to", "a", "of", "in", "on", "or", "an", "be", "it", "at",
-    "as", "we",
+    "the", "and", "for", "with", "that", "this", "have", "from", "you", "use", "are", "is", "to",
+    "a", "of", "in", "on", "or", "an", "be", "it", "at", "as", "we",
 ];
 
 /// Score one skill against a query string. Higher = better match.
@@ -169,26 +168,45 @@ mod tests {
     #[test]
     fn scores_zero_for_manual_activation() {
         let q = query_token_set("pdf invoice");
-        let s = score_skill("pdf-helper", "PDFs.", &["pdf".into()], SkillActivation::Manual, &q);
+        let s = score_skill(
+            "pdf-helper",
+            "PDFs.",
+            &["pdf".into()],
+            SkillActivation::Manual,
+            &q,
+        );
         assert_eq!(s, 0);
     }
 
     #[test]
     fn keyword_dominates_description_tokens() {
         let q = query_token_set("pdf in the document");
-        let with_keyword =
-            score_skill("a", "x", &["pdf".into()], SkillActivation::Auto, &q);
-        let only_desc =
-            score_skill("b", "pdf is mentioned here", &[], SkillActivation::Auto, &q);
+        let with_keyword = score_skill("a", "x", &["pdf".into()], SkillActivation::Auto, &q);
+        let only_desc = score_skill("b", "pdf is mentioned here", &[], SkillActivation::Auto, &q);
         assert!(with_keyword > only_desc, "keyword weight should dominate");
     }
 
     #[test]
     fn picks_top_k_in_score_order() {
         let mut cat = SkillCatalog::new();
-        cat.insert(entry("pdf-helper", "Read PDF files.", &["pdf"], SkillActivation::Both));
-        cat.insert(entry("code-review", "Review diffs.", &["review", "diff", "pr"], SkillActivation::Both));
-        cat.insert(entry("manual-only", "Should not auto.", &["pdf"], SkillActivation::Manual));
+        cat.insert(entry(
+            "pdf-helper",
+            "Read PDF files.",
+            &["pdf"],
+            SkillActivation::Both,
+        ));
+        cat.insert(entry(
+            "code-review",
+            "Review diffs.",
+            &["review", "diff", "pr"],
+            SkillActivation::Both,
+        ));
+        cat.insert(entry(
+            "manual-only",
+            "Should not auto.",
+            &["pdf"],
+            SkillActivation::Manual,
+        ));
 
         let picks = pick_auto_skills(&cat, "Can you review my PR diff?", 2, &[]);
         assert_eq!(picks, vec!["code-review".to_string()]);
@@ -204,8 +222,7 @@ mod tests {
     fn exclude_filters_already_active_skills() {
         let mut cat = SkillCatalog::new();
         cat.insert(entry("pdf-helper", "PDF.", &["pdf"], SkillActivation::Auto));
-        let picks =
-            pick_auto_skills(&cat, "pdf please", 2, &["pdf-helper".to_string()]);
+        let picks = pick_auto_skills(&cat, "pdf please", 2, &["pdf-helper".to_string()]);
         assert!(picks.is_empty());
     }
 
@@ -220,16 +237,34 @@ mod tests {
     #[test]
     fn zero_score_skills_are_dropped() {
         let mut cat = SkillCatalog::new();
-        cat.insert(entry("nope", "Totally unrelated.", &["sailboat"], SkillActivation::Auto));
+        cat.insert(entry(
+            "nope",
+            "Totally unrelated.",
+            &["sailboat"],
+            SkillActivation::Auto,
+        ));
         let picks = pick_auto_skills(&cat, "review my code", 2, &[]);
-        assert!(picks.is_empty(), "should not pick skills that don't match at all");
+        assert!(
+            picks.is_empty(),
+            "should not pick skills that don't match at all"
+        );
     }
 
     #[test]
     fn ties_break_by_name() {
         let mut cat = SkillCatalog::new();
-        cat.insert(entry("zebra", "review!", &["review"], SkillActivation::Auto));
-        cat.insert(entry("alpha", "review!", &["review"], SkillActivation::Auto));
+        cat.insert(entry(
+            "zebra",
+            "review!",
+            &["review"],
+            SkillActivation::Auto,
+        ));
+        cat.insert(entry(
+            "alpha",
+            "review!",
+            &["review"],
+            SkillActivation::Auto,
+        ));
         let picks = pick_auto_skills(&cat, "code review please", 2, &[]);
         assert_eq!(picks, vec!["alpha".to_string(), "zebra".to_string()]);
     }

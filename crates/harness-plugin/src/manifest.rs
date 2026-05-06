@@ -250,7 +250,10 @@ mod tests {
     fn rejects_missing_description() {
         let raw = r#"{ "name": "x", "version": "0.1.0", "description": "" }"#;
         let err = parse_plugin_manifest(raw).unwrap_err();
-        assert!(matches!(err, PluginManifestError::MissingField("description")));
+        assert!(matches!(
+            err,
+            PluginManifestError::MissingField("description")
+        ));
     }
 
     #[test]
@@ -267,7 +270,10 @@ mod tests {
         match &entry.transport {
             harness_mcp::McpTransport::Stdio { command, args, .. } => {
                 assert_eq!(command, "npx");
-                assert_eq!(args, &vec!["-y".to_string(), "gitnexus".to_string(), "mcp".to_string()]);
+                assert_eq!(
+                    args,
+                    &vec!["-y".to_string(), "gitnexus".to_string(), "mcp".to_string()]
+                );
             }
             other => panic!("expected stdio transport, got {other:?}"),
         }

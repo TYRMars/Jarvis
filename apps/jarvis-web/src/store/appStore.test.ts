@@ -206,6 +206,40 @@ describe("messages slice", () => {
     if (last?.kind === "assistant") expect(last.content).toBe("Hello!");
   });
 
+  it("finalizeAssistant repairs cumulative stream snapshots with the final content", () => {
+    get().pushUserMessage("hi");
+    get().appendDelta("Hel");
+    get().appendDelta("Hello!");
+    get().finalizeAssistant({ content: "Hello!" });
+
+    const last = get().messages.at(-1);
+    expect(last?.kind).toBe("assistant");
+    if (last?.kind === "assistant") {
+      expect(last.content).toBe("Hello!");
+      expect(last.finalised).toBe(true);
+    }
+  });
+
+  it("finalizeAssistant coalesces adjacent duplicate assistant replies", () => {
+    get().pushUserMessage("which subagents can you use?");
+    get().appendDelta("I can help with Claude Code.");
+    get().finalizeAssistant({ content: "I can help with Claude Code." });
+
+    get().appendDelta("I can help with Claude Code.");
+    get().finalizeAssistant({
+      content: "I can help with Claude Code.",
+      reasoning_content: "The user is asking about subagents.",
+    });
+
+    const assistants = get().messages.filter((m) => m.kind === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "assistant") {
+      expect(assistants[0].content).toBe("I can help with Claude Code.");
+      expect(assistants[0].reasoning).toBe("The user is asking about subagents.");
+      expect(assistants[0].finalised).toBe(true);
+    }
+  });
+
   it("multi-iteration tool calls without intervening text attach to the right assistant", () => {
     // Reproduces the rendering bug where iteration 2's tool call
     // shows up under iteration 1's assistant bubble because

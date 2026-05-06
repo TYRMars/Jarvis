@@ -115,7 +115,7 @@ describe("AddFolderDialog — Browse button", () => {
       />,
     );
     expect(
-      screen.queryByRole("button", { name: /Browse|浏览/ }),
+      screen.queryByRole("button", { name: /Choose folder|选择文件夹|Browse|浏览/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -135,7 +135,7 @@ describe("AddFolderDialog — Browse button", () => {
         onAdded={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Browse|浏览/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Choose folder|选择文件夹|Browse|浏览/ }));
     await waitFor(() => {
       const input = screen.getByPlaceholderText(
         /absolute\/path|~\/code\/proj/i,
@@ -164,7 +164,7 @@ describe("AddFolderDialog — Browse button", () => {
         onAdded={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Browse|浏览/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Choose folder|选择文件夹|Browse|浏览/ }));
     // Both candidate paths render as `<code>` rows inside the inline
     // list; assert both are in the DOM.
     await waitFor(() => {

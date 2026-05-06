@@ -30,7 +30,6 @@ import { OpenSidebarButton } from "../Workspace/WorkspaceToggles";
 export function ProjectsPage() {
   const available = useAppStore((s) => s.projectsAvailable);
   const projects = useAppStore((s) => s.projects);
-  const activeConversationId = useAppStore((s) => s.activeId);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -59,6 +58,10 @@ export function ProjectsPage() {
       window.removeEventListener("jarvis:new-project", onNewProject);
     };
   }, []);
+
+  useEffect(() => {
+    setCreating(false);
+  }, [selectedProjectId]);
 
   const visibleProjects = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -274,14 +277,23 @@ export function ProjectsPage() {
         </div>
       </header>
 
-      {creating ? (
-        <ProjectCreatePanel onDone={() => setCreating(false)} />
-      ) : selectedProject ? (
+      {creating && (
+        <ProjectCreatePanel
+          onDone={(created) => {
+            setCreating(false);
+            if (created) {
+              void navigate(`/projects/${created.id}`);
+            }
+          }}
+        />
+      )}
+
+      {selectedProject ? (
         <ProjectBoard
+          key={selectedProject.id}
           project={selectedProject}
           requirements={requirements}
           query={query}
-          activeConversationId={activeConversationId}
           onChanged={refreshRequirements}
           onOpenConversation={(id) => {
             void resumeConversation(id);

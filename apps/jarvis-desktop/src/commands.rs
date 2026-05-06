@@ -28,7 +28,11 @@ pub fn restart_server(
     workspace: Option<String>,
     state: State<'_, DesktopAppState>,
 ) -> DesktopStatus {
-    state.server.lock().expect("server manager").restart(workspace)
+    state
+        .server
+        .lock()
+        .expect("server manager")
+        .restart(workspace)
 }
 
 #[tauri::command]
@@ -42,7 +46,10 @@ pub fn select_workspace_dir() -> Option<String> {
 #[tauri::command]
 pub fn open_path(path: String) -> CommandResult {
     match open::that_detached(PathBuf::from(path)) {
-        Ok(_) => CommandResult { ok: true, error: None },
+        Ok(_) => CommandResult {
+            ok: true,
+            error: None,
+        },
         Err(e) => CommandResult {
             ok: false,
             error: Some(e.to_string()),
@@ -63,7 +70,10 @@ pub fn reveal_path(path: String) -> CommandResult {
     let result = open::that_detached(PathBuf::from(&path)).map(|_| true);
 
     match result {
-        Ok(true) => CommandResult { ok: true, error: None },
+        Ok(true) => CommandResult {
+            ok: true,
+            error: None,
+        },
         Ok(false) => CommandResult {
             ok: false,
             error: Some("system opener returned a non-zero status".to_string()),

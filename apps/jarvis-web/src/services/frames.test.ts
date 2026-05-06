@@ -8,6 +8,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useAppStore } from "../store/appStore";
 import { handleFrame } from "./frames";
+import { resetUsage } from "./usage";
+import { resetUsageHistory, totalsByModelForWindow } from "./usageCumulator";
 
 vi.mock("./socket", () => ({
   applyRouting: vi.fn(),
@@ -20,6 +22,8 @@ const get = () => useAppStore.getState();
 
 beforeEach(() => {
   localStorage.clear();
+  resetUsage();
+  resetUsageHistory();
 });
 
 describe("handleFrame: chat / tool flow", () => {
@@ -223,6 +227,54 @@ describe("handleFrame: forked + resumed + started", () => {
     expect(get().convoRows[0]?.id).toBe("convo-7"); // optimistic stub
   });
 
+  it("started clears stale project and workspace bindings when the server sends nulls", () => {
+    get().setDraftProjectId("project-old");
+    get().setSocketWorkspace("/old/repo", null);
+    handleFrame({ type: "started", id: "convo-free", project_id: null, workspace_path: null });
+    expect(get().draftProjectId).toBeNull();
+    expect(get().socketWorkspace).toBeNull();
+    expect(get().draftWorkspacePath).toBeNull();
+  });
+
+  it("resumed applies the conversation project and workspace binding", () => {
+    handleFrame({
+      type: "resumed",
+      id: "convo-bound",
+      message_count: 3,
+      project_id: "project-1",
+      workspace_path: "/repo/project-1",
+    });
+    expect(get().draftProjectId).toBe("project-1");
+    expect(get().socketWorkspace).toBe("/repo/project-1");
+    expect(get().draftWorkspacePath).toBe("/repo/project-1");
+  });
+
+  it("resumed falls back to the project's first workspace for old project-bound conversations", () => {
+    useAppStore.setState({
+      projectsById: {
+        "project-1": {
+          id: "project-1",
+          slug: "p1",
+          name: "Project 1",
+          instructions: "",
+          tags: [],
+          workspaces: [{ path: "/repo/project-1" }],
+          archived: false,
+          created_at: "",
+          updated_at: "",
+        },
+      },
+    });
+    handleFrame({
+      type: "resumed",
+      id: "convo-old",
+      message_count: 3,
+      project_id: "project-1",
+      workspace_path: null,
+    });
+    expect(get().socketWorkspace).toBe("/repo/project-1");
+  });
+
   it("resumed restores a known saved routing", () => {
     useAppStore.setState({
       providers: [
@@ -249,10 +301,42 @@ describe("handleFrame: forked + resumed + started", () => {
 
 describe("handleFrame: usage", () => {
   it("usage frame accumulates into the store's UsageBadge slice", () => {
-    handleFrame({ type: "usage", prompt_tokens: 100, completion_tokens: 50, cached_prompt_tokens: 10 });
+    handleFrame({ type: "usage", model: "gpt-4o-mini", prompt_tokens: 100, completion_tokens: 50, cached_prompt_tokens: 10 });
     expect(get().usage).toMatchObject({ prompt: 100, completion: 50, cached: 10, calls: 1 });
-    handleFrame({ type: "usage", prompt_tokens: 5, completion_tokens: 3 });
+    handleFrame({ type: "usage", model: "claude-3-5-haiku-latest", prompt_tokens: 5, completion_tokens: 3 });
     expect(get().usage).toMatchObject({ prompt: 105, completion: 53, calls: 2 });
+  });
+
+  it("usage frames are persisted per model for the work overview", () => {
+    handleFrame({ type: "usage", model: "gpt-4o-mini", prompt_tokens: 100, completion_tokens: 50 });
+    handleFrame({ type: "usage", model: "claude-3-5-haiku-latest", prompt_tokens: 20, completion_tokens: 10 });
+    handleFrame({ type: "usage", model: "gpt-4o-mini", prompt_tokens: 5, completion_tokens: 5 });
+
+    expect(totalsByModelForWindow(7)).toEqual([
+      expect.objectContaining({ model: "gpt-4o-mini", prompt: 105, completion: 55, total: 160, calls: 2 }),
+      expect.objectContaining({ model: "claude-3-5-haiku-latest", prompt: 20, completion: 10, total: 30, calls: 1 }),
+    ]);
+  });
+
+  it("subagent usage frames are also counted", () => {
+    handleFrame({
+      type: "sub_agent_event",
+      frame: {
+        subagent_id: "sub-1",
+        subagent_name: "review",
+        event: {
+          kind: "usage",
+          model: "claude-3-5-haiku-latest",
+          prompt_tokens: 30,
+          completion_tokens: 12,
+        },
+      },
+    });
+
+    expect(get().usage).toMatchObject({ prompt: 30, completion: 12, calls: 1 });
+    expect(totalsByModelForWindow(7)).toEqual([
+      expect.objectContaining({ model: "claude-3-5-haiku-latest", prompt: 30, completion: 12, total: 42, calls: 1 }),
+    ]);
   });
 });
 

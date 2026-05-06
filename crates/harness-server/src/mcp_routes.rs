@@ -27,16 +27,22 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/mcp/servers", get(list).post(add))
-        .route("/v1/mcp/servers/:prefix", get(get_one).delete(remove).put(replace))
+        .route(
+            "/v1/mcp/servers/:prefix",
+            get(get_one).delete(remove).put(replace),
+        )
         .route("/v1/mcp/servers/:prefix/health", post(health))
 }
 
 #[allow(clippy::result_large_err)]
 fn require_mcp(state: &AppState) -> Result<Arc<McpManager>, Response> {
-    state
-        .mcp
-        .clone()
-        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "mcp manager not configured" }))).into_response())
+    state.mcp.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "mcp manager not configured" })),
+        )
+            .into_response()
+    })
 }
 
 async fn list(State(state): State<AppState>) -> Response {
@@ -55,7 +61,11 @@ async fn get_one(State(state): State<AppState>, Path(prefix): Path<String>) -> R
     };
     match mcp.get(&prefix).await {
         Some(info) => (StatusCode::OK, Json(json!(info))).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "no such mcp server", "prefix": prefix }))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no such mcp server", "prefix": prefix })),
+        )
+            .into_response(),
     }
 }
 
@@ -65,11 +75,19 @@ async fn add(State(state): State<AppState>, Json(cfg): Json<McpClientConfig>) ->
         Err(r) => return r,
     };
     if cfg.prefix.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "prefix is required" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "prefix is required" })),
+        )
+            .into_response();
     }
     let prefix = cfg.prefix.clone();
     match mcp.add(cfg).await {
-        Ok(tools) => (StatusCode::CREATED, Json(json!({ "prefix": prefix, "tools": tools }))).into_response(),
+        Ok(tools) => (
+            StatusCode::CREATED,
+            Json(json!({ "prefix": prefix, "tools": tools })),
+        )
+            .into_response(),
         Err(e) => map_mcp_error(e),
     }
 }
@@ -99,7 +117,11 @@ async fn replace(
             .into_response();
     }
     match mcp.replace(&prefix, cfg).await {
-        Ok(tools) => (StatusCode::OK, Json(json!({ "prefix": prefix, "tools": tools }))).into_response(),
+        Ok(tools) => (
+            StatusCode::OK,
+            Json(json!({ "prefix": prefix, "tools": tools })),
+        )
+            .into_response(),
         Err(e) => map_mcp_error(e),
     }
 }
@@ -110,8 +132,16 @@ async fn remove(State(state): State<AppState>, Path(prefix): Path<String>) -> Re
         Err(r) => return r,
     };
     match mcp.remove(&prefix).await {
-        Ok(true) => (StatusCode::OK, Json(json!({ "deleted": true, "prefix": prefix }))).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "no such mcp server", "prefix": prefix }))).into_response(),
+        Ok(true) => (
+            StatusCode::OK,
+            Json(json!({ "deleted": true, "prefix": prefix })),
+        )
+            .into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no such mcp server", "prefix": prefix })),
+        )
+            .into_response(),
         Err(e) => map_mcp_error(e),
     }
 }
@@ -125,7 +155,11 @@ async fn health(State(state): State<AppState>, Path(prefix): Path<String>) -> Re
     match mcp.health(&prefix).await {
         Ok(count) => {
             let latency_ms = started.elapsed().as_millis() as u64;
-            (StatusCode::OK, Json(json!({ "ok": true, "tools": count, "latency_ms": latency_ms }))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "tools": count, "latency_ms": latency_ms })),
+            )
+                .into_response()
         }
         Err(e) => {
             let latency_ms = started.elapsed().as_millis() as u64;
@@ -140,9 +174,7 @@ async fn health(State(state): State<AppState>, Path(prefix): Path<String>) -> Re
 
 fn map_mcp_error(e: harness_mcp::McpError) -> Response {
     let msg = e.to_string();
-    let status = if msg.contains("already registered")
-        || msg.contains("would conflict")
-    {
+    let status = if msg.contains("already registered") || msg.contains("would conflict") {
         StatusCode::CONFLICT
     } else if msg.contains("unknown mcp prefix") || msg.contains("does not match") {
         StatusCode::BAD_REQUEST

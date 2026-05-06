@@ -341,7 +341,8 @@ impl JsonFileTodoStore {
     }
 
     fn path_for(&self, workspace: &str, id: &str) -> PathBuf {
-        self.workspace_dir(workspace).join(format!("{}.json", encode_id(id)))
+        self.workspace_dir(workspace)
+            .join(format!("{}.json", encode_id(id)))
     }
 
     /// Walk every workspace dir to find a TODO by id. Used by
@@ -400,7 +401,11 @@ impl TodoStore for JsonFileTodoStore {
         }
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         if rows.len() > 500 {
-            tracing::warn!(workspace, count = rows.len(), "todo list exceeded 500-item soft cap");
+            tracing::warn!(
+                workspace,
+                count = rows.len(),
+                "todo list exceeded 500-item soft cap"
+            );
             rows.truncate(500);
         }
         Ok(rows)
@@ -830,7 +835,9 @@ impl AgentProfileStore for JsonFileAgentProfileStore {
         let path = self.path_for(id);
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {
-                let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+                let _ = self
+                    .tx
+                    .send(AgentProfileEvent::Deleted { id: id.to_string() });
                 Ok(true)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -877,10 +884,7 @@ impl JsonFileActivityStore {
 
 #[async_trait]
 impl ActivityStore for JsonFileActivityStore {
-    async fn list_for_requirement(
-        &self,
-        requirement_id: &str,
-    ) -> Result<Vec<Activity>, BoxError> {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Activity>, BoxError> {
         let dir = self.requirement_dir(requirement_id);
         let mut read_dir = match tokio::fs::read_dir(&dir).await {
             Ok(d) => d,
@@ -1004,7 +1008,11 @@ impl DocStore for JsonFileDocStore {
         }
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         if rows.len() > 500 {
-            tracing::warn!(workspace, count = rows.len(), "doc project list exceeded 500-item soft cap");
+            tracing::warn!(
+                workspace,
+                count = rows.len(),
+                "doc project list exceeded 500-item soft cap"
+            );
             rows.truncate(500);
         }
         Ok(rows)

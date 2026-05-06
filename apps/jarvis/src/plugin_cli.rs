@@ -107,19 +107,33 @@ async fn list(args: ListArgs, cfg: Option<&Config>) -> Result<()> {
         return Ok(());
     }
     let empty = Vec::new();
-    let plugins = body.get("plugins").and_then(Value::as_array).unwrap_or(&empty);
+    let plugins = body
+        .get("plugins")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if plugins.is_empty() {
         println!("(no plugins installed — try `jarvis plugin marketplace`)");
         return Ok(());
     }
-    println!("{:<24} {:<10} {:<7} {:<7} DESCRIPTION", "NAME", "VERSION", "SKILLS", "MCP");
+    println!(
+        "{:<24} {:<10} {:<7} {:<7} DESCRIPTION",
+        "NAME", "VERSION", "SKILLS", "MCP"
+    );
     for p in plugins {
         let name = p.get("name").and_then(Value::as_str).unwrap_or("");
         let version = p.get("version").and_then(Value::as_str).unwrap_or("");
         let skills_empty = Vec::new();
-        let skills = p.get("skill_names").and_then(Value::as_array).unwrap_or(&skills_empty).len();
+        let skills = p
+            .get("skill_names")
+            .and_then(Value::as_array)
+            .unwrap_or(&skills_empty)
+            .len();
         let mcp_empty = Vec::new();
-        let mcp = p.get("mcp_prefixes").and_then(Value::as_array).unwrap_or(&mcp_empty).len();
+        let mcp = p
+            .get("mcp_prefixes")
+            .and_then(Value::as_array)
+            .unwrap_or(&mcp_empty)
+            .len();
         let desc = p
             .get("description")
             .and_then(Value::as_str)
@@ -180,14 +194,29 @@ async fn info(args: InfoArgs, cfg: Option<&Config>) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&body)?);
         return Ok(());
     }
-    let name = body.get("name").and_then(Value::as_str).unwrap_or(&args.name);
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(&args.name);
     let version = body.get("version").and_then(Value::as_str).unwrap_or("?");
-    let dir = body.get("install_dir").and_then(Value::as_str).unwrap_or("?");
-    let installed_at = body.get("installed_at").and_then(Value::as_str).unwrap_or("?");
+    let dir = body
+        .get("install_dir")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let installed_at = body
+        .get("installed_at")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
     let skills_empty = Vec::new();
-    let skills = body.get("skill_names").and_then(Value::as_array).unwrap_or(&skills_empty);
+    let skills = body
+        .get("skill_names")
+        .and_then(Value::as_array)
+        .unwrap_or(&skills_empty);
     let mcp_empty = Vec::new();
-    let mcp = body.get("mcp_prefixes").and_then(Value::as_array).unwrap_or(&mcp_empty);
+    let mcp = body
+        .get("mcp_prefixes")
+        .and_then(Value::as_array)
+        .unwrap_or(&mcp_empty);
     println!("name:       {name}");
     println!("version:    {version}");
     println!("install:    {dir}");
@@ -205,7 +234,10 @@ async fn marketplace(args: MarketplaceArgs, cfg: Option<&Config>) -> Result<()> 
         return Ok(());
     }
     let empty = Vec::new();
-    let plugins = body.get("plugins").and_then(Value::as_array).unwrap_or(&empty);
+    let plugins = body
+        .get("plugins")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if plugins.is_empty() {
         println!("(marketplace is empty)");
         return Ok(());

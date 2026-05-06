@@ -8,6 +8,10 @@
 import { useState } from "react";
 import type { ProjectWorkspace } from "../../types/frames";
 import { probeWorkspace, shortenPath, type WorkspaceInfo } from "../../services/workspace";
+import {
+  pickWorkspaceFolder,
+  supportsWorkspaceFolderPicker,
+} from "../../services/folderPicker";
 import { t } from "../../utils/i18n";
 
 interface Props {
@@ -53,6 +57,16 @@ export function ProjectWorkspacesEditor({ value, onChange, readOnly }: Props) {
     onChange([...value, { path: "", name: null }]);
   };
 
+  const addFromPicker = async () => {
+    try {
+      const picked = await pickWorkspaceFolder();
+      if (!picked.path) return;
+      onChange([...value, { path: picked.path, name: null }]);
+    } catch {
+      // User cancelled the system picker.
+    }
+  };
+
   const removeRow = (idx: number) => {
     const next = value.slice();
     next.splice(idx, 1);
@@ -77,13 +91,23 @@ export function ProjectWorkspacesEditor({ value, onChange, readOnly }: Props) {
     try {
       const info = await probeWorkspace(path);
       setProbe(idx, { status: "ok", info });
-    } catch (e: any) {
+    } catch (e: unknown) {
       setProbe(idx, {
         status: "error",
-        error: e?.message ?? String(e),
+        error: e instanceof Error ? e.message : String(e),
       });
     }
   };
+  const browse = async (idx: number) => {
+    try {
+      const picked = await pickWorkspaceFolder();
+      if (!picked.path) return;
+      updateRow(idx, { path: picked.path });
+    } catch {
+      // User cancelled the system picker.
+    }
+  };
+  const browseSupported = supportsWorkspaceFolderPicker();
 
   if (readOnly && value.length === 0) {
     return <p className="project-workspaces-empty">{t("projectWorkspaceNone")}</p>;
@@ -129,6 +153,15 @@ export function ProjectWorkspacesEditor({ value, onChange, readOnly }: Props) {
                     ? t("projectWorkspaceProbing")
                     : t("projectWorkspaceProbe")}
                 </button>
+                {browseSupported ? (
+                  <button
+                    type="button"
+                    className="settings-btn"
+                    onClick={() => void browse(idx)}
+                  >
+                    {t("composerFolderPickerBrowse")}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="settings-btn-danger"
@@ -144,13 +177,24 @@ export function ProjectWorkspacesEditor({ value, onChange, readOnly }: Props) {
         );
       })}
       {!readOnly ? (
-        <button
-          type="button"
-          className="settings-btn project-workspace-add"
-          onClick={addRow}
-        >
-          {t("projectWorkspaceAdd")}
-        </button>
+        <div className="project-workspace-actions">
+          <button
+            type="button"
+            className="settings-btn project-workspace-add"
+            onClick={addRow}
+          >
+            {t("projectWorkspaceAdd")}
+          </button>
+          {browseSupported ? (
+            <button
+              type="button"
+              className="settings-btn project-workspace-browse"
+              onClick={() => void addFromPicker()}
+            >
+              {t("composerFolderPickerBrowse")}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

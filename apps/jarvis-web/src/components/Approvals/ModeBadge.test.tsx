@@ -23,6 +23,7 @@ vi.mock("../../services/socket", () => ({
 const originalConfirm = window.confirm;
 beforeEach(() => {
   sendMock.mockClear();
+  useAppStore.getState().setLang("en");
 });
 afterEach(() => {
   window.confirm = originalConfirm;
@@ -45,6 +46,15 @@ describe("ModeBadge", () => {
     fireEvent.click(planOption);
     expect(sendMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenCalledWith({ type: "set_mode", mode: "plan" });
+  });
+
+  it("shows English names in parentheses for the Chinese picker list", () => {
+    useAppStore.getState().setLang("zh");
+    useAppStore.getState().setPermissionMode("ask");
+    render(<ModeBadge />);
+    fireEvent.click(screen.getByRole("button", { name: /每次询问/ }));
+    expect(screen.getByRole("menuitemradio", { name: /每次询问（Ask）/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /自动接受编辑（Accept edits）/ })).toBeInTheDocument();
   });
 
   it("bypass click confirms before sending; accept ships set_mode", () => {

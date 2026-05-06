@@ -83,10 +83,7 @@ struct ResolvedWindow {
 #[allow(clippy::result_large_err)]
 fn resolve_window(q: &OverviewQuery) -> Result<ResolvedWindow, Response> {
     let as_of = Utc::now();
-    let window_days = q
-        .window_days
-        .unwrap_or(DEFAULT_WINDOW_DAYS)
-        .clamp(1, 365);
+    let window_days = q.window_days.unwrap_or(DEFAULT_WINDOW_DAYS).clamp(1, 365);
     let since = match q.since.as_deref() {
         Some(raw) => DateTime::parse_from_rfc3339(raw)
             .map(|dt| dt.with_timezone(&Utc))
@@ -182,8 +179,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
         }
     };
 
-    let requirements: Option<Vec<Requirement>> = match (state.requirements.as_ref(), &projects)
-    {
+    let requirements: Option<Vec<Requirement>> = match (state.requirements.as_ref(), &projects) {
         (Some(req_store), Some(projs)) => {
             let mut all = Vec::new();
             for p in projs {
@@ -231,9 +227,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
         .filter(|r| r.status == RequirementRunStatus::Running)
         .map(|r| {
             let req = req_index.get(&r.requirement_id);
-            let proj = req
-                .and_then(|rq| proj_index.get(&rq.project_id))
-                .copied();
+            let proj = req.and_then(|rq| proj_index.get(&rq.project_id)).copied();
             let started = parse_ts(&r.started_at);
             let duration_ms = started.map(|s| (window.as_of - s).num_milliseconds().max(0));
             json!({
@@ -330,7 +324,11 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
 
     // recent_failures, newest-first, top 10
     recent_failures.sort_by(|a, b| {
-        let key = |r: &RequirementRun| r.finished_at.clone().unwrap_or_else(|| r.started_at.clone());
+        let key = |r: &RequirementRun| {
+            r.finished_at
+                .clone()
+                .unwrap_or_else(|| r.started_at.clone())
+        };
         key(b).cmp(&key(a))
     });
     let recent_failures: Vec<Value> = recent_failures
@@ -338,9 +336,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
         .take(10)
         .map(|r| {
             let req = req_index.get(&r.requirement_id);
-            let proj = req
-                .and_then(|rq| proj_index.get(&rq.project_id))
-                .copied();
+            let proj = req.and_then(|rq| proj_index.get(&rq.project_id)).copied();
             json!({
                 "id": r.id,
                 "requirement_id": r.requirement_id,
@@ -448,9 +444,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
                         .map(|u| u > ts.as_str())
                         .unwrap_or(false);
                     if !unblocked_after {
-                        let project_name = proj_index
-                            .get(&r.project_id)
-                            .map(|p| p.name.as_str());
+                        let project_name = proj_index.get(&r.project_id).map(|p| p.name.as_str());
                         let reason = body
                             .get("reason")
                             .and_then(Value::as_str)
@@ -466,7 +460,11 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
                     }
                 }
             }
-            blocked.sort_by(|a, b| b["blocked_since"].as_str().cmp(&a["blocked_since"].as_str()));
+            blocked.sort_by(|a, b| {
+                b["blocked_since"]
+                    .as_str()
+                    .cmp(&a["blocked_since"].as_str())
+            });
             (Some(blocked), truncated)
         }
         _ => {
@@ -598,8 +596,7 @@ async fn get_quality(State(state): State<AppState>, Query(q): Query<OverviewQuer
             })
         })
         .collect();
-    verification_pass_rate_by_day
-        .sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
+    verification_pass_rate_by_day.sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
 
     Json(json!({
         "as_of": window.as_of.to_rfc3339(),

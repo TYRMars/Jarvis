@@ -223,8 +223,8 @@ pub async fn register_builtins(
     // when `claude --version` returns the Claude Code banner; if
     // the binary isn't on PATH we log at INFO and skip — startup
     // continues uninterrupted.
-    let claude_bin = std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_BIN")
-        .unwrap_or_else(|_| "claude".into());
+    let claude_bin =
+        std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_BIN").unwrap_or_else(|_| "claude".into());
     match claude_code::probe(&claude_bin).await {
         Ok(()) => {
             let cc_cfg = claude_code::ClaudeCodeConfig {

@@ -4,28 +4,20 @@
 
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../store/appStore";
-import { sendFrame } from "../../services/socket";
+import { newConversation } from "../../services/conversations";
 import { t } from "../../utils/i18n";
 
 export function NewConvoButton() {
-  const persistEnabled = useAppStore((s) => s.persistEnabled);
   const activeFilter = useAppStore((s) => s.activeProjectFilter);
   const navigate = useNavigate();
 
   const onClick = () => {
     const store = useAppStore.getState();
     void navigate("/");
-    if (store.activeId) store.saveConversationSurface(store.activeId);
-    if (!store.persistEnabled) {
-      if (sendFrame({ type: "reset" })) {
-        store.clearMessages();
-        store.setActiveId(null);
-      }
-      return;
-    }
-    store.clearMessages();
-    store.setActiveId(null);
-    store.setDraftProjectId?.(activeFilter ?? store.draftProjectId ?? null);
+    newConversation({
+      projectId: activeFilter ?? store.draftProjectId ?? null,
+      workspacePath: store.draftWorkspacePath ?? null,
+    });
     window.setTimeout(() => document.getElementById("input")?.focus(), 0);
   };
 
@@ -35,7 +27,6 @@ export function NewConvoButton() {
       type="button"
       className="nav-item"
       title={t("newConversation")}
-      disabled={!persistEnabled}
       onClick={onClick}
     >
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

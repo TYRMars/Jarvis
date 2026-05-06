@@ -4,7 +4,6 @@ import { t } from "../../utils/i18n";
 import {
   approveRequirement,
   createRequirement,
-  linkRequirementConversation,
   rejectRequirement,
   updateRequirement,
 } from "../../services/requirements";
@@ -26,7 +25,10 @@ import { columnsFor, StatusGlyph, type BoardColumn } from "./columns";
 import { ColumnEditor } from "./ColumnEditor";
 import { MarkdownLite } from "./MarkdownLite";
 import { RequirementDetail } from "./RequirementDetail";
+import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
+import { Modal } from "../ui";
+import { parseRoadmapDescription } from "./roadmapDescription";
 
 // The kanban board for a single project: header row, optional inline
 // "create requirement" panel, four columns (one per RequirementStatus).
@@ -35,7 +37,6 @@ export function ProjectBoard({
   project,
   requirements,
   query,
-  activeConversationId,
   onChanged,
   onOpenConversation,
 }: {
@@ -45,7 +46,6 @@ export function ProjectBoard({
   /// requirements whose title or description don't match the query
   /// are hidden from both the kanban columns and the triage strip.
   query?: string;
-  activeConversationId: string | null;
   onChanged: () => void;
   onOpenConversation: (id: string) => void;
 }) {
@@ -57,6 +57,7 @@ export function ProjectBoard({
   const [creatingForStatus, setCreatingForStatus] =
     useState<RequirementStatus | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingColumns, setEditingColumns] = useState(false);
 
@@ -71,6 +72,10 @@ export function ProjectBoard({
   );
   const colIds = useMemo(() => new Set(cols.map((c) => c.id)), [cols]);
   const firstColId = cols[0]?.id ?? "backlog";
+  const inProgressStatus = useMemo(
+    () => cols.find((c) => c.kind === "in_progress" || c.id === "in_progress")?.id ?? null,
+    [cols],
+  );
   const selected = selectedId
     ? requirements.find((r) => r.id === selectedId) ?? null
     : null;
@@ -154,7 +159,54 @@ export function ProjectBoard({
         <div className="project-board-head-actions">
           <button
             type="button"
-            className="settings-btn"
+            className="projects-empty-btn project-board-primary-action"
+            onClick={() => setCreatingForStatus(firstColId)}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+            <span>{t("boardNewReq")}</span>
+          </button>
+          <span className="project-board-action-separator" aria-hidden="true" />
+          <button
+            type="button"
+            className="settings-btn project-board-columns-btn"
+            onClick={() => setMemoryOpen(true)}
+            aria-label={t("projectMemoryTitle")}
+            title={t("projectMemoryTitle")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+              <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15z" />
+              <path d="M8 7h8" />
+              <path d="M8 11h6" />
+            </svg>
+            <span>{t("projectMemoryButton")}</span>
+          </button>
+          <button
+            type="button"
+            className="settings-btn project-board-columns-btn"
             onClick={() => setEditingColumns(true)}
             aria-label={t("columnEditorOpenBtn")}
             title={t("columnEditorOpenBtn")}
@@ -174,11 +226,11 @@ export function ProjectBoard({
               <rect x="10" y="4" width="5" height="16" rx="1" />
               <rect x="17" y="4" width="4" height="10" rx="1" />
             </svg>
-            <span>{t("columnEditorOpenBtn")}</span>
+            <span>{t("boardColumnSettings")}</span>
           </button>
           <button
             type="button"
-            className="settings-btn project-board-head-gear"
+            className="settings-btn project-board-columns-btn"
             onClick={() => setSettingsOpen(true)}
             aria-label={t("projectSettingsTitle")}
             title={t("projectSettingsTitle")}
@@ -197,30 +249,15 @@ export function ProjectBoard({
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
-          </button>
-          <button
-            type="button"
-            className="projects-empty-btn"
-            onClick={() => setCreatingForStatus(firstColId)}
-          >
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
-            <span>{t("boardNewReq")}</span>
+            <span>{t("projectSettingsTitle")}</span>
           </button>
         </div>
       </div>
+      <ProjectMemoryPanel
+        project={project}
+        open={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
+      />
       <ProjectSettingsPanel
         project={project}
         open={settingsOpen}
@@ -248,20 +285,9 @@ export function ProjectBoard({
         />
       )}
 
-      {/* View toolbar — Multica-style tabs (Board / Filter / Display)
-          on the left, total requirement count on the right. Filter
-          and Display are placeholders (disabled until we have the
-          query-builder + density toggles). The active "Board" tab
-          carries no behaviour today either, but the visual frame
-          tells operators "more views are coming here". */}
       <div className="project-board-toolbar">
-        <div className="project-board-tabs" role="tablist" aria-label={t("boardViewBoard")}>
-          <button
-            type="button"
-            role="tab"
-            aria-selected="true"
-            className="project-board-tab active"
-          >
+        <div className="project-board-view-label" aria-label={t("boardViewBoard")}>
+          <span className="project-board-tab active">
             <svg
               width="13"
               height="13"
@@ -278,59 +304,14 @@ export function ProjectBoard({
               <rect x="19" y="4" width="2" height="6" rx="1" />
             </svg>
             <span>{t("boardViewBoard")}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            disabled
-            className="project-board-tab"
-            title="(coming soon)"
-          >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M4 6h16" />
-              <path d="M7 12h10" />
-              <path d="M10 18h4" />
-            </svg>
-            <span>{t("boardViewFilter")}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            disabled
-            className="project-board-tab"
-            title="(coming soon)"
-          >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19 12c0 1.5-1 2.5-2 3l1 2-3 1-1-2c-.5.2-1 .2-1.5 0l-1 2-3-1 1-2c-1-.5-2-1.5-2-3s1-2.5 2-3l-1-2 3-1 1 2c.5-.2 1-.2 1.5 0l1-2 3 1-1 2c1 .5 2 1.5 2 3z" />
-            </svg>
-            <span>{t("boardViewDisplay")}</span>
-          </button>
+          </span>
         </div>
-        <AutoModeToggle />
-        <span className="project-board-count tabular-nums">
-          {t("boardCount", boardRequirements.length)}
-        </span>
+        <div className="project-board-toolbar-meta">
+          <AutoModeToggle />
+          <span className="project-board-count tabular-nums">
+            {t("boardCount", boardRequirements.length)}
+          </span>
+        </div>
       </div>
 
       {triageRequirements.length > 0 && (
@@ -404,10 +385,10 @@ export function ProjectBoard({
                       key={req.id}
                       requirement={req}
                       columns={cols}
-                      activeConversationId={activeConversationId}
+                      inProgressStatus={inProgressStatus}
                       onChanged={onChanged}
-                      onOpenConversation={onOpenConversation}
                       onOpenDetail={() => setSelectedId(req.id)}
+                      onOpenConversation={onOpenConversation}
                     />
                   ))
                 )}
@@ -420,7 +401,6 @@ export function ProjectBoard({
       <RequirementDetail
         requirement={selected}
         columns={cols}
-        activeConversationId={activeConversationId}
         onClose={() => setSelectedId(null)}
         onChanged={onChanged}
         onOpenConversation={onOpenConversation}
@@ -480,59 +460,67 @@ function RequirementCreatePanel({
   };
 
   return (
-    <section className="requirement-create-panel">
-      <div className="requirement-create-target text-xs text-soft mb-1">
-        → {targetLabel}
-      </div>
-      <label>
-        <span>{t("reqCreateTitle")}</span>
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          autoFocus
-        />
-      </label>
-      <label>
-        <span>{t("reqCreateDesc")}</span>
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          rows={3}
-        />
-      </label>
-      <div className="projects-create-actions">
-        <button type="button" className="settings-btn" onClick={onDone}>
-          {t("reqCreateCancel")}
-        </button>
-        <button
-          type="button"
-          className="projects-new-btn"
-          disabled={!title.trim()}
-          onClick={submit}
-        >
-          {t("reqCreateSubmit")}
-        </button>
-      </div>
-    </section>
+    <Modal
+      open
+      onClose={onDone}
+      title={t("reqCreateTitle")}
+      size="md"
+    >
+      <form
+        className="requirement-create-panel"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <div className="requirement-create-target text-xs text-soft mb-1">
+          → {targetLabel}
+        </div>
+        <label>
+          <span>{t("reqCreateTitle")}</span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            autoFocus
+          />
+        </label>
+        <label>
+          <span>{t("reqCreateDesc")}</span>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+          />
+        </label>
+        <div className="projects-create-actions">
+          <button type="button" className="settings-btn" onClick={onDone}>
+            {t("reqCreateCancel")}
+          </button>
+          <button type="submit" className="projects-new-btn" disabled={!title.trim()}>
+            {t("reqCreateSubmit")}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
 function RequirementCard({
   requirement,
   columns,
-  activeConversationId,
+  inProgressStatus,
   onChanged,
-  onOpenConversation,
   onOpenDetail,
+  onOpenConversation,
 }: {
   requirement: Requirement;
   columns: BoardColumn[];
-  activeConversationId: string | null;
+  inProgressStatus: RequirementStatus | null;
   onChanged: () => void;
-  onOpenConversation: (id: string) => void;
   onOpenDetail: () => void;
+  onOpenConversation: (id: string) => void;
 }) {
-  const desc = requirement.description?.trim() ?? "";
+  const desc = parseRoadmapDescription(requirement.description).text;
   const sessions = requirement.conversation_ids.length;
   // Short, monospace-friendly handle for the card head — picks the
   // first 6 hex chars of the UUID so users have something stable to
@@ -540,22 +528,46 @@ function RequirementCard({
   // ids would be nicer (Multica's `MUL-17` style) but those need
   // schema work; UUID slicing is good enough for now.
   const idShort = requirement.id.replace(/-/g, "").slice(0, 6).toUpperCase();
-  const canLink =
-    !!activeConversationId &&
-    !requirement.conversation_ids.includes(activeConversationId);
   const statusCol = columns.find((c) => c.id === requirement.status);
   const statusLabel = statusCol ? statusCol.label : requirement.status;
+  const todos = requirement.todos ?? [];
+  const openTodos = todos.filter(
+    (todo) => !["passed", "skipped"].includes(todo.status),
+  ).length;
   // Pill class still uses kind so the legacy status-* CSS rules apply
   // for built-in columns; custom columns fall through to a neutral
   // class. Without this, a renamed Backlog (`kind: "backlog"`) keeps
   // its dashed-circle pill, while a brand-new "Blocked" custom column
   // gets a token-coloured neutral chip.
   const pillKind = statusCol?.kind ?? null;
+  const latestConversationId = requirement.conversation_ids[0] ?? null;
+  const isBacklog = statusCol?.kind === "backlog" || requirement.status === "backlog";
+  const isInProgress =
+    statusCol?.kind === "in_progress" || requirement.status === "in_progress";
+  const isDone = statusCol?.kind === "done" || requirement.status === "done";
+  const canStart =
+    isBacklog && Boolean(inProgressStatus) && !requirement.id.startsWith("req-local-");
+  const canOpenConversation =
+    Boolean(latestConversationId) && (isInProgress || isDone);
+  const primaryActionLabel = canStart
+    ? t("reqStart")
+    : isInProgress && latestConversationId
+      ? t("reqContinue")
+      : isDone && latestConversationId
+        ? t("reqViewResult")
+        : t("reqOpen");
 
-  const linkCurrent = () => {
-    if (!activeConversationId) return;
-    linkRequirementConversation(requirement.id, activeConversationId);
-    onChanged();
+  const handlePrimaryAction = () => {
+    if (canStart && inProgressStatus) {
+      updateRequirement(requirement.id, { status: inProgressStatus });
+      onChanged();
+      return;
+    }
+    if (canOpenConversation && latestConversationId) {
+      onOpenConversation(latestConversationId);
+      return;
+    }
+    onOpenDetail();
   };
 
   // dnd-kit hook: gives us a ref + drag listeners + transform offset
@@ -586,6 +598,13 @@ function RequirementCard({
         "requirement-card has-desc" + (isDragging ? " dragging" : "")
       }
       onClick={onCardClick}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        if ((e.target as HTMLElement).closest("button, a")) return;
+        e.preventDefault();
+        onOpenDetail();
+      }}
+      aria-label={t("reqOpenDetailAria", requirement.title)}
       {...attributes}
       {...listeners}
     >
@@ -595,6 +614,17 @@ function RequirementCard({
         <div className="requirement-card-desc">
           <MarkdownLite text={desc} />
           <div className="requirement-card-fade" aria-hidden="true" />
+        </div>
+      )}
+      {todos.length > 0 && (
+        <div
+          className="requirement-card-todos"
+          title={`${openTodos}/${todos.length}`}
+        >
+          <span className="requirement-card-todos-dot" aria-hidden="true" />
+          <span className="tabular-nums">
+            {openTodos}/{todos.length}
+          </span>
         </div>
       )}
       {/* Footer migrated to Tailwind utilities — `text-soft` / `bg-panel`
@@ -621,30 +651,20 @@ function RequirementCard({
           </span>
         )}
         <span className="requirement-card-spacer flex-1" />
-        {requirement.conversation_ids[0] && (
+        <span className="requirement-card-action-hint">{t("reqClickHint")}</span>
+        <div className="requirement-card-actions" aria-label={t("reqCardActions")}>
           <button
             type="button"
             className="requirement-link-btn"
             onClick={(e) => {
               e.stopPropagation();
-              onOpenConversation(requirement.conversation_ids[0]);
+              handlePrimaryAction();
             }}
+            title={canStart ? t("reqStartTitle") : undefined}
           >
-            {t("reqOpen")}
+            {primaryActionLabel}
           </button>
-        )}
-        {canLink && (
-          <button
-            type="button"
-            className="requirement-link-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              linkCurrent();
-            }}
-          >
-            {t("reqLink")}
-          </button>
-        )}
+        </div>
       </div>
     </article>
   );

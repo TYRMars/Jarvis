@@ -8,9 +8,9 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Project,
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    DocDraft, DocEvent, DocKind, DocProject, DocStore, ProjectStore, Requirement, RequirementEvent,
+    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
+    DocEvent, DocKind, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
     RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStatus, RequirementStore,
     TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
@@ -129,11 +129,9 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_requirements_project ON requirements(project_id)",
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_requirements_project ON requirements(project_id)")
+        .execute(pool)
+        .await?;
     // Phase 3.6: add `assignee_id` to existing tables.
     sqlx::query("ALTER TABLE requirements ADD COLUMN IF NOT EXISTS assignee_id TEXT")
         .execute(pool)
@@ -216,11 +214,9 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     )
     .execute(pool)
     .await?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_doc_projects_workspace ON doc_projects(workspace)",
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_doc_projects_workspace ON doc_projects(workspace)")
+        .execute(pool)
+        .await?;
     // Forward-compat: add the three-pane columns to databases that
     // pre-date them. Postgres supports `ADD COLUMN IF NOT EXISTS`
     // since 9.6 — no probe needed. We mirror the existing Project
@@ -396,8 +392,7 @@ impl PostgresProjectStore {
 impl ProjectStore for PostgresProjectStore {
     async fn save(&self, project: &Project) -> Result<(), BoxError> {
         let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
-        let workspaces =
-            serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
+        let workspaces = serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
         sqlx::query(
             r#"
             INSERT INTO projects
@@ -867,10 +862,7 @@ impl RequirementRunStore for PostgresRequirementRunStore {
         .await
         .map_err(StoreError::from)?;
         if rows.len() == 200 {
-            tracing::warn!(
-                requirement_id,
-                "requirement run list hit 200-item soft cap"
-            );
+            tracing::warn!(requirement_id, "requirement run list hit 200-item soft cap");
         }
         rows.into_iter()
             .map(|(payload,)| {
@@ -1029,7 +1021,9 @@ impl AgentProfileStore for PostgresAgentProfileStore {
             .await
             .map_err(StoreError::from)?;
         if res.rows_affected() > 0 {
-            let _ = self.tx.send(AgentProfileEvent::Deleted { id: id.to_string() });
+            let _ = self
+                .tx
+                .send(AgentProfileEvent::Deleted { id: id.to_string() });
             Ok(true)
         } else {
             Ok(false)
@@ -1057,10 +1051,7 @@ impl PostgresActivityStore {
 
 #[async_trait]
 impl ActivityStore for PostgresActivityStore {
-    async fn list_for_requirement(
-        &self,
-        requirement_id: &str,
-    ) -> Result<Vec<Activity>, BoxError> {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Activity>, BoxError> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"SELECT payload
                  FROM activities
@@ -1077,8 +1068,7 @@ impl ActivityStore for PostgresActivityStore {
         }
         rows.into_iter()
             .map(|(payload,)| {
-                serde_json::from_str::<Activity>(&payload)
-                    .map_err(|e| -> BoxError { Box::new(e) })
+                serde_json::from_str::<Activity>(&payload).map_err(|e| -> BoxError { Box::new(e) })
             })
             .collect()
     }

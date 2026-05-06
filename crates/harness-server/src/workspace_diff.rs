@@ -174,7 +174,6 @@ fn safe_relative_path(path: &str) -> Result<&str, &'static str> {
     Ok(path)
 }
 
-
 /// Resolve the workspace root for one request. The optional `override_root`
 /// (forwarded by the web UI as `?root=<path>` or in the request body) wins
 /// over `AppState::workspace_root` so the user can flip the active workspace
@@ -184,10 +183,7 @@ fn safe_relative_path(path: &str) -> Result<&str, &'static str> {
 /// be absolute, NUL/newline-free, and resolve via `canonicalize` to an
 /// existing directory; anything else returns `400`.
 #[allow(clippy::result_large_err)]
-fn resolve_workspace(
-    state: &AppState,
-    override_root: Option<&str>,
-) -> Result<PathBuf, Response> {
+fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<PathBuf, Response> {
     if let Some(raw) = override_root {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -199,9 +195,8 @@ fn resolve_workspace(
         if !std::path::Path::new(trimmed).is_absolute() {
             return Err(bad_request("`root` must be an absolute path"));
         }
-        let canonical = std::fs::canonicalize(trimmed).map_err(|e| {
-            bad_request(&format!("`root` does not resolve: {e}"))
-        })?;
+        let canonical = std::fs::canonicalize(trimmed)
+            .map_err(|e| bad_request(&format!("`root` does not resolve: {e}")))?;
         if !canonical.is_dir() {
             return Err(bad_request("`root` is not a directory"));
         }
@@ -243,10 +238,7 @@ async fn run_git(root: &std::path::Path, args: &[&str]) -> Result<String, String
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let fut = async {
-        let out = cmd
-            .output()
-            .await
-            .map_err(|e| format!("spawn git: {e}"))?;
+        let out = cmd.output().await.map_err(|e| format!("spawn git: {e}"))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
             return Err(if stderr.is_empty() {
@@ -268,19 +260,19 @@ async fn run_git(root: &std::path::Path, args: &[&str]) -> Result<String, String
 /// instead of 500ing. This makes fresh repos / detached-HEAD CI
 /// boxes degrade gracefully.
 async fn base_exists(root: &std::path::Path, base: &str) -> bool {
-    run_git(root, &["rev-parse", "--verify", &format!("{base}^{{commit}}")])
-        .await
-        .is_ok()
+    run_git(
+        root,
+        &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
+    )
+    .await
+    .is_ok()
 }
 
 // ----------------------------------------------------------------------
 // GET /v1/workspace/diff
 // ----------------------------------------------------------------------
 
-async fn get_workspace_diff(
-    State(state): State<AppState>,
-    Query(q): Query<DiffQuery>,
-) -> Response {
+async fn get_workspace_diff(State(state): State<AppState>, Query(q): Query<DiffQuery>) -> Response {
     let root = match resolve_workspace(&state, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
@@ -340,8 +332,7 @@ async fn get_workspace_diff(
 
     // Per-file numstat: "<added>\t<removed>\t<path>". Binary diffs
     // come back as "-\t-\t<path>" — we surface them with 0/0 stats.
-    let numstat_raw = match run_git(root, &["diff", "--numstat", &format!("{base}...HEAD")]).await
-    {
+    let numstat_raw = match run_git(root, &["diff", "--numstat", &format!("{base}...HEAD")]).await {
         Ok(s) => s,
         Err(e) => return server_error(e),
     };
@@ -350,12 +341,9 @@ async fn get_workspace_diff(
     // Per-file name-status to fill in `M` / `A` / `D` / `R...`.
     // Missing-on-error is non-fatal — we keep the numstat-derived
     // default of `M` and skip the rename detail.
-    let name_status = run_git(
-        root,
-        &["diff", "--name-status", &format!("{base}...HEAD")],
-    )
-    .await
-    .unwrap_or_default();
+    let name_status = run_git(root, &["diff", "--name-status", &format!("{base}...HEAD")])
+        .await
+        .unwrap_or_default();
     apply_name_status(&mut files, &name_status);
 
     let stat = aggregate_stat(&files);
@@ -395,8 +383,16 @@ fn parse_numstat(raw: &str) -> Vec<FileEntry> {
             continue;
         }
         // `-\t-\t<path>` for binary diffs.
-        let added: u64 = if added == "-" { 0 } else { added.parse().unwrap_or(0) };
-        let removed: u64 = if removed == "-" { 0 } else { removed.parse().unwrap_or(0) };
+        let added: u64 = if added == "-" {
+            0
+        } else {
+            added.parse().unwrap_or(0)
+        };
+        let removed: u64 = if removed == "-" {
+            0
+        } else {
+            removed.parse().unwrap_or(0)
+        };
 
         // Renames in numstat come as `old => new` or with brace
         // expansion `dir/{old => new}`. Normalise to the new path
@@ -508,12 +504,7 @@ async fn uncommitted_summary(root: &std::path::Path) -> Value {
     // Untracked files — `git diff` ignores them, so list them
     // separately and synthesise +<line-count> / `-0` stats so the
     // UI can show them with sensible counts.
-    if let Ok(raw) = run_git(
-        root,
-        &["ls-files", "--others", "--exclude-standard"],
-    )
-    .await
-    {
+    if let Ok(raw) = run_git(root, &["ls-files", "--others", "--exclude-standard"]).await {
         for line in raw.lines() {
             let path = line.trim();
             if path.is_empty() || by_path.contains_key(path) {
@@ -597,20 +588,12 @@ async fn get_workspace_diff_file(
             // surfaces as Err(stderr) in our wrapper. Empty
             // string is a fine fallback; clients already render
             // "(empty diff)" gracefully.
-            _ => run_git(
-                root,
-                &["diff", "--no-index", "--", "/dev/null", path],
-            )
-            .await
-            .unwrap_or_default(),
+            _ => run_git(root, &["diff", "--no-index", "--", "/dev/null", path])
+                .await
+                .unwrap_or_default(),
         }
     } else {
-        match run_git(
-            root,
-            &["diff", &format!("{base}...HEAD"), "--", path],
-        )
-        .await
-        {
+        match run_git(root, &["diff", &format!("{base}...HEAD"), "--", path]).await {
             Ok(s) => s,
             Err(e) => return server_error(e),
         }
@@ -755,10 +738,7 @@ async fn post_workspace_commit(
 // GET /v1/workspace/pr/preview
 // ----------------------------------------------------------------------
 
-async fn get_pr_preview(
-    State(state): State<AppState>,
-    Query(q): Query<DiffQuery>,
-) -> Response {
+async fn get_pr_preview(State(state): State<AppState>, Query(q): Query<DiffQuery>) -> Response {
     let root = match resolve_workspace(&state, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
@@ -796,19 +776,11 @@ async fn get_pr_preview(
     .into_response()
 }
 
-async fn best_pr_title(
-    root: &std::path::Path,
-    base: &str,
-    branch: Option<&str>,
-) -> String {
+async fn best_pr_title(root: &std::path::Path, base: &str, branch: Option<&str>) -> String {
     // 1. Single commit on the branch → use its subject verbatim.
     if let Ok(out) = run_git(
         root,
-        &[
-            "log",
-            "--pretty=format:%s",
-            &format!("{base}..HEAD"),
-        ],
+        &["log", "--pretty=format:%s", &format!("{base}..HEAD")],
     )
     .await
     {
@@ -905,10 +877,7 @@ fn default_true() -> bool {
     true
 }
 
-async fn post_create_pr(
-    State(state): State<AppState>,
-    Json(body): Json<CreatePrBody>,
-) -> Response {
+async fn post_create_pr(State(state): State<AppState>, Json(body): Json<CreatePrBody>) -> Response {
     let root = match resolve_workspace(&state, body.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
@@ -1016,10 +985,7 @@ async fn run_git_with_timeout(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let fut = async {
-        let out = cmd
-            .output()
-            .await
-            .map_err(|e| format!("spawn git: {e}"))?;
+        let out = cmd.output().await.map_err(|e| format!("spawn git: {e}"))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
             return Err(if stderr.is_empty() {
@@ -1050,10 +1016,7 @@ async fn run_gh_with_timeout(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let fut = async {
-        let out = cmd
-            .output()
-            .await
-            .map_err(|e| format!("spawn gh: {e}"))?;
+        let out = cmd.output().await.map_err(|e| format!("spawn gh: {e}"))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
             return Err(if stderr.is_empty() {

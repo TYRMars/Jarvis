@@ -42,6 +42,8 @@ use std::sync::Arc;
 use harness_core::{BoxError, Conversation, Message, ProjectStore};
 use tracing::warn;
 
+use crate::project_memory::{load_project_memory_prompt, ProjectMemoryConfig};
+
 /// Outcome of [`materialise`]: the prepared conversation plus the
 /// information needed by [`strip_project_block`] to undo the
 /// injection on the way out.
@@ -63,6 +65,7 @@ pub(crate) struct PreparedConversation {
 /// persisting the agent's output.
 pub(crate) async fn materialise(
     project_store: Option<&Arc<dyn ProjectStore>>,
+    project_memory: Option<&ProjectMemoryConfig>,
     conv: Conversation,
     project_id: Option<&str>,
 ) -> Result<PreparedConversation, BoxError> {
@@ -87,21 +90,31 @@ pub(crate) async fn materialise(
     let project = match store.load(pid).await? {
         Some(p) if !p.archived => p,
         Some(_) => {
-            warn!(project_id = pid, "bound project is archived; skipping injection");
+            warn!(
+                project_id = pid,
+                "bound project is archived; skipping injection"
+            );
             return Ok(PreparedConversation {
                 conversation: conv,
                 injected_at: None,
             });
         }
         None => {
-            warn!(project_id = pid, "bound project no longer exists; skipping injection");
+            warn!(
+                project_id = pid,
+                "bound project no longer exists; skipping injection"
+            );
             return Ok(PreparedConversation {
                 conversation: conv,
                 injected_at: None,
             });
         }
     };
-    let block = render_project_block(&project);
+    let mut block = render_project_block(&project);
+    if let Some(memory) = project_memory.and_then(|cfg| load_project_memory_prompt(cfg, &project)) {
+        block.push_str("\n\n");
+        block.push_str(&memory);
+    }
     let mut messages = conv.messages;
     let pos = leading_system_count(&messages);
     messages.insert(pos, Message::system(block));
@@ -248,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn no_project_id_is_noop() {
         let conv = Conversation::new();
-        let out = materialise(None, conv.clone(), None).await.unwrap();
+        let out = materialise(None, None, conv.clone(), None).await.unwrap();
         assert!(out.injected_at.is_none());
         assert_eq!(out.conversation.messages.len(), 0);
     }
@@ -256,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn missing_store_warns_and_passes_through() {
         let conv = Conversation::new();
-        let out = materialise(None, conv, Some("p-x")).await.unwrap();
+        let out = materialise(None, None, conv, Some("p-x")).await.unwrap();
         assert!(out.injected_at.is_none());
     }
 
@@ -272,7 +285,7 @@ mod tests {
         conv.push(Message::system("base prompt"));
         conv.push(Message::user("hi"));
 
-        let out = materialise(Some(&store_arc), conv, Some(&pid))
+        let out = materialise(Some(&store_arc), None, conv, Some(&pid))
             .await
             .unwrap();
         assert_eq!(out.injected_at, Some(1));
@@ -306,7 +319,7 @@ mod tests {
         let store_arc: Arc<dyn ProjectStore> = Arc::new(store);
 
         let conv = Conversation::new();
-        let out = materialise(Some(&store_arc), conv, Some(&pid))
+        let out = materialise(Some(&store_arc), None, conv, Some(&pid))
             .await
             .unwrap();
         let Message::System { content, .. } = &out.conversation.messages[0] else {
@@ -336,7 +349,7 @@ mod tests {
         let store_arc: Arc<dyn ProjectStore> = Arc::new(store);
 
         let conv = Conversation::new();
-        let out = materialise(Some(&store_arc), conv, Some(&pid))
+        let out = materialise(Some(&store_arc), None, conv, Some(&pid))
             .await
             .unwrap();
         let Message::System { content, .. } = &out.conversation.messages[0] else {
@@ -360,11 +373,14 @@ mod tests {
         let mut conv = Conversation::new();
         conv.push(Message::user("hi"));
 
-        let out = materialise(Some(&store_arc), conv, Some(&pid))
+        let out = materialise(Some(&store_arc), None, conv, Some(&pid))
             .await
             .unwrap();
         assert_eq!(out.injected_at, Some(0));
-        assert!(matches!(out.conversation.messages[0], Message::System { .. }));
+        assert!(matches!(
+            out.conversation.messages[0],
+            Message::System { .. }
+        ));
     }
 
     #[tokio::test]
@@ -377,7 +393,7 @@ mod tests {
         let store_arc: Arc<dyn ProjectStore> = Arc::new(store);
 
         let conv = Conversation::new();
-        let out = materialise(Some(&store_arc), conv, Some(&pid))
+        let out = materialise(Some(&store_arc), None, conv, Some(&pid))
             .await
             .unwrap();
         assert!(out.injected_at.is_none());

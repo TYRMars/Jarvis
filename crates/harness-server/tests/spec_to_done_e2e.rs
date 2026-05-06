@@ -181,7 +181,11 @@ async fn spec_to_done_full_journey() {
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let items = json_body(resp).await["items"].as_array().unwrap().clone();
-    assert_eq!(items.len(), 2, "synthetic `proposed` filter matches both proposed_by_*");
+    assert_eq!(
+        items.len(),
+        2,
+        "synthetic `proposed` filter matches both proposed_by_*"
+    );
 
     let resp = get(
         &app,
@@ -235,7 +239,11 @@ async fn spec_to_done_full_journey() {
         json!({"reason": ""}),
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "blank reason must 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "blank reason must 400"
+    );
 
     let resp = post(
         &app,
@@ -250,15 +258,12 @@ async fn spec_to_done_full_journey() {
     assert_eq!(body["reason"], "out of scope for v1");
 
     // The rejected reason landed on the (now-orphan) activity timeline.
-    let resp = get(
-        &app,
-        &format!("/v1/requirements/{req_scan_id}/activities"),
-    )
-    .await;
+    let resp = get(&app, &format!("/v1/requirements/{req_scan_id}/activities")).await;
     let acts = json_body(resp).await["items"].as_array().unwrap().clone();
     assert!(
-        acts.iter()
-            .any(|a| a["body"]["kind"] == "rejected" && a["body"]["reason"] == "out of scope for v1"),
+        acts.iter().any(
+            |a| a["body"]["kind"] == "rejected" && a["body"]["reason"] == "out of scope for v1"
+        ),
         "rejection reason must be on the timeline; got {acts:?}"
     );
 
@@ -391,7 +396,15 @@ async fn verify_fail_does_not_advance_terminal_to_completed() {
     let run_id = runs_body["run"]["id"].as_str().unwrap().to_string();
 
     // `false` exits 1 → verification fails → run.status flips Failed.
-    let body = json_body(post(&app, &format!("/v1/runs/{run_id}/verify"), json!({"commands":["false"]})).await).await;
+    let body = json_body(
+        post(
+            &app,
+            &format!("/v1/runs/{run_id}/verify"),
+            json!({"commands":["false"]}),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(body["verification"]["status"], "failed");
     assert_eq!(body["status"], "failed");
 }
