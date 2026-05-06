@@ -109,7 +109,13 @@ jobs:
       - name: Install tauri-cli
         uses: taiki-e/install-action@v2
         with:
-          tool: tauri-cli@^2
+          # `taiki-e/install-action` rejects SemVer operators in `tool`
+          # (`tauri-cli@^2` errors with "semver operators are not
+          # supported"); pinning a bare version works, but updates
+          # require a workflow change. Tracking latest is fine for
+          # the preview channel — pin if a future tauri-cli rev
+          # breaks us.
+          tool: tauri-cli
 
       # `externalBin` is injected here rather than in tauri.conf.json
       # because tauri-build validates the path on *every* cargo
