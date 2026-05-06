@@ -1,0 +1,203 @@
+name: Desktop release (macOS)
+
+# Build the Tauri-packaged Jarvis desktop app for macOS and (on tag
+# pushes) publish a GitHub Release with the resulting DMGs.
+#
+# Triggers:
+#   - tag push  `desktop-v*`              → build + publish release
+#   - workflow_dispatch                   → build only (DMGs uploaded
+#                                           as workflow artifacts)
+#
+# Releases are intentionally unsigned for the trial channel — see
+# `apps/jarvis-desktop/README.md` for the Gatekeeper-bypass install
+# instructions surfaced in the release notes.
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      label:
+        description: "Artifact label (e.g. preview-1). Real releases come from tag pushes."
+        required: false
+        default: "manual"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      # Build both architectures even if one fails — partial coverage
+      # is more useful than no coverage when a release attempt goes
+      # red on one runner.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            arch_label: arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            arch_label: x64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release label
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "label=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=${{ inputs.label || 'manual' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/jarvis-web/package-lock.json
+
+      - name: Install web deps
+        working-directory: apps/jarvis-web
+        run: npm ci
+
+      # Desktop builds load assets via the Tauri asset protocol, not
+      # an HTTP origin, so the web build needs JARVIS_DESKTOP_BUILD=1
+      # to emit relative asset paths (see vite.config.ts).
+      - name: Build web UI (desktop mode)
+        working-directory: apps/jarvis-web
+        env:
+          JARVIS_DESKTOP_BUILD: "1"
+        run: npm run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+
+      # Build the Jarvis server binary; it gets bundled inside the
+      # .app via tauri.conf.json's `bundle.externalBin` declaration.
+      # Tauri expects the file under `binaries/jarvis-<triple>`
+      # (relative to tauri.conf.json's parent) and copies it into
+      # the bundle as `Contents/MacOS/jarvis`. The desktop crate's
+      # `locate_jarvis_binary` already prefers a sibling-named
+      # `jarvis`, which is exactly that bundled path.
+      - name: Build jarvis server
+        run: cargo build --release --bin jarvis --target ${{ matrix.target }}
+
+      - name: Stage sidecar for Tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p apps/jarvis-desktop/binaries
+          cp "target/${{ matrix.target }}/release/jarvis" \
+             "apps/jarvis-desktop/binaries/jarvis-${{ matrix.target }}"
+          chmod +x "apps/jarvis-desktop/binaries/jarvis-${{ matrix.target }}"
+
+      - name: Install tauri-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@^2
+
+      # `externalBin` is injected here rather than in tauri.conf.json
+      # because tauri-build validates the path on *every* cargo
+      # check — declaring it in the committed conf would break
+      # `cargo run -p jarvis-desktop` for anyone who hasn't pre-staged
+      # a server binary. CI stages it just above this step, so the
+      # validation is happy when the merged config gets read.
+      #
+      # Also disable beforeBuildCommand: we already ran the web build
+      # explicitly above, and the committed default's `cd jarvis-web`
+      # is path-fragile.
+      - name: Build Tauri DMG
+        working-directory: apps/jarvis-desktop
+        run: |
+          cargo tauri build \
+            --target ${{ matrix.target }} \
+            --bundles dmg,app \
+            --config '{"build":{"beforeBuildCommand":""},"bundle":{"externalBin":["binaries/jarvis"]}}'
+
+      - name: Stage release artifacts
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="Jarvis-${{ steps.meta.outputs.label }}-macos-${{ matrix.arch_label }}"
+          OUT_DIR="$GITHUB_WORKSPACE/_dist/$STAGE"
+          mkdir -p "$OUT_DIR"
+          # Tauri names DMGs `<productName>_<version>_<arch>.dmg`.
+          # We rename to a label-stamped name so multiple build
+          # runs don't collide in the release asset list.
+          DMG=$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -n1)
+          cp "$DMG" "$OUT_DIR/$STAGE.dmg"
+          ( cd "$OUT_DIR" && shasum -a 256 "$STAGE.dmg" > "$STAGE.dmg.sha256" )
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          echo "out_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.stage }}
+          path: ${{ steps.stage.outputs.out_dir }}
+          if-no-files-found: error
+
+  release:
+    name: Publish desktop release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: Jarvis-*
+          merge-multiple: true
+
+      - run: ls -la dist
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'Jarvis Desktop ${{ github.ref_name }}'
+          body: |
+            Mac desktop preview build (unsigned).
+
+            ### Install
+
+            1. Download the `.dmg` for your CPU:
+               - **Apple Silicon (M-series):** `*-arm64.dmg`
+               - **Intel:** `*-x64.dmg`
+            2. Open the DMG and drag **Jarvis.app** into **Applications**.
+            3. The build is unsigned, so first launch needs a Gatekeeper bypass:
+               ```sh
+               xattr -dr com.apple.quarantine /Applications/Jarvis.app
+               ```
+            4. Set your LLM provider API key in the shell that launches the app, e.g.:
+               ```sh
+               export OPENAI_API_KEY=sk-...
+               open /Applications/Jarvis.app
+               ```
+
+            Troubleshooting and supported env vars: see
+            [`apps/jarvis-desktop/README.md`](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/apps/jarvis-desktop/README.md).
+          files: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true

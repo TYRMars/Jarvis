@@ -11,7 +11,8 @@ Cargo.lock.bak
 apps/jarvis-web/node_modules/
 apps/jarvis-web/tsconfig.tsbuildinfo
 apps/jarvis-web/dist/
+apps/jarvis-desktop/binaries/
 .claude/
 /.playwright-mcp
-.gitnexus
 node_modules
+.playwright-cli
