@@ -26,7 +26,8 @@ use axum::{
 };
 use harness_core::{
     derive_slug, validate_column_id, validate_slug, ConversationStore, KanbanColumn, Project,
-    ProjectStore, ProjectWorkspace,
+    ProjectAutomation, ProjectMemory, ProjectMemoryKind, ProjectMemoryStore, ProjectStore,
+    ProjectWorkspace,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -69,12 +70,21 @@ pub(crate) fn router() -> Router<AppState> {
             post(workspace_switch),
         )
         .route("/v1/projects/:id_or_slug/memory", get(get_memory))
+        .route("/v1/projects/:id_or_slug/runs", get(project_runs))
         .route("/v1/projects/:id_or_slug/memory/sync", post(sync_memory))
         .route(
             "/v1/projects/:id_or_slug/memory/files/:file",
             get(get_memory_file)
                 .put(update_memory_file)
                 .delete(delete_memory_file),
+        )
+        .route(
+            "/v1/projects/:id_or_slug/memories",
+            get(list_memories).post(create_memory),
+        )
+        .route(
+            "/v1/projects/:id_or_slug/memories/:memory_id",
+            axum::routing::delete(delete_memory),
         )
 }
 
@@ -134,6 +144,32 @@ fn require_requirement_store(
     })
 }
 
+#[allow(clippy::result_large_err)]
+fn require_run_store(
+    state: &AppState,
+) -> Result<Arc<dyn harness_core::RequirementRunStore>, Response> {
+    state.requirement_runs.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "requirement run store not configured" })),
+        )
+            .into_response()
+    })
+}
+
+#[allow(clippy::result_large_err)]
+fn require_project_memory_store(state: &AppState) -> Result<Arc<dyn ProjectMemoryStore>, Response> {
+    state.project_memories.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "project memory store not configured"
+            })),
+        )
+            .into_response()
+    })
+}
+
 async fn load_project_or_404(
     store: &Arc<dyn ProjectStore>,
     id_or_slug: &str,
@@ -162,6 +198,8 @@ struct CreateRequest {
     /// invalid entry rejects the whole create with `400 Bad Request`.
     #[serde(default)]
     workspaces: Vec<ProjectWorkspaceInput>,
+    #[serde(default)]
+    automation: Option<ProjectAutomation>,
 }
 
 /// Wire shape for a workspace entry on POST / PUT bodies. We accept a
@@ -209,6 +247,9 @@ async fn create(State(state): State<AppState>, Json(req): Json<CreateRequest>) -
             Ok(ws) => p.set_workspaces(ws),
             Err(resp) => return resp,
         }
+    }
+    if let Some(automation) = req.automation {
+        p.set_automation(automation);
     }
     if let Err(e) = store.save(&p).await {
         return internal_error(e);
@@ -438,6 +479,9 @@ struct UpdateRequest {
     /// leave the existing setting alone. Each entry is validated
     /// (id shape + non-empty label, no duplicate ids).
     columns: Option<Vec<KanbanColumn>>,
+    /// Replace the project's automation policy. Pass `None` to leave
+    /// the current setting untouched.
+    automation: Option<ProjectAutomation>,
 }
 
 async fn update(
@@ -520,6 +564,9 @@ async fn update(
             p.columns = Some(cols);
         }
         p.touch();
+    }
+    if let Some(automation) = req.automation {
+        p.set_automation(automation);
     }
 
     if let Err(e) = store.save(&p).await {
@@ -675,6 +722,190 @@ async fn delete_memory_file(
         Ok(snapshot) => Json(snapshot).into_response(),
         Err(e) => bad_request(&e.to_string()),
     }
+}
+
+/// `GET /v1/projects/:id_or_slug/memories` — list the project's
+/// captured / curated [`harness_core::ProjectMemory`] rows
+/// (newest-first by `updated_at`). Returns 503 when no memory store
+/// is configured.
+async fn list_memories(State(state): State<AppState>, Path(id_or_slug): Path<String>) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let memories = match require_project_memory_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match memories.list(&project.id).await {
+        Ok(rows) => Json(json!({
+            "project_id": project.id,
+            "memories": rows,
+        }))
+        .into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateMemoryRequest {
+    /// Wire form: `lesson` / `gotcha` / `context`. Defaults to `context`
+    /// (manual annotations) when omitted.
+    #[serde(default)]
+    kind: Option<String>,
+    title: String,
+    body: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// `POST /v1/projects/:id_or_slug/memories` — manually create a
+/// memory row. Used by the Web UI's "项目经验" panel for operator-
+/// authored notes; auto-captured rows from failed runs use the
+/// in-process store directly via [`crate::auto_mode`].
+///
+/// Validation: `title` and `body` must be non-blank after trim.
+/// `kind` parses leniently — unknown values fall back to `context`
+/// rather than rejecting, so the UI doesn't have to enumerate them.
+async fn create_memory(
+    State(state): State<AppState>,
+    Path(id_or_slug): Path<String>,
+    Json(req): Json<CreateMemoryRequest>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let memories = match require_project_memory_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let title = req.title.trim();
+    let body = req.body.trim();
+    if title.is_empty() {
+        return bad_request("title must not be blank");
+    }
+    if body.is_empty() {
+        return bad_request("body must not be blank");
+    }
+    let kind = match req.kind.as_deref().map(str::trim) {
+        Some("lesson") => ProjectMemoryKind::Lesson,
+        Some("gotcha") => ProjectMemoryKind::Gotcha,
+        _ => ProjectMemoryKind::Context,
+    };
+    let memory = ProjectMemory::new(&project.id, kind, title, body).with_tags(req.tags);
+    match memories.upsert(&memory).await {
+        Ok(()) => (StatusCode::CREATED, Json(json!(memory))).into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+/// `DELETE /v1/projects/:id_or_slug/memories/:memory_id` — hard-delete
+/// a single memory row. Returns 404 when the row didn't exist or
+/// belongs to a different project (project-scoped delete keeps the
+/// UI's "are you sure" boundary clean).
+async fn delete_memory(
+    State(state): State<AppState>,
+    Path((id_or_slug, memory_id)): Path<(String, String)>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let memories = match require_project_memory_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&store, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match memories.get(&memory_id).await {
+        Ok(Some(memory)) if memory.project_id == project.id => {}
+        Ok(_) => return not_found(),
+        Err(e) => return internal_error(e),
+    }
+    match memories.delete(&memory_id).await {
+        Ok(true) => Json(json!({ "deleted": true })).into_response(),
+        Ok(false) => not_found(),
+        Err(e) => internal_error(e),
+    }
+}
+
+// ----------------------- project run history -----------------------
+
+#[derive(Debug, Deserialize)]
+struct ProjectRunsQuery {
+    #[serde(default = "default_project_runs_limit")]
+    limit: u32,
+}
+
+fn default_project_runs_limit() -> u32 {
+    50
+}
+
+async fn project_runs(
+    State(state): State<AppState>,
+    Path(id_or_slug): Path<String>,
+    Query(q): Query<ProjectRunsQuery>,
+) -> Response {
+    let projects = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let requirements = match require_requirement_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let runs = match require_run_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let project = match load_project_or_404(&projects, &id_or_slug).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let reqs = match requirements.list(&project.id).await {
+        Ok(rows) => rows,
+        Err(e) => return internal_error(e),
+    };
+
+    let mut items: Vec<Value> = Vec::new();
+    for req in reqs {
+        let history = match runs.list_for_requirement(&req.id).await {
+            Ok(rows) => rows,
+            Err(e) => return internal_error(e),
+        };
+        for run in history {
+            let mut v =
+                serde_json::to_value(&run).unwrap_or_else(|e| json!({ "error": e.to_string() }));
+            v["project_id"] = json!(project.id);
+            v["project_name"] = json!(project.name);
+            v["requirement_title"] = json!(req.title);
+            v["requirement_status"] = json!(req.status.as_wire());
+            items.push(v);
+        }
+    }
+    items.sort_by(|a, b| {
+        let a_ts = a.get("started_at").and_then(Value::as_str).unwrap_or("");
+        let b_ts = b.get("started_at").and_then(Value::as_str).unwrap_or("");
+        b_ts.cmp(a_ts)
+    });
+    items.truncate(q.limit.clamp(1, 500) as usize);
+    Json(json!({
+        "project_id": project.id,
+        "items": items,
+        "count": items.len(),
+    }))
+    .into_response()
 }
 
 /// Validate a column list submitted by the client. Returns an error
@@ -915,6 +1146,7 @@ fn project_to_json(p: &Project) -> Value {
         "tags": p.tags,
         "workspaces": workspaces,
         "archived": p.archived,
+        "automation": p.automation,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
     });
@@ -1226,6 +1458,7 @@ mod tests {
                 message: Message::assistant_text("ok"),
                 finish_reason: FinishReason::Stop,
                 response_id: None,
+                    usage: None,
             })
         }
     }

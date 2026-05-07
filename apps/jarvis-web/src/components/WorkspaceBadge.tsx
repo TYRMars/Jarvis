@@ -55,7 +55,7 @@ export function WorkspaceBadge() {
   useEffect(() => {
     refreshBaseline();
     refreshRecent();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // Re-fetch the recent list whenever the dropdown opens — covers the

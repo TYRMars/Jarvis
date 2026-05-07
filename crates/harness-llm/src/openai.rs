@@ -508,6 +508,11 @@ impl From<ToolSpec> for OaTool {
 #[derive(Debug, Deserialize)]
 struct OpenAiResponse {
     choices: Vec<OaChoice>,
+    /// Token accounting (also shipped by Kimi / Ollama / any
+    /// chat-completions-compatible endpoint that bothers to fill it).
+    /// Optional per-call: some self-hosted variants omit it.
+    #[serde(default)]
+    usage: Option<OaUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -564,6 +569,7 @@ impl OpenAiResponse {
 
         let finish_reason = map_finish_reason(choice.finish_reason.as_deref(), &tool_calls);
 
+        let usage = self.usage.map(OaUsage::into_core);
         Ok(ChatResponse {
             message: Message::Assistant {
                 content: choice.message.content,
@@ -573,6 +579,7 @@ impl OpenAiResponse {
             },
             finish_reason,
             response_id: None,
+            usage,
         })
     }
 }

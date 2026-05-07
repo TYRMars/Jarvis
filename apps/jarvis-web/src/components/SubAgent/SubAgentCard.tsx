@@ -69,6 +69,8 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
   const elapsed = fmtElapsed(
     (run.endedAt ?? Date.now()) - run.startedAt,
   );
+  const toolEntries = run.timeline.filter((entry) => entry.kind === "tool");
+  const completedTools = toolEntries.filter((entry) => entry.tEnd !== undefined).length;
 
   const statusLabel = (() => {
     switch (run.status) {
@@ -93,23 +95,14 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
         onClick={toggle}
         aria-expanded={isExpanded}
       >
-        <span className={`subagent-status-dot subagent-status-${run.status}`} aria-hidden="true" />
-        <span className="subagent-card-name">subagent.{run.name}</span>
-        <span className="subagent-card-sep" aria-hidden="true">
-          ·
+        <span className="subagent-card-title">
+          <span className={`subagent-status-dot subagent-status-${run.status}`} aria-hidden="true" />
+          <span className="subagent-card-name">subagent.{run.name}</span>
         </span>
         <span className="subagent-card-status">{statusLabel}</span>
         {run.model ? (
-          <>
-            <span className="subagent-card-sep" aria-hidden="true">
-              ·
-            </span>
-            <span className="subagent-card-model mono">{run.model}</span>
-          </>
+          <span className="subagent-card-model mono">{run.model}</span>
         ) : null}
-        <span className="subagent-card-sep" aria-hidden="true">
-          ·
-        </span>
         <span className="subagent-card-elapsed tabular-nums">{elapsed}</span>
         <span className="subagent-card-spacer" />
         <span className="subagent-card-chevron" aria-hidden="true">
@@ -134,6 +127,14 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
             </div>
           ) : null}
           <ol className="subagent-timeline">
+            {toolEntries.length > 0 ? (
+              <li className="subagent-timeline-overview">
+                <span>{tx("subagentTimelineTools", "Tool calls")}</span>
+                <strong className="tabular-nums">
+                  {completedTools}/{toolEntries.length}
+                </strong>
+              </li>
+            ) : null}
             {run.timeline.length === 0 ? (
               <li className="subagent-timeline-empty">
                 {tx("subagentTimelineWaiting", "Waiting for first event...")}
@@ -162,12 +163,21 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
   if (entry.kind === "tool") {
     const ended = entry.tEnd !== undefined;
     return (
-      <li className={`subagent-timeline-row tool${ended ? " tool-done" : " tool-running"}`}>
+      <li
+        className={`subagent-timeline-row subagent-tool-row${
+          ended ? " subagent-tool-done" : " subagent-tool-running"
+        }`}
+      >
         <span className="subagent-timeline-glyph mono" aria-hidden="true">
-          {ended ? "✓" : "▶"}
+          {ended ? "✓" : "…"}
         </span>
-        <span className="subagent-timeline-name mono">{entry.name}</span>
-        <span className="subagent-timeline-args mono">
+        <span className="subagent-timeline-head">
+          <span className="subagent-timeline-name mono">{entry.name}</span>
+          <span className="subagent-timeline-state">
+            {ended ? tx("subagentToolDone", "done") : tx("subagentToolRunning", "running")}
+          </span>
+        </span>
+        <span className="subagent-timeline-args">
           {summariseArgs(entry.args)}
         </span>
         {ended && entry.output ? (

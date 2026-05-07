@@ -83,7 +83,7 @@ const warned = new Set<string>();
 function warnOnce(name: string, err: unknown): void {
   if (warned.has(name)) return;
   warned.add(name);
-  // eslint-disable-next-line no-console
+   
   console.warn(`toolSummaries: parser for "${name}" threw, suppressing future warnings`, err);
 }
 

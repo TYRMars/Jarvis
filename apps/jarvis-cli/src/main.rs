@@ -24,6 +24,7 @@ mod policy;
 mod provider;
 mod render;
 mod runner;
+mod web;
 
 use std::path::PathBuf;
 
@@ -129,6 +130,22 @@ pub struct Args {
     /// Memory backend: `window` (default) or `summary`.
     #[arg(long, value_name = "MODE", default_value = "window")]
     pub memory_mode: String,
+
+    /// Boot the bundled Web UI alongside the REPL. Spawns
+    /// `jarvis serve` as a child process bound to `--web-addr`; when
+    /// `--db <url>` is set, the URL is forwarded as `JARVIS_DB_URL`
+    /// so chats started in one surface are visible from the other.
+    /// The child dies with the parent (kill-on-drop). Pipe mode
+    /// (`--no-interactive`) ignores this flag — there's nobody at
+    /// the keyboard to use the UI.
+    #[arg(long)]
+    pub web: bool,
+
+    /// Bind address for `--web`. Defaults to `127.0.0.1:7001` so it's
+    /// loopback-only by default; pass `0.0.0.0:7001` if you want LAN
+    /// access (and accept the security implications).
+    #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:7001")]
+    pub web_addr: String,
 }
 
 #[tokio::main]

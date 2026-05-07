@@ -23,7 +23,7 @@ export function ServerSection({ embedded }: { embedded?: boolean } = {}) {
   };
   useEffect(() => {
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   if (state.kind === "loading") {

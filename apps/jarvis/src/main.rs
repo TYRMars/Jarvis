@@ -202,6 +202,13 @@ pub(crate) struct ServeArgs {
     /// agent on your LAN.
     #[arg(long)]
     pub bypass_on_network: bool,
+
+    /// Open the Web UI in the default browser once the server is
+    /// listening. Best-effort — falls back silently if no browser is
+    /// available (SSH, headless CI). Loopback URL (`http://127.0.0.1:<port>`)
+    /// is used even when bound to `0.0.0.0`.
+    #[arg(long)]
+    pub open: bool,
 }
 
 #[tokio::main]

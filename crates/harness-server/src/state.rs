@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use harness_core::{
-    ActivityStore, Agent, AgentConfig, AgentProfileStore, ConversationStore, DocStore, LlmProvider,
-    PermissionMode, PermissionStore, ProjectStore, RequirementRunStore, RequirementStore,
-    TodoStore, ToolRegistry,
+    ActivityStore, Agent, AgentConfig, AgentProfileStore, CommentStore, ConversationStore,
+    DocStore, LabelStore, LlmProvider, PermissionMode, PermissionStore, ProjectMemoryStore,
+    ProjectStore, RequirementRunStore, RequirementStore, TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
@@ -194,6 +194,29 @@ pub struct AppState {
     /// Optional persistent Doc store — backs the `/docs` page.
     /// Returns 503 from `/v1/doc-projects*` when `None`.
     pub docs: Option<Arc<dyn DocStore>>,
+    /// Optional persistent Comment store — Phase 3.8 discussion
+    /// threads attached to requirements. `None` ⇒
+    /// `/v1/requirements/:id/comments*` returns 503; the rest of
+    /// the server runs unchanged.
+    pub comments: Option<Arc<dyn CommentStore>>,
+    /// Optional persistent Label store — Phase 3.8 project-scoped
+    /// tags. `None` ⇒ `/v1/projects/:id/labels*` returns 503; the
+    /// kanban falls back to label-less rendering.
+    pub labels: Option<Arc<dyn LabelStore>>,
+    /// Optional project-scoped long-term memory store. When `Some(_)`,
+    /// the auto loop captures a [`harness_core::ProjectMemory`] row
+    /// for every Failed run and prepends the most recent project
+    /// memories into the next run's system prompt — the agent's
+    /// institutional memory across runs. `None` ⇒ capture / inject
+    /// are no-ops; the `auto_mode` path skips both branches without
+    /// erroring.
+    ///
+    /// Distinct from the file-based [`project_memory`](Self::project_memory)
+    /// (the kanban/calendar snapshot system). This store holds
+    /// row-shaped lessons captured from runs; the file-memory
+    /// system holds derived markdown of the current board state.
+    /// Both can be wired independently.
+    pub project_memories: Option<Arc<dyn ProjectMemoryStore>>,
     /// Inject the current pending/in_progress/blocked TODOs into
     /// the system prompt at the start of every turn? Defaults to
     /// `true` — gives the agent cheap awareness without an extra
@@ -257,6 +280,9 @@ impl AppState {
             activities: None,
             agent_profiles: None,
             docs: None,
+            comments: None,
+            labels: None,
+            project_memories: None,
             todos_in_prompt: true,
             worktree_mode: WorktreeMode::Off,
             worktree_root: None,
@@ -297,6 +323,9 @@ impl AppState {
             activities: None,
             agent_profiles: None,
             docs: None,
+            comments: None,
+            labels: None,
+            project_memories: None,
             todos_in_prompt: true,
             worktree_mode: WorktreeMode::Off,
             worktree_root: None,
@@ -451,6 +480,30 @@ impl AppState {
     /// page renders the empty state.
     pub fn with_doc_store(mut self, store: Arc<dyn DocStore>) -> Self {
         self.docs = Some(store);
+        self
+    }
+
+    /// Wire in the project-scoped long-term memory store. Without
+    /// one, the auto loop's failure-capture and prompt-inject branches
+    /// no-op silently — the rest of the loop runs unchanged.
+    pub fn with_project_memory_store(mut self, store: Arc<dyn ProjectMemoryStore>) -> Self {
+        self.project_memories = Some(store);
+        self
+    }
+
+    /// Wire in the persistent Comment store (Phase 3.8). Without
+    /// one, `/v1/requirements/:id/comments*` returns 503 and the
+    /// kanban card's discussion drawer renders disabled.
+    pub fn with_comment_store(mut self, store: Arc<dyn CommentStore>) -> Self {
+        self.comments = Some(store);
+        self
+    }
+
+    /// Wire in the persistent Label store (Phase 3.8). Without one,
+    /// `/v1/projects/:id/labels*` returns 503 and the kanban falls
+    /// back to label-less rendering.
+    pub fn with_label_store(mut self, store: Arc<dyn LabelStore>) -> Self {
+        self.labels = Some(store);
         self
     }
 

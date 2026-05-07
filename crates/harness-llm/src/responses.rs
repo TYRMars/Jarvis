@@ -419,11 +419,16 @@ impl LlmProvider for ResponsesProvider {
         // shape they expect; the wire stays stream-only.
         let mut stream = self.complete_stream(req).await?;
         let mut last_finish: Option<(Message, FinishReason, Option<String>)> = None;
+        let mut last_usage: Option<Usage> = None;
         while let Some(chunk) = stream.next().await {
             match chunk? {
-                LlmChunk::ContentDelta(_) | LlmChunk::ToolCallDelta { .. } | LlmChunk::Usage(_) => {
-                    // Aggregated form arrives in the trailing `Finish`
-                    // chunk; the per-token deltas are noise here.
+                LlmChunk::ContentDelta(_) | LlmChunk::ToolCallDelta { .. } => {}
+                LlmChunk::Usage(u) => {
+                    // Responses normally ships exactly one Usage
+                    // chunk per request (right before `Finish`); we
+                    // keep the latest in case a future protocol
+                    // revision sends incremental updates.
+                    last_usage = Some(u);
                 }
                 LlmChunk::Finish {
                     message,
@@ -441,6 +446,7 @@ impl LlmProvider for ResponsesProvider {
             message,
             finish_reason,
             response_id,
+            usage: last_usage,
         })
     }
 
@@ -969,6 +975,7 @@ impl ResponsesResponseBody {
             self.incomplete_details.as_ref(),
             &tool_calls,
         );
+        let usage = self.usage.map(RespUsage::into_core);
         Ok(ChatResponse {
             message: Message::Assistant {
                 content,
@@ -978,6 +985,7 @@ impl ResponsesResponseBody {
             },
             finish_reason,
             response_id: self.id.clone(),
+            usage,
         })
     }
 }

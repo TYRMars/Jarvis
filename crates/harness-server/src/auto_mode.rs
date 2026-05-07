@@ -32,17 +32,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
 use harness_core::{
     ActivityActor, ActivityKind, AgentProfile, CommandResult, Conversation, ConversationMetadata,
-    Message, Project, Requirement, RequirementRun, RequirementRunEvent, RequirementRunLogLevel,
-    RequirementRunStatus, RequirementStatus, RequirementTodo, RequirementTodoCreator,
-    RequirementTodoEvidence, RequirementTodoKind, RequirementTodoStatus, TriageState,
-    VerificationPlan, VerificationResult, VerificationStatus,
+    Message, Project, ProjectMemory, ProjectMemoryKind, Requirement, RequirementRun,
+    RequirementRunEvent, RequirementRunLogLevel, RequirementRunStatus, RequirementStatus,
+    RequirementTodo, RequirementTodoCreator, RequirementTodoEvidence, RequirementTodoKind,
+    RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult, VerificationStatus,
 };
 use harness_requirement::{build_default_manifest, render_manifest_summary};
 use serde::Deserialize;
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 use crate::verification;
@@ -71,18 +73,36 @@ impl AutoMode {
 
 /// Knobs sourced from `JARVIS_WORK_*` env vars.
 ///
-/// `tick_seconds` and `max_units_per_tick` together cap the
-/// scheduler's appetite. `max_retries` is the ceiling on failed
-/// runs per requirement before the loop stops re-picking it (so
-/// a broken LLM endpoint can't burn money in a loop).
-/// `run_timeout_ms` caps the agent loop's wall-clock budget per
-/// pickup — same envelope the manual WS runs would have if you
-/// stuck a `tokio::time::timeout` on them.
+/// Three orthogonal dials govern the scheduler's appetite:
+///
+/// - `tick_seconds` — how often the picker wakes up.
+/// - `max_units_per_tick` — burst budget. Cap on how many candidates
+///   the picker can spawn-task in a single tick. Defends against a
+///   single tick stampeding the LLM API even before the global cap
+///   kicks in.
+/// - `max_concurrent_units` — true global concurrency. Each spawned
+///   drive task acquires a [`Semaphore`] permit before calling the
+///   provider; if all permits are held, extra spawns wait in the
+///   semaphore's queue rather than racing for tokens. This is the
+///   knob the user reaches for when "agents are stomping each
+///   other's rate limits". Default `2` mirrors Symphony's small
+///   default pool (most LLM rate limits comfortably absorb 2 in
+///   parallel for typical agent loops).
+///
+/// `max_retries` is the ceiling on failed runs per requirement
+/// before the loop stops re-picking it (so a broken LLM endpoint
+/// can't burn money in a loop). `run_timeout_ms` caps the agent
+/// loop's wall-clock budget per pickup — same envelope the manual
+/// WS runs would have if you stuck a `tokio::time::timeout` on
+/// them.
 #[derive(Debug, Clone)]
 pub struct AutoModeConfig {
     pub mode: AutoMode,
     pub tick_seconds: u64,
     pub max_units_per_tick: usize,
+    /// Global concurrency cap. Permits-in-flight ceiling for the
+    /// drive task pool. See type-level docs.
+    pub max_concurrent_units: usize,
     pub max_retries: usize,
     pub run_timeout_ms: u64,
     /// Let the scheduler run approved requirements even when the
@@ -110,6 +130,11 @@ impl Default for AutoModeConfig {
             mode: AutoMode::Off,
             tick_seconds: 30,
             max_units_per_tick: 1,
+            // 2 = enough headroom that a slow agent doesn't gate the
+            // whole queue, low enough that token / rate-limit budgets
+            // stay predictable. Override via JARVIS_WORK_MAX_CONCURRENT
+            // or WORKFLOW.md `agent.max_concurrent_agents`.
+            max_concurrent_units: 2,
             max_retries: 1,
             run_timeout_ms: 5 * 60 * 1000,
             allow_unassigned: true,
@@ -129,6 +154,10 @@ pub struct AutoWorkflow {
     pub mode: Option<AutoMode>,
     pub tick_seconds: Option<u64>,
     pub max_units_per_tick: Option<usize>,
+    /// Maps from Symphony YAML `agent.max_concurrent_agents` /
+    /// `automation.max_concurrent_units`. `None` = inherit the
+    /// `AutoModeConfig` default.
+    pub max_concurrent_units: Option<usize>,
     pub max_retries: Option<usize>,
     pub run_timeout_ms: Option<u64>,
     pub allow_unassigned: Option<bool>,
@@ -175,6 +204,9 @@ impl AutoWorkflow {
         if let Some(v) = self.max_units_per_tick {
             cfg.max_units_per_tick = v.max(1);
         }
+        if let Some(v) = self.max_concurrent_units {
+            cfg.max_concurrent_units = v.max(1);
+        }
         if let Some(v) = self.max_retries {
             cfg.max_retries = v;
         }
@@ -211,6 +243,11 @@ struct AutomationYaml {
     tick_seconds: Option<u64>,
     #[serde(default)]
     max_units_per_tick: Option<usize>,
+    /// Optional global concurrency cap exposed at automation level
+    /// (mirror of `agent.max_concurrent_agents` for users who'd
+    /// rather group all scheduler dials under `automation:`).
+    #[serde(default)]
+    max_concurrent_units: Option<usize>,
     #[serde(default)]
     max_retries: Option<usize>,
     #[serde(default)]
@@ -248,6 +285,7 @@ impl WorkflowFrontMatter {
             out.mode = a.mode.as_deref().and_then(AutoMode::from_wire);
             out.tick_seconds = a.tick_seconds;
             out.max_units_per_tick = a.max_units_per_tick;
+            out.max_concurrent_units = a.max_concurrent_units;
             out.max_retries = a.max_retries;
             out.run_timeout_ms = a.run_timeout_ms;
             out.allow_unassigned = a.allow_unassigned;
@@ -257,8 +295,12 @@ impl WorkflowFrontMatter {
             out.tick_seconds = Some(p.saturating_add(999) / 1000);
         }
         if let Some(a) = self.agent {
+            // `agent.max_concurrent_agents` always meant "how many
+            // agents run in parallel" — the original mapping to
+            // `max_units_per_tick` was a misnomer. From v1.1 it
+            // routes to the real global concurrency cap.
             if let Some(v) = a.max_concurrent_agents {
-                out.max_units_per_tick = Some(v);
+                out.max_concurrent_units = Some(v);
             }
             if let Some(v) = a.max_retries {
                 out.max_retries = Some(v);
@@ -303,10 +345,22 @@ fn split_front_matter(raw: &str) -> Result<(Option<&str>, &str), String> {
 /// startup `AutoModeConfig.mode`. The background loop polls the
 /// flag every tick (so toggle latency is at most one
 /// `tick_seconds`).
-#[derive(Debug, Clone, Default)]
+///
+/// Beyond the on/off bit this also owns:
+///
+/// - `active_requirements`: per-requirement reentrancy guard so the
+///   same row never runs twice in parallel.
+/// - `concurrency_gate`: process-wide [`Semaphore`] of size
+///   `max_concurrent_units`. Each spawned drive task acquires one
+///   permit before invoking the LLM; surplus tasks wait in the
+///   semaphore's FIFO queue rather than racing for tokens. This is
+///   the actual queue users tune when "agents step on each other's
+///   rate limits".
+#[derive(Debug, Clone)]
 pub struct AutoModeRuntime {
     enabled: Arc<AtomicBool>,
     active_requirements: Arc<Mutex<HashSet<String>>>,
+    concurrency_gate: Arc<Semaphore>,
 }
 
 #[derive(Debug)]
@@ -323,11 +377,30 @@ impl Drop for RequirementRunClaim {
     }
 }
 
+impl Default for AutoModeRuntime {
+    fn default() -> Self {
+        Self::with_capacity(AutoMode::Off, AutoModeConfig::default().max_concurrent_units)
+    }
+}
+
 impl AutoModeRuntime {
+    /// Convenience constructor that picks the default concurrency
+    /// pool size. Call [`Self::with_capacity`] to plumb through the
+    /// resolved config value.
     pub fn new(initial: AutoMode) -> Self {
+        Self::with_capacity(initial, AutoModeConfig::default().max_concurrent_units)
+    }
+
+    /// Build a runtime with an explicit concurrency cap. The binary
+    /// resolves `max_concurrent_units` (env > workflow > default)
+    /// and threads it here so the semaphore matches what `tick`
+    /// promises.
+    pub fn with_capacity(initial: AutoMode, max_concurrent_units: usize) -> Self {
+        let permits = max_concurrent_units.max(1);
         Self {
             enabled: Arc::new(AtomicBool::new(matches!(initial, AutoMode::Auto))),
             active_requirements: Arc::new(Mutex::new(HashSet::new())),
+            concurrency_gate: Arc::new(Semaphore::new(permits)),
         }
     }
 
@@ -352,6 +425,21 @@ impl AutoModeRuntime {
             active_requirements: Arc::clone(&self.active_requirements),
         })
     }
+
+    /// Hand a clone of the concurrency gate to a spawned task so
+    /// it can `gate.acquire_owned().await` before doing work.
+    /// Returning the `Arc<Semaphore>` (not a permit) keeps the
+    /// acquisition lazy — the spawn happens immediately, the wait
+    /// happens inside the spawned future.
+    pub(crate) fn concurrency_gate(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.concurrency_gate)
+    }
+
+    /// Available permits — useful for diagnostics / tests. Snapshot
+    /// only; not intended as a synchronisation primitive.
+    pub fn available_permits(&self) -> usize {
+        self.concurrency_gate.available_permits()
+    }
 }
 
 /// Spawn the background loop unconditionally. The runtime flag (set
@@ -361,13 +449,13 @@ impl AutoModeRuntime {
 /// flip auto on at runtime even if the binary started with
 /// `JARVIS_WORK_MODE=off`.
 pub fn spawn(state: AppState, config: AutoModeConfig) {
-    let runtime = state
-        .auto_mode_runtime
-        .clone()
-        .unwrap_or_else(|| AutoModeRuntime::new(config.mode));
+    let runtime = state.auto_mode_runtime.clone().unwrap_or_else(|| {
+        AutoModeRuntime::with_capacity(config.mode, config.max_concurrent_units)
+    });
     info!(
         tick_s = config.tick_seconds,
         max_units = config.max_units_per_tick,
+        max_concurrent = config.max_concurrent_units,
         max_retries = config.max_retries,
         run_timeout_ms = config.run_timeout_ms,
         initial_enabled = runtime.is_enabled(),
@@ -381,6 +469,15 @@ pub fn spawn(state: AppState, config: AutoModeConfig) {
         interval.tick().await; // consume the immediate first tick
         loop {
             interval.tick().await;
+            // Always reap stale Pending/Running rows, even when the
+            // auto loop is disabled. Pending rows accumulate from
+            // REST `start_run` invocations and from agent runs that
+            // crashed between "minted" and "terminal status write".
+            // Skipping the reaper while auto mode is off would leave
+            // ghost rows pinning their requirements forever — see
+            // the `feat/auto_project` investigation that motivated
+            // this split.
+            reap_all_stale_inflight_runs(&state, &config).await;
             if !runtime.is_enabled() {
                 continue;
             }
@@ -389,6 +486,32 @@ pub fn spawn(state: AppState, config: AutoModeConfig) {
             }
         }
     });
+}
+
+/// Sweep `RequirementRunStore::list_all` and reap any stale
+/// Pending/Running rows. Decoupled from [`tick`] so it runs whether
+/// or not auto mode is enabled — the reaper is a pure governance
+/// action (no new runs minted, no LLM call), so the enable gate
+/// doesn't need to apply.
+///
+/// Errors are logged, never propagated: the spawn loop must keep
+/// ticking even if a single sweep fails (e.g. transient store
+/// hiccup). The hard cap of 500 rows per pass matches the store
+/// trait's recommended soft cap; in practice the inflight set is
+/// tiny (<10 typical), so the cap mostly defends against an
+/// unreaped backlog from before the watchdog was wired up.
+async fn reap_all_stale_inflight_runs(state: &AppState, config: &AutoModeConfig) {
+    let Some(runs) = state.requirement_runs.as_ref() else {
+        return;
+    };
+    match runs.list_all(500).await {
+        Ok(mut rows) => {
+            reclaim_stale_pending_runs(runs, &mut rows, config.run_timeout_ms).await;
+        }
+        Err(e) => {
+            warn!(error = %e, "auto mode reaper: list_all failed; skipping this sweep");
+        }
+    }
 }
 
 /// Returns "this tick processed N requirements" so callers /
@@ -415,6 +538,15 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
         if picked >= config.max_units_per_tick {
             break;
         }
+        if !project.automation.auto_mode_enabled {
+            debug!(
+                project_id = %project.id,
+                project_slug = %project.slug,
+                reason = "project_auto_mode_disabled",
+                "auto mode skipping project"
+            );
+            continue;
+        }
         let reqs = requirements
             .list(&project.id)
             .await
@@ -437,6 +569,12 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                     | RequirementStatus::InProgress
                     | RequirementStatus::Review
             ) {
+                debug!(
+                    requirement_id = %req.id,
+                    status = req.status.as_wire(),
+                    reason = "ineligible_status",
+                    "auto mode skipping requirement"
+                );
                 continue;
             }
             // v1.0 — Triage gate. Auto loop only consumes
@@ -446,18 +584,30 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
             // proposals freely without the executor running them
             // unattended.
             if req.triage_state != TriageState::Approved {
+                debug!(
+                    requirement_id = %req.id,
+                    triage_state = req.triage_state.as_wire(),
+                    reason = "not_approved",
+                    "auto mode skipping requirement"
+                );
                 continue;
             }
             // v1.0 — depends_on. Skip until every listed
             // dependency reaches `done`. Unknown ids (deleted /
             // cross-project) are treated as "not yet done" so a
             // stale ref blocks rather than silently passes.
-            if !req.depends_on.iter().all(|dep_id| {
-                dep_index
-                    .get(dep_id)
+            if let Some(blocking_dep) = req.depends_on.iter().find(|dep_id| {
+                !dep_index
+                    .get(dep_id.as_str())
                     .map(|s| matches!(s, RequirementStatus::Done))
                     .unwrap_or(false)
             }) {
+                debug!(
+                    requirement_id = %req.id,
+                    blocking_dep = %blocking_dep,
+                    reason = "dep_not_done",
+                    "auto mode skipping requirement"
+                );
                 continue;
             }
             let mut history = runs
@@ -472,14 +622,52 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                 )
             });
             if has_inflight {
+                debug!(
+                    requirement_id = %req.id,
+                    reason = "inflight_run",
+                    "auto mode skipping requirement"
+                );
                 continue;
             }
-            let failed_count = history
-                .iter()
-                .filter(|r| matches!(r.status, RequirementRunStatus::Failed))
-                .count();
-            if failed_count >= config.max_retries {
+            // v1.1 — count failures since the most recent success,
+            // not all-time. Without this a Requirement that fails
+            // once is permanently locked out at the default
+            // `max_retries=1` even after a manual fix that lands a
+            // Completed run. Cancelled rows (timeout reaper, manual
+            // abort) are skipped: they're neither success nor
+            // failure for retry budgeting.
+            let consecutive_failed = consecutive_failed_since_last_success(&history);
+            if consecutive_failed >= config.max_retries {
+                debug!(
+                    requirement_id = %req.id,
+                    consecutive_failed,
+                    max_retries = config.max_retries,
+                    reason = "retries_exceeded",
+                    "auto mode skipping requirement"
+                );
                 continue;
+            }
+            // v1.1 — exponential backoff between consecutive
+            // failures. Bounded by `FAILURE_BACKOFF_MAX_MS`.
+            // Without this, a Requirement that fails twice in a
+            // row gets retried 30s later (the next tick) and burns
+            // its remaining retry budget against a transient fault
+            // — rate limits, network, the sort of thing that
+            // recovers on its own given a few minutes.
+            let backoff_ms = failure_backoff_ms(consecutive_failed, config.tick_seconds);
+            if let Some(latest_failed) = most_recent_failed_run(&history) {
+                if let Some(remaining_ms) = failure_backoff_remaining_ms(latest_failed, backoff_ms)
+                {
+                    debug!(
+                        requirement_id = %req.id,
+                        consecutive_failed,
+                        backoff_ms,
+                        remaining_ms,
+                        reason = "failure_backoff",
+                        "auto mode skipping requirement"
+                    );
+                    continue;
+                }
             }
             let profile = match resolve_auto_profile(
                 profiles,
@@ -490,28 +678,81 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
             .await?
             {
                 Some(p) => Some(p),
-                None if req.assignee_id.is_some() => continue,
+                None if req.assignee_id.is_some() => {
+                    debug!(
+                        requirement_id = %req.id,
+                        assignee_id = ?req.assignee_id,
+                        reason = "assignee_unresolved",
+                        "auto mode skipping requirement"
+                    );
+                    continue;
+                }
                 None if config.allow_unassigned => None,
-                None => continue,
+                None => {
+                    debug!(
+                        requirement_id = %req.id,
+                        reason = "no_assignee_and_unassigned_disallowed",
+                        "auto mode skipping requirement"
+                    );
+                    continue;
+                }
             };
 
             let claim = match state.auto_mode_runtime.as_ref() {
                 Some(runtime) => match runtime.try_claim_requirement(&req.id) {
                     Some(claim) => Some(claim),
-                    None => continue,
+                    None => {
+                        debug!(
+                            requirement_id = %req.id,
+                            reason = "claim_taken",
+                            "auto mode skipping requirement"
+                        );
+                        continue;
+                    }
                 },
                 None => None,
             };
             picked += 1;
             // Spawn so the tick stays short. The next tick will
             // observe the Pending run and skip this requirement.
+            //
+            // The spawned future is gated on the runtime's
+            // concurrency semaphore — when N agents are already
+            // running (N = `max_concurrent_units`), additional
+            // spawns wait at `acquire_owned().await` until a permit
+            // frees. This is the actual "queue" that controls how
+            // many requirements pound the LLM in parallel.
             let state_clone = state.clone();
             let req_clone = req.clone();
             let workspace = resolve_project_workspace(&project, profile.as_ref(), state);
             let timeout_ms = config.run_timeout_ms;
             let workflow_prompt = config.workflow_prompt.clone();
+            let gate = state
+                .auto_mode_runtime
+                .as_ref()
+                .map(AutoModeRuntime::concurrency_gate);
             tokio::spawn(async move {
+                // Hold the per-requirement claim across the wait so
+                // the same row can't be picked again while we're
+                // queued. `acquire_owned` returns a permit tied to
+                // the lifetime of the spawned task — drop on
+                // completion releases the slot for the next waiter.
                 let _claim = claim;
+                let _permit: Option<OwnedSemaphorePermit> = match gate {
+                    Some(gate) => match gate.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        Err(_) => {
+                            // Semaphore closed mid-wait → runtime is
+                            // shutting down; bail without running.
+                            warn!(
+                                requirement_id = %req_clone.id,
+                                "auto mode concurrency gate closed; aborting drive"
+                            );
+                            return;
+                        }
+                    },
+                    None => None,
+                };
                 if let Err(e) = drive_one_with_prompt(
                     &state_clone,
                     &req_clone,
@@ -579,47 +820,195 @@ async fn resolve_auto_profile(
     Ok(by_name)
 }
 
+/// Safety multiplier applied to `run_timeout_ms` before reaping a
+/// stuck `Running` row. The agent loop itself is wrapped in a
+/// `tokio::time::timeout(run_timeout_ms)` ([`drive_one_with_prompt`]),
+/// so any healthy run must terminate at or before that boundary.
+/// We give it 3x headroom before declaring it abandoned, which
+/// covers verification + DB write tail latency without ever
+/// pre-empting a live task.
+const RUNNING_STALE_MULTIPLIER: u64 = 3;
+
+/// Reap in-flight runs whose age exceeds the configured wall-clock
+/// budget. Two cases the same routine handles:
+///
+/// * `Pending` — minted by REST `start_run` but the WS client never
+///   flipped it to `Running` (disconnected, browser closed, etc.).
+///   Reaped after `run_timeout_ms`.
+/// * `Running` — minted by [`drive_one_with_prompt`], typically
+///   stuck because the spawned tokio task panicked between
+///   "agent.run started" and the terminal status write. Reaped after
+///   `run_timeout_ms * RUNNING_STALE_MULTIPLIER` so we never race
+///   ahead of a slow-but-healthy run.
+///
+/// In both cases the row is flipped to `Cancelled` (not `Failed`):
+/// `Failed` carries semantics of "the agent loop ran and the LLM /
+/// tool produced an error", which we can't claim here — we don't
+/// know what happened to the spawned task. `Cancelled` is the
+/// neutral "the auto loop gave up on this row" signal, and
+/// `failed_count` (used by the `max_retries` guard) deliberately
+/// doesn't count it, so a panic'd run doesn't permanently burn
+/// a retry slot.
 async fn reclaim_stale_pending_runs(
     runs: &Arc<dyn harness_core::RequirementRunStore>,
     history: &mut [RequirementRun],
     timeout_ms: u64,
 ) {
     let timeout_ms = timeout_ms.max(1);
+    let running_threshold_ms = timeout_ms.saturating_mul(RUNNING_STALE_MULTIPLIER);
     for run in history.iter_mut() {
-        if run.status != RequirementRunStatus::Pending {
+        let (threshold_ms, summary, reason) = match run.status {
+            RequirementRunStatus::Pending => (
+                timeout_ms,
+                "Stale pending run reclaimed",
+                "pending exceeded auto run timeout without becoming running",
+            ),
+            RequirementRunStatus::Running => (
+                running_threshold_ms,
+                "Stuck running run reclaimed",
+                "running exceeded auto run timeout × safety multiplier; assumed abandoned",
+            ),
+            _ => continue,
+        };
+        if !inflight_run_is_stale(run, threshold_ms) {
             continue;
         }
-        if !pending_run_is_stale(run, timeout_ms) {
-            continue;
-        }
+        let prior_status = run.status;
         run.status = RequirementRunStatus::Cancelled;
-        run.error
-            .get_or_insert_with(|| "stale pending run reclaimed by auto mode".to_string());
+        run.error.get_or_insert_with(|| match prior_status {
+            RequirementRunStatus::Pending => "stale pending run reclaimed by auto mode".to_string(),
+            RequirementRunStatus::Running => {
+                "stuck running run reclaimed by auto mode (assumed abandoned)".to_string()
+            }
+            _ => "stale run reclaimed by auto mode".to_string(),
+        });
         run.finished_at = Some(chrono::Utc::now().to_rfc3339());
         run.push_log(
             RequirementRunLogLevel::Warn,
-            "Stale pending run reclaimed",
+            summary,
             Some(json!({
-                "timeout_ms": timeout_ms,
-                "reason": "pending exceeded auto run timeout without becoming running",
+                "timeout_ms": threshold_ms,
+                "reason": reason,
+                "prior_status": prior_status.as_wire(),
             })),
         );
         if let Err(e) = runs.upsert(run).await {
             warn!(
                 run_id = %run.id,
                 error = %e,
-                "auto mode failed to persist stale pending run reclamation"
+                "auto mode failed to persist stale run reclamation"
+            );
+        } else {
+            warn!(
+                run_id = %run.id,
+                prior_status = %prior_status.as_wire(),
+                threshold_ms,
+                "auto mode reclaimed stale in-flight run"
             );
         }
     }
 }
 
-fn pending_run_is_stale(run: &RequirementRun, timeout_ms: u64) -> bool {
+fn inflight_run_is_stale(run: &RequirementRun, threshold_ms: u64) -> bool {
     let Ok(started_at) = chrono::DateTime::parse_from_rfc3339(&run.started_at) else {
         return false;
     };
     let age = chrono::Utc::now().signed_duration_since(started_at.with_timezone(&chrono::Utc));
-    age.num_milliseconds() > timeout_ms as i64
+    age.num_milliseconds() > threshold_ms as i64
+}
+
+/// Hard ceiling on the failure backoff window. One hour matches the
+/// `JARVIS_WORK_TICK_SECONDS` documentation upper bound — anything
+/// longer and operators are better off flipping the row to Backlog
+/// or fixing the underlying failure manually.
+const FAILURE_BACKOFF_MAX_MS: u64 = 60 * 60 * 1000;
+
+/// Floor on the per-failure base delay. With `tick_seconds=1` (test
+/// fixtures, dev) the raw base would be 1 second and the loop would
+/// hammer a flaky LLM. 30 s is short enough that a single transient
+/// blip recovers fast and long enough that it's clearly distinct
+/// from "next tick".
+const FAILURE_BACKOFF_BASE_FLOOR_MS: u64 = 30_000;
+
+/// Count `Failed` runs in `history` (newest-first by store contract)
+/// up to and excluding the most recent `Completed` run.
+///
+/// Why "consecutive": the all-time count made
+/// `JARVIS_WORK_MAX_RETRIES=1` (the default) lock a Requirement out
+/// of the auto loop on its very first failure, even after an
+/// operator manually fixed and successfully ran it. Counting only
+/// failures since the last success is what matches the operator's
+/// mental model of "retries".
+///
+/// `Cancelled` rows are skipped (neither a success nor a failure
+/// — the timeout reaper or a manual abort wrote them). `Pending` /
+/// `Running` shouldn't be in history at this point because the
+/// in-flight guard above already short-circuits, but we skip them
+/// defensively.
+fn consecutive_failed_since_last_success(history: &[RequirementRun]) -> usize {
+    let mut count = 0;
+    for run in history {
+        match run.status {
+            RequirementRunStatus::Failed => count += 1,
+            RequirementRunStatus::Completed => break,
+            RequirementRunStatus::Cancelled
+            | RequirementRunStatus::Pending
+            | RequirementRunStatus::Running => continue,
+        }
+    }
+    count
+}
+
+/// Most recent `Failed` run, or `None` if no failure exists.
+/// Relies on `list_for_requirement` returning newest-first.
+fn most_recent_failed_run(history: &[RequirementRun]) -> Option<&RequirementRun> {
+    history
+        .iter()
+        .find(|r| matches!(r.status, RequirementRunStatus::Failed))
+}
+
+/// Compute the failure backoff window for a given consecutive-failure
+/// count. Doubles per failure starting from a `tick_seconds`-derived
+/// base, capped at `FAILURE_BACKOFF_MAX_MS`. `consecutive == 0`
+/// returns 0 (no backoff for a fresh / post-success requirement).
+fn failure_backoff_ms(consecutive: usize, tick_seconds: u64) -> u64 {
+    if consecutive == 0 {
+        return 0;
+    }
+    let base = tick_seconds
+        .saturating_mul(1000)
+        .max(FAILURE_BACKOFF_BASE_FLOOR_MS);
+    // The shift ceiling is high enough that the time cap
+    // (`FAILURE_BACKOFF_MAX_MS`) is what actually bounds the result
+    // for any sane `tick_seconds`. We keep a finite shift purely to
+    // avoid touching `1u64 << 64` UB territory if a buggy caller
+    // ever passes `consecutive = usize::MAX`.
+    let shift = (consecutive - 1).min(16) as u32;
+    base.saturating_mul(1u64 << shift)
+        .min(FAILURE_BACKOFF_MAX_MS)
+}
+
+/// Remaining backoff in ms for `run` (a `Failed` run). `None` when
+/// the window has elapsed, when `backoff_ms == 0`, or when the
+/// timestamp is unparseable / in the future (clock skew). The
+/// future-timestamp case returns `None` to avoid permanently
+/// pinning a requirement on a buggy clock.
+fn failure_backoff_remaining_ms(run: &RequirementRun, backoff_ms: u64) -> Option<u64> {
+    if backoff_ms == 0 {
+        return None;
+    }
+    let reference = run
+        .finished_at
+        .as_deref()
+        .unwrap_or(run.started_at.as_str());
+    let parsed = chrono::DateTime::parse_from_rfc3339(reference).ok()?;
+    let age_ms = chrono::Utc::now()
+        .signed_duration_since(parsed.with_timezone(&chrono::Utc))
+        .num_milliseconds();
+    if age_ms < 0 {
+        return None;
+    }
+    backoff_ms.checked_sub(age_ms as u64).filter(|&r| r > 0)
 }
 
 /// Default wall-clock budget for ad-hoc background runs (status
@@ -811,12 +1200,8 @@ async fn drive_one_with_prompt(
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let manifest = build_default_manifest(&workspace, requirement).await;
     let summary = render_manifest_summary(&manifest);
-    let composed_summary = match profile.and_then(|p| p.system_prompt.as_deref()) {
-        Some(p) if !p.trim().is_empty() => {
-            format!("=== assignee instructions ===\n{}\n\n{}", p.trim(), summary)
-        }
-        _ => summary,
-    };
+    let memory_preamble = render_project_memory_preamble(state, &requirement.project_id).await;
+    let composed_summary = compose_system_prompt(&memory_preamble, profile, &summary);
 
     // 2. Mint conversation: system (manifest) + user (seed prompt).
     let conversation_id = uuid::Uuid::new_v4().to_string();
@@ -960,6 +1345,7 @@ async fn drive_one_with_prompt(
         )
         .await;
         advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
+        capture_failure_memory(state, &requirement, &run).await;
         record_activity(
             state,
             &requirement.id,
@@ -1006,6 +1392,14 @@ async fn drive_one_with_prompt(
         }),
         None => state.build_agent(None, None),
     };
+    // Stamp the model id used for this run *before* the agent runs.
+    // We persist whatever route was selected so cost attribution
+    // works even if the run later fails (the row carries the model
+    // it tried, not just successful ones).
+    run.model = match profile {
+        Some(p) => Some(p.model.clone()),
+        None => Some(state.agent_template.model.clone()),
+    };
     let outcome = match agent_result {
         Ok(agent) => {
             // Run inside an async block so the borrowed `&mut
@@ -1014,11 +1408,11 @@ async fn drive_one_with_prompt(
             // the temporary across the await).
             let mut conv_for_run = conv.clone();
             let result = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-                agent.run(&mut conv_for_run).await
+                agent.run_with_usage(&mut conv_for_run).await
             })
             .await;
             match result {
-                Ok(Ok(_)) => Ok(conv_for_run),
+                Ok(Ok((_, usage))) => Ok((conv_for_run, usage)),
                 Ok(Err(e)) => Err(format!("agent error: {e}")),
                 Err(_) => Err(format!("agent timed out after {timeout_ms}ms")),
             }
@@ -1028,7 +1422,10 @@ async fn drive_one_with_prompt(
 
     // 7. Mark run terminal + persist.
     match outcome {
-        Ok(final_conv) => {
+        Ok((final_conv, usage)) => {
+            if !usage.is_empty() {
+                run.usage = Some(usage);
+            }
             // Re-save conversation with the assistant's reply.
             if let Err(e) = convo_store
                 .save_envelope(&conversation_id, &final_conv, &metadata)
@@ -1099,6 +1496,7 @@ async fn drive_one_with_prompt(
         .await;
     }
     advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
+    capture_failure_memory(state, &requirement, &run).await;
     record_activity(
         state,
         &requirement.id,
@@ -1524,6 +1922,172 @@ async fn record_activity(
     }
 }
 
+/// Compose the synthetic system prompt for an auto run. Order
+/// matters: project memory comes first so a "from now on, watch out
+/// for X" lesson is the strongest signal the model sees, then the
+/// assignee's profile instructions, then the workspace manifest.
+/// Empty inputs are skipped, never papered over with empty headers.
+fn compose_system_prompt(
+    memory_preamble: &str,
+    profile: Option<&AgentProfile>,
+    manifest_summary: &str,
+) -> String {
+    let mut out = String::new();
+    if !memory_preamble.is_empty() {
+        out.push_str(memory_preamble);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if let Some(prompt) = profile.and_then(|p| p.system_prompt.as_deref()) {
+        let trimmed = prompt.trim();
+        if !trimmed.is_empty() {
+            out.push_str("=== assignee instructions ===\n");
+            out.push_str(trimmed);
+            out.push_str("\n\n");
+        }
+    }
+    out.push_str(manifest_summary);
+    out
+}
+
+/// Hard byte budget for the project-memory block injected into the
+/// system prompt. Two KiB ≈ ~10 short lessons; older memories spill
+/// past the cap and are summarised as "(older memories omitted)".
+const PROJECT_MEMORY_PROMPT_BYTES: usize = 2048;
+
+/// Render the project-memory preamble for `project_id`, or an empty
+/// string when no store is configured / no rows exist / the store
+/// errors. Memories listed newest-first by `updated_at` (the store's
+/// contract); older entries past the byte budget are trimmed.
+///
+/// The header / footer markers (`=== project memory ===`) match the
+/// existing `harness_server::project_memory` file-memory convention
+/// so an operator reading the system prompt can find the section
+/// either way.
+async fn render_project_memory_preamble(state: &AppState, project_id: &str) -> String {
+    let Some(store) = state.project_memories.as_ref() else {
+        return String::new();
+    };
+    let memories = match store.list(project_id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                project_id,
+                error = %e,
+                "auto mode: project memory list failed; injecting empty preamble"
+            );
+            return String::new();
+        }
+    };
+    if memories.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("=== project memory ===\n");
+    out.push_str(
+        "Lessons / gotchas captured from prior runs in this project. \
+         Treat as hints, not authority — verify before acting.\n\n",
+    );
+    let mut omitted = 0usize;
+    for memory in memories {
+        let line = format!("- [{}] {}\n", memory.kind.as_wire(), memory.title.trim());
+        if out.len() + line.len() + 64 > PROJECT_MEMORY_PROMPT_BYTES {
+            omitted += 1;
+            continue;
+        }
+        out.push_str(&line);
+    }
+    if omitted > 0 {
+        out.push_str(&format!(
+            "- … ({omitted} older memorie(s) omitted; see project memory list)\n"
+        ));
+    }
+    out.push_str("=== /project memory ===\n");
+    out
+}
+
+/// Persist a fresh `ProjectMemory::Gotcha` row distilled from a
+/// failed run. No-op when the store isn't configured or `run.status`
+/// isn't [`RequirementRunStatus::Failed`]. Failures here are logged
+/// at WARN and never propagated — losing a memory write is strictly
+/// better than aborting the auto loop.
+async fn capture_failure_memory(state: &AppState, requirement: &Requirement, run: &RequirementRun) {
+    let Some(store) = state.project_memories.as_ref() else {
+        return;
+    };
+    if run.status != RequirementRunStatus::Failed {
+        return;
+    }
+    let body = render_failure_memory_body(run);
+    let memory = ProjectMemory::new(
+        &requirement.project_id,
+        ProjectMemoryKind::Gotcha,
+        format!("Run failed: {}", requirement.title),
+        body,
+    )
+    .with_source(run.id.clone(), requirement.id.clone());
+    if let Err(e) = store.upsert(&memory).await {
+        warn!(
+            run_id = %run.id,
+            project_id = %requirement.project_id,
+            error = %e,
+            "auto mode: project memory capture failed"
+        );
+    } else {
+        debug!(
+            run_id = %run.id,
+            memory_id = %memory.id,
+            project_id = %requirement.project_id,
+            "auto mode captured project memory from failed run"
+        );
+    }
+}
+
+/// Render the markdown body of a failure memory. Pulls the run's
+/// top-level error and (when available) the failing verification
+/// commands' stderr — the two pieces an operator most often needs
+/// to remember why this run blew up. The string is truncated to
+/// [`ProjectMemory::BODY_CAP`] inside `ProjectMemory::new`, so we
+/// can be slightly verbose here without budgeting carefully.
+fn render_failure_memory_body(run: &RequirementRun) -> String {
+    let mut body = String::new();
+    if let Some(err) = run
+        .error
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        body.push_str("Error: ");
+        body.push_str(err);
+        body.push('\n');
+    }
+    if let Some(verification) = run.verification.as_ref() {
+        for cr in &verification.command_results {
+            if cr.exit_code == Some(0) {
+                continue;
+            }
+            body.push_str(&format!(
+                "\nCommand failed (exit {}): {}\n",
+                cr.exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                cr.command.trim()
+            ));
+            let stderr = cr.stderr.trim();
+            if !stderr.is_empty() {
+                body.push_str("stderr: ");
+                body.push_str(stderr);
+                body.push('\n');
+            }
+        }
+    }
+    if body.trim().is_empty() {
+        body.push_str("No further detail recorded.");
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,18 +2097,22 @@ mod tests {
         VerificationPlan,
     };
     use harness_store::{
-        MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore, MemoryProjectStore,
-        MemoryRequirementRunStore, MemoryRequirementStore,
+        MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore,
+        MemoryProjectMemoryStore, MemoryProjectStore, MemoryRequirementRunStore,
+        MemoryRequirementStore,
     };
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Arc;
 
     /// Stub LLM that returns a canned assistant message and a
     /// `Stop` finish reason — the agent loop runs exactly one
-    /// turn and exits cleanly.
+    /// turn and exits cleanly. `usage` is optional so individual
+    /// tests can verify the agent loop forwards usage into the
+    /// run row.
     struct CannedLlm {
         reply: String,
         calls: Option<Arc<AtomicUsize>>,
+        usage: Option<harness_core::Usage>,
     }
     #[async_trait::async_trait]
     impl LlmProvider for CannedLlm {
@@ -1556,15 +2124,24 @@ mod tests {
                 message: Message::assistant_text(&self.reply),
                 finish_reason: FinishReason::Stop,
                 response_id: None,
+                usage: self.usage.clone(),
             })
         }
     }
 
     fn base_state_with_canned_llm(reply: &str) -> AppState {
+        base_state_with_canned_llm_usage(reply, None)
+    }
+
+    fn base_state_with_canned_llm_usage(
+        reply: &str,
+        usage: Option<harness_core::Usage>,
+    ) -> AppState {
         use crate::provider_registry::ProviderRegistry;
         let llm: Arc<dyn LlmProvider> = Arc::new(CannedLlm {
             reply: reply.to_string(),
             calls: None,
+            usage,
         });
         let cfg = AgentConfig::new("canned-model");
         let mut registry = ProviderRegistry::new("canned");
@@ -1578,6 +2155,7 @@ mod tests {
         let llm: Arc<dyn LlmProvider> = Arc::new(CannedLlm {
             reply: reply.to_string(),
             calls: Some(calls.clone()),
+            usage: None,
         });
         let cfg = AgentConfig::new("canned-model");
         let mut registry = ProviderRegistry::new("canned");
@@ -1593,6 +2171,7 @@ mod tests {
             .with_run_store(Arc::new(MemoryRequirementRunStore::new()))
             .with_activity_store(Arc::new(MemoryActivityStore::new()))
             .with_agent_profile_store(Arc::new(MemoryAgentProfileStore::new()))
+            .with_project_memory_store(Arc::new(MemoryProjectMemoryStore::new()))
     }
 
     #[test]
@@ -1642,7 +2221,11 @@ Do {{ requirement.title }} in {{ issue.state }}.
         wf.apply_to(&mut c);
         assert_eq!(c.mode, AutoMode::Auto);
         assert_eq!(c.tick_seconds, 2);
-        assert_eq!(c.max_units_per_tick, 4);
+        // `agent.max_concurrent_agents` now drives the real
+        // global concurrency cap (was mis-mapped to per-tick burst
+        // until v1.1). Per-tick stays at default.
+        assert_eq!(c.max_units_per_tick, 1);
+        assert_eq!(c.max_concurrent_units, 4);
         assert_eq!(c.max_retries, 3);
         assert!(c.allow_unassigned);
         assert_eq!(c.default_assignee.as_deref(), Some("Auto Alice"));
@@ -1675,6 +2258,10 @@ Do {{ requirement.title }} in {{ issue.state }}.
             mode: AutoMode::Auto,
             tick_seconds: 9999,
             max_units_per_tick: 5,
+            // High enough that the existing tests aren't gated on
+            // the new concurrency cap; the dedicated cap test
+            // configures its own value.
+            max_concurrent_units: 32,
             max_retries: 2,
             run_timeout_ms: 5_000,
             allow_unassigned: false,
@@ -1808,6 +2395,35 @@ Do {{ requirement.title }} in {{ issue.state }}.
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("drive_one never finished within 1s");
+    }
+
+    #[tokio::test]
+    async fn tick_skips_project_when_project_auto_mode_disabled() {
+        let state = wire_stores(base_state_with_canned_llm("should not run."));
+        let (mut proj, prof) = seed_project_and_profile(&state).await;
+        proj.automation.auto_mode_enabled = false;
+        state.projects.as_ref().unwrap().save(&proj).await.unwrap();
+
+        let mut req = Requirement::new(&proj.id, "paused project");
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 0);
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        assert!(runs.is_empty());
     }
 
     #[tokio::test]
@@ -2129,6 +2745,121 @@ Do {{ requirement.title }} in {{ issue.state }}.
     }
 
     #[tokio::test]
+    async fn tick_reclaims_stale_running_run_after_safety_multiplier() {
+        // Models the failure mode the watchdog was extended for:
+        // a Running row was minted by `drive_one_with_prompt` but
+        // the spawned tokio task panicked before it could write a
+        // terminal status. The in-flight guard would otherwise pin
+        // this requirement forever; the watchdog must reap it once
+        // age > run_timeout_ms * RUNNING_STALE_MULTIPLIER.
+        let state = wire_stores(base_state_with_canned_llm("fresh run."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "stale running");
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let mut stuck = RequirementRun::new(&req.id, "stuck-conv");
+        stuck.status = RequirementRunStatus::Running;
+        // Plant a started_at well past the safety window
+        // (multiplier=3, so 60s is way over even with a 5s timeout).
+        stuck.started_at = (chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339();
+        let stuck_id = stuck.id.clone();
+        state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .upsert(&stuck)
+            .await
+            .unwrap();
+
+        let mut c = cfg();
+        c.run_timeout_ms = 1; // 1ms × 3 = 3ms threshold; 60s row is way past it
+        let n = tick(&state, &c).await.unwrap();
+        assert_eq!(n, 1, "stuck running should not block a fresh pickup");
+
+        for _ in 0..50 {
+            let runs = state
+                .requirement_runs
+                .as_ref()
+                .unwrap()
+                .list_for_requirement(&req.id)
+                .await
+                .unwrap();
+            let reaped = runs.iter().find(|r| r.id == stuck_id).unwrap();
+            assert_eq!(reaped.status, RequirementRunStatus::Cancelled);
+            assert!(reaped
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("stuck running"));
+            if runs
+                .iter()
+                .any(|r| r.id != stuck_id && r.status == RequirementRunStatus::Completed)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("fresh pickup after stale running reclaim did not finish within 1s");
+    }
+
+    #[tokio::test]
+    async fn tick_keeps_recent_running_run_inflight() {
+        // Inverse of the reap test: a Running row inside the safety
+        // window must NOT be touched, otherwise we'd pre-empt
+        // legitimate long-running work. The in-flight guard then
+        // correctly skips the requirement this tick.
+        let state = wire_stores(base_state_with_canned_llm("ok."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "live running");
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let mut live = RequirementRun::new(&req.id, "live-conv");
+        live.status = RequirementRunStatus::Running;
+        // started_at = now (well within run_timeout_ms × 3 = 15s)
+        let live_id = live.id.clone();
+        state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .upsert(&live)
+            .await
+            .unwrap();
+
+        let c = cfg(); // run_timeout_ms = 5_000, threshold = 15_000
+        let n = tick(&state, &c).await.unwrap();
+        assert_eq!(n, 0, "live running run must block fresh pickup");
+
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        let same = runs.iter().find(|r| r.id == live_id).unwrap();
+        assert_eq!(
+            same.status,
+            RequirementRunStatus::Running,
+            "live running row must be left alone within the safety window"
+        );
+        assert!(same.finished_at.is_none(), "no terminal timestamp expected");
+    }
+
+    #[tokio::test]
     async fn tick_skips_when_max_retries_exceeded() {
         let state = wire_stores(base_state_with_canned_llm("ok."));
         let (proj, prof) = seed_project_and_profile(&state).await;
@@ -2178,6 +2909,156 @@ Do {{ requirement.title }} in {{ issue.state }}.
         c.max_units_per_tick = 2;
         let n = tick(&state, &c).await.unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// Stub LLM that records peak concurrency (how many `complete`
+    /// calls were in flight at the same moment). Sleeps briefly
+    /// inside `complete` so several tasks can pile up if the
+    /// semaphore isn't gating them.
+    struct ConcurrencyProbeLlm {
+        inflight: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        hold_ms: u64,
+    }
+    #[async_trait::async_trait]
+    impl LlmProvider for ConcurrencyProbeLlm {
+        async fn complete(&self, _: ChatRequest) -> Result<ChatResponse, Error> {
+            let now = self.inflight.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            // Atomic-CAS bump of `peak` to max(peak, now).
+            let mut snap = self.peak.load(AtomicOrdering::SeqCst);
+            while snap < now {
+                match self.peak.compare_exchange(
+                    snap,
+                    now,
+                    AtomicOrdering::SeqCst,
+                    AtomicOrdering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => snap = actual,
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(self.hold_ms)).await;
+            self.inflight.fetch_sub(1, AtomicOrdering::SeqCst);
+            Ok(ChatResponse {
+                message: Message::assistant_text("ok."),
+                finish_reason: FinishReason::Stop,
+                response_id: None,
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_mode_semaphore_caps_concurrent_drive_tasks() {
+        // Cap at 2; spawn 4 candidates in one tick. The probe LLM
+        // records peak in-flight; with the gate working we should
+        // never see more than 2 simultaneous `complete` calls even
+        // though 4 drive tasks are running.
+        use crate::provider_registry::ProviderRegistry;
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let llm: Arc<dyn LlmProvider> = Arc::new(ConcurrencyProbeLlm {
+            inflight: inflight.clone(),
+            peak: peak.clone(),
+            hold_ms: 80,
+        });
+        let mut registry = ProviderRegistry::new("canned");
+        registry.insert("canned", llm, "canned-model".to_string());
+        let cfg_template = AgentConfig::new("canned-model");
+        let bare = AppState::from_registry(registry, cfg_template);
+
+        // Pre-create the runtime with capacity=2 so the gate is in
+        // place before `tick` runs (mirrors what apps/jarvis::serve
+        // does at startup).
+        let bare = bare.with_auto_mode_runtime(AutoModeRuntime::with_capacity(AutoMode::Auto, 2));
+        let state = wire_stores(bare);
+        let (proj, prof) = seed_project_and_profile(&state).await;
+
+        for i in 0..4 {
+            let mut req = Requirement::new(&proj.id, format!("req-{i}"));
+            req.assignee_id = Some(prof.id.clone());
+            state
+                .requirements
+                .as_ref()
+                .unwrap()
+                .upsert(&req)
+                .await
+                .unwrap();
+        }
+
+        let mut c = cfg();
+        c.max_units_per_tick = 4; // spawn all four in one tick
+        c.max_concurrent_units = 2; // … but only two run in parallel
+        c.run_timeout_ms = 5_000;
+        let n = tick(&state, &c).await.unwrap();
+        assert_eq!(n, 4, "tick should pick up all four candidates");
+
+        // Wait for all spawned drive tasks to finish — generous
+        // upper bound: 4 reqs × 80 ms hold ÷ 2 permits ≈ 160 ms,
+        // plus per-task setup + agent loop overhead. 5s is plenty
+        // and only matters when the cap is broken.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if inflight.load(AtomicOrdering::SeqCst) == 0
+                && state
+                    .requirement_runs
+                    .as_ref()
+                    .unwrap()
+                    .list_all(50)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|r| {
+                        matches!(
+                            r.status,
+                            RequirementRunStatus::Pending | RequirementRunStatus::Running
+                        )
+                    })
+                    .count()
+                    == 0
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "drive tasks did not finish within 5s; inflight={} peak={}",
+                inflight.load(AtomicOrdering::SeqCst),
+                peak.load(AtomicOrdering::SeqCst),
+            );
+        }
+
+        // Core assertion: peak in-flight LLM calls never exceeded
+        // the configured cap. If the semaphore weren't there, peak
+        // would race towards 4.
+        let observed_peak = peak.load(AtomicOrdering::SeqCst);
+        assert!(
+            observed_peak <= 2,
+            "concurrency cap broken: peak in-flight LLM calls = {observed_peak}, expected ≤ 2"
+        );
+        // And every requirement was eventually processed (so the
+        // queue drained — no permanent starvation).
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_all(50)
+            .await
+            .unwrap();
+        let completed = runs
+            .iter()
+            .filter(|r| matches!(r.status, RequirementRunStatus::Completed))
+            .count();
+        let total = runs.len();
+        let by_status: std::collections::HashMap<&str, usize> =
+            runs.iter().fold(std::collections::HashMap::new(), |mut acc, r| {
+                *acc.entry(r.status.as_wire()).or_insert(0) += 1;
+                acc
+            });
+        assert_eq!(
+            completed, 4,
+            "all four requirements should drain through the queue; total={total} by_status={by_status:?}"
+        );
     }
 
     #[tokio::test]
@@ -2264,6 +3145,115 @@ Do {{ requirement.title }} in {{ issue.state }}.
     }
 
     #[tokio::test]
+    async fn auto_run_persists_usage_and_model_onto_run_row() {
+        // CannedLlm reports a single Usage; the agent loop should
+        // sum it into the run's `usage` field and stamp the model
+        // it routed to. Provides the source-of-truth for the
+        // /v1/runs/:id token columns.
+        let usage = harness_core::Usage {
+            prompt_tokens: Some(1234),
+            completion_tokens: Some(56),
+            cached_prompt_tokens: Some(78),
+            reasoning_tokens: Some(9),
+        };
+        let state = wire_stores(base_state_with_canned_llm_usage("done.", Some(usage.clone())));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "needs token tracking");
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 1);
+
+        for _ in 0..50 {
+            let runs = state
+                .requirement_runs
+                .as_ref()
+                .unwrap()
+                .list_for_requirement(&req.id)
+                .await
+                .unwrap();
+            if let Some(run) = runs.iter().find(|r| r.status.is_terminal()) {
+                assert_eq!(run.status, RequirementRunStatus::Completed);
+                let actual = run
+                    .usage
+                    .as_ref()
+                    .expect("agent loop must persist usage onto the run row");
+                assert_eq!(actual.prompt_tokens, Some(1234));
+                assert_eq!(actual.completion_tokens, Some(56));
+                assert_eq!(actual.cached_prompt_tokens, Some(78));
+                assert_eq!(actual.reasoning_tokens, Some(9));
+                assert_eq!(
+                    run.model.as_deref(),
+                    Some("canned-model"),
+                    "model the run routed to must be stamped on the row"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("usage-aware drive_one did not finish within 1s");
+    }
+
+    #[test]
+    fn usage_add_merges_per_iteration_counters() {
+        let mut total = harness_core::Usage::default();
+        total.add(&harness_core::Usage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(20),
+            cached_prompt_tokens: None,
+            reasoning_tokens: Some(5),
+        });
+        total.add(&harness_core::Usage {
+            prompt_tokens: Some(50),
+            completion_tokens: None,
+            cached_prompt_tokens: Some(30),
+            reasoning_tokens: Some(7),
+        });
+        assert_eq!(total.prompt_tokens, Some(150));
+        assert_eq!(total.completion_tokens, Some(20));
+        assert_eq!(total.cached_prompt_tokens, Some(30));
+        assert_eq!(total.reasoning_tokens, Some(12));
+    }
+
+    #[tokio::test]
+    async fn reaper_runs_independent_of_enable_flag() {
+        // Models the `feat/auto_project` ghost-row case: a Pending
+        // row sits in the store while auto mode is disabled; the
+        // tick gate would otherwise skip the reaper entirely. The
+        // decoupled top-level reaper must reap it regardless.
+        let state = wire_stores(base_state_with_canned_llm("ignored"));
+        let runs = state.requirement_runs.as_ref().unwrap();
+        let mut stale = RequirementRun::new("req-orphan", "conv-orphan");
+        stale.status = RequirementRunStatus::Pending;
+        stale.started_at = (chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339();
+        let stale_id = stale.id.clone();
+        runs.upsert(&stale).await.unwrap();
+
+        let mut c = cfg();
+        c.run_timeout_ms = 1; // make the row well past the threshold
+
+        // Reaper runs without going through `tick()` and without
+        // checking the enable flag.
+        reap_all_stale_inflight_runs(&state, &c).await;
+
+        let after = runs.get(&stale_id).await.unwrap().unwrap();
+        assert_eq!(after.status, RequirementRunStatus::Cancelled);
+        assert!(after.finished_at.is_some());
+        assert!(after
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("stale pending"));
+    }
+
+    #[tokio::test]
     async fn off_mode_spawn_is_a_no_op() {
         let state = wire_stores(base_state_with_canned_llm("ok."));
         // Just verify that calling spawn with Off doesn't panic
@@ -2271,5 +3261,319 @@ Do {{ requirement.title }} in {{ issue.state }}.
         // task spawned" directly; the smoke test is "the
         // function returns immediately".
         spawn(state, AutoModeConfig::default());
+    }
+
+    fn fake_run(req_id: &str, status: RequirementRunStatus, started_at: &str) -> RequirementRun {
+        let mut r = RequirementRun::new(req_id, "conv");
+        r.status = status;
+        r.started_at = started_at.to_string();
+        if status.is_terminal() {
+            r.finished_at = Some(started_at.to_string());
+        }
+        r
+    }
+
+    #[test]
+    fn consecutive_failed_resets_after_completed() {
+        // Newest-first ordering matches what the store returns.
+        let history = vec![
+            fake_run("r", RequirementRunStatus::Failed, "2026-05-07T03:00:00Z"),
+            fake_run("r", RequirementRunStatus::Completed, "2026-05-07T02:00:00Z"),
+            fake_run("r", RequirementRunStatus::Failed, "2026-05-07T01:00:00Z"),
+            fake_run("r", RequirementRunStatus::Failed, "2026-05-07T00:00:00Z"),
+        ];
+        // Only the failure newer than the most recent Completed counts.
+        assert_eq!(consecutive_failed_since_last_success(&history), 1);
+    }
+
+    #[test]
+    fn consecutive_failed_ignores_cancelled_runs() {
+        let history = vec![
+            fake_run("r", RequirementRunStatus::Cancelled, "2026-05-07T03:00:00Z"),
+            fake_run("r", RequirementRunStatus::Failed, "2026-05-07T02:00:00Z"),
+            fake_run("r", RequirementRunStatus::Cancelled, "2026-05-07T01:00:00Z"),
+            fake_run("r", RequirementRunStatus::Failed, "2026-05-07T00:00:00Z"),
+        ];
+        // Two Failed, no Completed, two Cancelled in between — counter
+        // sees 2. Cancelled (timeout reaper / manual abort) is neither
+        // success nor failure for retry budgeting.
+        assert_eq!(consecutive_failed_since_last_success(&history), 2);
+    }
+
+    #[test]
+    fn failure_backoff_grows_then_caps() {
+        // tick_seconds=30 → base = 30_000ms, doubling per failure.
+        assert_eq!(failure_backoff_ms(0, 30), 0);
+        assert_eq!(failure_backoff_ms(1, 30), 30_000);
+        assert_eq!(failure_backoff_ms(2, 30), 60_000);
+        assert_eq!(failure_backoff_ms(3, 30), 120_000);
+        // 6 doublings on a 30s base = 30 * 64 = 1920s = 32min, still
+        // under the 1h cap.
+        assert_eq!(failure_backoff_ms(7, 30), 30_000 * 64);
+        // 13th failure would be 30 * 4096 = ~34h without the cap.
+        assert_eq!(failure_backoff_ms(13, 30), FAILURE_BACKOFF_MAX_MS);
+        // tick_seconds=1 — base is floored at 30s so dev/test
+        // configurations don't hammer.
+        assert_eq!(failure_backoff_ms(1, 1), FAILURE_BACKOFF_BASE_FLOOR_MS);
+    }
+
+    #[test]
+    fn failure_backoff_remaining_handles_clock_skew_and_missing_timestamps() {
+        let mut run = RequirementRun::new("req", "conv");
+        run.status = RequirementRunStatus::Failed;
+        // future-dated finished_at — must NOT pin the requirement.
+        run.finished_at = Some((chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339());
+        assert_eq!(
+            failure_backoff_remaining_ms(&run, 60_000),
+            None,
+            "future timestamp from clock skew must read as elapsed, not blocking"
+        );
+
+        run.finished_at = None;
+        run.started_at = chrono::Utc::now().to_rfc3339();
+        assert!(
+            failure_backoff_remaining_ms(&run, 60_000).is_some(),
+            "missing finished_at should fall back to started_at"
+        );
+
+        run.finished_at = Some("not-a-timestamp".to_string());
+        assert_eq!(
+            failure_backoff_remaining_ms(&run, 60_000),
+            None,
+            "unparseable timestamp must read as elapsed (fail open)"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_picks_again_after_failure_then_success_history() {
+        // Old all-time counter would lock this row out forever (any
+        // Failed run >= max_retries=1). New consecutive counter sees
+        // the Completed run reset the budget.
+        let state = wire_stores(base_state_with_canned_llm("retry succeeds."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "post-success retry");
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let runs = state.requirement_runs.as_ref().unwrap();
+        // Oldest: a Failed run from 2 hours ago.
+        let mut failed = RequirementRun::new(&req.id, "c-failed");
+        failed.started_at = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        failed.status = RequirementRunStatus::Failed;
+        failed.finished_at = Some(failed.started_at.clone());
+        runs.upsert(&failed).await.unwrap();
+        // Mid: a Completed run from 1 hour ago — resets the counter.
+        let mut completed = RequirementRun::new(&req.id, "c-completed");
+        completed.started_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        completed.status = RequirementRunStatus::Completed;
+        completed.finished_at = Some(completed.started_at.clone());
+        runs.upsert(&completed).await.unwrap();
+
+        let mut c = cfg();
+        c.max_retries = 1; // production default — strictest possible.
+        let n = tick(&state, &c).await.unwrap();
+        assert_eq!(
+            n, 1,
+            "consecutive counter should ignore failures before the latest success"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_run_captures_project_memory_with_provenance() {
+        // Verification-only path: failing command marks the run
+        // Failed; auto loop must drop a `gotcha` memory carrying the
+        // run + requirement ids + the stderr we'll care about next
+        // time.
+        let project_dir = tempfile::tempdir().unwrap();
+        let (state, _llm_calls) = state_with_counting_llm("ignored");
+        let state = wire_stores(state).with_workspace_root(project_dir.path().to_path_buf());
+        let mut proj = Project::new("Memory capture", "instructions");
+        proj.slug = "memory-capture".into();
+        state.projects.as_ref().unwrap().save(&proj).await.unwrap();
+        let prof = AgentProfile::new("Auto Alice", "canned", "canned-model");
+        state
+            .agent_profiles
+            .as_ref()
+            .unwrap()
+            .upsert(&prof)
+            .await
+            .unwrap();
+
+        let fail_cmd = "printf 'boom from cmd' >&2; exit 7";
+        let mut req = Requirement::new(&proj.id, "boom requirement");
+        req.assignee_id = Some(prof.id.clone());
+        req.verification_plan = Some(VerificationPlan {
+            commands: vec![fail_cmd.into()],
+            require_diff: false,
+            require_tests: false,
+            require_human_review: false,
+        });
+        let mut todo = harness_core::RequirementTodo::new("fails", RequirementTodoKind::Ci);
+        todo.command = Some(fail_cmd.into());
+        req.todos = vec![todo];
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 1);
+
+        for _ in 0..50 {
+            let runs = state
+                .requirement_runs
+                .as_ref()
+                .unwrap()
+                .list_for_requirement(&req.id)
+                .await
+                .unwrap();
+            if let Some(run) = runs.iter().find(|r| r.status.is_terminal()) {
+                assert_eq!(run.status, RequirementRunStatus::Failed);
+                let memories = state
+                    .project_memories
+                    .as_ref()
+                    .unwrap()
+                    .list(&proj.id)
+                    .await
+                    .unwrap();
+                assert_eq!(memories.len(), 1, "exactly one gotcha per failed run");
+                let m = &memories[0];
+                assert_eq!(m.kind, ProjectMemoryKind::Gotcha);
+                assert_eq!(m.project_id, proj.id);
+                assert_eq!(m.source_run_id.as_deref(), Some(run.id.as_str()));
+                assert_eq!(m.source_requirement_id.as_deref(), Some(req.id.as_str()));
+                assert!(
+                    m.title.contains("boom requirement"),
+                    "title should reference the requirement: {}",
+                    m.title
+                );
+                assert!(
+                    m.body.contains("boom from cmd"),
+                    "body should retain stderr context: {}",
+                    m.body
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("verification-only failure did not finalize within 1s");
+    }
+
+    #[tokio::test]
+    async fn project_memory_is_injected_into_next_run_system_prompt() {
+        let state = wire_stores(base_state_with_canned_llm("ok."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let memory = ProjectMemory::new(
+            &proj.id,
+            ProjectMemoryKind::Gotcha,
+            "Cargo build needs nightly toolchain",
+            "Last run failed because rustc was on stable; rerun with rustup default nightly.",
+        );
+        state
+            .project_memories
+            .as_ref()
+            .unwrap()
+            .upsert(&memory)
+            .await
+            .unwrap();
+
+        let mut req = Requirement::new(&proj.id, "fresh pickup with memory");
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 1);
+
+        for _ in 0..50 {
+            let runs = state
+                .requirement_runs
+                .as_ref()
+                .unwrap()
+                .list_for_requirement(&req.id)
+                .await
+                .unwrap();
+            if let Some(run) = runs.iter().find(|r| r.status.is_terminal()) {
+                assert_eq!(run.status, RequirementRunStatus::Completed);
+                let convo = state
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .load(&run.conversation_id)
+                    .await
+                    .unwrap()
+                    .expect("conversation should be saved");
+                let system = convo
+                    .messages
+                    .iter()
+                    .find_map(|m| match m {
+                        Message::System { content, .. } => Some(content.clone()),
+                        _ => None,
+                    })
+                    .expect("system message should exist");
+                assert!(
+                    system.contains("=== project memory ==="),
+                    "system prompt should include the project memory section: {system}"
+                );
+                assert!(
+                    system.contains("Cargo build needs nightly toolchain"),
+                    "system prompt should include the memory title: {system}"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("drive_one with memory did not finish within 1s");
+    }
+
+    #[tokio::test]
+    async fn tick_blocks_within_failure_backoff_then_unblocks() {
+        let state = wire_stores(base_state_with_canned_llm("ok after backoff."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "backoff guarded");
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let runs = state.requirement_runs.as_ref().unwrap();
+        let mut recent = RequirementRun::new(&req.id, "c-fresh");
+        recent.status = RequirementRunStatus::Failed;
+        // finished just now → backoff window fully open.
+        recent.started_at = chrono::Utc::now().to_rfc3339();
+        recent.finished_at = Some(recent.started_at.clone());
+        runs.upsert(&recent).await.unwrap();
+
+        let mut c = cfg();
+        c.max_retries = 5; // not the gate we're testing
+        c.tick_seconds = 30; // 30s base ≥ floor; keeps test fast
+        let n = tick(&state, &c).await.unwrap();
+        assert_eq!(n, 0, "fresh failure must be in backoff window");
+
+        // Backdate the failure past the backoff window.
+        let mut backdated = recent.clone();
+        backdated.started_at = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        backdated.finished_at = Some(backdated.started_at.clone());
+        runs.upsert(&backdated).await.unwrap();
+        let n = tick(&state, &c).await.unwrap();
+        assert_eq!(n, 1, "elapsed backoff window must let the row through");
     }
 }

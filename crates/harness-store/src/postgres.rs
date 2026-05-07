@@ -9,10 +9,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
-    DocEvent, DocKind, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStatus, RequirementStore,
-    TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
+    BoxError, Comment, CommentEvent, CommentStore, Conversation, ConversationMetadata,
+    ConversationRecord, ConversationStore, DocDraft, DocEvent, DocKind, DocProject, DocStore,
+    KanbanColumn, Label, LabelEvent, LabelStore, Project, ProjectAutomation, ProjectStore,
+    Requirement, RequirementEvent, RequirementRun, RequirementRunEvent, RequirementRunStore,
+    RequirementStatus, RequirementStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -74,6 +75,8 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             instructions TEXT NOT NULL,
             tags         TEXT NOT NULL,
             workspaces   TEXT NOT NULL DEFAULT '[]',
+            columns      TEXT,
+            automation   TEXT NOT NULL DEFAULT '{"auto_mode_enabled":true}',
             archived     BOOLEAN NOT NULL DEFAULT FALSE,
             created_at   TEXT NOT NULL,
             updated_at   TEXT NOT NULL
@@ -85,6 +88,14 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     // Forward-compat for databases created before multi-workspace shipped.
     sqlx::query(
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS workspaces TEXT NOT NULL DEFAULT '[]'",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS columns TEXT")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        r#"ALTER TABLE projects ADD COLUMN IF NOT EXISTS automation TEXT NOT NULL DEFAULT '{"auto_mode_enabled":true}'"#,
     )
     .execute(pool)
     .await?;
@@ -193,6 +204,53 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_activities_req \
          ON activities(requirement_id, created_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
+    // Phase 3.8 — Comments + Labels (see sqlite.rs for the rationale).
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS comments (
+            id             TEXT PRIMARY KEY,
+            requirement_id TEXT NOT NULL,
+            parent_id      TEXT,
+            payload        TEXT NOT NULL,
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_comments_req \
+         ON comments(requirement_id, created_at ASC)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS labels (
+            id          TEXT PRIMARY KEY,
+            project_id  TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            colour      TEXT NOT NULL,
+            payload     TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_labels_proj \
+         ON labels(project_id, name)",
     )
     .execute(pool)
     .await?;
@@ -393,11 +451,18 @@ impl ProjectStore for PostgresProjectStore {
     async fn save(&self, project: &Project) -> Result<(), BoxError> {
         let tags = serde_json::to_string(&project.tags).map_err(StoreError::from)?;
         let workspaces = serde_json::to_string(&project.workspaces).map_err(StoreError::from)?;
+        let columns = project
+            .columns
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(StoreError::from)?;
+        let automation = serde_json::to_string(&project.automation).map_err(StoreError::from)?;
         sqlx::query(
             r#"
             INSERT INTO projects
-                (id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                (id, slug, name, description, instructions, tags, workspaces, columns, automation, archived, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (id) DO UPDATE SET
                 slug         = EXCLUDED.slug,
                 name         = EXCLUDED.name,
@@ -405,6 +470,8 @@ impl ProjectStore for PostgresProjectStore {
                 instructions = EXCLUDED.instructions,
                 tags         = EXCLUDED.tags,
                 workspaces   = EXCLUDED.workspaces,
+                columns      = EXCLUDED.columns,
+                automation   = EXCLUDED.automation,
                 archived     = EXCLUDED.archived,
                 updated_at   = EXCLUDED.updated_at
             "#,
@@ -416,6 +483,8 @@ impl ProjectStore for PostgresProjectStore {
         .bind(&project.instructions)
         .bind(&tags)
         .bind(&workspaces)
+        .bind(&columns)
+        .bind(&automation)
         .bind(project.archived)
         .bind(&project.created_at)
         .bind(&project.updated_at)
@@ -427,7 +496,7 @@ impl ProjectStore for PostgresProjectStore {
 
     async fn load(&self, id: &str) -> Result<Option<Project>, BoxError> {
         let row: Option<ProjectRow> = sqlx::query_as(
-            r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
+            r#"SELECT id, slug, name, description, instructions, tags, workspaces, columns, automation, archived, created_at, updated_at
                  FROM projects WHERE id = $1"#,
         )
         .bind(id)
@@ -439,7 +508,7 @@ impl ProjectStore for PostgresProjectStore {
 
     async fn find_by_slug(&self, slug: &str) -> Result<Option<Project>, BoxError> {
         let row: Option<ProjectRow> = sqlx::query_as(
-            r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
+            r#"SELECT id, slug, name, description, instructions, tags, workspaces, columns, automation, archived, created_at, updated_at
                  FROM projects WHERE slug = $1"#,
         )
         .bind(slug)
@@ -452,7 +521,7 @@ impl ProjectStore for PostgresProjectStore {
     async fn list(&self, include_archived: bool, limit: u32) -> Result<Vec<Project>, BoxError> {
         let rows: Vec<ProjectRow> = if include_archived {
             sqlx::query_as(
-                r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
+                r#"SELECT id, slug, name, description, instructions, tags, workspaces, columns, automation, archived, created_at, updated_at
                      FROM projects
                      ORDER BY updated_at DESC
                      LIMIT $1"#,
@@ -463,7 +532,7 @@ impl ProjectStore for PostgresProjectStore {
             .map_err(StoreError::from)?
         } else {
             sqlx::query_as(
-                r#"SELECT id, slug, name, description, instructions, tags, workspaces, archived, created_at, updated_at
+                r#"SELECT id, slug, name, description, instructions, tags, workspaces, columns, automation, archived, created_at, updated_at
                      FROM projects
                      WHERE archived = FALSE
                      ORDER BY updated_at DESC
@@ -507,6 +576,8 @@ struct ProjectRow {
     instructions: String,
     tags: String,
     workspaces: String,
+    columns: Option<String>,
+    automation: String,
     archived: bool,
     created_at: String,
     updated_at: String,
@@ -520,6 +591,18 @@ impl ProjectRow {
         } else {
             serde_json::from_str(&self.workspaces).map_err(StoreError::from)?
         };
+        let columns: Option<Vec<KanbanColumn>> = self
+            .columns
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(StoreError::from)?;
+        let automation: ProjectAutomation = if self.automation.trim().is_empty() {
+            ProjectAutomation::default()
+        } else {
+            serde_json::from_str(&self.automation).map_err(StoreError::from)?
+        };
         Ok(Project {
             id: self.id,
             slug: self.slug,
@@ -529,6 +612,8 @@ impl ProjectRow {
             tags,
             workspaces,
             archived: self.archived,
+            columns,
+            automation,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -710,6 +795,8 @@ impl RequirementRow {
             Some(s) => Some(serde_json::from_str(&s).map_err(StoreError::from)?),
             None => None,
         };
+        // Phase 3.6 / v1.0 / Phase 3.8 fields default the same way
+        // `Requirement::new` does — see sqlite.rs for the rationale.
         Ok(Requirement {
             id: self.id,
             project_id: self.project_id,
@@ -719,6 +806,11 @@ impl RequirementRow {
             conversation_ids,
             assignee_id: self.assignee_id,
             verification_plan,
+            todos: Vec::new(),
+            triage_state: harness_core::TriageState::Approved,
+            depends_on: Vec::new(),
+            label_ids: Vec::new(),
+            acceptance_policy: harness_core::AcceptancePolicy::Subagent,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -1091,6 +1183,350 @@ impl ActivityStore for PostgresActivityStore {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<ActivityEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- CommentStore -------------------------------------------------
+
+pub struct PostgresCommentStore {
+    pool: PgPool,
+    tx: broadcast::Sender<CommentEvent>,
+}
+
+impl PostgresCommentStore {
+    pub fn from_pool(pool: PgPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+}
+
+#[async_trait]
+impl CommentStore for PostgresCommentStore {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Comment>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM comments
+                 WHERE requirement_id = $1
+                 ORDER BY created_at ASC
+                 LIMIT 500"#,
+        )
+        .bind(requirement_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        if rows.len() == 500 {
+            tracing::warn!(requirement_id, "comment list hit 500-item soft cap");
+        }
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<Comment>(&payload).map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn create(&self, comment: &Comment) -> Result<(), BoxError> {
+        if let Some(parent_id) = comment.parent_id.as_deref() {
+            let parent: Option<(Option<String>, String)> = sqlx::query_as(
+                r#"SELECT parent_id, requirement_id FROM comments WHERE id = $1"#,
+            )
+            .bind(parent_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+            match parent {
+                None => {
+                    return Err(format!(
+                        "parent comment `{parent_id}` not found in requirement"
+                    )
+                    .into())
+                }
+                Some((_, parent_req)) if parent_req != comment.requirement_id => {
+                    return Err(format!(
+                        "parent comment `{parent_id}` not found in requirement"
+                    )
+                    .into())
+                }
+                Some((Some(_), _)) => {
+                    return Err(
+                        "comment threading is limited to depth 1 (cannot reply to a reply)"
+                            .into(),
+                    )
+                }
+                _ => {}
+            }
+        }
+        let payload = serde_json::to_string(comment).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO comments
+                (id, requirement_id, parent_id, payload, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6)"#,
+        )
+        .bind(&comment.id)
+        .bind(&comment.requirement_id)
+        .bind(comment.parent_id.as_deref())
+        .bind(&payload)
+        .bind(&comment.created_at)
+        .bind(&comment.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| -> BoxError {
+            // Postgres surfaces "duplicate key value violates unique
+            // constraint" — same hand-off as SQLite, just a different
+            // error string.
+            let msg = e.to_string();
+            if msg.contains("duplicate key") {
+                format!("comment id `{}` already exists", comment.id).into()
+            } else {
+                Box::new(StoreError::from(e))
+            }
+        })?;
+        let _ = self.tx.send(CommentEvent::Posted(comment.clone()));
+        Ok(())
+    }
+
+    async fn update(&self, comment: &Comment) -> Result<bool, BoxError> {
+        let existing: Option<(String,)> = sqlx::query_as(
+            r#"SELECT payload FROM comments WHERE id = $1 AND requirement_id = $2"#,
+        )
+        .bind(&comment.id)
+        .bind(&comment.requirement_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let Some((existing_payload,)) = existing else {
+            return Ok(false);
+        };
+        let mut existing: Comment =
+            serde_json::from_str(&existing_payload).map_err(StoreError::from)?;
+        existing.body = comment.body.clone();
+        existing.updated_at = comment.updated_at.clone();
+        let payload = serde_json::to_string(&existing).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"UPDATE comments
+                 SET payload = $1, updated_at = $2
+                 WHERE id = $3"#,
+        )
+        .bind(&payload)
+        .bind(&existing.updated_at)
+        .bind(&existing.id)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(CommentEvent::Edited(existing));
+        Ok(true)
+    }
+
+    async fn delete(&self, requirement_id: &str, comment_id: &str) -> Result<bool, BoxError> {
+        let target: Option<(Option<String>,)> = sqlx::query_as(
+            r#"SELECT parent_id FROM comments WHERE id = $1 AND requirement_id = $2"#,
+        )
+        .bind(comment_id)
+        .bind(requirement_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let Some((target_parent_id,)) = target else {
+            return Ok(false);
+        };
+        let mut to_remove: Vec<String> = vec![comment_id.to_string()];
+        if target_parent_id.is_none() {
+            let reply_rows: Vec<(String,)> = sqlx::query_as(
+                r#"SELECT id FROM comments WHERE parent_id = $1"#,
+            )
+            .bind(comment_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
+            for (id,) in reply_rows {
+                to_remove.push(id);
+            }
+        }
+        sqlx::query(
+            r#"DELETE FROM comments
+                WHERE id = $1
+                   OR parent_id = $1"#,
+        )
+        .bind(comment_id)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        for id in to_remove {
+            let _ = self.tx.send(CommentEvent::Deleted {
+                requirement_id: requirement_id.to_string(),
+                comment_id: id,
+            });
+        }
+        Ok(true)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<CommentEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- LabelStore ---------------------------------------------------
+
+pub struct PostgresLabelStore {
+    pool: PgPool,
+    tx: broadcast::Sender<LabelEvent>,
+}
+
+impl PostgresLabelStore {
+    pub fn from_pool(pool: PgPool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
+
+    async fn name_clash(
+        &self,
+        project_id: &str,
+        name: &str,
+        skip_id: Option<&str>,
+    ) -> Result<bool, BoxError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"SELECT id, name FROM labels WHERE project_id = $1"#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        Ok(rows.iter().any(|(id, n)| {
+            skip_id.map(|s| s != id).unwrap_or(true) && n.eq_ignore_ascii_case(name)
+        }))
+    }
+}
+
+#[async_trait]
+impl LabelStore for PostgresLabelStore {
+    async fn list_for_project(&self, project_id: &str) -> Result<Vec<Label>, BoxError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT payload
+                 FROM labels
+                 WHERE project_id = $1
+                 ORDER BY LOWER(name) ASC"#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<Label>(&payload).map_err(|e| -> BoxError { Box::new(e) })
+            })
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Label>, BoxError> {
+        let row: Option<(String,)> =
+            sqlx::query_as(r#"SELECT payload FROM labels WHERE id = $1"#)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
+        row.map(|(payload,)| serde_json::from_str::<Label>(&payload).map_err(StoreError::from))
+            .transpose()
+            .map_err(|e| -> BoxError { Box::new(e) })
+    }
+
+    async fn create(&self, label: &Label) -> Result<(), BoxError> {
+        if self.name_clash(&label.project_id, &label.name, None).await? {
+            return Err(format!("label name `{}` already exists in project", label.name).into());
+        }
+        let payload = serde_json::to_string(label).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"INSERT INTO labels
+                (id, project_id, name, colour, payload, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+        )
+        .bind(&label.id)
+        .bind(&label.project_id)
+        .bind(&label.name)
+        .bind(&label.colour)
+        .bind(&payload)
+        .bind(&label.created_at)
+        .bind(&label.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| -> BoxError {
+            let msg = e.to_string();
+            if msg.contains("duplicate key") {
+                format!("label id `{}` already exists", label.id).into()
+            } else {
+                Box::new(StoreError::from(e))
+            }
+        })?;
+        let _ = self.tx.send(LabelEvent::Created(label.clone()));
+        Ok(())
+    }
+
+    async fn update(&self, label: &Label) -> Result<bool, BoxError> {
+        let existing: Option<(String,)> = sqlx::query_as(
+            r#"SELECT payload FROM labels WHERE id = $1 AND project_id = $2"#,
+        )
+        .bind(&label.id)
+        .bind(&label.project_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let Some((existing_payload,)) = existing else {
+            return Ok(false);
+        };
+        let existing: Label =
+            serde_json::from_str(&existing_payload).map_err(StoreError::from)?;
+        if self
+            .name_clash(&label.project_id, &label.name, Some(&label.id))
+            .await?
+        {
+            return Err(format!("label name `{}` already exists in project", label.name).into());
+        }
+        let merged = Label {
+            id: existing.id,
+            project_id: existing.project_id,
+            created_at: existing.created_at,
+            name: label.name.clone(),
+            colour: label.colour.clone(),
+            description: label.description.clone(),
+            updated_at: label.updated_at.clone(),
+        };
+        let payload = serde_json::to_string(&merged).map_err(StoreError::from)?;
+        sqlx::query(
+            r#"UPDATE labels
+                 SET name = $1, colour = $2, payload = $3, updated_at = $4
+                 WHERE id = $5"#,
+        )
+        .bind(&merged.name)
+        .bind(&merged.colour)
+        .bind(&payload)
+        .bind(&merged.updated_at)
+        .bind(&merged.id)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let _ = self.tx.send(LabelEvent::Updated(merged));
+        Ok(true)
+    }
+
+    async fn delete(&self, project_id: &str, label_id: &str) -> Result<bool, BoxError> {
+        let res = sqlx::query(
+            r#"DELETE FROM labels WHERE id = $1 AND project_id = $2"#,
+        )
+        .bind(label_id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::from)?;
+        let removed = res.rows_affected() > 0;
+        if removed {
+            let _ = self.tx.send(LabelEvent::Deleted {
+                project_id: project_id.to_string(),
+                label_id: label_id.to_string(),
+            });
+        }
+        Ok(removed)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<LabelEvent> {
         self.tx.subscribe()
     }
 }

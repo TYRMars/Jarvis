@@ -145,7 +145,18 @@ that picks Approved Requirements with an assignee + all
 per-Requirement `verification_plan` after each agent loop. Off
 unless explicitly opted in),
 `JARVIS_WORK_TICK_SECONDS` (default `30`),
-`JARVIS_WORK_MAX_UNITS_PER_TICK` (default `1`),
+`JARVIS_WORK_MAX_UNITS_PER_TICK` (default `1` — per-tick burst
+budget; how many candidates the picker may spawn-task in a single
+tick before waiting for the next interval),
+`JARVIS_WORK_MAX_CONCURRENT` (default `2` — true global concurrency
+cap. Each spawned drive task acquires a permit from the
+auto-mode runtime's `Semaphore` before invoking the LLM; surplus
+spawns wait in the semaphore's FIFO queue rather than racing for
+rate-limit tokens. Independent from the per-tick burst —
+`max_units_per_tick=10 + max_concurrent=2` picks 10 per tick but
+only 2 ever run in parallel. WORKFLOW.md alias:
+`agent.max_concurrent_agents` (was misnamed in v1.0 to mean
+per-tick; v1.1 routes it to the real concurrency cap)),
 `JARVIS_WORK_MAX_RETRIES` (default `1`),
 `JARVIS_WORK_RUN_TIMEOUT_MS` (default `300000` — 5 min wall-clock
 budget per agent loop pickup),

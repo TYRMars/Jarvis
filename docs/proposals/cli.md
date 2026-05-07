@@ -1,6 +1,6 @@
 # `harness-cli` — terminal Chat / Work client
 
-**Status:** Proposed
+**Status:** Adopted (v1.0 — steps 1-6 landed in `apps/jarvis-cli`; TUI mode remains a follow-up proposal)
 **Touches:** new `apps/jarvis-cli` binary, no library changes (reuses
 `harness-core` / `harness-llm` / `harness-tools` / `harness-memory`).
 

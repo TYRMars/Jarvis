@@ -100,7 +100,7 @@ pub trait Tool: Send + Sync {
 
 /// Provider-agnostic description of a tool, suitable for serialising into a
 /// chat-completions `tools` array.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,

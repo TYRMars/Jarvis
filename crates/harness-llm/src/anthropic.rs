@@ -524,6 +524,12 @@ struct AnthropicResponse {
     content: Vec<AnResponseBlock>,
     #[serde(default)]
     stop_reason: Option<String>,
+    /// Token roll-up shipped on the non-stream response. Same shape
+    /// as the streaming `message_stop` payload, so we reuse the
+    /// `prompt = input + cache_creation + cache_read` flattening
+    /// logic via `flatten_an_usage`.
+    #[serde(default)]
+    usage: Option<AnUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -563,6 +569,7 @@ impl AnthropicResponse {
         let content = if text.is_empty() { None } else { Some(text) };
         let finish_reason = map_stop_reason(self.stop_reason.as_deref(), &tool_calls);
 
+        let usage = self.usage.and_then(flatten_an_usage);
         Ok(ChatResponse {
             message: Message::Assistant {
                 content,
@@ -572,8 +579,36 @@ impl AnthropicResponse {
             },
             finish_reason,
             response_id: None,
+            usage,
         })
     }
+}
+
+/// Flatten Anthropic's three prompt-side counters into the harness
+/// `Usage` shape. Mirrors `StreamAccumulator::build_usage` so the
+/// non-stream path produces identical values for the same inputs.
+fn flatten_an_usage(u: AnUsage) -> Option<Usage> {
+    let any = u.input_tokens.is_some()
+        || u.output_tokens.is_some()
+        || u.cache_creation_input_tokens.is_some()
+        || u.cache_read_input_tokens.is_some();
+    if !any {
+        return None;
+    }
+    let prompt = match (
+        u.input_tokens,
+        u.cache_creation_input_tokens,
+        u.cache_read_input_tokens,
+    ) {
+        (None, None, None) => None,
+        (a, b, c) => Some(a.unwrap_or(0) + b.unwrap_or(0) + c.unwrap_or(0)),
+    };
+    Some(Usage {
+        prompt_tokens: prompt,
+        completion_tokens: u.output_tokens,
+        cached_prompt_tokens: u.cache_read_input_tokens,
+        reasoning_tokens: None,
+    })
 }
 
 fn map_stop_reason(raw: Option<&str>, tool_calls: &[ToolCall]) -> FinishReason {

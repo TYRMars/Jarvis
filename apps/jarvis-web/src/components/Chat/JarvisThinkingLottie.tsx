@@ -6,6 +6,20 @@ interface LottieInstance {
   goToAndStop: (value: number, isFrame?: boolean) => void;
 }
 
+interface LottieModule {
+  loadAnimation: (options: {
+    container: Element;
+    renderer: "svg";
+    loop: boolean;
+    autoplay: boolean;
+    animationData: unknown;
+    rendererSettings?: {
+      preserveAspectRatio?: string;
+      progressiveLoad?: boolean;
+    };
+  }) => LottieInstance;
+}
+
 export function JarvisThinkingLottie() {
   const containerRef = useRef<HTMLSpanElement | null>(null);
   const [failed, setFailed] = useState(false);
@@ -18,8 +32,8 @@ export function JarvisThinkingLottie() {
     const reduceMotion =
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
-    void import("lottie-web/build/player/lottie_svg")
-      .then(({ default: lottie }) => {
+    void loadLottie()
+      .then((lottie) => {
         if (cancelled) return;
         try {
           animation = lottie.loadAnimation({
@@ -59,9 +73,30 @@ export function JarvisThinkingLottie() {
       ref={containerRef}
       aria-hidden="true"
     >
-      {failed ? "J" : null}
+      {failed ? (
+        <>
+          <span className="jarvis-thinking-fallback-face">
+            <span className="jarvis-thinking-fallback-eye left" />
+            <span className="jarvis-thinking-fallback-eye right" />
+            <span className="jarvis-thinking-fallback-mouth" />
+          </span>
+          <span className="jarvis-thinking-fallback-dot one" />
+          <span className="jarvis-thinking-fallback-dot two" />
+          <span className="jarvis-thinking-fallback-dot three" />
+        </>
+      ) : null}
     </span>
   );
+}
+
+async function loadLottie(): Promise<LottieModule> {
+  try {
+    const mod = await import("lottie-web/build/player/lottie_svg");
+    return mod.default;
+  } catch {
+    const mod = await import("lottie-web");
+    return mod.default;
+  }
 }
 
 function cloneAnimationData<T>(data: T): T {

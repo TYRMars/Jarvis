@@ -17,7 +17,7 @@ import { resumeConversation } from "../../services/conversations";
 import { EmptyState } from "../shared/EmptyState";
 import { ConvoRow } from "./ConvoRow";
 import type { ConversationRunStatus, ConversationSurfaceSnapshot } from "../../store/types";
-import type { ConvoGroupBy } from "../../store/persistence";
+import type { ConvoAutoFilter, ConvoGroupBy } from "../../store/persistence";
 
 export function ConvoList() {
   const rows = useAppStore((s) => s.convoRows);
@@ -29,6 +29,8 @@ export function ConvoList() {
   const conversationSurfaces = useAppStore((s) => s.conversationSurfaces);
   const convoGroupBy = useAppStore((s) => s.convoGroupBy);
   const setConvoGroupBy = useAppStore((s) => s.setConvoGroupBy);
+  const convoAutoFilter = useAppStore((s) => s.convoAutoFilter);
+  const setConvoAutoFilter = useAppStore((s) => s.setConvoAutoFilter);
   const projectsById = useAppStore((s) => s.projectsById);
 
   const rowsById = new Map(rows.map((r) => [r.id, r]));
@@ -38,6 +40,11 @@ export function ConvoList() {
   const runningIds = new Set(runningEntries.map(([id]) => id));
   const pinnedRows = rows.filter((r) => pinned.has(r.id) && !runningIds.has(r.id));
   const recentRows = rows.filter((r) => !pinned.has(r.id) && !runningIds.has(r.id));
+  const filteredRecents = recentRows.filter((r) => {
+    if (convoAutoFilter === "all") return true;
+    const isAuto = r.source === "requirement" || !!r.requirement_title;
+    return convoAutoFilter === "auto" ? isAuto : !isAuto;
+  });
   const runningRows = runningEntries.map(
     ([id]) => rowsById.get(id) ?? makeFallbackRow(id, conversationSurfaces[id]),
   );
@@ -63,7 +70,7 @@ export function ConvoList() {
           target.tagName === "SELECT" ||
           target.isContentEditable);
       if (inEditable) return;
-      const all = uniqueRows([...runningRows, ...pinnedRows, ...recentRows]);
+      const all = uniqueRows([...runningRows, ...pinnedRows, ...filteredRecents]);
       if (all.length === 0) return;
       e.preventDefault();
       const direction = e.key === "ArrowDown" ? 1 : -1;
@@ -81,7 +88,7 @@ export function ConvoList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, pinned, activeId, quickOpen]);
 
-  const recentsHaveContent = recentRows.length > 0;
+  const recentsHaveContent = filteredRecents.length > 0;
   const status: "" | "disabled" | "empty" = !persistEnabled
     ? "disabled"
     : rows.length === 0
@@ -124,11 +131,12 @@ export function ConvoList() {
         <div className="section-label">{t("recents")}</div>
         <div className="convo-group-toolbar">
           <GroupByToggle mode={convoGroupBy} onChange={setConvoGroupBy} />
+          <AutoFilterPill mode={convoAutoFilter} onChange={setConvoAutoFilter} />
         </div>
         <ConvoStatus kind={status} />
         <ul id="convo-list">
           {recentsHaveContent &&
-            renderGroupedRows(recentRows, convoGroupBy, projectsById).map((entry) =>
+            renderGroupedRows(filteredRecents, convoGroupBy, projectsById).map((entry) =>
               entry.kind === "group" ? (
                 <li
                   key={`g:${entry.label}`}
@@ -234,6 +242,39 @@ function renderGroupedByProject(
     for (const r of bucket.rows) out.push({ kind: "row", row: r });
   }
   return out;
+}
+
+function AutoFilterPill({
+  mode,
+  onChange,
+}: {
+  mode: ConvoAutoFilter;
+  onChange: (mode: ConvoAutoFilter) => void;
+}) {
+  const opts: { v: ConvoAutoFilter; label: string }[] = [
+    { v: "all", label: t("convoAutoFilterAll") },
+    { v: "auto", label: t("convoAutoFilterAuto") },
+    { v: "manual", label: t("convoAutoFilterManual") },
+  ];
+  return (
+    <div
+      className="convo-auto-filter"
+      role="group"
+      aria-label={t("convoAutoFilterLabel")}
+    >
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          type="button"
+          className={"convo-auto-filter-seg" + (mode === o.v ? " active" : "")}
+          aria-pressed={mode === o.v}
+          onClick={() => onChange(o.v)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function GroupByToggle({

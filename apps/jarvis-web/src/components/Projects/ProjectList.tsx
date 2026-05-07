@@ -9,6 +9,7 @@ import {
   archiveProject,
   createProject,
   restoreProject,
+  updateProject,
 } from "../../services/projects";
 import {
   listRequirements,
@@ -107,6 +108,8 @@ export function ProjectGridCard({
   onOpen: () => void;
 }) {
   const reqs = listRequirements(project.id);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const counts = useMemo(() => {
     const c: Record<RequirementStatus, number> = {
       backlog: 0,
@@ -122,50 +125,90 @@ export function ProjectGridCard({
     return c;
   }, [reqs]);
   const total = counts.backlog + counts.in_progress + counts.review + counts.done;
+  const enabled = project.automation?.auto_mode_enabled ?? true;
+
+  const toggleAutomation = async () => {
+    if (pending || project.archived) return;
+    setPending(true);
+    setError(null);
+    try {
+      const saved = await updateProject(project.id, {
+        automation: {
+          ...(project.automation ?? {}),
+          auto_mode_enabled: !enabled,
+        },
+      });
+      if (!saved) setError(t("autoModeFailed"));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
+  };
 
   return (
-    <button
-      type="button"
+    <article
       className={"project-grid-card" + (project.archived ? " archived" : "")}
-      onClick={onOpen}
     >
       <header className="project-grid-card-head">
-        <span
-          className="project-dot"
-          style={{ background: chipColor(project.slug) }}
-          aria-hidden="true"
-        />
-        <h3>{project.name}</h3>
-        {project.archived && (
-          <span className="project-grid-card-archived">
-            {t("projectListArchived")}
+        <button type="button" className="project-grid-card-title" onClick={onOpen}>
+          <span
+            className="project-dot"
+            style={{ background: chipColor(project.slug) }}
+            aria-hidden="true"
+          />
+          <h3>{project.name}</h3>
+          {project.archived && (
+            <span className="project-grid-card-archived">
+              {t("projectListArchived")}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          className={
+            "project-auto-switch project-grid-auto-switch" +
+            (enabled ? " is-on" : "") +
+            (pending ? " is-pending" : "")
+          }
+          onClick={() => void toggleAutomation()}
+          disabled={pending || project.archived}
+          aria-pressed={enabled}
+          title={enabled ? t("projectAutoOnHint") : t("projectAutoOffHint")}
+        >
+          <span className="project-auto-switch-track" aria-hidden="true">
+            <span className="project-auto-switch-knob" />
           </span>
-        )}
+          <span>{enabled ? t("projectAutoOn") : t("projectAutoOff")}</span>
+        </button>
       </header>
-      {/* Description slot is always rendered (em-dash placeholder when
-          empty) so every card has the same height — without it cards
-          with descriptions sit taller than ones without and the grid
-          looks ragged. The `title` attribute carries the full text so
-          the 2-line clamp doesn't silently swallow long descriptions. */}
-      <p
-        className={
-          "project-grid-card-desc" +
-          (project.description ? "" : " is-empty")
-        }
-        title={project.description || undefined}
-      >
-        {project.description || "—"}
-      </p>
-      <footer className="project-grid-card-counts">
-        <CountChip label={t("colBacklog")} value={counts.backlog} tone="backlog" />
-        <CountChip label={t("colInProgress")} value={counts.in_progress} tone="in_progress" />
-        <CountChip label={t("colReview")} value={counts.review} tone="review" />
-        <CountChip label={t("colDone")} value={counts.done} tone="done" />
-        <span className="project-grid-card-total">
-          {t("projectGridTotal", total)}
-        </span>
-      </footer>
-    </button>
+      <button type="button" className="project-grid-card-body" onClick={onOpen}>
+        {/* Description slot is always rendered (em-dash placeholder when
+            empty) so every card has the same height — without it cards
+            with descriptions sit taller than ones without and the grid
+            looks ragged. The `title` attribute carries the full text so
+            the 2-line clamp doesn't silently swallow long descriptions. */}
+        <p
+          className={
+            "project-grid-card-desc" +
+            (project.description ? "" : " is-empty")
+          }
+          title={project.description || undefined}
+        >
+          {project.description || "—"}
+        </p>
+        <footer className="project-grid-card-counts">
+          <CountChip label={t("colBacklog")} value={counts.backlog} tone="backlog" />
+          <CountChip label={t("colInProgress")} value={counts.in_progress} tone="in_progress" />
+          <CountChip label={t("colReview")} value={counts.review} tone="review" />
+          <CountChip label={t("colDone")} value={counts.done} tone="done" />
+          <span className="project-grid-card-total">
+            {t("projectGridTotal", total)}
+          </span>
+        </footer>
+      </button>
+      {error && <div className="project-grid-card-error">{error}</div>}
+    </article>
   );
 }
 

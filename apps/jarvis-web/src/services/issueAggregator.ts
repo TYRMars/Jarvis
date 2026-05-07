@@ -159,7 +159,13 @@ function severityFor(category: IssueCategory, normalised: string): IssueSeverity
 const HINTS: Array<[RegExp, string]> = [
   [/store must be set to false/i, "Codex backend rejects `store: true`. Set `chain_responses=false` on the provider config."],
   [/(invalid|bad).*api.?key|unauthorized|401/i, "Re-run `jarvis login --provider <name>` to refresh credentials."],
-  [/timeout|timed out/i, "Tune `JARVIS_WORK_RUN_TIMEOUT_MS` or check the upstream provider's status page."],
+  // Auto-mode's own wall-clock timeout. The producer at
+  // `crates/harness-server/src/auto_mode.rs:1298` writes this exact
+  // shape (`agent timed out after Nms`) and nothing else, so the
+  // anchor is safe; an upstream message that merely *contains* the
+  // phrase falls through to the catch-all below.
+  [/^agent timed out after \d+ms$/i, "Auto-mode hit its `JARVIS_WORK_RUN_TIMEOUT_MS` budget (default 300000ms). Open the run conversation to check whether the model is looping; raise the value if the work genuinely needs more time."],
+  [/timeout|timed out/i, "Looks like an upstream provider timeout. Check the provider's status page or switch `JARVIS_PROVIDER` — `JARVIS_WORK_RUN_TIMEOUT_MS` won't help here."],
   [/rate.?limit|429/i, "Throttle by lowering `JARVIS_WORK_MAX_UNITS_PER_TICK`, or wait for the provider window to reset."],
   [/max.?retries/i, "Inspect the failing requirement; `requirement.update` to clear retry budget when fixed."],
   [/permission denied|forbidden|403/i, "Check filesystem perms on the workspace + tool sandbox root."],

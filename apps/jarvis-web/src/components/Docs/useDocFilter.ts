@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { setDocScope, useDocScope, type DocScope } from "../../services/docScope";
-import type { DocKind, DocProject } from "../../types/frames";
+import type { DocProject } from "../../types/frames";
 
 export type { DocScope } from "../../services/docScope";
 
@@ -14,7 +14,7 @@ export interface DocFilterState {
 
 /// Hook used by the docs page. The scope itself lives in
 /// `services/docScope` so the global sidebar can drive it; sort and
-/// query are local to the list column.
+/// query are local to the list view (now hosted inside the sidebar).
 export function useDocFilterState() {
   const scope = useDocScope();
   const [sort, setSort] = useState<DocSort>("updated");
@@ -61,8 +61,6 @@ export function applyDocFilter({
         return !!p.pinned;
       case "archived":
         return !!p.archived;
-      case "kind":
-        return p.kind === scope.kind;
       case "tag":
         return (p.tags ?? []).includes(scope.tag);
     }
@@ -95,9 +93,9 @@ export function applyDocFilter({
   });
 
   matched.sort((a, b) => {
-    // Pinned always floats to top under "all" / "kind" / "tag" scopes
-    // (but not under "pinned" — already filtered — or "archived",
-    // where pinning has been overridden by the archive intent).
+    // Pinned always floats to top under "all" / "tag" scopes (not
+    // under "pinned" — already filtered — or "archived", where the
+    // archive intent overrides pinning).
     if (scope.type !== "pinned" && scope.type !== "archived") {
       if (!!a.project.pinned !== !!b.project.pinned) {
         return a.project.pinned ? -1 : 1;
@@ -122,7 +120,6 @@ export interface DocCounts {
   all: number;
   pinned: number;
   archived: number;
-  kinds: Record<DocKind, number>;
   tags: Map<string, number>;
 }
 
@@ -132,7 +129,6 @@ export function useDocCounts(projects: DocProject[]): DocCounts {
       all: 0,
       pinned: 0,
       archived: 0,
-      kinds: { note: 0, research: 0, report: 0, design: 0, guide: 0 },
       tags: new Map(),
     };
     for (const p of projects) {
@@ -142,7 +138,6 @@ export function useDocCounts(projects: DocProject[]): DocCounts {
       }
       counts.all += 1;
       if (p.pinned) counts.pinned += 1;
-      counts.kinds[p.kind] = (counts.kinds[p.kind] ?? 0) + 1;
       for (const t of p.tags ?? []) {
         counts.tags.set(t, (counts.tags.get(t) ?? 0) + 1);
       }

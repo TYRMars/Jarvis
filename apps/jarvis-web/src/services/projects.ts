@@ -10,7 +10,13 @@
 // own error state.
 
 import { appStore } from "../store/appStore";
-import type { KanbanColumn, Project, ProjectWorkspace } from "../types/frames";
+import type {
+  KanbanColumn,
+  Project,
+  ProjectAutomation,
+  ProjectWorkspace,
+  RequirementRun,
+} from "../types/frames";
 import { apiUrl } from "./api";
 import { showError } from "./status";
 
@@ -78,6 +84,7 @@ export interface CreateProjectInput {
   description?: string;
   tags?: string[];
   workspaces?: ProjectWorkspace[];
+  automation?: ProjectAutomation;
 }
 
 export async function createProject(input: CreateProjectInput): Promise<Project | null> {
@@ -128,6 +135,7 @@ export interface UpdateProjectInput {
   /// four built-in defaults. Otherwise replaces the customised
   /// column set wholesale.
   columns?: KanbanColumn[];
+  automation?: ProjectAutomation;
 }
 
 export async function updateProject(
@@ -308,6 +316,93 @@ export async function deleteProjectMemoryFile(
   }
 }
 
+/// Row-shaped, project-scoped long-term memory captured from runs.
+/// Distinct from the file-based [`ProjectMemorySnapshot`] above —
+/// see `harness_core::ProjectMemory` for the source of truth on
+/// fields. `kind` round-trips as `"lesson" | "gotcha" | "context"`.
+export interface ProjectMemoryRow {
+  id: string;
+  project_id: string;
+  kind: "lesson" | "gotcha" | "context";
+  title: string;
+  body: string;
+  tags?: string[];
+  source_run_id?: string | null;
+  source_requirement_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listProjectMemoryRows(
+  idOrSlug: string,
+): Promise<ProjectMemoryRow[]> {
+  try {
+    const r = await fetch(
+      apiUrl(`/v1/projects/${encodeURIComponent(idOrSlug)}/memories`),
+    );
+    if (!r.ok) {
+      const body = await safeBody(r);
+      throw new Error(body?.error ?? `memories: ${r.status}`);
+    }
+    const json = (await r.json()) as { memories: ProjectMemoryRow[] };
+    return json.memories ?? [];
+  } catch (e: any) {
+    showError(`Project memories: ${e.message ?? e}`);
+    return [];
+  }
+}
+
+export async function createProjectMemoryRow(
+  idOrSlug: string,
+  input: {
+    kind: "lesson" | "gotcha" | "context";
+    title: string;
+    body: string;
+    tags?: string[];
+  },
+): Promise<ProjectMemoryRow | null> {
+  try {
+    const r = await fetch(
+      apiUrl(`/v1/projects/${encodeURIComponent(idOrSlug)}/memories`),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+    if (!r.ok) {
+      const body = await safeBody(r);
+      throw new Error(body?.error ?? `memory create: ${r.status}`);
+    }
+    return (await r.json()) as ProjectMemoryRow;
+  } catch (e: any) {
+    showError(`Create memory: ${e.message ?? e}`);
+    return null;
+  }
+}
+
+export async function deleteProjectMemoryRow(
+  idOrSlug: string,
+  memoryId: string,
+): Promise<boolean> {
+  try {
+    const r = await fetch(
+      apiUrl(
+        `/v1/projects/${encodeURIComponent(idOrSlug)}/memories/${encodeURIComponent(memoryId)}`,
+      ),
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      const body = await safeBody(r);
+      throw new Error(body?.error ?? `memory delete: ${r.status}`);
+    }
+    return true;
+  } catch (e: any) {
+    showError(`Delete memory: ${e.message ?? e}`);
+    return false;
+  }
+}
+
 async function safeBody(r: Response): Promise<any> {
   try {
     return await r.json();
@@ -337,6 +432,7 @@ function createLocalProject(input: CreateProjectInput): Project {
     instructions: input.instructions?.trim() || "",
     tags: input.tags || [],
     workspaces: input.workspaces ? [...input.workspaces] : [],
+    automation: input.automation ?? { auto_mode_enabled: true },
     archived: false,
     created_at: now,
     updated_at: now,
@@ -356,12 +452,38 @@ function updateLocalProject(id: string, patch: UpdateProjectInput): Project | nu
       description: patch.description === undefined ? p.description : patch.description,
       tags: patch.tags === undefined ? p.tags : patch.tags,
       workspaces: patch.workspaces === undefined ? p.workspaces : patch.workspaces,
+      automation: patch.automation === undefined ? p.automation : patch.automation,
       updated_at: new Date().toISOString(),
     };
     return found;
   });
   if (found) writeLocalProjects(rows);
   return found;
+}
+
+export interface ProjectRunHistoryItem extends RequirementRun {
+  project_id?: string;
+  project_name?: string;
+  requirement_title?: string;
+  requirement_status?: string;
+}
+
+export interface ProjectRunsResponse {
+  project_id: string;
+  items: ProjectRunHistoryItem[];
+  count: number;
+}
+
+export async function fetchProjectRuns(
+  idOrSlug: string,
+  limit = 50,
+): Promise<ProjectRunsResponse | null> {
+  const r = await fetch(
+    apiUrl(`/v1/projects/${encodeURIComponent(idOrSlug)}/runs?limit=${limit}`),
+  );
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`project runs: ${r.status}`);
+  return (await r.json()) as ProjectRunsResponse;
 }
 
 // ----------------------- workspace status -----------------------

@@ -295,6 +295,16 @@ export function initialConvoGroupBy(): ConvoGroupBy {
   return saved === "project" ? "project" : "date";
 }
 
+/// Recents-section auto/manual filter. "all" shows everything,
+/// "auto" keeps only requirement-driven runs, "manual" hides them.
+/// Persisted to localStorage as `jarvis.convoAutoFilter`.
+export type ConvoAutoFilter = "all" | "auto" | "manual";
+
+export function initialConvoAutoFilter(): ConvoAutoFilter {
+  const saved = safeGet("jarvis.convoAutoFilter");
+  return saved === "auto" || saved === "manual" ? saved : "all";
+}
+
 // ---- Title resolution --------------------------------------------
 
 /// Resolve a conversation row's displayed title in priority order:

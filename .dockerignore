@@ -1,0 +1,38 @@
+# Build outputs — regenerated inside the image
+target/
+**/target/
+apps/jarvis-web/dist/
+apps/jarvis-web/node_modules/
+node_modules/
+**/node_modules/
+
+# Desktop / Tauri app — not part of the server image
+apps/jarvis-desktop/
+
+# Local-only state that has no business inside the image
+.jarvis/
+.env
+.env.local
+.env.*.local
+
+# VCS metadata. Note: we still need version info at runtime to be useful,
+# but the image doesn't read .git directly — git.* tools work against the
+# user's mounted /workspace, not the image's source.
+.git/
+.gitignore
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# CI / tooling artefacts
+.github/
+*.log
+coverage/
+.cache/
+.turbo/
+
+# Heavy docs we don't need at build time
+docs/assets/

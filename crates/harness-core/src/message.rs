@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// One turn in a conversation. Mirrors the OpenAI chat-completions shape so
 /// providers can map back and forth without losing information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
     System {
@@ -57,7 +57,7 @@ pub enum Message {
 /// prefix cache is automatic and Google Gemini's `cachedContents`
 /// resource is a separate API plane (see
 /// `docs/proposals/prompt-caching.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheHint {
     /// Anthropic's default 5-minute breakpoint.
@@ -127,7 +127,7 @@ impl Message {
 }
 
 /// A function-style tool call emitted by the assistant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,

@@ -120,7 +120,7 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
       // Same muscle memory as GitHub / Linear / GitLab — `/` always
       // means "search what I'm looking at". Picks the search affordance
       // that belongs to the current surface:
-      //   /projects → focus the page-level project list-search
+      //   /projects/* → focus the page-level project search
       //   /docs     → focus the page-level doc list-search
       //   /         → open the QuickSwitcher modal (chat has no inline
       //                search input; the modal IS the search surface)

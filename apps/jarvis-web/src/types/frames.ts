@@ -270,6 +270,16 @@ export interface ConvoListRow {
   /// servers omit this; clients can fall back to the bound project's
   /// first workspace.
   workspace_path?: string | null;
+  /// Source hint supplied by newer servers. Requirement-backed rows
+  /// are usually spawned by project auto mode or the requirement run
+  /// button; plain chat rows omit this or send "chat". Typed as
+  /// plain `string` because the literal alternatives are absorbed
+  /// by the open string anyway — the comment above documents the
+  /// known-server values so callers can branch on them.
+  source?: string | null;
+  requirement_id?: string | null;
+  requirement_title?: string | null;
+  requirement_status?: string | null;
 }
 
 export interface ConvoDetail {
@@ -285,6 +295,13 @@ export interface ConvoDetail {
 export interface ProjectWorkspace {
   path: string;
   name?: string | null;
+}
+
+export interface ProjectAutomation {
+  /** Project-level scheduler gate. The server-level auto-mode switch
+   *  must also be on before any background pickup happens. Missing
+   *  means enabled for backward compatibility with older servers. */
+  auto_mode_enabled?: boolean;
 }
 
 /// Wire shape returned by `GET /v1/projects` (and the create / get /
@@ -307,6 +324,7 @@ export interface Project {
   /// `Projects/columns.tsx`. When present, the saved labels are
   /// rendered verbatim (no i18n lookup).
   columns?: KanbanColumn[] | null;
+  automation?: ProjectAutomation;
   created_at: string;
   updated_at: string;
   conversation_count?: number;
@@ -355,6 +373,11 @@ export interface Requirement {
    *  the auto executor will pick this one up. Empty / absent = no
    *  dependencies. */
   depends_on?: string[];
+  /** Phase 3.8 — project-scoped Label ids attached to this row.
+   *  The actual Label rows live under `/v1/projects/:id/labels`;
+   *  this field only carries references so renames stay cheap.
+   *  Order is preserved (used for chip rendering order). */
+  label_ids?: string[];
   /** Optional pinned VerificationPlan that auto mode (and the manual
    *  "Run verification" form) executes after each RequirementRun.
    *  Server-side type: `Option<VerificationPlan>`. */
@@ -528,6 +551,39 @@ export interface Activity {
   actor: ActivityActor;
   body: Record<string, unknown>;
   created_at: string;
+}
+
+// ----------------- Comment types (Phase 3.8) -----------------------
+
+/// One row in a Requirement's discussion thread. Mirrors
+/// `harness_core::Comment`. `parent_id` is set on a reply, absent
+/// on a top-level comment; threading is deliberately depth-1, so
+/// `parent_id` always points at a top-level row.
+export interface Comment {
+  id: string;
+  requirement_id: string;
+  author: ActivityActor;
+  body: string;
+  parent_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ----------------- Label types (Phase 3.8) -------------------------
+
+/// Project-scoped tag. Mirrors `harness_core::Label`. The kanban
+/// looks these up by id from `Requirement.label_ids`; renaming /
+/// recolouring updates one row, not every requirement that
+/// references it.
+export interface Label {
+  id: string;
+  project_id: string;
+  name: string;
+  /** `#rrggbb` (canonicalised lowercase server-side). */
+  colour: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // ----------------- Doc workspace types -----------------------------

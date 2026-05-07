@@ -49,6 +49,7 @@ import {
 } from "./sections/SystemSection";
 import { PermissionsSection } from "./sections/PermissionsSection";
 import { ProjectsSettingsSection } from "./sections/ProjectsSettingsSection";
+import { LabelsSettingsSection } from "./sections/LabelsSettingsSection";
 import { SoulSection } from "./sections/SoulSection";
 import { t } from "../../utils/i18n";
 
@@ -125,6 +126,11 @@ const NAV_GROUPS: NavGroup[] = [
         id: "projects",
         labelKey: "settingsNavProjects",
         fallback: "Projects",
+      },
+      {
+        id: "labels",
+        labelKey: "settingsNavLabels",
+        fallback: "Labels",
       },
       {
         id: "system",
@@ -519,6 +525,8 @@ function renderSection(parsed: ParsedHash, setTab: (tab: string) => void) {
       return <PermissionsSection />;
     case "projects":
       return <ProjectsSettingsSection />;
+    case "labels":
+      return <LabelsSettingsSection />;
     case "system":
       return (
         <SystemSection

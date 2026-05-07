@@ -7,14 +7,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::StoreError;
 use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
-    DocEvent, DocProject, DocStore, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, TodoEvent,
-    TodoItem, TodoStore,
+    BoxError, Comment, CommentEvent, CommentStore, Conversation, ConversationMetadata,
+    ConversationRecord, ConversationStore, DocDraft, DocEvent, DocProject, DocStore, Label,
+    LabelEvent, LabelStore, Project, ProjectMemory, ProjectMemoryStore, ProjectStore, Requirement,
+    RequirementEvent, RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore,
+    Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
 };
 use tokio::sync::{broadcast, RwLock};
 
@@ -166,6 +168,58 @@ impl ProjectStore for MemoryProjectStore {
         } else {
             Ok(false)
         }
+    }
+}
+
+/// In-process [`ProjectMemoryStore`]. Memories keyed by id; project
+/// scoping is a runtime filter on `list`. Insert/update overwrite
+/// by id with no broadcast — memories don't drive realtime UI.
+#[derive(Default, Clone)]
+pub struct MemoryProjectMemoryStore {
+    inner: Arc<RwLock<HashMap<String, ProjectMemory>>>,
+}
+
+impl MemoryProjectMemoryStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl ProjectMemoryStore for MemoryProjectMemoryStore {
+    async fn list(&self, project_id: &str) -> Result<Vec<ProjectMemory>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<ProjectMemory> = guard
+            .values()
+            .filter(|m| m.project_id == project_id)
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        if rows.len() > 200 {
+            tracing::warn!(
+                project_id,
+                count = rows.len(),
+                "project memory list exceeded 200-item soft cap"
+            );
+            rows.truncate(200);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<ProjectMemory>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn upsert(&self, memory: &ProjectMemory) -> Result<(), BoxError> {
+        let mut guard = self.inner.write().await;
+        guard.insert(memory.id.clone(), memory.clone());
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.inner.write().await;
+        Ok(guard.remove(id).is_some())
     }
 }
 
@@ -673,6 +727,324 @@ impl DocStore for MemoryDocStore {
     }
 }
 
+// ---------- CommentStore --------------------------------------------------
+
+/// In-process [`CommentStore`]. Comments stored by `requirement_id`
+/// in a `HashMap<String, Vec<Comment>>` behind one `RwLock`.
+/// Single broadcast fanout shared via `Arc`. Behaviourally identical
+/// to the JSON / SQL backends; used as the test reference impl.
+#[derive(Clone)]
+pub struct MemoryCommentStore {
+    inner: Arc<RwLock<HashMap<String, Vec<Comment>>>>,
+    tx: broadcast::Sender<CommentEvent>,
+}
+
+impl Default for MemoryCommentStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryCommentStore {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            tx,
+        }
+    }
+}
+
+#[async_trait]
+impl CommentStore for MemoryCommentStore {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Comment>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows = guard.get(requirement_id).cloned().unwrap_or_default();
+        // Oldest-first (chat order).
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                requirement_id,
+                count = rows.len(),
+                "comment list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn create(&self, comment: &Comment) -> Result<(), BoxError> {
+        // Validate parent_id depth-1 invariant before writing.
+        if let Some(parent_id) = comment.parent_id.as_deref() {
+            let guard = self.inner.read().await;
+            let bucket = guard.get(&comment.requirement_id);
+            let parent = bucket.and_then(|rows| rows.iter().find(|c| c.id == parent_id));
+            match parent {
+                None => {
+                    return Err(
+                        format!("parent comment `{parent_id}` not found in requirement").into(),
+                    )
+                }
+                Some(p) if p.parent_id.is_some() => {
+                    return Err(
+                        "comment threading is limited to depth 1 (cannot reply to a reply)".into(),
+                    )
+                }
+                _ => {}
+            }
+        }
+        {
+            let mut guard = self.inner.write().await;
+            let list = guard.entry(comment.requirement_id.clone()).or_default();
+            // Reject duplicate id (caller bug). Mirrors the JSON / SQL
+            // behaviour of failing the atomic write rather than silently
+            // overwriting on `create`.
+            if list.iter().any(|c| c.id == comment.id) {
+                return Err(format!("comment id `{}` already exists", comment.id).into());
+            }
+            list.push(comment.clone());
+        }
+        let _ = self.tx.send(CommentEvent::Posted(comment.clone()));
+        Ok(())
+    }
+
+    async fn update(&self, comment: &Comment) -> Result<bool, BoxError> {
+        let updated = {
+            let mut guard = self.inner.write().await;
+            let Some(list) = guard.get_mut(&comment.requirement_id) else {
+                return Ok(false);
+            };
+            let Some(slot) = list.iter_mut().find(|c| c.id == comment.id) else {
+                return Ok(false);
+            };
+            // The trait pins `id`, `requirement_id`, `parent_id`,
+            // `author`, `created_at` as immutable. We overwrite
+            // `body` + `updated_at` and leave the rest of the in-memory
+            // row untouched.
+            slot.body = comment.body.clone();
+            slot.updated_at = comment.updated_at.clone();
+            slot.clone()
+        };
+        let _ = self.tx.send(CommentEvent::Edited(updated));
+        Ok(true)
+    }
+
+    async fn delete(&self, requirement_id: &str, comment_id: &str) -> Result<bool, BoxError> {
+        // Cascade: collect ids to remove (top-level + its replies).
+        let removed_ids: Vec<String> = {
+            let mut guard = self.inner.write().await;
+            let Some(list) = guard.get_mut(requirement_id) else {
+                return Ok(false);
+            };
+            let target_idx = match list.iter().position(|c| c.id == comment_id) {
+                Some(i) => i,
+                None => return Ok(false),
+            };
+            let target_is_top_level = list[target_idx].parent_id.is_none();
+            let target_id = list[target_idx].id.clone();
+            let mut to_remove = vec![target_id.clone()];
+            if target_is_top_level {
+                for c in list.iter() {
+                    if c.parent_id.as_deref() == Some(target_id.as_str()) {
+                        to_remove.push(c.id.clone());
+                    }
+                }
+            }
+            list.retain(|c| !to_remove.contains(&c.id));
+            to_remove
+        };
+        for id in removed_ids {
+            let _ = self.tx.send(CommentEvent::Deleted {
+                requirement_id: requirement_id.to_string(),
+                comment_id: id,
+            });
+        }
+        Ok(true)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<CommentEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- LabelStore ----------------------------------------------------
+
+/// In-process [`LabelStore`]. Labels stored by `project_id` in a
+/// `HashMap<String, Vec<Label>>`. Name uniqueness is checked
+/// case-insensitively per project.
+#[derive(Clone)]
+pub struct MemoryLabelStore {
+    inner: Arc<RwLock<HashMap<String, Vec<Label>>>>,
+    tx: broadcast::Sender<LabelEvent>,
+}
+
+impl Default for MemoryLabelStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryLabelStore {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            tx,
+        }
+    }
+}
+
+#[async_trait]
+impl LabelStore for MemoryLabelStore {
+    async fn list_for_project(&self, project_id: &str) -> Result<Vec<Label>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows = guard.get(project_id).cloned().unwrap_or_default();
+        rows.sort_by_key(|l| l.name.to_lowercase());
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Label>, BoxError> {
+        let guard = self.inner.read().await;
+        for bucket in guard.values() {
+            if let Some(l) = bucket.iter().find(|l| l.id == id) {
+                return Ok(Some(l.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn create(&self, label: &Label) -> Result<(), BoxError> {
+        let mut guard = self.inner.write().await;
+        let bucket = guard.entry(label.project_id.clone()).or_default();
+        let lower = label.name.to_lowercase();
+        if bucket
+            .iter()
+            .any(|l| l.name.eq_ignore_ascii_case(&label.name))
+        {
+            return Err(format!("label name `{}` already exists in project", label.name).into());
+        }
+        if bucket.iter().any(|l| l.id == label.id) {
+            return Err(format!("label id `{}` already exists", label.id).into());
+        }
+        let _ = lower; // silence "unused" if we ever drop the case-fold check
+        bucket.push(label.clone());
+        let _ = self.tx.send(LabelEvent::Created(label.clone()));
+        Ok(())
+    }
+
+    async fn update(&self, label: &Label) -> Result<bool, BoxError> {
+        let updated = {
+            let mut guard = self.inner.write().await;
+            let Some(bucket) = guard.get_mut(&label.project_id) else {
+                return Ok(false);
+            };
+            // Name-uniqueness check skips the row we're about to update.
+            let conflict = bucket
+                .iter()
+                .any(|l| l.id != label.id && l.name.eq_ignore_ascii_case(&label.name));
+            if conflict {
+                return Err(
+                    format!("label name `{}` already exists in project", label.name).into(),
+                );
+            }
+            let Some(slot) = bucket.iter_mut().find(|l| l.id == label.id) else {
+                return Ok(false);
+            };
+            slot.name = label.name.clone();
+            slot.colour = label.colour.clone();
+            slot.description = label.description.clone();
+            slot.updated_at = label.updated_at.clone();
+            slot.clone()
+        };
+        let _ = self.tx.send(LabelEvent::Updated(updated));
+        Ok(true)
+    }
+
+    async fn delete(&self, project_id: &str, label_id: &str) -> Result<bool, BoxError> {
+        let removed = {
+            let mut guard = self.inner.write().await;
+            let Some(bucket) = guard.get_mut(project_id) else {
+                return Ok(false);
+            };
+            let before = bucket.len();
+            bucket.retain(|l| l.id != label_id);
+            before != bucket.len()
+        };
+        if removed {
+            let _ = self.tx.send(LabelEvent::Deleted {
+                project_id: project_id.to_string(),
+                label_id: label_id.to_string(),
+            });
+        }
+        Ok(removed)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<LabelEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- TenantStore -------------------------------------------------
+
+/// In-process [`TenantStore`]. Tenants keyed by id; slug uniqueness is
+/// enforced by a linear scan inside `save`.
+#[derive(Default, Clone)]
+pub struct MemoryTenantStore {
+    inner: Arc<RwLock<HashMap<String, Tenant>>>,
+}
+
+impl MemoryTenantStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl TenantStore for MemoryTenantStore {
+    async fn save(&self, tenant: &Tenant) -> Result<(), BoxError> {
+        let mut guard = self.inner.write().await;
+        for (id, existing) in guard.iter() {
+            if id != &tenant.id && existing.slug == tenant.slug {
+                return Err(StoreError::DuplicateSlug(tenant.slug.clone()).into());
+            }
+        }
+        guard.insert(tenant.id.clone(), tenant.clone());
+        Ok(())
+    }
+
+    async fn load(&self, id: &str) -> Result<Option<Tenant>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn find_by_slug(&self, slug: &str) -> Result<Option<Tenant>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.values().find(|t| t.slug == slug).cloned())
+    }
+
+    async fn list(&self) -> Result<Vec<Tenant>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<Tenant> = guard.values().filter(|t| !t.archived).cloned().collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn archive(&self, id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.inner.write().await;
+        if let Some(t) = guard.get_mut(id) {
+            t.archive();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.inner.write().await;
+        Ok(guard.remove(id).is_some())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1112,6 +1484,281 @@ mod tests {
         match rx.recv().await.unwrap() {
             ActivityEvent::Appended(got) => assert_eq!(got.id, a.id),
         }
+    }
+
+    // ---- CommentStore ---------------------------------------------------
+    // (`ActivityActor` is already in scope from the activity tests above.)
+
+    #[tokio::test]
+    async fn comment_create_and_list_returns_oldest_first() {
+        let store = MemoryCommentStore::new();
+        let mut c1 = Comment::new("req-a", ActivityActor::Human, "first");
+        c1.created_at = "2026-01-01T00:00:00+00:00".into();
+        c1.updated_at = c1.created_at.clone();
+        let mut c2 = Comment::new("req-a", ActivityActor::Human, "second");
+        c2.created_at = "2026-01-02T00:00:00+00:00".into();
+        c2.updated_at = c2.created_at.clone();
+        let other = Comment::new("req-b", ActivityActor::Human, "elsewhere");
+        store.create(&c1).await.unwrap();
+        store.create(&c2).await.unwrap();
+        store.create(&other).await.unwrap();
+
+        let only_a = store.list_for_requirement("req-a").await.unwrap();
+        assert_eq!(only_a.len(), 2);
+        // Oldest-first.
+        assert_eq!(only_a[0].id, c1.id);
+        assert_eq!(only_a[1].id, c2.id);
+    }
+
+    #[tokio::test]
+    async fn comment_create_rejects_duplicate_id() {
+        let store = MemoryCommentStore::new();
+        let c = Comment::new("req-a", ActivityActor::Human, "v1");
+        store.create(&c).await.unwrap();
+        let err = store.create(&c).await.unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn comment_create_validates_parent_exists_and_depth() {
+        let store = MemoryCommentStore::new();
+        let top = Comment::new("req-a", ActivityActor::Human, "top");
+        store.create(&top).await.unwrap();
+
+        // Reply to a top-level comment — fine.
+        let reply1 = Comment::reply("req-a", ActivityActor::Human, "r1", &top.id);
+        store.create(&reply1).await.unwrap();
+
+        // Reply to a reply — depth-1 violation, must fail.
+        let reply2 = Comment::reply("req-a", ActivityActor::Human, "r2", &reply1.id);
+        let err = store.create(&reply2).await.unwrap_err();
+        assert!(err.to_string().contains("depth 1"));
+
+        // Reply to an unknown id — must fail.
+        let stray = Comment::reply("req-a", ActivityActor::Human, "stray", "no-such-id");
+        let err = store.create(&stray).await.unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn comment_update_only_touches_body_and_updated_at() {
+        let store = MemoryCommentStore::new();
+        let mut c = Comment::new("req-a", ActivityActor::Human, "original");
+        store.create(&c).await.unwrap();
+        let original_created = c.created_at.clone();
+
+        c.edit("revised");
+        let ok = store.update(&c).await.unwrap();
+        assert!(ok);
+
+        let rows = store.list_for_requirement("req-a").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "revised");
+        assert_eq!(rows[0].created_at, original_created, "created_at immutable");
+    }
+
+    #[tokio::test]
+    async fn comment_update_returns_false_for_unknown() {
+        let store = MemoryCommentStore::new();
+        let c = Comment::new("req-a", ActivityActor::Human, "ghost");
+        let ok = store.update(&c).await.unwrap();
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn comment_delete_top_level_cascades_to_replies() {
+        let store = MemoryCommentStore::new();
+        let top = Comment::new("req-a", ActivityActor::Human, "top");
+        store.create(&top).await.unwrap();
+        let r1 = Comment::reply("req-a", ActivityActor::Human, "r1", &top.id);
+        store.create(&r1).await.unwrap();
+        let r2 = Comment::reply("req-a", ActivityActor::Human, "r2", &top.id);
+        store.create(&r2).await.unwrap();
+        let unrelated = Comment::new("req-a", ActivityActor::Human, "elsewhere");
+        store.create(&unrelated).await.unwrap();
+
+        let removed = store.delete("req-a", &top.id).await.unwrap();
+        assert!(removed);
+
+        let rows = store.list_for_requirement("req-a").await.unwrap();
+        assert_eq!(rows.len(), 1, "only the unrelated row remains");
+        assert_eq!(rows[0].id, unrelated.id);
+    }
+
+    #[tokio::test]
+    async fn comment_subscribe_emits_posted_edited_deleted() {
+        let store = MemoryCommentStore::new();
+        let mut rx = store.subscribe();
+        let mut c = Comment::new("req-a", ActivityActor::Human, "v1");
+        store.create(&c).await.unwrap();
+        match rx.recv().await.unwrap() {
+            CommentEvent::Posted(got) => assert_eq!(got.id, c.id),
+            other => panic!("expected Posted, got {other:?}"),
+        }
+        c.edit("v2");
+        store.update(&c).await.unwrap();
+        match rx.recv().await.unwrap() {
+            CommentEvent::Edited(got) => assert_eq!(got.body, "v2"),
+            other => panic!("expected Edited, got {other:?}"),
+        }
+        store.delete("req-a", &c.id).await.unwrap();
+        match rx.recv().await.unwrap() {
+            CommentEvent::Deleted {
+                requirement_id,
+                comment_id,
+            } => {
+                assert_eq!(requirement_id, "req-a");
+                assert_eq!(comment_id, c.id);
+            }
+            other => panic!("expected Deleted, got {other:?}"),
+        }
+    }
+
+    // ---- LabelStore -----------------------------------------------------
+
+    #[tokio::test]
+    async fn label_create_and_list_sorts_by_name_case_insensitive() {
+        let store = MemoryLabelStore::new();
+        store
+            .create(&Label::new("proj-1", "zebra", "#000000"))
+            .await
+            .unwrap();
+        store
+            .create(&Label::new("proj-1", "Apple", "#ff0000"))
+            .await
+            .unwrap();
+        store
+            .create(&Label::new("proj-1", "banana", "#ffff00"))
+            .await
+            .unwrap();
+        // Different project, should not bleed into proj-1's list.
+        store
+            .create(&Label::new("proj-2", "elsewhere", "#00ff00"))
+            .await
+            .unwrap();
+
+        let rows = store.list_for_project("proj-1").await.unwrap();
+        let names: Vec<_> = rows.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, vec!["Apple", "banana", "zebra"]);
+    }
+
+    #[tokio::test]
+    async fn label_create_rejects_duplicate_name_case_insensitive() {
+        let store = MemoryLabelStore::new();
+        store
+            .create(&Label::new("proj-1", "Bug", "#ff0000"))
+            .await
+            .unwrap();
+        let err = store
+            .create(&Label::new("proj-1", "BUG", "#00ff00"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn label_get_finds_across_projects() {
+        let store = MemoryLabelStore::new();
+        let l1 = Label::new("proj-1", "bug", "#ff0000");
+        let l2 = Label::new("proj-2", "feature", "#00ff00");
+        store.create(&l1).await.unwrap();
+        store.create(&l2).await.unwrap();
+        assert_eq!(store.get(&l1.id).await.unwrap().unwrap(), l1);
+        assert_eq!(store.get(&l2.id).await.unwrap().unwrap(), l2);
+        assert!(store.get("missing").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn label_update_skips_self_in_uniqueness_check() {
+        let store = MemoryLabelStore::new();
+        let mut l = Label::new("proj-1", "bug", "#ff0000");
+        store.create(&l).await.unwrap();
+        // Recolour without renaming → must not trip on its own name.
+        l.colour = "#0000ff".into();
+        l.touch();
+        assert!(store.update(&l).await.unwrap());
+        let got = store.get(&l.id).await.unwrap().unwrap();
+        assert_eq!(got.colour, "#0000ff");
+    }
+
+    #[tokio::test]
+    async fn label_update_blocks_collision_with_other_label() {
+        let store = MemoryLabelStore::new();
+        let l1 = Label::new("proj-1", "bug", "#ff0000");
+        let mut l2 = Label::new("proj-1", "feature", "#00ff00");
+        store.create(&l1).await.unwrap();
+        store.create(&l2).await.unwrap();
+        // Try to rename l2 → "bug": must fail.
+        l2.name = "Bug".into();
+        let err = store.update(&l2).await.unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn label_delete_returns_false_for_unknown() {
+        let store = MemoryLabelStore::new();
+        let removed = store.delete("proj-1", "nope").await.unwrap();
+        assert!(!removed);
+    }
+
+    #[tokio::test]
+    async fn label_subscribe_emits_create_update_delete() {
+        let store = MemoryLabelStore::new();
+        let mut rx = store.subscribe();
+        let mut l = Label::new("proj-1", "bug", "#ff0000");
+        store.create(&l).await.unwrap();
+        match rx.recv().await.unwrap() {
+            LabelEvent::Created(got) => assert_eq!(got.id, l.id),
+            other => panic!("expected Created, got {other:?}"),
+        }
+        l.colour = "#00ff00".into();
+        l.touch();
+        store.update(&l).await.unwrap();
+        match rx.recv().await.unwrap() {
+            LabelEvent::Updated(got) => assert_eq!(got.colour, "#00ff00"),
+            other => panic!("expected Updated, got {other:?}"),
+        }
+        store.delete("proj-1", &l.id).await.unwrap();
+        match rx.recv().await.unwrap() {
+            LabelEvent::Deleted {
+                project_id,
+                label_id,
+            } => {
+                assert_eq!(project_id, "proj-1");
+                assert_eq!(label_id, l.id);
+            }
+            other => panic!("expected Deleted, got {other:?}"),
+        }
+    }
+
+    // ---- TenantStore ----------------------------------------------------
+
+    #[tokio::test]
+    async fn first_start_creates_default_tenant() {
+        let store = MemoryTenantStore::new();
+        crate::ensure_default_tenant(Arc::new(store.clone()))
+            .await
+            .unwrap();
+        let t = store.find_by_slug("default").await.unwrap().unwrap();
+        assert_eq!(t.slug, "default");
+        assert_eq!(t.name, "Default");
+
+        // Idempotent — second call must not create a duplicate.
+        crate::ensure_default_tenant(Arc::new(store.clone()))
+            .await
+            .unwrap();
+        let list = store.list().await.unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tenant_save_rejects_duplicate_slug() {
+        let store = MemoryTenantStore::new();
+        let a = Tenant::new("A").with_slug("dup");
+        let b = Tenant::new("B").with_slug("dup");
+        store.save(&a).await.unwrap();
+        let err = store.save(&b).await.unwrap_err();
+        assert!(err.to_string().contains("dup"));
     }
 
     // ---- DocStore -------------------------------------------------------

@@ -16,3 +16,4 @@ apps/jarvis-desktop/binaries/
 /.playwright-mcp
 node_modules
 .playwright-cli
+.jarvis

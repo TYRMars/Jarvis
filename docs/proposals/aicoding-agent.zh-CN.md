@@ -1,8 +1,14 @@
 # Coding 基础能力与工作流
 
-**状态：** Proposed
+**状态：** Adopted（初始实现已落地）
 **涉及：** `harness-tools`、`harness-core` 事件层、
 `harness-server` WS/SSE 传输、`apps/jarvis-web`、文档。
+
+全部能力项已实现：`workspace.context`、只读 `git.*` 工具、`plan.update`
+及对应 `AgentEvent::PlanUpdate` 类型事件、带审批的 `fs.patch`、只读的
+`project.checks`、`apps/jarvis` 的 coding system prompt，以及 Web UI
+对应卡片（plan、diff、类终端 shell 进度）。
+
 
 ## 背景
 

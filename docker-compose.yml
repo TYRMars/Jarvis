@@ -1,0 +1,82 @@
+# Minimal Jarvis stack — one container, one bind-mounted workspace,
+# one named volume for the JSON conversation/project store.
+#
+# Quickstart:
+#   1.  cp .env.example .env  &&  edit it (set OPENAI_API_KEY etc.)
+#   2.  docker compose up -d
+#   3.  open http://127.0.0.1:7001
+#
+# To use Postgres instead of the default JSON file store, uncomment the
+# `postgres` service block and the `JARVIS_DB_URL` line in the env list.
+# That requires building Jarvis with `--features postgres` (the public
+# image is shipped with default features only — see DEPLOYMENT.md).
+
+services:
+  jarvis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jarvis:local
+    container_name: jarvis
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only by default. Change to "7001:7001" if you
+      # need it reachable from the LAN, and front it with a TLS-terminating
+      # reverse proxy before exposing to the internet.
+      - "127.0.0.1:7001:7001"
+    env_file:
+      # `required: false` lets `docker compose config` succeed before the
+      # user copies .env.example → .env. Compose v2.24+ syntax.
+      - path: .env
+        required: false
+    environment:
+      # These four are baked into the image but can still be overridden
+      # via .env. Listed here so `docker compose config` shows them.
+      JARVIS_ADDR: "0.0.0.0:7001"
+      JARVIS_FS_ROOT: "/workspace"
+      HOME: "/data"
+      # Default JSON store path inside the container. Persists via the
+      # `jarvis-data` volume below.
+      JARVIS_DB_URL: "json:///data/.local/share/jarvis/conversations"
+      # Uncomment to switch to Postgres (requires --features postgres build):
+      # JARVIS_DB_URL: "postgres://jarvis:jarvis@postgres:5432/jarvis"
+    volumes:
+      - jarvis-data:/data
+      # Mount the workspace you want the agent to operate on. Defaults to
+      # `./workspace` so it's obvious where files end up the first time
+      # someone runs this. Edit to point at a real project.
+      - ./workspace:/workspace
+    healthcheck:
+      # Defined in the Dockerfile, redeclared here so `docker compose ps`
+      # and orchestrators that re-read it get an explicit copy.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7001/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    # depends_on:
+    #   - postgres   # uncomment alongside the postgres service
+
+  # ------------------------------------------------------------------------
+  # Optional Postgres backend. Uncomment + rebuild Jarvis with the
+  # `postgres` cargo feature to switch.
+  # ------------------------------------------------------------------------
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: jarvis-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: jarvis
+  #     POSTGRES_PASSWORD: jarvis
+  #     POSTGRES_DB: jarvis
+  #   volumes:
+  #     - jarvis-postgres:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U jarvis"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 5
+
+volumes:
+  jarvis-data:
+  # jarvis-postgres:

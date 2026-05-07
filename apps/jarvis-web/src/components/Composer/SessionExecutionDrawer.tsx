@@ -3,7 +3,7 @@
 // Mirrors the right-side panel pattern from `RequirementDetail.tsx`
 // — same `.requirement-detail-panel` / `.requirement-detail-backdrop`
 // CSS so styling stays consistent — but does not carry the action
-// chrome (start run, mark done, edit assignee, …). Action buttons
+// chrome (start run, mark done, edit metadata, …). Action buttons
 // live behind the spec's Phase 4 follow-up; the placeholder div
 // below reserves the slot.
 
