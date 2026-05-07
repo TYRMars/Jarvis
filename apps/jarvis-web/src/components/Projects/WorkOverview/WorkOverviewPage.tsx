@@ -1,21 +1,21 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { t } from "../../../utils/i18n";
 import type { WindowDays } from "../../../services/workOverview";
 import { useWorkOverview } from "./useWorkOverview";
 import { KpiStrip } from "./KpiStrip";
-import { OperationalPanel } from "./OperationalPanel";
+import { HealthCenter } from "./HealthCenter";
 import { ThroughputChart } from "./ThroughputChart";
-import { QualityPanel } from "./QualityPanel";
 import { ProjectLeaderboard } from "./ProjectLeaderboard";
-import { SystemStatusBanner } from "./SystemStatusBanner";
 import { UsagePanel } from "./UsagePanel";
-import { ExceptionsPanel } from "../../Diagnostics/ExceptionsPanel";
+import { HarnessEvolutionPanel } from "./HarnessEvolutionPanel";
+import { ModelComparisonPanel } from "./ModelComparisonPanel";
 
 const WINDOW_OPTIONS: WindowDays[] = [7, 30, 90];
 
-// Top-level dashboard shown on `/projects` when no project is
-// selected. Owns the time-window state + the data hook; child panels
-// just render slices of the response.
+// Top-level dashboard shown on `/projects/overview`. Owns the
+// time-window state + the data hook; child panels just render slices
+// of the response.
 export function WorkOverviewPage() {
   const [windowDays, setWindowDays] = useState<WindowDays>(7);
   const state = useWorkOverview(windowDays);
@@ -51,40 +51,33 @@ export function WorkOverviewPage() {
             {t("workOverviewSubtitle")}
           </p>
         </div>
-        <div
-          className="work-overview-window"
-          role="tablist"
-          aria-label={t("workOverviewWindow")}
-        >
-          {WINDOW_OPTIONS.map((opt) => (
-            <button
-              key={opt}
-              type="button"
-              role="tab"
-              aria-selected={windowDays === opt}
-              className={
-                "work-overview-window-tab" +
-                (windowDays === opt ? " active" : "")
-              }
-              onClick={() => setWindowDays(opt)}
-            >
-              {t(`workOverviewWindow${opt}d` as const)}
-            </button>
-          ))}
+        <div className="work-overview-header-actions">
+          <Link className="work-overview-projects-link" to="/projects/list">
+            {t("workOverviewProjectsLink")}
+          </Link>
+          <div
+            className="work-overview-window"
+            role="tablist"
+            aria-label={t("workOverviewWindow")}
+          >
+            {WINDOW_OPTIONS.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                role="tab"
+                aria-selected={windowDays === opt}
+                className={
+                  "work-overview-window-tab" +
+                  (windowDays === opt ? " active" : "")
+                }
+                onClick={() => setWindowDays(opt)}
+              >
+                {t(`workOverviewWindow${opt}d` as const)}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
-
-      {/* Top-of-page status banner. Owns the at-a-glance answers to
-          "is the system working / failing / idle", "is auto on", and
-          "is the data fresh". Replaces the old spread-out
-          banner+footer pattern. */}
-      <SystemStatusBanner
-        overview={state.overview}
-        unavailable={state.overviewUnavailable}
-        loading={state.loading}
-        error={state.error}
-        onRefresh={state.refetch}
-      />
 
       {state.overview?.truncated && (
         <div className="work-overview-banner">
@@ -97,45 +90,50 @@ export function WorkOverviewPage() {
         loading={state.loading && !state.overview}
       />
 
-      {/* Anchor IDs match the `scrollTo` props on KPI cards so
-          clicking a KPI smooth-scrolls to the relevant panel. The
-          ids are on wrapper divs to avoid intruding into the panel
-          components' own className contracts. */}
-      <div className="work-overview-grid">
-        <div id="work-overview-operational" className="work-overview-grid-cell">
-          <OperationalPanel overview={state.overview} />
-        </div>
-        <div id="work-overview-throughput" className="work-overview-grid-cell">
-          <ThroughputChart overview={state.overview} />
-        </div>
-        <div className="work-overview-grid-cell">
-          <QualityPanel
-            quality={state.quality}
-            unavailable={state.qualityUnavailable}
-          />
-        </div>
-        <div className="work-overview-grid-cell">
-          <ProjectLeaderboard overview={state.overview} />
-        </div>
-        {/* Token / cost usage — fed by the WS `usage` frame stream
-            via `usageCumulator`; persisted to localStorage so the
-            "today / window" totals survive reload without a server
-            schema change on RequirementRun. */}
-        <div className="work-overview-grid-cell">
-          <UsagePanel windowDays={windowDays} />
-        </div>
+      <div id="work-overview-operational" className="work-overview-anchor">
+        <HealthCenter
+          overview={state.overview}
+          quality={state.quality}
+          overviewUnavailable={state.overviewUnavailable}
+          qualityUnavailable={state.qualityUnavailable}
+          loading={state.loading}
+          error={state.error}
+          onRefresh={state.refetch}
+        />
       </div>
 
-      {/* Sentry-style exceptions feed — replaces the old 3-section
-          diagnostics body. Errors group by signature (so 12 retries
-          of the same root cause read as one card with `× 12`),
-          carry a severity badge + last-seen relative time, an
-          optional resolution hint, and an `Ignore` button for
-          known-noise. Source data: `state.overview.recent_failures`
-          plus diagnostics service for orphans + stuck runs. */}
-      <div className="work-overview-diagnostics">
-        <ExceptionsPanel overview={state.overview} />
-      </div>
+      <section className="work-insights-group" aria-label={t("workInsightsTitle")}>
+        <header className="work-insights-head">
+          <div>
+            <h3>{t("workInsightsTitle")}</h3>
+            <p>{t("workInsightsSubtitle")}</p>
+          </div>
+        </header>
+        <div className="work-insights-grid">
+          <div
+            id="work-overview-throughput"
+            className="work-insights-cell work-insights-cell-throughput"
+          >
+            <ThroughputChart overview={state.overview} />
+          </div>
+          <div className="work-insights-cell work-insights-cell-leaderboard">
+            <ProjectLeaderboard overview={state.overview} />
+          </div>
+          <div className="work-insights-cell work-insights-cell-usage">
+            <UsagePanel windowDays={windowDays} />
+          </div>
+          <div className="work-insights-cell work-insights-cell-models">
+            <ModelComparisonPanel windowDays={windowDays} />
+          </div>
+        </div>
+      </section>
+
+      <HarnessEvolutionPanel
+        overview={state.overview}
+        quality={state.quality}
+        overviewUnavailable={state.overviewUnavailable}
+        qualityUnavailable={state.qualityUnavailable}
+      />
 
       {/* Footer kept for absolute timestamp (the banner already shows
           relative time, but exact wall-clock is useful for ops

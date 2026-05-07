@@ -105,6 +105,15 @@ pub struct Requirement {
     /// as an empty `Vec`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// Project-scoped [`Label`](crate::Label) ids attached to this
+    /// row. The label rows themselves live in [`LabelStore`](crate::LabelStore)
+    /// — this field only carries references so renaming / recolouring
+    /// a label doesn't rewrite every Requirement that uses it.
+    /// Order is preserved so the UI can render chips in the order
+    /// the operator added them. Older JSON rows without the field
+    /// deserialise as an empty `Vec`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub label_ids: Vec<String>,
     /// Who decides `Review → Done`. The default
     /// [`AcceptancePolicy::Subagent`] hands the call off to a
     /// reviewer subagent (see `docs/proposals/subagents.zh-CN.md`)
@@ -468,6 +477,7 @@ impl Requirement {
             todos: Vec::new(),
             triage_state: TriageState::Approved,
             depends_on: Vec::new(),
+            label_ids: Vec::new(),
             acceptance_policy: AcceptancePolicy::Subagent,
             created_at: now.clone(),
             updated_at: now,

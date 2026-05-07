@@ -9,10 +9,12 @@ pub mod activity;
 pub mod agent;
 pub mod agent_profile;
 pub mod approval;
+pub mod comment;
 pub mod conversation;
 pub mod doc;
 pub mod error;
 pub mod hitl;
+pub mod label;
 pub mod llm;
 pub mod memory;
 pub mod message;
@@ -20,6 +22,7 @@ pub mod permission;
 pub mod plan;
 pub mod progress;
 pub mod project;
+pub mod project_memory;
 pub mod requirement;
 pub mod requirement_run;
 pub mod store;
@@ -36,12 +39,16 @@ pub use approval::{
     AlwaysApprove, AlwaysDeny, ApprovalDecision, ApprovalRequest, Approver, ChannelApprover,
     PendingApproval,
 };
+pub use comment::{Comment, CommentEvent};
 pub use conversation::Conversation;
 pub use doc::{DocDraft, DocEvent, DocKind, DocProject};
 pub use error::{BoxError, Error, Result};
 pub use hitl::{
     request as request_human, with_hitl, HitlKind, HitlOption, HitlRequest, HitlResponse,
     HitlStatus, HitlTransport, PendingHitl,
+};
+pub use label::{
+    validate_label_colour, validate_label_name, Label, LabelEvent, MAX_LABEL_NAME_LEN,
 };
 pub use llm::{ChatRequest, ChatResponse, FinishReason, LlmChunk, LlmProvider, LlmStream, Usage};
 pub use memory::{
@@ -60,8 +67,9 @@ pub use progress::{
 };
 pub use project::{
     default_kanban_columns, derive_slug, validate_column_id, validate_slug, KanbanColumn, Project,
-    ProjectWorkspace,
+    ProjectAutomation, ProjectWorkspace,
 };
+pub use project_memory::{ProjectMemory, ProjectMemoryKind};
 pub use requirement::{
     AcceptancePolicy, Requirement, RequirementEvent, RequirementStatus, RequirementTodo,
     RequirementTodoCreator, RequirementTodoEvidence, RequirementTodoKind, RequirementTodoStatus,
@@ -72,13 +80,20 @@ pub use requirement_run::{
     RequirementRunStatus, VerificationPlan, VerificationResult, VerificationStatus,
 };
 pub use store::{
-    ActivityStore, AgentProfileStore, ConversationMetadata, ConversationRecord, ConversationStore,
-    DocStore, ProjectStore, RequirementRunStore, RequirementStore, TodoStore,
+    ActivityStore, AgentProfileStore, CommentStore, ConversationMetadata, ConversationRecord,
+    ConversationStore, DocStore, LabelStore, ProjectMemoryStore, ProjectStore, RequirementRunStore,
+    RequirementStore, TodoStore,
 };
 pub use subagent::{
     emit as emit_subagent, is_active as subagent_active, with_subagent, SubAgentEvent,
     SubAgentFrame,
 };
+/// Tenant (multi-tenant isolation boundary) value types and store trait.
+///
+/// **Important distinction:** [`Tenant`](crate::tenant::Tenant) is a
+/// multi-tenant organisational boundary (team, customer, SaaS tenant).
+/// It is **not** a filesystem workspace — the per-session working
+/// directory concept lives in [`workspace`](crate::workspace).
 pub use tenant::{Tenant, TenantSettings, TenantStore};
 pub use todo::{TodoEvent, TodoItem, TodoPriority, TodoStatus};
 pub use tool::{Tool, ToolCategory, ToolRegistry, ToolSpec};

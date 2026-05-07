@@ -38,12 +38,15 @@ mod workspace;
 
 pub use error::StoreError;
 pub use json_file::{
-    JsonFileActivityStore, JsonFileAgentProfileStore, JsonFileConversationStore, JsonFileDocStore,
-    JsonFileProjectStore, JsonFileRequirementRunStore, JsonFileRequirementStore, JsonFileTodoStore,
+    JsonFileActivityStore, JsonFileAgentProfileStore, JsonFileCommentStore,
+    JsonFileConversationStore, JsonFileDocStore, JsonFileLabelStore, JsonFileProjectStore,
+    JsonFileRequirementRunStore, JsonFileRequirementStore, JsonFileTenantStore,
+    JsonFileTodoStore,
 };
 pub use memory::{
-    MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore, MemoryDocStore,
-    MemoryProjectStore, MemoryRequirementRunStore, MemoryRequirementStore, MemoryTodoStore,
+    MemoryActivityStore, MemoryAgentProfileStore, MemoryCommentStore, MemoryConversationStore,
+    MemoryDocStore, MemoryLabelStore, MemoryProjectMemoryStore, MemoryProjectStore,
+    MemoryRequirementRunStore, MemoryRequirementStore, MemoryTenantStore, MemoryTodoStore,
 };
 pub use permission::JsonFilePermissionStore;
 pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, WorkspaceStore};
@@ -52,31 +55,34 @@ pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, Wor
 mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::{
-    SqliteActivityStore, SqliteAgentProfileStore, SqliteConversationStore, SqliteDocStore,
-    SqliteProjectStore, SqliteRequirementRunStore, SqliteRequirementStore, SqliteTodoStore,
+    SqliteActivityStore, SqliteAgentProfileStore, SqliteCommentStore, SqliteConversationStore,
+    SqliteDocStore, SqliteLabelStore, SqliteProjectStore, SqliteRequirementRunStore,
+    SqliteRequirementStore, SqliteTenantStore, SqliteTodoStore,
 };
 
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(feature = "postgres")]
 pub use postgres::{
-    PostgresActivityStore, PostgresAgentProfileStore, PostgresConversationStore, PostgresDocStore,
-    PostgresProjectStore, PostgresRequirementRunStore, PostgresRequirementStore, PostgresTodoStore,
+    PostgresActivityStore, PostgresAgentProfileStore, PostgresCommentStore,
+    PostgresConversationStore, PostgresDocStore, PostgresLabelStore, PostgresProjectStore,
+    PostgresRequirementRunStore, PostgresRequirementStore, PostgresTodoStore,
 };
 
 #[cfg(feature = "mysql")]
 mod mysql;
 #[cfg(feature = "mysql")]
 pub use mysql::{
-    MysqlActivityStore, MysqlAgentProfileStore, MysqlConversationStore, MysqlDocStore,
-    MysqlProjectStore, MysqlRequirementRunStore, MysqlRequirementStore, MysqlTodoStore,
+    MysqlActivityStore, MysqlAgentProfileStore, MysqlCommentStore, MysqlConversationStore,
+    MysqlDocStore, MysqlLabelStore, MysqlProjectStore, MysqlRequirementRunStore,
+    MysqlRequirementStore, MysqlTodoStore,
 };
 
 use std::sync::Arc;
 
 use harness_core::{
-    ActivityStore, AgentProfileStore, ConversationStore, DocStore, ProjectStore,
-    RequirementRunStore, RequirementStore, TodoStore,
+    ActivityStore, AgentProfileStore, CommentStore, ConversationStore, DocStore, LabelStore,
+    ProjectStore, RequirementRunStore, RequirementStore, TenantStore, TodoStore,
 };
 
 /// Bundle of stores returned by [`connect_all`]. The backends share
@@ -105,6 +111,15 @@ pub struct StoreBundle {
     /// Per-workspace doc workspaces (notes, designs, reports) with
     /// Markdown drafts attached.
     pub docs: Arc<dyn DocStore>,
+    /// Per-requirement discussion threads (Phase 3.8 / 3.8b).
+    /// Persisted across every backend — JSON files, SQLite,
+    /// Postgres, MySQL.
+    pub comments: Arc<dyn CommentStore>,
+    /// Per-project structured tags (Phase 3.8 / 3.8b). Persisted
+    /// across every backend.
+    pub labels: Arc<dyn LabelStore>,
+    /// Multi-tenant isolation boundary store.
+    pub tenants: Arc<dyn TenantStore>,
 }
 
 /// Open both stores for a given database URL. The scheme selects the
@@ -132,6 +147,10 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let agent_profiles =
                 Arc::new(JsonFileAgentProfileStore::open(&path)?) as Arc<dyn AgentProfileStore>;
             let docs = Arc::new(JsonFileDocStore::open(&path)?) as Arc<dyn DocStore>;
+            let comments = Arc::new(JsonFileCommentStore::open(&path)?) as Arc<dyn CommentStore>;
+            let labels = Arc::new(JsonFileLabelStore::open(&path)?) as Arc<dyn LabelStore>;
+            let tenants =
+                Arc::new(JsonFileTenantStore::open(&path)?) as Arc<dyn TenantStore>;
             Ok(StoreBundle {
                 conversations,
                 projects,
@@ -141,6 +160,9 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 activities,
                 agent_profiles,
                 docs,
+                comments,
+                labels,
+                tenants,
             })
         }
         #[cfg(feature = "sqlite")]
@@ -153,6 +175,11 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let activities = SqliteActivityStore::from_pool(conv.pool());
             let agent_profiles = SqliteAgentProfileStore::from_pool(conv.pool());
             let docs = SqliteDocStore::from_pool(conv.pool());
+            // Phase 3.8b — Comment + Label SQL impls landed; persisted
+            // alongside everything else.
+            let comments = SqliteCommentStore::from_pool(conv.pool());
+            let labels = SqliteLabelStore::from_pool(conv.pool());
+            let tenants = SqliteTenantStore::from_pool(conv.pool());
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -162,6 +189,9 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 activities: Arc::new(activities),
                 agent_profiles: Arc::new(agent_profiles),
                 docs: Arc::new(docs),
+                comments: Arc::new(comments),
+                labels: Arc::new(labels),
+                tenants: Arc::new(tenants),
             })
         }
         #[cfg(feature = "postgres")]
@@ -174,6 +204,9 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let activities = PostgresActivityStore::from_pool(conv.pool());
             let agent_profiles = PostgresAgentProfileStore::from_pool(conv.pool());
             let docs = PostgresDocStore::from_pool(conv.pool());
+            let comments = PostgresCommentStore::from_pool(conv.pool());
+            let labels = PostgresLabelStore::from_pool(conv.pool());
+            let tenants = ephemeral_tenants("postgres");
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -183,6 +216,9 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 activities: Arc::new(activities),
                 agent_profiles: Arc::new(agent_profiles),
                 docs: Arc::new(docs),
+                comments: Arc::new(comments),
+                labels: Arc::new(labels),
+                tenants,
             })
         }
         #[cfg(feature = "mysql")]
@@ -195,6 +231,9 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let activities = MysqlActivityStore::from_pool(conv.pool());
             let agent_profiles = MysqlAgentProfileStore::from_pool(conv.pool());
             let docs = MysqlDocStore::from_pool(conv.pool());
+            let comments = MysqlCommentStore::from_pool(conv.pool());
+            let labels = MysqlLabelStore::from_pool(conv.pool());
+            let tenants = ephemeral_tenants("mysql");
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -204,11 +243,15 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 activities: Arc::new(activities),
                 agent_profiles: Arc::new(agent_profiles),
                 docs: Arc::new(docs),
+                comments: Arc::new(comments),
+                labels: Arc::new(labels),
+                tenants,
             })
         }
         other => Err(StoreError::UnsupportedScheme(other.to_string())),
     }
 }
+
 
 /// Open just the conversation store for a given URL. Equivalent to
 /// `connect_all(url).await?.conversations`. Preserved for callers that
@@ -260,6 +303,22 @@ pub async fn connect_agent_profiles(url: &str) -> Result<Arc<dyn AgentProfileSto
 /// `connect_all(url).await?.docs`.
 pub async fn connect_docs(url: &str) -> Result<Arc<dyn DocStore>, StoreError> {
     Ok(connect_all(url).await?.docs)
+}
+
+/// Open just the tenant store for a given URL. Equivalent to
+/// `connect_all(url).await?.tenants`.
+pub async fn connect_tenants(url: &str) -> Result<Arc<dyn TenantStore>, StoreError> {
+    Ok(connect_all(url).await?.tenants)
+}
+
+/// Idempotently ensure a tenant with slug `default` exists.
+/// Called once at process startup by the composition root.
+pub async fn ensure_default_tenant(store: Arc<dyn TenantStore>) -> Result<(), StoreError> {
+    if store.find_by_slug("default").await?.is_none() {
+        let t = harness_core::Tenant::new("Default").with_slug("default");
+        store.save(&t).await.map_err(StoreError::Other)?;
+    }
+    Ok(())
 }
 
 fn json_path(url: &str) -> Result<String, StoreError> {

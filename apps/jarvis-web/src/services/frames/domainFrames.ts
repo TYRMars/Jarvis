@@ -21,6 +21,16 @@ import {
   applyDocProjectDeleted,
   applyDocProjectUpserted,
 } from "../docs";
+import {
+  applyCommentDeleted,
+  applyCommentEdited,
+  applyCommentPosted,
+} from "../comments";
+import {
+  applyLabelCreated,
+  applyLabelDeleted,
+  applyLabelUpdated,
+} from "../labels";
 
 export const domainFrameHandlers: Record<string, (ev: any) => void> = {
   // ---- Persistent TODO board frames ----
@@ -71,5 +81,35 @@ export const domainFrameHandlers: Record<string, (ev: any) => void> = {
   },
   doc_draft_upserted: (ev) => {
     if (ev.draft) applyDocDraftUpserted(ev.draft);
+  },
+  // ---- Comment frames (Phase 3.8) ----
+  comment_posted: (ev) => {
+    if (ev.comment) applyCommentPosted(ev.comment);
+  },
+  comment_edited: (ev) => {
+    if (ev.comment) applyCommentEdited(ev.comment);
+  },
+  comment_deleted: (ev) => {
+    if (
+      typeof ev.requirement_id === "string" &&
+      typeof ev.comment_id === "string"
+    ) {
+      applyCommentDeleted(ev.requirement_id, ev.comment_id);
+    }
+  },
+  // ---- Label frames (Phase 3.8) ----
+  label_created: (ev) => {
+    if (ev.label) applyLabelCreated(ev.label);
+  },
+  label_updated: (ev) => {
+    if (ev.label) applyLabelUpdated(ev.label);
+  },
+  label_deleted: (ev) => {
+    if (
+      typeof ev.project_id === "string" &&
+      typeof ev.label_id === "string"
+    ) {
+      applyLabelDeleted(ev.project_id, ev.label_id);
+    }
   },
 };

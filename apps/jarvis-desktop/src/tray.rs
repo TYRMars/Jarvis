@@ -1,6 +1,6 @@
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::DesktopAppState;
 
@@ -15,12 +15,19 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     TrayIconBuilder::new()
         .menu(&menu)
         .on_menu_event(move |app, event| {
-            match event.id.as_ref() {
-                id if id == show_i.id() => show_window(app),
-                id if id == restart_i.id() => restart_server(app),
-                id if id == logs_i.id() => open_logs(app),
-                id if id == quit_i.id() => app.exit(0),
-                _ => {}
+            // Tauri 2.x: `event.id` is a `&MenuId`; `MenuItem::id()`
+            // also returns `&MenuId`. `MenuId: PartialEq<MenuId>` is
+            // derived, so direct equality works without going
+            // through `as_ref()`.
+            let id = &event.id;
+            if id == show_i.id() {
+                show_window(app);
+            } else if id == restart_i.id() {
+                restart_server(app);
+            } else if id == logs_i.id() {
+                open_logs(app);
+            } else if id == quit_i.id() {
+                app.exit(0);
             }
         })
         .on_tray_icon_event(|tray, event| {

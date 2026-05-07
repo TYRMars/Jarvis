@@ -70,6 +70,21 @@ pub struct RequirementRun {
     /// shell ops should `cd` here when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    /// Aggregated provider-reported token usage for this run, summed
+    /// across every iteration of the agent loop. `None` means no
+    /// LLM call ever returned usage (verification-only runs, runs
+    /// that crashed before the first response, or providers that
+    /// don't ship counters). The auto loop populates this from
+    /// `Agent::run_with_usage`; manual runs from REST `start_run`
+    /// can populate it via the `PATCH /v1/runs/:id` endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::Usage>,
+    /// Concrete model id this run targeted. Recorded so cost
+    /// attribution can be done per-model later (different rates per
+    /// vendor / per tier). Pulled from `AgentProfile.model` when an
+    /// assignee is set, otherwise from the binary's default route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// RFC-3339 / ISO-8601 timestamp of run creation.
     pub started_at: String,
     /// RFC-3339 timestamp of completion. `None` while in flight.
@@ -91,6 +106,8 @@ impl RequirementRun {
             verification: None,
             logs: Vec::new(),
             worktree_path: None,
+            usage: None,
+            model: None,
             started_at: chrono::Utc::now().to_rfc3339(),
             finished_at: None,
         }

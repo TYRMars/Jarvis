@@ -65,6 +65,15 @@ Jarvis 暴露 OpenAI 风格和 Jarvis 原生接口：
 
 WebSocket 是最完整的传输方式：支持多轮状态、恢复持久化会话、审批决策、HITL 响应、模型/路由切换、工作区切换，以及流式 `AgentEvent`。
 
+## 产品架构图
+
+![Jarvis 产品架构图](docs/assets/product-architecture.zh-CN.svg)
+
+这张图按产品使用路径阅读：用户从 Web、CLI、桌面或 API 进入，`apps/jarvis`
+把传输层、权限策略、Agent runtime 和具体能力组装起来；`harness-core`
+只负责编排对话、模型与工具调用，不直接知道 HTTP、Provider、存储、MCP
+或 Web UI。更底层的 crate 分层和请求生命周期见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 快速开始
 
 ### 1. 构建 Web UI

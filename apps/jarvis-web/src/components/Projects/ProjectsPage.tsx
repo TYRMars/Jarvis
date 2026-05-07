@@ -37,7 +37,8 @@ export function ProjectsPage() {
   const navigate = useNavigate();
   // Selected project lives in the URL (`/projects/:projectId`) so the
   // back button, bookmarks, and sidebar links all behave correctly.
-  // The plain `/projects` URL is the list view.
+  // `/projects/list` is the list view; `/projects` redirects to the
+  // operational overview.
   const { projectId: selectedProjectId = null } = useParams<{
     projectId: string;
   }>();
@@ -137,8 +138,8 @@ export function ProjectsPage() {
   // viewing. The sidebar's "+ New session" reads `draftProjectId`
   // (with `activeProjectFilter` as a fallback), so this is what makes
   // a click in the sidebar create a project-bound chat instead of a
-  // free-floating one. Cleared when the URL goes back to `/projects`
-  // (no id) so leaving the project page doesn't strand the binding.
+  // free-floating one. Cleared when the URL has no project id so
+  // leaving the project detail page doesn't strand the binding.
   useEffect(() => {
     useAppStore.getState().setDraftProjectId?.(selectedProjectId);
   }, [selectedProjectId]);
@@ -157,7 +158,7 @@ export function ProjectsPage() {
             type="button"
             className="projects-back-btn projects-back-btn-leading"
             onClick={() => {
-              void navigate("/projects");
+              void navigate("/projects/list");
               setQuery("");
             }}
             title={t("projectsBackBtn")}

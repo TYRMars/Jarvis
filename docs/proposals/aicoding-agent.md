@@ -1,8 +1,13 @@
 # Coding capability pack and workflow
 
-**Status:** Proposed
+**Status:** Adopted (initial implementation landed)
 **Touches:** `harness-tools`, `harness-core` event surface,
 `harness-server` WS/SSE transport, `apps/jarvis-web`, docs.
+
+All capability items are implemented: `workspace.context`, read-only `git.*`
+tools, `plan.update` with typed `AgentEvent::PlanUpdate`, gated `fs.patch`,
+read-only `project.checks`, coding system prompt in `apps/jarvis`, and
+corresponding Web UI cards (plan, diff, terminal-like shell progress).
 
 ## Motivation
 

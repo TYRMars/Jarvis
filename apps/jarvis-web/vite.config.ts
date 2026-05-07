@@ -25,6 +25,9 @@ export default defineConfig({
     // produce `0.1.0` as JS code, not a string literal.
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  optimizeDeps: {
+    include: ["lottie-web", "lottie-web/build/player/lottie_svg"],
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,

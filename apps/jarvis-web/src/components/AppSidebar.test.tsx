@@ -35,8 +35,8 @@ describe("AppSidebar search", () => {
     // The inline title-prefix filter has moved into the QuickSwitcher
     // modal — the sidebar list itself is now a plain "show every
     // conversation we know about" surface. This test pins that
-    // contract: both rows show, no input box exists, and rows stay
-    // compact without project chips or message counts.
+    // contract: both rows show, no input box exists, and project
+    // context is visible without bringing message counts back.
     useAppStore.getState().setConvoGroupBy("date");
     useAppStore.getState().setProjects([
       {
@@ -58,6 +58,8 @@ describe("AppSidebar search", () => {
         created_at: "2026-04-26T00:00:00Z",
         updated_at: "2026-04-26T00:00:00Z",
         project_id: "proj-1",
+        source: "requirement",
+        requirement_title: "Ship roadmap import",
       },
       {
         id: "beta-12345678",
@@ -70,12 +72,15 @@ describe("AppSidebar search", () => {
 
     renderWithRouter(<AppSidebar />);
 
-    expect(screen.getByText("Alpha planning")).toBeInTheDocument();
+    expect(screen.getByText("Ship roadmap import")).toBeInTheDocument();
     expect(screen.getByText("Beta bugfix")).toBeInTheDocument();
     expect(
       screen.queryByRole("searchbox", { name: /search conversations/i }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("Svelte Learn")).not.toBeInTheDocument();
+    const reqRow = screen.getByText("Ship roadmap import").closest("li");
+    expect(reqRow).not.toBeNull();
+    expect(reqRow).toHaveTextContent("Auto");
+    expect(screen.getByText("Svelte Learn")).toBeInTheDocument();
     expect(screen.queryByText("2 msg")).not.toBeInTheDocument();
   });
 
@@ -137,17 +142,15 @@ describe("AppSidebar search", () => {
   });
 
   it("renders Projects as a primary active tab", () => {
-    renderWithRouter(<AppSidebar />, ["/projects"]);
+    renderWithRouter(<AppSidebar />, ["/projects/overview"]);
 
     expect(screen.getByRole("link", { name: "Chat" })).toHaveAttribute("href", "/");
-    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("href", "/projects");
+    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("href", "/projects/overview");
     expect(screen.getByRole("link", { name: "Doc" })).toHaveAttribute("href", "/docs");
     expect(screen.queryByText("Code")).not.toBeInTheDocument();
 
     expect(screen.getByRole("link", { name: "Projects" })).toHaveClass("active");
-    const link = screen.getByRole("link", { name: "List" });
-    expect(link).toHaveAttribute("href", "/projects");
-    expect(link).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveClass("active");
     expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "新建会话" })).not.toBeInTheDocument();
     expect(screen.queryByText("Alpha planning")).not.toBeInTheDocument();
@@ -165,7 +168,6 @@ describe("AppSidebar search", () => {
       "is-active",
     );
     expect(screen.getByRole("button", { name: /^Pinned/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Research/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Archive/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "新建会话" })).not.toBeInTheDocument();
     expect(screen.queryByText("Alpha planning")).not.toBeInTheDocument();

@@ -17,6 +17,7 @@ import type {
   WorkspacePanelKey,
 } from "../persistence";
 import {
+  initialConvoAutoFilter,
   initialConvoGroupBy,
   initialEffort,
   initialLang,
@@ -158,6 +159,11 @@ export interface CoreSlice {
   /// Persisted to localStorage as `jarvis.convoGroupBy`.
   convoGroupBy: import("../persistence").ConvoGroupBy;
 
+  /// Recents-section auto/manual filter. "all" hides nothing;
+  /// "auto" → only requirement-driven runs; "manual" → only chat rows.
+  /// Persisted to localStorage as `jarvis.convoAutoFilter`.
+  convoAutoFilter: import("../persistence").ConvoAutoFilter;
+
   // ---- Projects ----
   projectsAvailable: boolean;
   projects: Project[];
@@ -220,6 +226,7 @@ export interface CoreSlice {
   setConvoStatus: (kind: ConvoStatusKind) => void;
   setPersistEnabled: (v: boolean) => void;
   setConvoGroupBy: (mode: import("../persistence").ConvoGroupBy) => void;
+  setConvoAutoFilter: (mode: import("../persistence").ConvoAutoFilter) => void;
 
   setProjectsAvailable: (v: boolean) => void;
   setProjects: (rows: Project[]) => void;
@@ -281,6 +288,7 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   convoStatus: "",
   persistEnabled: true,
   convoGroupBy: initialConvoGroupBy(),
+  convoAutoFilter: initialConvoAutoFilter(),
   projectsAvailable: true,
   projects: [],
   projectsById: {},
@@ -462,6 +470,10 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   setConvoGroupBy: (mode) => {
     safeSet("jarvis.convoGroupBy", mode);
     set({ convoGroupBy: mode });
+  },
+  setConvoAutoFilter: (mode) => {
+    safeSet("jarvis.convoAutoFilter", mode);
+    set({ convoAutoFilter: mode });
   },
 
   // ---- Projects ----

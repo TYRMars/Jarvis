@@ -55,6 +55,35 @@ impl ProjectWorkspace {
     }
 }
 
+/// Per-project automation policy.
+///
+/// The process-level auto-mode flag remains the master switch, but
+/// each Project can now opt out independently. The default is
+/// enabled so existing deployments that turn on `JARVIS_WORK_MODE=auto`
+/// keep the historical "all approved projects are eligible" behaviour
+/// until an operator pauses a specific project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectAutomation {
+    #[serde(default = "default_auto_mode_enabled")]
+    pub auto_mode_enabled: bool,
+}
+
+fn default_auto_mode_enabled() -> bool {
+    true
+}
+
+impl Default for ProjectAutomation {
+    fn default() -> Self {
+        Self {
+            auto_mode_enabled: true,
+        }
+    }
+}
+
+fn is_default_automation(value: &ProjectAutomation) -> bool {
+    value == &ProjectAutomation::default()
+}
+
 /// A reusable, named bundle of instructions / context that can be bound
 /// to one or more [`Conversation`](crate::Conversation)s.
 ///
@@ -100,6 +129,10 @@ pub struct Project {
     /// stores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<KanbanColumn>>,
+    /// Per-project automation policy. Omitted on legacy JSON rows;
+    /// such rows default to auto-mode eligibility.
+    #[serde(default, skip_serializing_if = "is_default_automation")]
+    pub automation: ProjectAutomation,
     /// RFC-3339 / ISO-8601 timestamp of creation.
     pub created_at: String,
     /// RFC-3339 / ISO-8601 timestamp of the last mutation. Bumped by
@@ -205,6 +238,7 @@ impl Project {
             // [`default_kanban_columns`]. Only populated once the
             // user explicitly customises the board.
             columns: None,
+            automation: ProjectAutomation::default(),
             created_at: now.clone(),
             updated_at: now,
         }
@@ -267,6 +301,12 @@ impl Project {
     /// Replace `workspaces`; bumps `updated_at`.
     pub fn set_workspaces(&mut self, workspaces: Vec<ProjectWorkspace>) {
         self.workspaces = workspaces;
+        self.touch();
+    }
+
+    /// Replace the automation policy; bumps `updated_at`.
+    pub fn set_automation(&mut self, automation: ProjectAutomation) {
+        self.automation = automation;
         self.touch();
     }
 
@@ -532,6 +572,22 @@ mod tests {
     }
 
     #[test]
+    fn automation_defaults_enabled_for_legacy_json() {
+        let legacy = r#"{
+            "id": "11111111-1111-1111-1111-111111111111",
+            "slug": "legacy",
+            "name": "Legacy",
+            "instructions": "be terse",
+            "tags": [],
+            "archived": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let p: Project = serde_json::from_str(legacy).unwrap();
+        assert!(p.automation.auto_mode_enabled);
+    }
+
+    #[test]
     fn columns_are_skipped_when_none() {
         let p = Project::new("n", "i");
         let json = serde_json::to_string(&p).unwrap();
@@ -557,5 +613,15 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back.columns, Some(cols));
+    }
+
+    #[test]
+    fn automation_round_trip_when_disabled() {
+        let mut p = Project::new("n", "i");
+        p.automation.auto_mode_enabled = false;
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("automation"));
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert!(!back.automation.auto_mode_enabled);
     }
 }

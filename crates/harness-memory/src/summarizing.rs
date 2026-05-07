@@ -493,6 +493,7 @@ mod tests {
                 message: Message::assistant_text(&self.reply),
                 finish_reason: FinishReason::Stop,
                 response_id: None,
+                    usage: None,
             })
         }
 
@@ -691,6 +692,7 @@ mod tests {
                     message: Message::assistant_text("EVENTUAL SUMMARY"),
                     finish_reason: FinishReason::Stop,
                     response_id: None,
+                    usage: None,
                 })
             }
         }

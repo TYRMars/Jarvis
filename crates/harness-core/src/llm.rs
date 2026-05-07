@@ -12,7 +12,7 @@ use crate::tool::ToolSpec;
 
 /// A request to a chat-style LLM. Provider crates translate this into their
 /// native wire format.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -38,7 +38,7 @@ pub struct ChatRequest {
     pub chain_origin: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ChatResponse {
     /// The assistant message returned by the provider. May contain tool_calls.
     pub message: Message,
@@ -49,9 +49,16 @@ pub struct ChatResponse {
     /// next request via [`ChatRequest::previous_response_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_id: Option<String>,
+    /// Per-call token accounting reported by the provider. `None`
+    /// means the provider didn't ship a usage block for this call.
+    /// Mirrors the streaming-path [`LlmChunk::Usage`] so the agent
+    /// loop can aggregate cost across iterations on either entry
+    /// point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
@@ -71,7 +78,7 @@ pub enum FinishReason {
 /// it as [`crate::AgentEvent::Usage`] so transports can show context
 /// budget + cache hit savings without each transport re-deriving
 /// counts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Usage {
     /// Input tokens billed for this request, including any cached portion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,6 +95,35 @@ pub struct Usage {
     /// without confusing it with completion content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
+}
+
+impl Usage {
+    /// `true` when every counter is `None` — i.e. the provider didn't
+    /// ship usage at all. Useful as a quick "skip persistence" check.
+    pub fn is_empty(&self) -> bool {
+        self.prompt_tokens.is_none()
+            && self.completion_tokens.is_none()
+            && self.cached_prompt_tokens.is_none()
+            && self.reasoning_tokens.is_none()
+    }
+
+    /// Add `other`'s counters into `self`. `Some + Some` becomes the
+    /// (saturating) sum; `Some + None` keeps the existing value;
+    /// `None + Some` adopts the new value. Used by the agent loop to
+    /// roll per-iteration usage into a per-run total.
+    pub fn add(&mut self, other: &Usage) {
+        fn merge(a: &mut Option<u32>, b: Option<u32>) {
+            match (*a, b) {
+                (Some(x), Some(y)) => *a = Some(x.saturating_add(y)),
+                (None, Some(y)) => *a = Some(y),
+                _ => {}
+            }
+        }
+        merge(&mut self.prompt_tokens, other.prompt_tokens);
+        merge(&mut self.completion_tokens, other.completion_tokens);
+        merge(&mut self.cached_prompt_tokens, other.cached_prompt_tokens);
+        merge(&mut self.reasoning_tokens, other.reasoning_tokens);
+    }
 }
 
 /// One piece of a streamed LLM response. Providers emit `ContentDelta` for

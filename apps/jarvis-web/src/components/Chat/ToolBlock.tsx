@@ -119,9 +119,11 @@ export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
       </div>
       {open && (
         <div className="tool-body">
-          <div className="tool-section">
-            {renderArgsSection(entry.name, entry.args)}
-          </div>
+          {!subAgentRun && (
+            <div className="tool-section">
+              {renderArgsSection(entry.name, entry.args)}
+            </div>
+          )}
           {entry.output == null && entry.progress.length > 0 && (
             <div className="tool-section">
               <div className="tool-label">{t("output")}</div>
@@ -129,7 +131,7 @@ export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
             </div>
           )}
           {subAgentRun ? (
-            <div className="tool-section">
+            <div className="tool-section subagent-tool-section">
               <div className="tool-label">{t("tasksSubagentSection")}</div>
               <SubAgentCard run={subAgentRun} expanded={forceOpen ? true : undefined} />
             </div>

@@ -12,7 +12,12 @@ import { ConnectionStatus } from "./ConnectionStatus";
 import { ConvoList } from "./Sidebar/ConvoList";
 import { NewConvoButton } from "./Sidebar/NewConvoButton";
 import { AccountMenu } from "./Settings/AccountMenu";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import {
+  NavLink,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
 import { t } from "../utils/i18n";
 import { chipColor } from "../utils/chipColor";
 import {
@@ -21,9 +26,13 @@ import {
   sameScope,
   type DocScope,
 } from "../services/docScope";
-import { listDocProjects, subscribeDocs } from "../services/docs";
-import type { DocKind } from "../types/frames";
-import { kindLabel, KIND_ORDER, KindIcon } from "./Docs/KindIcon";
+import {
+  createDocProject,
+  listDocProjects,
+  subscribeDocs,
+} from "../services/docs";
+import { applyDocFilter } from "./Docs/useDocFilter";
+import { updateProject } from "../services/projects";
 
 export function AppSidebar() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
@@ -80,7 +89,7 @@ export function AppSidebar() {
           </svg>
           <span>{t("sidebarModeChat")}</span>
         </NavLink>
-        <NavLink to="/projects" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
+        <NavLink to="/projects/overview" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m16 18 6-6-6-6" />
             <path d="m8 6-6 6 6 6" />
@@ -139,10 +148,11 @@ function ChatSidebarBody() {
 
 function WorkSidebarBody() {
   const projects = useAppStore((s) => s.projects).filter((p) => !p.archived);
+  const [pendingAuto, setPendingAuto] = useState<Record<string, boolean>>({});
   const navigate = useNavigate();
 
   const openNewProject = () => {
-    void navigate("/projects");
+    void navigate("/projects/list");
     window.setTimeout(() => {
       window.dispatchEvent(new Event("jarvis:new-project"));
     }, 0);
@@ -153,6 +163,22 @@ function WorkSidebarBody() {
     // browser back, bookmarks, and reload all preserve the selection.
     // No window event roundtrip needed.
     void navigate(`/projects/${id}`);
+  };
+
+  const toggleProjectAuto = async (project: (typeof projects)[number]) => {
+    if (pendingAuto[project.id]) return;
+    const enabled = project.automation?.auto_mode_enabled ?? true;
+    setPendingAuto((prev) => ({ ...prev, [project.id]: true }));
+    try {
+      await updateProject(project.id, {
+        automation: {
+          ...(project.automation ?? {}),
+          auto_mode_enabled: !enabled,
+        },
+      });
+    } finally {
+      setPendingAuto((prev) => ({ ...prev, [project.id]: false }));
+    }
   };
 
   return (
@@ -166,17 +192,6 @@ function WorkSidebarBody() {
           <span>{t("projectsNewBtn")}</span>
         </button>
         <NavLink
-          to="/projects"
-          end
-          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
-        >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
-            <path d="M3 10h18" />
-          </svg>
-          <span>{t("sidebarNavProjectList")}</span>
-        </NavLink>
-        <NavLink
           to="/projects/overview"
           className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
         >
@@ -188,6 +203,20 @@ function WorkSidebarBody() {
           </svg>
           <span>{t("sidebarNavWorkOverview")}</span>
         </NavLink>
+        <NavLink
+          to="/projects/list"
+          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M8 6h13" />
+            <path d="M8 12h13" />
+            <path d="M8 18h13" />
+            <path d="M3 6h.01" />
+            <path d="M3 12h.01" />
+            <path d="M3 18h.01" />
+          </svg>
+          <span>{t("sidebarNavProjectList")}</span>
+        </NavLink>
       </nav>
 
       <div className="sidebar-section mode-sidebar-section">
@@ -197,10 +226,36 @@ function WorkSidebarBody() {
         ) : (
           <ul className="mode-sidebar-list">
             {projects.map((p) => (
-              <li key={p.id}>
+              <li key={p.id} className="mode-sidebar-project-item">
                 <button type="button" className="mode-sidebar-row" onClick={() => openProject(p.id)}>
                   <span className="project-dot" style={{ background: chipColor(p.slug) }} aria-hidden="true" />
                   <span>{p.name}</span>
+                </button>
+                <button
+                  type="button"
+                  className={
+                    "project-auto-switch mode-sidebar-auto-switch" +
+                    ((p.automation?.auto_mode_enabled ?? true) ? " is-on" : "") +
+                    (pendingAuto[p.id] ? " is-pending" : "")
+                  }
+                  onClick={() => void toggleProjectAuto(p)}
+                  disabled={!!pendingAuto[p.id]}
+                  aria-pressed={p.automation?.auto_mode_enabled ?? true}
+                  aria-label={`${p.name} ${(p.automation?.auto_mode_enabled ?? true) ? t("projectAutoOn") : t("projectAutoOff")}`}
+                  title={
+                    (p.automation?.auto_mode_enabled ?? true)
+                      ? t("projectAutoOnHint")
+                      : t("projectAutoOffHint")
+                  }
+                >
+                  <span className="project-auto-switch-track" aria-hidden="true">
+                    <span className="project-auto-switch-knob" />
+                  </span>
+                  <span className="sr-only">
+                    {(p.automation?.auto_mode_enabled ?? true)
+                      ? t("projectAutoOn")
+                      : t("projectAutoOff")}
+                  </span>
                 </button>
               </li>
             ))}
@@ -214,8 +269,10 @@ function WorkSidebarBody() {
 function DocSidebarBody() {
   const navigate = useNavigate();
   const location = useLocation();
+  const params = useParams<{ id?: string }>();
   const socketWorkspace = useAppStore((s) => s.socketWorkspace);
   const scope = useDocScope();
+  const [query, setQuery] = useState("");
 
   // Subscribe to the docs cache so counts stay live as docs are
   // created / deleted / pinned / archived from anywhere.
@@ -235,6 +292,17 @@ function DocSidebarBody() {
     [counts.tags],
   );
 
+  // The list inside the sidebar mirrors the same scope+search rules
+  // the page used to apply in its standalone list column.
+  const filtered = useMemo(
+    () =>
+      applyDocFilter({
+        projects,
+        filter: { scope, sort: "updated", query },
+      }),
+    [projects, scope, query],
+  );
+
   const onScope = (next: DocScope) => {
     setDocScope(next);
     if (!location.pathname.startsWith("/docs")) {
@@ -242,17 +310,33 @@ function DocSidebarBody() {
     }
   };
 
-  const openNew = () => {
-    void navigate("/docs");
-    window.setTimeout(() => {
-      window.dispatchEvent(new Event("jarvis:new-doc"));
-    }, 0);
+  const openNew = async () => {
+    // Mint a fresh doc immediately and navigate to it. No inline
+    // form anymore — the editor's title input doubles as the
+    // rename-on-create surface.
+    const project = await createDocProject({
+      title: t("docsCreateUntitled") || "Untitled",
+      kind: "note",
+      ...(socketWorkspace ? { workspace: socketWorkspace } : {}),
+    });
+    if (project) {
+      void navigate(`/docs/${project.id}`);
+    } else {
+      // Backend offline: fall back to the docs root so the page
+      // shows its empty state instead of leaving the user stuck on
+      // the previous route.
+      void navigate("/docs");
+    }
   };
 
   return (
     <>
       <nav className="nav-list" aria-label={t("sidebarModeDoc")}>
-        <button type="button" className="nav-item" onClick={openNew}>
+        <button
+          type="button"
+          className="nav-item"
+          onClick={() => void openNew()}
+        >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
@@ -277,18 +361,56 @@ function DocSidebarBody() {
         />
       </div>
 
-      <div className="sidebar-section mode-sidebar-section docs-rail-section">
-        <div className="section-label">{t("docsScopeKindHeader") || "Kind"}</div>
-        {KIND_ORDER.map((k) => (
-          <DocScopeRow
-            key={k}
-            label={kindLabel(k)}
-            count={counts.kinds[k] ?? 0}
-            active={sameScope(scope, { type: "kind", kind: k })}
-            onClick={() => onScope({ type: "kind", kind: k })}
-            kind={k}
+      <div className="sidebar-section mode-sidebar-section docs-rail-search">
+        <label className="docs-rail-search-input">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="11" cy="11" r="6.5" />
+            <path d="m20.5 20.5-3.7-3.7" />
+          </svg>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("docsSearchPlaceholder") || "Search…"}
+            aria-label={t("docsSearchAria") || "Search docs"}
           />
-        ))}
+        </label>
+      </div>
+
+      <div className="sidebar-section mode-sidebar-section docs-rail-list">
+        {filtered.length === 0 ? (
+          <p className="mode-sidebar-empty">
+            {query
+              ? t("docsListNoMatch") || "No matching docs"
+              : t("docsListEmpty") || "No docs yet"}
+          </p>
+        ) : (
+          <ul className="docs-rail-rows">
+            {filtered.map(({ project }) => (
+              <li key={project.id}>
+                <NavLink
+                  to={`/docs/${project.id}`}
+                  className={({ isActive }) =>
+                    "docs-rail-row" +
+                    (isActive || params.id === project.id
+                      ? " is-active"
+                      : "") +
+                    (project.archived ? " is-archived" : "")
+                  }
+                >
+                  {project.pinned ? (
+                    <span className="docs-rail-row-pin" aria-hidden>
+                      ★
+                    </span>
+                  ) : null}
+                  <span className="docs-rail-row-title">
+                    {project.title || t("docsUntitled") || "Untitled"}
+                  </span>
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {tagsSorted.length > 0 ? (
@@ -324,7 +446,6 @@ interface DocScopeRowProps {
   count: number;
   active: boolean;
   onClick: () => void;
-  kind?: DocKind;
   icon?: string;
   monospace?: boolean;
 }
@@ -334,7 +455,6 @@ function DocScopeRow({
   count,
   active,
   onClick,
-  kind,
   icon,
   monospace,
 }: DocScopeRowProps) {
@@ -345,13 +465,7 @@ function DocScopeRow({
       onClick={onClick}
     >
       <span className={"docs-scope-row-label" + (monospace ? " is-mono" : "")}>
-        {kind ? (
-          <span className="docs-scope-row-kind">
-            <KindIcon kind={kind} size={13} />
-          </span>
-        ) : icon ? (
-          <span aria-hidden>{icon}</span>
-        ) : null}
+        {icon ? <span aria-hidden>{icon}</span> : null}
         <span className="docs-scope-row-text">{label}</span>
       </span>
       <span className="docs-scope-row-count">{count}</span>
@@ -379,7 +493,6 @@ interface DocCounts {
   all: number;
   pinned: number;
   archived: number;
-  kinds: Record<DocKind, number>;
   tags: Map<string, number>;
 }
 
@@ -388,7 +501,6 @@ function computeCounts(projects: ReturnType<typeof listDocProjects>): DocCounts 
     all: 0,
     pinned: 0,
     archived: 0,
-    kinds: { note: 0, research: 0, report: 0, design: 0, guide: 0 },
     tags: new Map(),
   };
   for (const p of projects) {
@@ -398,7 +510,6 @@ function computeCounts(projects: ReturnType<typeof listDocProjects>): DocCounts 
     }
     counts.all += 1;
     if (p.pinned) counts.pinned += 1;
-    counts.kinds[p.kind] = (counts.kinds[p.kind] ?? 0) + 1;
     for (const tag of p.tags ?? []) {
       counts.tags.set(tag, (counts.tags.get(tag) ?? 0) + 1);
     }
@@ -406,7 +517,6 @@ function computeCounts(projects: ReturnType<typeof listDocProjects>): DocCounts 
   return counts;
 }
 
-// Suppress unused warnings for hooks pulled in for the docs body but
-// not always reached; React only invokes them in `doc` mode.
-void useState;
+// Suppress unused-import warnings for hooks the docs body owns but
+// React only invokes in `doc` mode.
 void useEffect;

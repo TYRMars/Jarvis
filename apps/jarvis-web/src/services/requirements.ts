@@ -240,6 +240,9 @@ export interface UpdateRequirementInput {
   /// the `null` literal so the server's three-state deserializer
   /// (Missing / Clear / Set) sees "Clear".
   assignee_id?: string | null;
+  /// Phase 3.8 — replace the label-id list. Order is preserved.
+  /// Omit to leave as-is; pass `[]` to clear all chips.
+  label_ids?: string[];
 }
 
 /// Patch a Requirement. Optimistic — applies immediately to cache,
@@ -262,6 +265,7 @@ export function updateRequirement(
       ? { conversation_ids: patch.conversation_ids }
       : {}),
     ...("assignee_id" in patch ? { assignee_id: patch.assignee_id ?? null } : {}),
+    ...(patch.label_ids !== undefined ? { label_ids: patch.label_ids } : {}),
     updated_at: new Date().toISOString(),
   };
   upsertLocal(next);

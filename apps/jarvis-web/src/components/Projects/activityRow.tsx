@@ -70,6 +70,15 @@ export function activityText(a: Activity): string {
       const toName = assigneeName(body.to);
       return t("activityAssigneeChange", fromName, toName);
     }
+    case "comment": {
+      // Phase 3.8 — `body.action` ∈ {posted, edited, deleted};
+      // `body.preview` carries a 120-char excerpt of the comment
+      // body (may be missing for deletes, where the row is gone
+      // by the time the activity is appended).
+      const action = (body.action) ?? "posted";
+      const preview = body.preview;
+      return t("activityComment", action, preview ?? "");
+    }
     default:
       return t("activityFallback", a.kind);
   }

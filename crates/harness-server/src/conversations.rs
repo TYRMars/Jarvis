@@ -15,6 +15,7 @@
 //! - `POST   /v1/conversations/:id/messages`        — append + run (blocking)
 //! - `POST   /v1/conversations/:id/messages/stream` — append + run (SSE)
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -30,7 +31,8 @@ use axum::{
 };
 use futures::{Stream, StreamExt};
 use harness_core::{
-    AgentEvent, Conversation, ConversationMetadata, ConversationStore, Message, RunOutcome,
+    AgentEvent, Conversation, ConversationMetadata, ConversationStore, Message, Requirement,
+    RequirementRun, RequirementRunStatus, RunOutcome,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -46,6 +48,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/v1/conversations", post(create).get(list))
         .route("/v1/conversations/search", get(search))
         .route("/v1/conversations/:id", get(get_one).delete(delete_one))
+        .route("/v1/conversations/:id/work-context", get(work_context))
         .route("/v1/conversations/:id/messages", post(post_message))
         .route(
             "/v1/conversations/:id/messages/stream",
@@ -255,6 +258,7 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
                 Some(ps) => collect_project_names(ps.as_ref(), &visible).await,
                 None => std::collections::HashMap::new(),
             };
+            let requirements = collect_conversation_requirements(&state, &visible).await;
             let mut out = Vec::with_capacity(visible.len());
             for r in visible {
                 let conv_for_title = store.load(&r.id).await.ok().flatten();
@@ -269,6 +273,7 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
                             .and_then(|pid| project_names.get(pid))
                             .map(|name| format!("{name} · 空会话"))
                     });
+                let req = requirements.get(&r.id);
                 out.push(json!({
                     "id": r.id,
                     "created_at": r.created_at,
@@ -277,6 +282,10 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
                     "title": title,
                     "project_id": r.project_id,
                     "workspace_path": conversation_workspace(&state, &r.id),
+                    "source": if req.is_some() { "requirement" } else { "chat" },
+                    "requirement_id": req.map(|req| req.id.clone()),
+                    "requirement_title": req.map(|req| req.title.clone()),
+                    "requirement_status": req.map(|req| req.status.as_wire()),
                 }));
             }
             Json(out).into_response()
@@ -302,6 +311,45 @@ async fn collect_project_names(
     out
 }
 
+async fn collect_conversation_requirements(
+    state: &AppState,
+    rows: &[harness_core::ConversationRecord],
+) -> HashMap<String, Requirement> {
+    let Some(req_store) = state.requirements.as_ref() else {
+        return HashMap::new();
+    };
+
+    let wanted: std::collections::HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    let mut out: HashMap<String, Requirement> = HashMap::new();
+    let mut seen_projects = std::collections::HashSet::new();
+    for pid in rows.iter().filter_map(|r| r.project_id.as_deref()) {
+        if !seen_projects.insert(pid) {
+            continue;
+        }
+        let Ok(requirements) = req_store.list(pid).await else {
+            continue;
+        };
+        for req in requirements {
+            for cid in req
+                .conversation_ids
+                .iter()
+                .filter(|cid| wanted.contains(cid.as_str()))
+            {
+                // `Option::is_none_or` is stable since 1.82 but
+                // the workspace MSRV is 1.80, so use the
+                // equivalent `map_or(true, …)` form.
+                let replace = out
+                    .get(cid)
+                    .map_or(true, |existing| req.updated_at > existing.updated_at);
+                if replace {
+                    out.insert(cid.clone(), req.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Best-effort conversation title: the first user message's first
 /// line, capped at 60 chars + a trailing ellipsis when truncated.
 /// Returns `None` when the conversation has no user message yet
@@ -310,7 +358,7 @@ fn first_user_title(conv: &harness_core::Conversation) -> Option<String> {
     const TITLE_MAX_CHARS: usize = 60;
     for m in &conv.messages {
         if let harness_core::Message::User { content, .. } = m {
-            let line = content.lines().next().unwrap_or("").trim();
+            let line = title_line_from_user_message(content);
             if line.is_empty() {
                 continue;
             }
@@ -323,6 +371,21 @@ fn first_user_title(conv: &harness_core::Conversation) -> Option<String> {
         }
     }
     None
+}
+
+fn title_line_from_user_message(content: &str) -> &str {
+    const AUTO_SEED_PREFIX: &str =
+        "Please complete this requirement and reply with a one-line summary";
+    let mut lines = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or("");
+    if first.starts_with(AUTO_SEED_PREFIX) {
+        lines.next().unwrap_or(first)
+    } else {
+        first
+    }
 }
 
 // ----------------------- search -----------------------
@@ -820,6 +883,172 @@ fn stream_run(
     }
 }
 
+// ----------------------- work-context (aggregate) -----------------------
+
+/// `GET /v1/conversations/:id/work-context` — aggregate the
+/// Requirement / RequirementRun / Activity timeline for the
+/// conversation's bound project in one round-trip.
+///
+/// Returns a degraded shape (null fields) when the conversation
+/// store, requirement store, run store, or activity store is not
+/// configured, so the caller can distinguish "nothing bound" from
+/// "server mis-configured" by checking the 200 body.
+async fn work_context(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if is_internal_id(&id) {
+        return not_found();
+    }
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let meta = match store.load_envelope(&id).await {
+        Ok(Some((_, meta))) => meta,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(e),
+    };
+
+    let project_id = meta.project_id.clone();
+
+    // Default degrade shape — always 200 when the conversation exists.
+    let mut body = json!({
+        "conversation_id": id,
+        "project_id": project_id,
+        "requirement": null,
+        "latest_run": null,
+        "recent_activities": [],
+    });
+
+    let Some(pid) = project_id else {
+        return Json(body).into_response();
+    };
+    let Some(req_store) = state.requirements.as_ref() else {
+        return Json(body).into_response();
+    };
+
+    let requirements = match req_store.list(&pid).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "work-context requirement list failed");
+            return Json(body).into_response();
+        }
+    };
+
+    let candidates: Vec<_> = requirements
+        .into_iter()
+        .filter(|r| r.conversation_ids.contains(&id))
+        .collect();
+
+    if candidates.is_empty() {
+        return Json(body).into_response();
+    }
+
+    // Build runs-by-requirement map when the run store is available.
+    let mut runs_by_req: std::collections::HashMap<String, Vec<RequirementRun>> =
+        std::collections::HashMap::new();
+    if let Some(run_store) = state.requirement_runs.as_ref() {
+        for req in &candidates {
+            match run_store.list_for_requirement(&req.id).await {
+                Ok(runs) => {
+                    runs_by_req.insert(req.id.clone(), runs);
+                }
+                Err(e) => {
+                    warn!(error = %e, req_id = %req.id, "work-context run list failed");
+                }
+            }
+        }
+    }
+
+    let primary = match pick_primary_requirement(&candidates, &runs_by_req, &id) {
+        Some(p) => p,
+        None => return Json(body).into_response(),
+    };
+
+    let latest_run = runs_by_req
+        .get(&primary.id)
+        .and_then(|runs| runs.iter().max_by_key(|r| &r.started_at).cloned());
+
+    let activities = if let Some(act_store) = state.activities.as_ref() {
+        match act_store.list_for_requirement(&primary.id).await {
+            Ok(acts) => acts.into_iter().rev().take(25).collect::<Vec<_>>(),
+            Err(e) => {
+                warn!(error = %e, req_id = %primary.id, "work-context activity list failed");
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    body = json!({
+        "conversation_id": id,
+        "project_id": pid,
+        "requirement": primary,
+        "latest_run": latest_run,
+        "recent_activities": activities,
+    });
+
+    Json(body).into_response()
+}
+
+/// Pick the primary Requirement when a Conversation is linked to
+/// several. Mirrors the frontend logic in
+/// `sessionExecutionDisplay.ts`.
+fn pick_primary_requirement<'a>(
+    candidates: &'a [Requirement],
+    runs_by_req: &std::collections::HashMap<String, Vec<RequirementRun>>,
+    conversation_id: &str,
+) -> Option<&'a Requirement> {
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(&candidates[0]);
+    }
+
+    let live: Vec<_> = candidates
+        .iter()
+        .filter(|r| {
+            runs_by_req.get(&r.id).is_some_and(|runs| {
+                runs.iter().any(|x| {
+                    x.status == RequirementRunStatus::Running
+                        || x.status == RequirementRunStatus::Pending
+                })
+            })
+        })
+        .collect();
+
+    if !live.is_empty() {
+        return live.into_iter().max_by_key(|r| {
+            runs_by_req
+                .get(&r.id)
+                .and_then(|runs| runs.iter().map(|x| &x.started_at).max())
+        });
+    }
+
+    let mut by_updated: Vec<_> = candidates.iter().collect();
+    by_updated.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    if by_updated.len() >= 2 && by_updated[0].updated_at != by_updated[1].updated_at {
+        return Some(by_updated[0]);
+    }
+
+    // Final fallback: the requirement that lists `conversation_id` last wins.
+    let mut chosen: Option<&Requirement> = None;
+    let mut chosen_index: i32 = -1;
+    for r in candidates {
+        if let Some(idx) = r
+            .conversation_ids
+            .iter()
+            .rposition(|c| c == conversation_id)
+        {
+            if idx as i32 > chosen_index {
+                chosen = Some(r);
+                chosen_index = idx as i32;
+            }
+        }
+    }
+    chosen.or_else(|| by_updated.into_iter().next())
+}
+
 // ============================== tests ==============================
 
 #[cfg(test)]
@@ -845,6 +1074,7 @@ mod tests {
                 message: Message::assistant_text("ok"),
                 finish_reason: FinishReason::Stop,
                 response_id: None,
+                usage: None,
             })
         }
     }
@@ -876,6 +1106,32 @@ mod tests {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body.to_string()))
             .unwrap()
+    }
+
+    #[test]
+    fn first_user_title_skips_auto_requirement_boilerplate() {
+        let mut conv = Conversation::new();
+        conv.push(Message::user(
+            "Please complete this requirement and reply with a one-line summary of what you did.\n\nShip the roadmap import UI\n\nDetails",
+        ));
+
+        assert_eq!(
+            first_user_title(&conv).as_deref(),
+            Some("Ship the roadmap import UI")
+        );
+    }
+
+    #[test]
+    fn first_user_title_keeps_regular_chat_title() {
+        let mut conv = Conversation::new();
+        conv.push(Message::user(
+            "Explain the scheduler design\n\nmore context",
+        ));
+
+        assert_eq!(
+            first_user_title(&conv).as_deref(),
+            Some("Explain the scheduler design")
+        );
     }
 
     #[tokio::test]
@@ -1139,6 +1395,7 @@ mod tests {
                 message: Message::assistant_text("ok"),
                 finish_reason: FinishReason::Stop,
                 response_id: None,
+                usage: None,
             })
         }
     }

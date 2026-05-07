@@ -139,8 +139,8 @@ export function ExceptionsPanel({ overview }: Props) {
     // have project_id on every affected row, so navigate to the
     // requirement detail page if needed). Simpler: open the
     // requirement-detail panel in the project — but that requires
-    // project_id. For now just navigate to /projects.
-    void navigate(`/projects`);
+    // project_id. For now just navigate to the work overview.
+    void navigate(`/projects/overview`);
     void affId;
   };
 

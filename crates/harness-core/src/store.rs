@@ -10,9 +10,11 @@ use tokio::sync::broadcast;
 
 use crate::activity::{Activity, ActivityEvent};
 use crate::agent_profile::{AgentProfile, AgentProfileEvent};
+use crate::comment::{Comment, CommentEvent};
 use crate::conversation::Conversation;
 use crate::doc::{DocDraft, DocEvent, DocProject};
 use crate::error::BoxError;
+use crate::label::{Label, LabelEvent};
 use crate::project::Project;
 use crate::requirement::{Requirement, RequirementEvent};
 use crate::requirement_run::{RequirementRun, RequirementRunEvent};
@@ -417,6 +419,115 @@ pub trait ActivityStore: Send + Sync {
     fn subscribe(&self) -> broadcast::Receiver<ActivityEvent>;
 }
 
+// ---------- CommentStore --------------------------------------------------
+
+/// Persistence operations on [`Comment`] rows.
+///
+/// Like [`ActivityStore`], rows are scoped to a parent
+/// [`Requirement`](crate::Requirement). Unlike `ActivityStore`,
+/// comments are **not** append-only: operators can edit typos and
+/// delete comments they regret. Implementations enforce three
+/// invariants:
+///
+/// 1. `create` rejects [`Comment::parent_id`] entries that don't
+///    exist or that themselves have a non-None parent (i.e. depth
+///    > 1). The store is the only place that can check this
+///    cheaply because the row layout is its own.
+/// 2. `update` only mutates `body` + `updated_at` — `id`,
+///    `requirement_id`, `parent_id`, `author`, and `created_at` are
+///    immutable across edits. Implementations may reject mismatching
+///    payloads or silently overwrite at their discretion; the REST
+///    layer normalises before calling.
+/// 3. `delete` cascades: removing a top-level comment removes its
+///    direct replies. The trait surfaces a single `delete` for
+///    convenience; implementations may issue multiple writes
+///    underneath.
+///
+/// `list_for_requirement` returns rows oldest-first (the chat-style
+/// order the UI wants for direct rendering), capped at ~500. The
+/// soft cap matches `ActivityStore` so a single Requirement's
+/// timeline page can render both streams without further paging.
+#[async_trait]
+pub trait CommentStore: Send + Sync {
+    /// Return up to ~500 comments for `requirement_id`, sorted by
+    /// `created_at` ascending (oldest-first; chat order).
+    /// Implementations should `tracing::warn!` when the cap is hit
+    /// so operators notice runaway threads.
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Comment>, BoxError>;
+
+    /// Insert a fresh comment. Returns `Err` when `parent_id` is
+    /// set but doesn't reference an existing top-level comment in
+    /// the same requirement, or when the parent itself is a reply
+    /// (depth-1 invariant). On success, broadcasts
+    /// [`CommentEvent::Posted`].
+    async fn create(&self, comment: &Comment) -> Result<(), BoxError>;
+
+    /// Replace an existing comment's body + `updated_at`. Returns
+    /// `Ok(false)` if `id` doesn't exist (caller maps to 404), or
+    /// `Ok(true)` after a successful write. Broadcasts
+    /// [`CommentEvent::Edited`].
+    async fn update(&self, comment: &Comment) -> Result<bool, BoxError>;
+
+    /// Hard-delete `comment_id`. When the row is a top-level
+    /// comment, every direct reply is also removed. Returns
+    /// `Ok(false)` if the id wasn't found. Broadcasts one
+    /// [`CommentEvent::Deleted`] per row removed.
+    async fn delete(&self, requirement_id: &str, comment_id: &str) -> Result<bool, BoxError>;
+
+    /// Subscribe to mutation events. Same lag behaviour as the
+    /// other stores — refetch on `Lagged`.
+    fn subscribe(&self) -> broadcast::Receiver<CommentEvent>;
+}
+
+// ---------- LabelStore ----------------------------------------------------
+
+/// Persistence operations on [`Label`] rows.
+///
+/// Labels are scoped to a [`Project`]. Two projects with a label
+/// named "bug" hold two independent rows; uniqueness is enforced
+/// per project, case-insensitively, on `create` / `update`.
+///
+/// The trait deliberately does NOT cascade label deletion into
+/// requirements that reference the label id. Reasoning: a deleted
+/// label leaves dangling ids in `Requirement.label_ids`, but that's
+/// fine — the REST layer filters unknown ids on read, and a future
+/// migration sweep can clean them up. Cascading would mean rewriting
+/// every Requirement on every label delete, which is the exact
+/// problem the indirection was meant to avoid.
+#[async_trait]
+pub trait LabelStore: Send + Sync {
+    /// Every label scoped to `project_id`, sorted by `name`
+    /// case-insensitively (stable UI ordering across backends).
+    async fn list_for_project(&self, project_id: &str) -> Result<Vec<Label>, BoxError>;
+
+    /// Lookup by id. Returns `None` when the id isn't found in any
+    /// project. The caller usually knows which project the row
+    /// should belong to and validates after the lookup.
+    async fn get(&self, id: &str) -> Result<Option<Label>, BoxError>;
+
+    /// Insert a fresh label. Errors when another label in the same
+    /// project already has the same name (case-insensitive). On
+    /// success, broadcasts [`LabelEvent::Created`].
+    async fn create(&self, label: &Label) -> Result<(), BoxError>;
+
+    /// Replace an existing label's `name` / `colour` / `description`
+    /// / `updated_at`. `id` and `project_id` are immutable across
+    /// updates; implementations reject mismatching payloads. Returns
+    /// `Ok(false)` if `id` doesn't exist. Broadcasts
+    /// [`LabelEvent::Updated`].
+    async fn update(&self, label: &Label) -> Result<bool, BoxError>;
+
+    /// Hard-delete `label_id`. Returns `Ok(false)` if the id wasn't
+    /// found. Does NOT touch any `Requirement.label_ids` — see the
+    /// trait-level note on dangling ids. Broadcasts
+    /// [`LabelEvent::Deleted`].
+    async fn delete(&self, project_id: &str, label_id: &str) -> Result<bool, BoxError>;
+
+    /// Subscribe to mutation events. Same lag behaviour as the
+    /// other stores — refetch on `Lagged`.
+    fn subscribe(&self) -> broadcast::Receiver<LabelEvent>;
+}
+
 /// Persistence operations on [`DocProject`] + [`DocDraft`] rows.
 ///
 /// One trait covers both halves of the doc workspace because they
@@ -461,4 +572,40 @@ pub trait DocStore: Send + Sync {
 
     /// Subscribe to mutation events.
     fn subscribe(&self) -> broadcast::Receiver<DocEvent>;
+}
+
+// ---------- ProjectMemoryStore -------------------------------------------
+
+/// Persistence operations on [`ProjectMemory`](crate::ProjectMemory)
+/// rows.
+///
+/// Memories are project-scoped: the auto loop loads them by
+/// `project_id` before each run and the agent / operator append /
+/// edit them via tools or REST. There is no broadcast channel —
+/// memories don't drive UI in real time the way Activity / Comment
+/// do; clients re-list when they want a refresh.
+///
+/// `list` returns rows newest-first (by `updated_at`) capped at the
+/// implementation's discretion (~200 is what the in-memory backend
+/// uses; SQL backends can paginate). `delete` is hard; archive
+/// semantics aren't useful here because rows are short-lived
+/// guidance, not historical artefacts.
+#[async_trait]
+pub trait ProjectMemoryStore: Send + Sync {
+    /// Return memories for `project_id`, newest-first by
+    /// `updated_at`. Implementations decide their own soft cap;
+    /// the auto loop budgets bytes inside the prompt injector,
+    /// not by row count.
+    async fn list(&self, project_id: &str) -> Result<Vec<crate::ProjectMemory>, BoxError>;
+
+    /// Look up by id. Returns `None` if absent.
+    async fn get(&self, id: &str) -> Result<Option<crate::ProjectMemory>, BoxError>;
+
+    /// Insert or overwrite a memory. The store does NOT mutate
+    /// `updated_at`; callers (or [`crate::ProjectMemory::touch`])
+    /// own that.
+    async fn upsert(&self, memory: &crate::ProjectMemory) -> Result<(), BoxError>;
+
+    /// Hard-delete by id. Returns `true` if a row was removed.
+    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
 }

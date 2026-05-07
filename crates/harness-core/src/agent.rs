@@ -288,6 +288,19 @@ impl Agent {
     /// On entry, if `conversation` has no system message and the config
     /// supplies one, it is prepended.
     pub async fn run(&self, conversation: &mut Conversation) -> Result<RunOutcome> {
+        let (outcome, _usage) = self.run_with_usage(conversation).await?;
+        Ok(outcome)
+    }
+
+    /// Same as [`run`](Self::run) but also returns the aggregated
+    /// [`Usage`] reported by the provider across every iteration.
+    /// Counters with `None` from the provider are skipped (no `0`
+    /// fabrication); the empty `Usage` is returned when no iteration
+    /// reported usage.
+    pub async fn run_with_usage(
+        &self,
+        conversation: &mut Conversation,
+    ) -> Result<(RunOutcome, Usage)> {
         // Each blocking-mode turn gets a fresh per-turn mutation
         // counter so `todo.{add,update,delete}` can't be hammered into
         // the backlog by a runaway loop. The streaming entry
@@ -297,8 +310,13 @@ impl Agent {
         crate::todo::with_turn_budget(self.run_inner(conversation)).await
     }
 
-    async fn run_inner(&self, conversation: &mut Conversation) -> Result<RunOutcome> {
+    async fn run_inner(
+        &self,
+        conversation: &mut Conversation,
+    ) -> Result<(RunOutcome, Usage)> {
         Self::ensure_system_prompt(conversation, self.config.system_prompt.as_deref());
+
+        let mut total_usage = Usage::default();
 
         for iter in 1..=self.config.max_iterations {
             let req = self.build_request(conversation).await?;
@@ -306,6 +324,9 @@ impl Agent {
             debug!(iteration = iter, "calling llm");
             let resp = self.llm.complete(req).await?;
             conversation.messages.push(resp.message.clone());
+            if let Some(u) = resp.usage.as_ref() {
+                total_usage.add(u);
+            }
             // Mirror the streaming path: capture the Responses-API
             // chain anchor so subsequent iterations can use
             // `previous_response_id` + delta-mode.
@@ -341,11 +362,11 @@ impl Agent {
                 }
                 (_, FinishReason::Length) => {
                     info!(iteration = iter, "llm finished due to length");
-                    return Ok(RunOutcome::LengthLimited { iterations: iter });
+                    return Ok((RunOutcome::LengthLimited { iterations: iter }, total_usage));
                 }
                 _ => {
                     info!(iteration = iter, "llm finished");
-                    return Ok(RunOutcome::Stopped { iterations: iter });
+                    return Ok((RunOutcome::Stopped { iterations: iter }, total_usage));
                 }
             }
         }
@@ -791,12 +812,14 @@ mod tests {
                     },
                     finish_reason: FinishReason::ToolCalls,
                     response_id: None,
+                    usage: None,
                 })
             } else {
                 Ok(ChatResponse {
                     message: Message::assistant_text("done"),
                     finish_reason: FinishReason::Stop,
                     response_id: None,
+                    usage: None,
                 })
             }
         }

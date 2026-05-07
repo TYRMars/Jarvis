@@ -495,6 +495,7 @@ struct GeFunctionCallIn {
 
 impl GoogleResponse {
     fn into_chat_response(mut self) -> Result<ChatResponse> {
+        let usage = self.usage_metadata.take().map(GeUsageMetadata::into_core);
         let candidate = self
             .candidates
             .pop()
@@ -533,6 +534,7 @@ impl GoogleResponse {
             },
             finish_reason,
             response_id: None,
+            usage,
         })
     }
 }

@@ -19,9 +19,9 @@ use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use harness_core::{
     canonicalize_workspace, ActivityEvent, AgentEvent, AgentProfileEvent, ApprovalDecision,
-    Approver, ChannelApprover, Conversation, ConversationMetadata, ConversationStore, DocEvent,
-    HitlResponse, HitlStatus, Message, PendingHitl, RequirementEvent, RequirementRunEvent,
-    RunOutcome, TodoEvent,
+    Approver, ChannelApprover, CommentEvent, Conversation, ConversationMetadata, ConversationStore,
+    DocEvent, HitlResponse, HitlStatus, LabelEvent, Message, PendingHitl, RequirementEvent,
+    RequirementRunEvent, RunOutcome, TodoEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -75,6 +75,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::subagents_routes::router())
         .merge(crate::diagnostics_routes::router())
         .merge(crate::auto_mode_routes::router())
+        .merge(crate::comments_routes::router())
+        .merge(crate::labels_routes::router())
         .merge(crate::docs_routes::router())
         .merge(crate::work_overview_routes::router())
         .merge(ui::router())
@@ -990,6 +992,13 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // requirements; the `/docs` page listens globally and routes
     // events by project_id itself.
     let mut docs_changed_rx = state.docs.as_ref().map(|s| s.subscribe());
+    // Phase 3.8 — Comment + Label store fan-out. Both feed the
+    // kanban-card detail panel: comments for the discussion
+    // drawer, labels for chip rendering. The Web UI routes to the
+    // right card / project by `requirement_id` / `project_id`
+    // itself, so the WS bridge stays unfiltered.
+    let mut comments_changed_rx = state.comments.as_ref().map(|s| s.subscribe());
+    let mut labels_changed_rx = state.labels.as_ref().map(|s| s.subscribe());
     let (hitl_tx, mut pending_hitl_rx) = mpsc::channel::<PendingHitl>(8);
 
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -1262,6 +1271,61 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     }
                     DocEvent::DraftUpserted(item) => {
                         json!({ "type": "doc_draft_upserted", "draft": item })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- comment store mutated (Phase 3.8) ----
+            // Discussion thread under one Requirement. Sibling fan-out
+            // to `activities_changed_rx` — the kanban-card detail
+            // panel reads both streams to keep the timeline + thread
+            // in sync without a refetch round-trip.
+            Ok(ev) = async {
+                match comments_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<CommentEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    CommentEvent::Posted(c) => {
+                        json!({ "type": "comment_posted", "comment": c })
+                    }
+                    CommentEvent::Edited(c) => {
+                        json!({ "type": "comment_edited", "comment": c })
+                    }
+                    CommentEvent::Deleted { requirement_id, comment_id } => {
+                        json!({
+                            "type": "comment_deleted",
+                            "requirement_id": requirement_id,
+                            "comment_id": comment_id
+                        })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
+            }
+            // ---- label store mutated (Phase 3.8) ----
+            // Project-scoped tags. The Web UI routes by `project_id`
+            // — the kanban repaints chips on rename / recolour, the
+            // settings panel keeps its list synced.
+            Ok(ev) = async {
+                match labels_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<LabelEvent, ()>>().await,
+                }
+            } => {
+                let frame = match &ev {
+                    LabelEvent::Created(l) => {
+                        json!({ "type": "label_created", "label": l })
+                    }
+                    LabelEvent::Updated(l) => {
+                        json!({ "type": "label_updated", "label": l })
+                    }
+                    LabelEvent::Deleted { project_id, label_id } => {
+                        json!({
+                            "type": "label_deleted",
+                            "project_id": project_id,
+                            "label_id": label_id
+                        })
                     }
                 };
                 let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;

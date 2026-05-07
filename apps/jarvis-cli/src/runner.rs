@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use harness_core::{
     Agent, AgentConfig, AgentEvent, AlwaysDeny, ApprovalDecision, Approver, ChannelApprover,
-    Conversation, Message, PendingApproval, ToolRegistry,
+    Conversation, ConversationStore, Message, PendingApproval, ToolRegistry,
 };
 use harness_tools::{register_builtins, BuiltinsConfig};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -38,6 +38,7 @@ use tracing::warn;
 use crate::policy::{Policy, PolicyTable};
 use crate::provider;
 use crate::render::{bold, cyan, dim, green, red, yellow};
+use crate::web;
 use crate::Args;
 
 /// The system prompt mirrors `apps/jarvis::serve::CODING_SYSTEM_PROMPT`
@@ -218,10 +219,51 @@ fn build_agent(
 // Interactive REPL
 // ============================================================
 
-pub async fn run_repl(args: Args, workspace: PathBuf) -> Result<()> {
+pub async fn run_repl(mut args: Args, workspace: PathBuf) -> Result<()> {
     let project_prelude = match &args.project {
         Some(needle) => Some(load_project_prelude(needle).await?),
         None => None,
+    };
+
+    // Connect conversation store if --db was passed.
+    let conv_store: Option<Arc<dyn ConversationStore>> = match &args.db {
+        Some(url) => match harness_store::connect(url).await {
+            Ok(store) => {
+                println!("{}", dim(&format!("(persistence enabled: {url})")));
+                Some(store)
+            }
+            Err(e) => {
+                eprintln!("{} failed to open db: {e}", red("✗"));
+                None
+            }
+        },
+        None => None,
+    };
+
+    // Optional sibling Web UI. Spawns `jarvis serve` as a child
+    // process bound to `--web-addr`; the handle is kept alive in
+    // `_web_child` for the duration of the REPL so `kill_on_drop`
+    // can take the server with us when the user quits. Bound only
+    // to the loopback interface by default — see `--web-addr`.
+    let _web_child = if args.web {
+        match web::spawn(&args, &workspace).await {
+            Ok(child) => {
+                println!(
+                    "{}",
+                    cyan(&format!(
+                        "✓ Web UI: http://{}  (closes when you /quit or Ctrl-D)",
+                        args.web_addr
+                    ))
+                );
+                Some(child)
+            }
+            Err(e) => {
+                eprintln!("{} failed to start web UI: {e:#}", red("✗"));
+                None
+            }
+        }
+    } else {
+        None
     };
 
     print_banner(&args, &workspace);
@@ -303,6 +345,55 @@ pub async fn run_repl(args: Args, workspace: PathBuf) -> Result<()> {
                     );
                 }
             }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("/save") {
+            let id = rest.trim();
+            if id.is_empty() {
+                eprintln!("{} usage: /save <id>", red("✗"));
+                continue;
+            }
+            match &conv_store {
+                Some(store) => match store.save(id, &conv).await {
+                    Ok(()) => println!("{} saved conversation to `{id}`", dim("→")),
+                    Err(e) => eprintln!("{} failed to save: {e}", red("✗")),
+                },
+                None => eprintln!("{} /save requires --db <url>", red("✗")),
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("/load") {
+            let id = rest.trim();
+            if id.is_empty() {
+                eprintln!("{} usage: /load <id>", red("✗"));
+                continue;
+            }
+            match &conv_store {
+                Some(store) => match store.load(id).await {
+                    Ok(Some(loaded)) => {
+                        let msg_count = loaded.messages.len();
+                        conv = loaded;
+                        println!(
+                            "{} loaded conversation from `{id}` ({msg_count} messages)",
+                            dim("→")
+                        );
+                    }
+                    Ok(None) => eprintln!("{} no conversation found for `{id}`", red("✗")),
+                    Err(e) => eprintln!("{} failed to load: {e}", red("✗")),
+                },
+                None => eprintln!("{} /load requires --db <url>", red("✗")),
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("/model") {
+            let model = rest.trim();
+            if model.is_empty() {
+                let current = args.model.as_deref().unwrap_or("(default)");
+                println!("{}", dim(&format!("current model: {current}")));
+                continue;
+            }
+            args.model = Some(model.to_string());
+            println!("{}", dim(&format!("(model set to `{model}` for next turn)")));
             continue;
         }
 
@@ -695,7 +786,7 @@ fn print_banner(args: &Args, workspace: &Path) {
     );
     eprintln!(
         "{}",
-        dim("type a prompt and Enter; /reset clears, /policy lists, /quit exits, Ctrl-C aborts the current turn.")
+        dim("type a prompt and Enter; /reset /save /load /model /policy /mode /quit; Ctrl-C aborts turn.")
     );
 }
 

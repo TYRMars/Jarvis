@@ -269,6 +269,11 @@ struct CreateBody {
     /// should survive beyond the chat turn that created the card.
     #[serde(default)]
     todos: Option<Vec<CreateRequirementTodoBody>>,
+    /// Phase 3.8 — initial label ids the row should carry. Order is
+    /// preserved; unknown ids are kept (the front-end filters them
+    /// at render). Omit / empty for no labels.
+    #[serde(default)]
+    label_ids: Option<Vec<String>>,
 }
 
 async fn create_requirement(
@@ -299,6 +304,12 @@ async fn create_requirement(
     }
     if let Some(deps) = body.depends_on {
         item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+    }
+    if let Some(label_ids) = body.label_ids {
+        item.label_ids = label_ids
+            .into_iter()
+            .filter(|id| !id.trim().is_empty())
+            .collect();
     }
     if let Some(todos) = body.todos {
         for todo_body in todos {
@@ -360,6 +371,10 @@ struct UpdateBody {
     /// this one up. Omit to leave as-is; pass `[]` to clear.
     #[serde(default)]
     depends_on: Option<Vec<String>>,
+    /// Phase 3.8 — replace the label-id list (preserves order).
+    /// Omit to leave as-is; pass `[]` to clear.
+    #[serde(default)]
+    label_ids: Option<Vec<String>>,
 }
 
 /// Three-state value for `verification_plan` in PATCH —
@@ -480,6 +495,12 @@ async fn update_requirement(
     }
     if let Some(deps) = body.depends_on {
         item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+    }
+    if let Some(label_ids) = body.label_ids {
+        item.label_ids = label_ids
+            .into_iter()
+            .filter(|id| !id.trim().is_empty())
+            .collect();
     }
     item.touch();
     match store.upsert(&item).await {

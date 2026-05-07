@@ -1,17 +1,20 @@
 // Shared singleton for the active Docs page scope (All / Pinned /
-// Kind / Tag / Archive). Both `AppSidebar.DocSidebarBody` and
-// `DocsPage` read/write it via `useDocScope`; using a module-local
-// store lets the rail live in the global sidebar without paying the
-// cost of putting transient UI state into `appStore.ts`.
+// Tag / Archive). Both `AppSidebar.DocSidebarBody` and `DocsPage`
+// read/write it via `useDocScope`; using a module-local store lets
+// the rail live in the global sidebar without paying the cost of
+// putting transient UI state into `appStore.ts`.
+//
+// The legacy `{ type: "kind"; kind: DocKind }` variant was dropped
+// when categorisation collapsed onto user-defined tags. The wire
+// `kind` field is still preserved for back-compat but never drives
+// the UI.
 
 import { useSyncExternalStore } from "react";
-import type { DocKind } from "../types/frames";
 
 export type DocScope =
   | { type: "all" }
   | { type: "pinned" }
   | { type: "archived" }
-  | { type: "kind"; kind: DocKind }
   | { type: "tag"; tag: string };
 
 let scope: DocScope = { type: "all" };
@@ -52,7 +55,6 @@ export function useDocScope(): DocScope {
 
 export function sameScope(a: DocScope, b: DocScope): boolean {
   if (a.type !== b.type) return false;
-  if (a.type === "kind" && b.type === "kind") return a.kind === b.kind;
   if (a.type === "tag" && b.type === "tag") return a.tag === b.tag;
   return true;
 }

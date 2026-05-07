@@ -8,6 +8,7 @@ import { useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { resolveTitle } from "../../store/persistence";
 import { t } from "../../utils/i18n";
+import { relTime } from "../../utils/time";
 import { resumeConversation, deleteConversation } from "../../services/conversations";
 import { exportConversationMarkdown } from "../../services/export";
 import type { ConvoListRow } from "../../types/frames";
@@ -20,10 +21,13 @@ interface Props {
 export function ConvoRow({ row, isPinned }: Props) {
   const activeId = useAppStore((s) => s.activeId);
   const runtime = useAppStore((s) => s.conversationRuns[row.id]);
+  const project = useAppStore((s) =>
+    row.project_id ? s.projectsById[row.project_id] : null,
+  );
   const togglePin = useAppStore((s) => s.togglePin);
   const setTitleOverride = useAppStore((s) => s.setTitleOverride);
   // Subscribing to titleOverrides triggers a re-render after rename.
-  useAppStore((s) => s.titleOverrides);
+  const titleOverrides = useAppStore((s) => s.titleOverrides);
 
   const [editing, setEditing] = useState(false);
   const titleText = resolveTitle(row);
@@ -31,11 +35,23 @@ export function ConvoRow({ row, isPinned }: Props) {
   const status = runtime?.status ?? "idle";
   const isActiveRun =
     status === "running" || status === "waiting_approval" || status === "waiting_hitl";
+  const isRequirement = row.source === "requirement" || !!row.requirement_title;
+  const manualTitle = titleOverrides[row.id]?.trim();
+  const displayTitle = manualTitle || row.requirement_title?.trim() || titleText;
+  const timeLabel = relTime(row.updated_at || row.created_at);
+  const statusLabel = runStatusLabel(status);
+  const metaItems = [
+    isRequirement ? t("convoSourceRequirement") : null,
+    statusLabel,
+    project?.name ?? null,
+    timeLabel,
+  ].filter(Boolean);
 
   return (
     <li
       data-id={row.id}
       data-run-status={status}
+      data-source={isRequirement ? "requirement" : "chat"}
       className={(row.id === activeId ? "active" : "") + (isActiveRun ? " running" : "")}
       onClick={() => {
         if (editing) return;
@@ -54,7 +70,17 @@ export function ConvoRow({ row, isPinned }: Props) {
             onCancel={() => setEditing(false)}
           />
         ) : (
-          <span className="convo-title" title={titleText}>{titleText}</span>
+          <span className="convo-title" title={displayTitle}>{displayTitle}</span>
+        )}
+        {!editing && metaItems.length > 0 && (
+          <span className="convo-meta" aria-label={metaItems.join(" · ")}>
+            {isRequirement && (
+              <span className="convo-chip source">{t("convoSourceRequirementShort")}</span>
+            )}
+            {statusLabel && <span className="convo-chip status">{statusLabel}</span>}
+            {project?.name && <span className="convo-meta-text">{project.name}</span>}
+            {timeLabel && <span className="convo-meta-text">{timeLabel}</span>}
+          </span>
         )}
         <div className="convo-actions">
           <button
@@ -106,6 +132,23 @@ export function ConvoRow({ row, isPinned }: Props) {
       </div>
     </li>
   );
+}
+
+function runStatusLabel(status: string): string | null {
+  switch (status) {
+    case "running":
+      return t("convoStatusRunning");
+    case "waiting_approval":
+      return t("convoStatusApproval");
+    case "waiting_hitl":
+      return t("convoStatusInput");
+    case "failed":
+      return t("convoStatusFailed");
+    case "cancelled":
+      return t("convoStatusCancelled");
+    default:
+      return null;
+  }
 }
 
 function RenameInput({

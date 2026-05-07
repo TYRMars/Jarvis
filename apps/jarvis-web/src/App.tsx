@@ -72,12 +72,22 @@ export function App() {
       <Routes>
         <Route path="/" element={<ChatLayout />} />
         <Route path="/projects/overview" element={<WorkOverviewLayout />} />
+        <Route path="/projects/list" element={<ProjectsLayout />} />
         {/* `/projects/:projectId` deep-links into a specific project's
             kanban so browser back, bookmarks, and sidebar links all
-            survive a reload. The plain `/projects` URL is the list. */}
+            survive a reload. `/projects` itself opens the overview by
+            default; the list is available at `/projects/list`. */}
         <Route path="/projects/:projectId" element={<ProjectsLayout />} />
-        <Route path="/projects" element={<ProjectsLayout />} />
+        <Route
+          path="/projects"
+          element={<Navigate to="/projects/overview" replace />}
+        />
         <Route path="/docs" element={<DocsLayout />} />
+        {/* Per-doc deep link. The sidebar's doc list uses these URLs
+            so browser back / refresh / bookmarks all preserve the
+            currently-open doc; DocsPage reads `:id` via
+            `useParams`. */}
+        <Route path="/docs/:id" element={<DocsLayout />} />
         {/* Diagnostics moved into Work Overview. Keep the legacy URL
             as a redirect so old bookmarks / docs links still resolve. */}
         <Route

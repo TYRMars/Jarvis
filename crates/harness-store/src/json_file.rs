@@ -43,10 +43,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft,
-    DocEvent, DocProject, DocStore, Message, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, TodoEvent,
-    TodoItem, TodoStore,
+    BoxError, Comment, CommentEvent, CommentStore, Conversation, ConversationMetadata,
+    ConversationRecord, ConversationStore, DocDraft, DocEvent, DocProject, DocStore, Label,
+    LabelEvent, LabelStore, Message, Project, ProjectStore, Requirement, RequirementEvent,
+    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, Tenant, TenantStore,
+    TodoEvent, TodoItem, TodoStore,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -934,6 +935,360 @@ impl ActivityStore for JsonFileActivityStore {
     }
 }
 
+// ---------- CommentStore ----------------------------------------------
+
+/// On-disk JSON layout, partitioned by requirement under `comments/`:
+/// `<base>/comments/<encode_id(requirement_id)>/<encode_id(id)>.json`.
+///
+/// Mutations are atomic-per-row (`tmp` + rename), the same primitive
+/// `JsonFileActivityStore` and friends use. The store enforces the
+/// trait's depth-1 invariant on `create` by reading the parent before
+/// writing the new row.
+pub struct JsonFileCommentStore {
+    base: PathBuf,
+    tx: broadcast::Sender<CommentEvent>,
+}
+
+impl JsonFileCommentStore {
+    /// Open or create a store at `<base>/comments/`. The
+    /// subdirectory is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn requirement_dir(&self, requirement_id: &str) -> PathBuf {
+        self.base.join("comments").join(encode_id(requirement_id))
+    }
+
+    fn path_for(&self, requirement_id: &str, id: &str) -> PathBuf {
+        self.requirement_dir(requirement_id)
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    /// Read every comment file in the requirement bucket. Used by
+    /// `list_for_requirement` and as a helper when validating
+    /// `parent_id` on `create`.
+    async fn load_bucket(&self, requirement_id: &str) -> Result<Vec<Comment>, BoxError> {
+        let dir = self.requirement_dir(requirement_id);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<Comment> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(c) = serde_json::from_slice::<Comment>(&bytes) {
+                rows.push(c);
+            }
+        }
+        Ok(rows)
+    }
+}
+
+#[async_trait]
+impl CommentStore for JsonFileCommentStore {
+    async fn list_for_requirement(&self, requirement_id: &str) -> Result<Vec<Comment>, BoxError> {
+        let mut rows = self.load_bucket(requirement_id).await?;
+        // Oldest-first (chat order). Mirrors MemoryCommentStore.
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        if rows.len() > 500 {
+            tracing::warn!(
+                requirement_id,
+                count = rows.len(),
+                "comment list exceeded 500-item soft cap"
+            );
+            rows.truncate(500);
+        }
+        Ok(rows)
+    }
+
+    async fn create(&self, comment: &Comment) -> Result<(), BoxError> {
+        // Parent validation reads the bucket; depth-1 invariant matches
+        // MemoryCommentStore.
+        if let Some(parent_id) = comment.parent_id.as_deref() {
+            let bucket = self.load_bucket(&comment.requirement_id).await?;
+            match bucket.iter().find(|c| c.id == parent_id) {
+                None => {
+                    return Err(
+                        format!("parent comment `{parent_id}` not found in requirement").into(),
+                    )
+                }
+                Some(p) if p.parent_id.is_some() => {
+                    return Err(
+                        "comment threading is limited to depth 1 (cannot reply to a reply)".into(),
+                    )
+                }
+                _ => {}
+            }
+        }
+        // Reject duplicate id deterministically (the file system would
+        // happily overwrite, which is wrong for `create`).
+        let path = self.path_for(&comment.requirement_id, &comment.id);
+        if tokio::fs::metadata(&path).await.is_ok() {
+            return Err(format!("comment id `{}` already exists", comment.id).into());
+        }
+        let dir = self.requirement_dir(&comment.requirement_id);
+        ensure_dir(&dir).map_err(|e| -> BoxError { Box::new(e) })?;
+        let bytes = serde_json::to_vec_pretty(comment)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(CommentEvent::Posted(comment.clone()));
+        Ok(())
+    }
+
+    async fn update(&self, comment: &Comment) -> Result<bool, BoxError> {
+        let path = self.path_for(&comment.requirement_id, &comment.id);
+        // Load the existing row, copy the immutable fields onto the
+        // patch, then atomic-write. Returning Ok(false) when the file
+        // is absent matches the trait contract.
+        let existing_bytes = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let existing: Comment = serde_json::from_slice(&existing_bytes)?;
+        let merged = Comment {
+            id: existing.id.clone(),
+            requirement_id: existing.requirement_id.clone(),
+            author: existing.author.clone(),
+            parent_id: existing.parent_id.clone(),
+            created_at: existing.created_at.clone(),
+            // `body` and `updated_at` are the only fields the trait
+            // permits a caller to mutate. We pull from the patch.
+            body: comment.body.clone(),
+            updated_at: comment.updated_at.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&merged)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(CommentEvent::Edited(merged));
+        Ok(true)
+    }
+
+    async fn delete(&self, requirement_id: &str, comment_id: &str) -> Result<bool, BoxError> {
+        // Need to read the bucket to determine whether the target is
+        // a top-level comment that requires a cascading delete of its
+        // direct replies.
+        let bucket = self.load_bucket(requirement_id).await?;
+        let target = match bucket.iter().find(|c| c.id == comment_id) {
+            Some(c) => c,
+            None => return Ok(false),
+        };
+        let mut to_remove: Vec<String> = vec![target.id.clone()];
+        if target.parent_id.is_none() {
+            for c in &bucket {
+                if c.parent_id.as_deref() == Some(comment_id) {
+                    to_remove.push(c.id.clone());
+                }
+            }
+        }
+        for id in &to_remove {
+            let path = self.path_for(requirement_id, id);
+            // `remove_file` on a missing path is fine (race with another
+            // writer would already have warned); `Other` errors bubble.
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(Box::new(e)),
+            }
+            let _ = self.tx.send(CommentEvent::Deleted {
+                requirement_id: requirement_id.to_string(),
+                comment_id: id.clone(),
+            });
+        }
+        Ok(true)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<CommentEvent> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------- LabelStore ------------------------------------------------
+
+/// On-disk JSON layout, partitioned by project under `labels/`:
+/// `<base>/labels/<encode_id(project_id)>/<encode_id(id)>.json`.
+///
+/// Name uniqueness is enforced case-insensitively on every mutation
+/// by scanning the project bucket. The bucket lookup is O(N labels in
+/// project) which is fine — projects rarely have >100 labels and we'd
+/// rather pay the scan than maintain a separate index file.
+pub struct JsonFileLabelStore {
+    base: PathBuf,
+    tx: broadcast::Sender<LabelEvent>,
+}
+
+impl JsonFileLabelStore {
+    /// Open or create a store at `<base>/labels/`. The subdirectory
+    /// is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        let (tx, _) = broadcast::channel(64);
+        Ok(Self { base, tx })
+    }
+
+    fn project_dir(&self, project_id: &str) -> PathBuf {
+        self.base.join("labels").join(encode_id(project_id))
+    }
+
+    fn path_for(&self, project_id: &str, id: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    /// Read every label file in the project bucket. Used by
+    /// `list_for_project`, the uniqueness check, and `get` (after
+    /// scanning across project buckets).
+    async fn load_bucket(&self, project_id: &str) -> Result<Vec<Label>, BoxError> {
+        let dir = self.project_dir(project_id);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<Label> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(l) = serde_json::from_slice::<Label>(&bytes) {
+                rows.push(l);
+            }
+        }
+        Ok(rows)
+    }
+}
+
+#[async_trait]
+impl LabelStore for JsonFileLabelStore {
+    async fn list_for_project(&self, project_id: &str) -> Result<Vec<Label>, BoxError> {
+        let mut rows = self.load_bucket(project_id).await?;
+        rows.sort_by_key(|l| l.name.to_lowercase());
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Label>, BoxError> {
+        // We don't know the project up front, so walk every project
+        // bucket. Acceptable because labels are rarely fetched by id
+        // alone — the REST layer almost always knows the project.
+        let labels_root = self.base.join("labels");
+        let mut read_dir = match tokio::fs::read_dir(&labels_root).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let target_filename = format!("{}.json", encode_id(id));
+        while let Some(entry) = read_dir.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let candidate = entry.path().join(&target_filename);
+            match tokio::fs::read(&candidate).await {
+                Ok(bytes) => {
+                    if let Ok(l) = serde_json::from_slice::<Label>(&bytes) {
+                        return Ok(Some(l));
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Box::new(e)),
+            }
+        }
+        Ok(None)
+    }
+
+    async fn create(&self, label: &Label) -> Result<(), BoxError> {
+        let bucket = self.load_bucket(&label.project_id).await?;
+        if bucket
+            .iter()
+            .any(|l| l.name.eq_ignore_ascii_case(&label.name))
+        {
+            return Err(format!("label name `{}` already exists in project", label.name).into());
+        }
+        let path = self.path_for(&label.project_id, &label.id);
+        if tokio::fs::metadata(&path).await.is_ok() {
+            return Err(format!("label id `{}` already exists", label.id).into());
+        }
+        let dir = self.project_dir(&label.project_id);
+        ensure_dir(&dir).map_err(|e| -> BoxError { Box::new(e) })?;
+        let bytes = serde_json::to_vec_pretty(label)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(LabelEvent::Created(label.clone()));
+        Ok(())
+    }
+
+    async fn update(&self, label: &Label) -> Result<bool, BoxError> {
+        let path = self.path_for(&label.project_id, &label.id);
+        let existing_bytes = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let existing: Label = serde_json::from_slice(&existing_bytes)?;
+        // Uniqueness check skipping ourselves.
+        let bucket = self.load_bucket(&label.project_id).await?;
+        if bucket
+            .iter()
+            .any(|l| l.id != label.id && l.name.eq_ignore_ascii_case(&label.name))
+        {
+            return Err(format!("label name `{}` already exists in project", label.name).into());
+        }
+        // Build the merged row: id / project_id / created_at are
+        // pinned to the on-disk values; everything else comes from
+        // the patch.
+        let merged = Label {
+            id: existing.id.clone(),
+            project_id: existing.project_id.clone(),
+            created_at: existing.created_at,
+            name: label.name.clone(),
+            colour: label.colour.clone(),
+            description: label.description.clone(),
+            updated_at: label.updated_at.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&merged)?;
+        atomic_write(&path, &bytes).await?;
+        let _ = self.tx.send(LabelEvent::Updated(merged));
+        Ok(true)
+    }
+
+    async fn delete(&self, project_id: &str, label_id: &str) -> Result<bool, BoxError> {
+        let path = self.path_for(project_id, label_id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                let _ = self.tx.send(LabelEvent::Deleted {
+                    project_id: project_id.to_string(),
+                    label_id: label_id.to_string(),
+                });
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<LabelEvent> {
+        self.tx.subscribe()
+    }
+}
+
 // ---------- DocStore --------------------------------------------------
 
 /// On-disk JSON layout:
@@ -1096,6 +1451,117 @@ impl DocStore for JsonFileDocStore {
     }
 }
 
+// ---------- TenantStore -------------------------------------------------
+
+/// One JSON file per tenant under `<base>/tenants/`.
+/// The set is small (typically dozens) so a flat directory is fine.
+pub struct JsonFileTenantStore {
+    base: PathBuf,
+}
+
+impl JsonFileTenantStore {
+    /// Open or create a store at `<base>/tenants/`. The subdirectory
+    /// is created lazily on first write.
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        Ok(Self { base })
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.base.join("tenants")
+    }
+
+    fn path_for(&self, id: &str) -> PathBuf {
+        self.dir().join(format!("{}.json", encode_id(id)))
+    }
+
+    /// Scan every tenant file in the directory.
+    async fn scan_tenants(&self) -> Result<Vec<Tenant>, BoxError> {
+        let dir = self.dir();
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows: Vec<Tenant> = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if let Ok(t) = serde_json::from_slice::<Tenant>(&bytes) {
+                rows.push(t);
+            }
+        }
+        Ok(rows)
+    }
+}
+
+#[async_trait]
+impl TenantStore for JsonFileTenantStore {
+    async fn save(&self, tenant: &Tenant) -> Result<(), BoxError> {
+        let existing = self.scan_tenants().await?;
+        for t in &existing {
+            if t.id != tenant.id && t.slug == tenant.slug {
+                return Err(StoreError::DuplicateSlug(tenant.slug.clone()).into());
+            }
+        }
+        ensure_dir(&self.dir()).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&tenant.id);
+        let bytes = serde_json::to_vec_pretty(tenant)?;
+        atomic_write(&path, &bytes).await
+    }
+
+    async fn load(&self, id: &str) -> Result<Option<Tenant>, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => Ok(Some(
+                serde_json::from_slice::<Tenant>(&bytes).map_err(StoreError::from)?,
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    async fn find_by_slug(&self, slug: &str) -> Result<Option<Tenant>, BoxError> {
+        let rows = self.scan_tenants().await?;
+        Ok(rows.into_iter().find(|t| t.slug == slug))
+    }
+
+    async fn list(&self) -> Result<Vec<Tenant>, BoxError> {
+        let mut rows = self.scan_tenants().await?;
+        rows.retain(|t| !t.archived);
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn archive(&self, id: &str) -> Result<bool, BoxError> {
+        let mut t = match self.load(id).await? {
+            Some(t) => t,
+            None => return Ok(false),
+        };
+        t.archive();
+        self.save(&t).await?;
+        Ok(true)
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
 // ---------- shared helpers -------------------------------------------------
 
 fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
@@ -1170,6 +1636,7 @@ fn decode_id(name: &str) -> Option<String> {
 mod tests {
     use super::*;
     use harness_core::Message;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn convo(content: &str) -> Conversation {
@@ -1737,5 +2204,39 @@ mod tests {
         assert_eq!(store.list_projects("/r-a").await.unwrap().len(), 1);
         assert_eq!(store.list_projects("/r-b").await.unwrap().len(), 1);
         assert!(store.list_projects("/never").await.unwrap().is_empty());
+    }
+
+    // ---- TenantStore ----------------------------------------------------
+
+    #[tokio::test]
+    async fn first_start_creates_default_tenant() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileTenantStore::open(dir.path()).unwrap();
+        crate::ensure_default_tenant(Arc::new(store))
+            .await
+            .unwrap();
+        let store = JsonFileTenantStore::open(dir.path()).unwrap();
+        let t = store.find_by_slug("default").await.unwrap().unwrap();
+        assert_eq!(t.slug, "default");
+        assert_eq!(t.name, "Default");
+
+        // Idempotent.
+        crate::ensure_default_tenant(Arc::new(store))
+            .await
+            .unwrap();
+        let store = JsonFileTenantStore::open(dir.path()).unwrap();
+        let list = store.list().await.unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tenant_save_rejects_duplicate_slug() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileTenantStore::open(dir.path()).unwrap();
+        let a = Tenant::new("A").with_slug("dup");
+        let b = Tenant::new("B").with_slug("dup");
+        store.save(&a).await.unwrap();
+        let err = store.save(&b).await.unwrap_err();
+        assert!(err.to_string().contains("dup"));
     }
 }

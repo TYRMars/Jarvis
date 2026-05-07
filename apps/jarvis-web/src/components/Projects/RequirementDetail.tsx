@@ -1,7 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import type {
   Activity,
-  AgentProfile,
   Requirement,
   RequirementRun,
   RequirementRunLog,
@@ -13,12 +12,6 @@ import type {
   VerificationStatus,
 } from "../../types/frames";
 import { t } from "../../utils/i18n";
-import {
-  getAgentProfileFromCache,
-  listAgentProfiles,
-  loadAgentProfiles,
-  subscribeAgentProfiles,
-} from "../../services/agentProfiles";
 import { appStore } from "../../store/appStore";
 import { currentJarvisSoulPrompt } from "../../store/persistence";
 import { startConversationTurn } from "../../services/conversationSockets";
@@ -43,6 +36,12 @@ import type { BoardColumn } from "./columns";
 import { MarkdownLite } from "./MarkdownLite";
 import { ActivityList } from "./activityRow";
 import { parseRoadmapDescription } from "./roadmapDescription";
+import { RequirementComments } from "./RequirementComments";
+import {
+  RequirementLabelChips,
+  RequirementLabelPicker,
+  useEnsureLabels,
+} from "./RequirementLabels";
 
 // Right-side slide-in panel that replaces the previous in-place
 // expand interaction. The card surface stays compact (single
@@ -84,7 +83,6 @@ export function RequirementDetail({
   // reads pick up the latest snapshot.
   const [runsTick, setRunsTick] = useState(0);
   const [actsTick, setActsTick] = useState(0);
-  const [profilesTick, setProfilesTick] = useState(0);
   // "Start fresh run" UX state. Declared up here (alongside the
   // other ticks) so the hook count stays stable regardless of
   // whether `requirement` is null on this render — moving these
@@ -96,27 +94,22 @@ export function RequirementDetail({
     if (!requirement) return;
     void loadRunsForRequirement(requirement.id);
     void loadActivitiesForRequirement(requirement.id);
-    void loadAgentProfiles();
     const offRuns = subscribeRequirementRuns(() => setRunsTick((n) => n + 1));
     const offActs = subscribeRequirementActivities(() =>
       setActsTick((n) => n + 1),
     );
-    const offProfs = subscribeAgentProfiles(() => setProfilesTick((n) => n + 1));
     return () => {
       offRuns();
       offActs();
-      offProfs();
     };
   }, [requirement]);
 
   if (!requirement) return null;
   const runs = listRunsForRequirement(requirement.id);
   const activities = listActivitiesForRequirement(requirement.id);
-  const profiles = listAgentProfiles();
   // Reading the ticks subscribes the component to cache mutations.
   void runsTick;
   void actsTick;
-  void profilesTick;
 
   const parsedDescription = parseRoadmapDescription(requirement.description);
   const desc = parsedDescription.text;
@@ -131,15 +124,6 @@ export function RequirementDetail({
 
   const setStatus = (status: RequirementStatus) => {
     updateRequirement(requirement.id, { status });
-    onChanged();
-  };
-
-  const setAssignee = (assigneeId: string) => {
-    // Empty string from the picker means "unassigned" (we render
-    // it as the leading `<option value="">`).
-    updateRequirement(requirement.id, {
-      assignee_id: assigneeId === "" ? null : assigneeId,
-    });
     onChanged();
   };
 
@@ -174,10 +158,6 @@ export function RequirementDetail({
   const latestRun = runs[0] ?? null;
   const latestConversationId =
     latestRun?.conversation_id ?? requirement.conversation_ids[0] ?? null;
-  const assignedProfile = getAgentProfileFromCache(
-    requirement.assignee_id ?? null,
-  );
-  const agentName = assignedProfile?.name ?? null;
   const todos = requirement.todos ?? [];
   const firstActionableTodo =
     todos.find((todo) => todo.status === "failed" || todo.status === "blocked") ??
@@ -326,17 +306,11 @@ export function RequirementDetail({
             {requirement.title}
           </h2>
 
+          <RequirementLabelsRow requirement={requirement} />
+
           <RequirementNextStep
             latestRun={latestRun}
             todos={todos}
-            agentName={agentName}
-            agentControl={
-              <AssigneePicker
-                assigneeId={requirement.assignee_id ?? null}
-                profiles={profiles}
-                onChange={setAssignee}
-              />
-            }
             startDisabled={startDisabled}
             starting={starting}
             inFlightRun={Boolean(inFlightRun)}
@@ -393,7 +367,8 @@ export function RequirementDetail({
               void handleAgentWork(formatTodoInjection(requirement, todo))
             }
           />
-          <RunsSection runs={runs} requirement={requirement} />
+          <SessionRecordsSection runs={runs} requirement={requirement} />
+          <RequirementComments requirementId={requirement.id} />
           <ActivitySection activities={activities} />
         </div>
 
@@ -452,8 +427,6 @@ const TODO_STATUSES: RequirementTodoStatus[] = [
 function RequirementNextStep({
   latestRun,
   todos,
-  agentName,
-  agentControl,
   startDisabled,
   starting,
   inFlightRun,
@@ -465,8 +438,6 @@ function RequirementNextStep({
 }: {
   latestRun: RequirementRun | null;
   todos: RequirementTodo[];
-  agentName: string | null;
-  agentControl: ReactNode;
   startDisabled: boolean;
   starting: boolean;
   inFlightRun: boolean;
@@ -508,9 +479,7 @@ function RequirementNextStep({
           : todos.length > 0
             ? t("detailProgressIdleWithChecks", todos.length)
             : t("detailProgressIdleNoChecks");
-  const startLabel = agentName
-    ? t("detailProgressStartWithAgent", agentName)
-    : t("detailProgressStart");
+  const startLabel = t("detailProgressStart");
 
   return (
     <section className={"requirement-next-step tone-" + tone}>
@@ -521,7 +490,6 @@ function RequirementNextStep({
         <strong>{title}</strong>
         <p>{detail}</p>
       </div>
-      {agentControl}
       <div className="requirement-next-actions">
         {tone === "failed" && onTodoPrompt && (
           <button
@@ -961,7 +929,7 @@ function formatTodoInjection(req: Requirement, todo: RequirementTodo): string {
 }
 
 // =============================================================
-// Runs section — Phase 3.5 RequirementRun history rendering.
+// Session records section — RequirementRun history rendering.
 // =============================================================
 //
 // Self-contained block rendered beneath the description in the card
@@ -974,7 +942,7 @@ function formatTodoInjection(req: Requirement, todo: RequirementTodo): string {
 // Click a row to expand the inline summary / error / per-command
 // stdout details.
 
-function RunsSection({
+function SessionRecordsSection({
   runs,
   requirement,
 }: {
@@ -999,9 +967,12 @@ function RunsSection({
       onToggle={(e) => setSectionOpen(e.currentTarget.open)}
     >
       <summary className="requirement-detail-record-summary">
-        <span className="requirement-detail-runs-heading">
-          {t("runsHeading")}
-        </span>
+        <div className="requirement-detail-record-title">
+          <span className="requirement-detail-runs-heading">
+            {t("runsHeading")}
+          </span>
+          <p>{t("runsHeadingHint")}</p>
+        </div>
         <span className="requirement-detail-record-meta">
           {runs.length === 0
             ? t("runsEmpty")
@@ -1114,7 +1085,7 @@ function RunDetail({
           className="requirement-detail-run-worktree"
           title={run.worktree_path}
         >
-          📁 worktree: <code>{run.worktree_path}</code>
+          worktree: <code>{run.worktree_path}</code>
         </p>
       )}
       {run.verification?.command_results &&
@@ -1353,9 +1324,12 @@ function ActivitySection({ activities }: { activities: Activity[] }) {
   return (
     <details className="requirement-detail-activities">
       <summary className="requirement-detail-record-summary">
-        <span className="requirement-detail-runs-heading">
-          {t("activityHeading")}
-        </span>
+        <div className="requirement-detail-record-title">
+          <span className="requirement-detail-runs-heading">
+            {t("activityHeading")}
+          </span>
+          <p>{t("activityHint")}</p>
+        </div>
         <span className="requirement-detail-record-meta">
           {t("activitySummary", activities.length)}
         </span>
@@ -1365,82 +1339,42 @@ function ActivitySection({ activities }: { activities: Activity[] }) {
   );
 }
 
-function shortenId(id: string | undefined): string {
-  if (!id) return "?";
-  return id.slice(0, 8);
-}
-
 // =============================================================
-// Handling agent picker — Phase 3.6.
+// Labels row — Phase 3.8.
 // =============================================================
 //
-// Compact shared Select rendered inside the progress panel. Empty
-// option = the default Jarvis execution path; remaining options come
-// from the cached AgentProfile list. The selected id is still persisted
-// as `assignee_id` because the scheduler/backend already consumes that
-// field to choose the Agent profile for requirement work.
+// Shows the requirement's existing label chips and a tiny "Edit"
+// button that opens the multi-select picker. Saving fires
+// `updateRequirement(id, { label_ids })` which optimistically
+// repaints the row and PATCHes the server in the background.
 
-function AssigneePicker({
-  assigneeId,
-  profiles,
-  onChange,
-}: {
-  assigneeId: string | null;
-  profiles: AgentProfile[];
-  onChange: (id: string) => void;
-}) {
-  // If the requirement is assigned but the profile isn't in cache
-  // (e.g. server lookup race), still render the id as a stub option
-  // so the select shows the correct selection rather than silently
-  // falling back to "unassigned".
-  const hasUnknownAssignee =
-    assigneeId !== null && !profiles.some((p) => p.id === assigneeId);
-  const shown = getAgentProfileFromCache(assigneeId);
-  const options = [
-    {
-      value: "",
-      label: t("detailAssigneeUnassigned"),
-      searchText: t("detailAssigneeUnassigned"),
-    },
-    ...profiles.map((p) => ({
-      value: p.id,
-      label: p.avatar ? `${p.avatar} ${p.name}` : p.name,
-      searchText: p.name,
-    })),
-    ...(hasUnknownAssignee
-      ? [
-          {
-            value: assigneeId,
-            label: `(unknown ${shortenId(assigneeId)})`,
-            searchText: shortenId(assigneeId),
-          },
-        ]
-      : []),
-  ];
+function RequirementLabelsRow({ requirement }: { requirement: Requirement }) {
+  const [picking, setPicking] = useState(false);
+  // Hydrate label cache for this project so chips resolve.
+  useEnsureLabels(requirement.project_id);
 
   return (
-    <div className="requirement-detail-assignee">
-      <label className="requirement-detail-assignee-label">
-        {t("detailAssigneeLabel")}
-      </label>
-      <Select
-        className="requirement-detail-assignee-select"
-        value={assigneeId ?? ""}
-        onChange={onChange}
-        options={options}
-        ariaLabel={t("detailAssigneeLabel")}
-        searchable={profiles.length > 8}
+    <div className="requirement-detail-labels-row">
+      <RequirementLabelChips
+        ids={requirement.label_ids}
+        emptyHint={t("labelsEmptyHint")}
       />
-      {shown?.system_prompt && (
-        <p
-          className="requirement-detail-assignee-prompt"
-          title={shown.system_prompt}
-        >
-          {shown.system_prompt.length > 80
-            ? shown.system_prompt.slice(0, 80) + "…"
-            : shown.system_prompt}
-        </p>
-      )}
+      <button
+        type="button"
+        className="requirement-detail-comment-action"
+        onClick={() => setPicking(true)}
+      >
+        {t("labelsEditButton")}
+      </button>
+      <RequirementLabelPicker
+        projectId={requirement.project_id}
+        selected={requirement.label_ids ?? []}
+        open={picking}
+        onClose={() => setPicking(false)}
+        onSave={(nextIds) => {
+          updateRequirement(requirement.id, { label_ids: nextIds });
+        }}
+      />
     </div>
   );
 }

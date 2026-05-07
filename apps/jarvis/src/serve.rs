@@ -79,6 +79,8 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         activity_store,
         agent_profile_store,
         doc_store,
+        comment_store,
+        label_store,
     ) = match persistence_url.as_deref() {
         Some(url) => {
             let bundle = harness_store::connect_all(url)
@@ -86,7 +88,7 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
                 .with_context(|| format!("opening persistence url `{url}`"))?;
             info!(
                 url = %url,
-                "conversation + project + todo + requirement + run + activity + agent_profile + doc store connected"
+                "conversation + project + todo + requirement + run + activity + agent_profile + doc + comment + label store connected"
             );
             (
                 Some(bundle.conversations),
@@ -97,14 +99,16 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
                 Some(bundle.activities),
                 Some(bundle.agent_profiles),
                 Some(bundle.docs),
+                Some(bundle.comments),
+                Some(bundle.labels),
             )
         }
         None => {
             info!(
                 "no persistence URL resolved (HOME unset?); running in-memory \
-                 (conversations / TODOs / requirements / runs / activities / profiles / docs will not survive restart)"
+                 (conversations / TODOs / requirements / runs / activities / profiles / docs / comments / labels will not survive restart)"
             );
-            (None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None, None)
         }
     };
     // `JARVIS_DISABLE_TODOS=1` opts out of the persistent TODO board
@@ -494,6 +498,21 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if let Some(ds) = doc_store {
         state = state.with_doc_store(ds);
     }
+    if let Some(cs) = comment_store {
+        state = state.with_comment_store(cs);
+    }
+    if let Some(ls) = label_store {
+        state = state.with_label_store(ls);
+    }
+    // Project-scoped long-term memory. The auto loop captures
+    // `gotcha` rows from failed runs and prepends recent rows into
+    // the next run's system prompt. We unconditionally wire an
+    // in-memory backend so the `/v1/projects/:id/memories` route is
+    // always live; persistence-backed implementations can land later
+    // and override this via `connect_all`.
+    state = state.with_project_memory_store(std::sync::Arc::new(
+        harness_store::MemoryProjectMemoryStore::new(),
+    ));
     // `JARVIS_NO_TODOS_IN_PROMPT=1` opts out of injecting the
     // current TODO list into the system prompt every turn. The
     // `todo.*` tools stay registered (the model can still query
@@ -589,6 +608,14 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     }) {
         auto_cfg.max_units_per_tick = v.max(1);
     }
+    // Real concurrency cap — independent from the per-tick burst.
+    // See `AutoModeConfig` docs for the full split.
+    if let Ok(v) = std::env::var("JARVIS_WORK_MAX_CONCURRENT").and_then(|s| {
+        s.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
+        auto_cfg.max_concurrent_units = v.max(1);
+    }
     if let Ok(v) = std::env::var("JARVIS_WORK_MAX_RETRIES").and_then(|s| {
         s.parse::<usize>()
             .map_err(|_| std::env::VarError::NotPresent)
@@ -615,7 +642,14 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
             auto_cfg.workflow_prompt = Some(s.to_string());
         }
     }
-    let auto_runtime = harness_server::AutoModeRuntime::new(auto_cfg.mode);
+    // Build the runtime with the resolved concurrency cap so the
+    // semaphore pool size matches what `tick` will enforce. The
+    // spawn helper falls back to default capacity when the runtime
+    // is built fresh inside it, but our binary always pre-creates
+    // it so the auto-mode REST routes (`POST /v1/auto-mode`) see a
+    // runtime they can toggle.
+    let auto_runtime =
+        harness_server::AutoModeRuntime::with_capacity(auto_cfg.mode, auto_cfg.max_concurrent_units);
     state = state.with_auto_mode_runtime(auto_runtime);
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
     if let (Some(pm), Some(projects), Some(requirements)) = (
@@ -628,10 +662,44 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     }
 
     info!(%addr, "jarvis listening");
+
+    if args.open {
+        let url = browser_open_url(&addr);
+        tokio::spawn(async move {
+            // Give axum a brief moment to start accepting connections
+            // before we shell out to the OS browser handler. 200 ms is
+            // well below human perception and avoids racing the bind.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            info!(%url, "opening Web UI in default browser");
+            if let Err(e) = open::that(&url) {
+                warn!(error = %e, %url, "failed to open browser; visit the URL manually");
+            }
+        });
+    }
+
     serve(addr, state).await?;
 
     drop(mcp_manager);
     Ok(())
+}
+
+/// Map a bind address to a browser-friendly URL. `0.0.0.0` and `::`
+/// are reachable for *listening* but invalid as client targets, so we
+/// substitute the loopback address. Everything else is used verbatim.
+fn browser_open_url(addr: &SocketAddr) -> String {
+    let port = addr.port();
+    let ip = addr.ip();
+    if ip.is_unspecified() {
+        if ip.is_ipv6() {
+            format!("http://[::1]:{port}")
+        } else {
+            format!("http://127.0.0.1:{port}")
+        }
+    } else if ip.is_ipv6() {
+        format!("http://[{ip}]:{port}")
+    } else {
+        format!("http://{ip}:{port}")
+    }
 }
 
 fn load_instructions_bounded(workspace_root: PathBuf, max_bytes: usize) -> Option<String> {
