@@ -356,6 +356,16 @@ export type RequirementStatus = string;
 /// executor only consumes `approved`.
 export type TriageState = "approved" | "proposed_by_agent" | "proposed_by_scan";
 
+/// v1.0 SubAgent — gate for the Review → Done transition. Mirrors
+/// `harness_core::AcceptancePolicy`. Wire form omits the field when
+/// it equals the default (`subagent`).
+///
+/// - `subagent` (default): the Reviewer subagent decides pass/fail
+///   once the work agent flips status to Review.
+/// - `human`: the row stops at Review until a person clicks
+///   "complete".
+export type AcceptancePolicy = "subagent" | "human";
+
 export interface Requirement {
   id: string;
   project_id: string;
@@ -378,6 +388,10 @@ export interface Requirement {
    *  this field only carries references so renames stay cheap.
    *  Order is preserved (used for chip rendering order). */
   label_ids?: string[];
+  /** v1.0 SubAgent — gate for the Review → Done transition. Server
+   *  omits this field when it equals the default (`subagent`); UI
+   *  treats absence as `subagent`. */
+  acceptance_policy?: AcceptancePolicy;
   /** Optional pinned VerificationPlan that auto mode (and the manual
    *  "Run verification" form) executes after each RequirementRun.
    *  Server-side type: `Option<VerificationPlan>`. */

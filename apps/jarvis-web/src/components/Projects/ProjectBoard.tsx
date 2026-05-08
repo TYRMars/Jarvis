@@ -775,6 +775,14 @@ function RequirementCard({
             {sessions}×
           </span>
         )}
+        {requirement.acceptance_policy === "human" && (
+          <span
+            className="requirement-card-acceptance-badge"
+            title={t("reqAcceptancePolicyHumanHint")}
+          >
+            {t("reqAcceptancePolicyHumanBadge")}
+          </span>
+        )}
         <span className="requirement-card-spacer flex-1" />
         <span className="requirement-card-action-hint">{t("reqClickHint")}</span>
         <div className="requirement-card-actions" aria-label={t("reqCardActions")}>
@@ -815,6 +823,7 @@ function TriageDrawer({
   onOpenDetail: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [bulkPending, setBulkPending] = useState(false);
 
   const handleApprove = async (id: string) => {
     await approveRequirement(id);
@@ -834,19 +843,57 @@ function TriageDrawer({
     }
   };
 
+  /// Bulk approve fires every visible candidate's approve in parallel.
+  /// We cap parallelism implicitly — the candidate set is the whole
+  /// drawer (already filtered to "Backlog + needs triage"), so the
+  /// browser's native HTTP queueing is enough headroom. Optimistic
+  /// updates land per-row as each promise resolves; the WS frame
+  /// reconciliation cleans up if the server rejects any.
+  const handleApproveAll = async () => {
+    if (bulkPending) return;
+    if (!window.confirm(t("triageApproveAllConfirm", candidates.length))) {
+      return;
+    }
+    setBulkPending(true);
+    const settled = await Promise.allSettled(
+      candidates.map((c) => approveRequirement(c.id)),
+    );
+    const failed = settled.filter((s) => s.status === "rejected").length;
+    setBulkPending(false);
+    onChanged();
+    if (failed > 0) {
+      console.warn(`triage: ${failed}/${candidates.length} approve failed`);
+    }
+  };
+
   return (
     <section className="triage-drawer" aria-label="Triage queue">
       <header className="triage-drawer-head">
         <span className="triage-drawer-title tabular-nums" aria-live="polite">
           {t("triageHeader", candidates.length)}
         </span>
-        <button
-          type="button"
-          className="triage-drawer-toggle"
-          onClick={() => setCollapsed((v) => !v)}
-        >
-          {collapsed ? t("triageExpand") : t("triageCollapse")}
-        </button>
+        <div className="triage-drawer-head-actions">
+          {candidates.length >= 2 && (
+            <button
+              type="button"
+              className="triage-drawer-approve-all"
+              onClick={() => void handleApproveAll()}
+              disabled={bulkPending}
+              title={t("triageApproveAllHint")}
+            >
+              {bulkPending
+                ? t("triageApproveAllBusy")
+                : t("triageApproveAll", candidates.length)}
+            </button>
+          )}
+          <button
+            type="button"
+            className="triage-drawer-toggle"
+            onClick={() => setCollapsed((v) => !v)}
+          >
+            {collapsed ? t("triageExpand") : t("triageCollapse")}
+          </button>
+        </div>
       </header>
       {!collapsed && (
         <ul className="triage-list">

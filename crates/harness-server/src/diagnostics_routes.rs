@@ -35,6 +35,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/v1/diagnostics/runs/stuck", get(list_stuck_runs))
         .route("/v1/diagnostics/runs/failed", get(list_failed_runs))
+        .route("/v1/diagnostics/runs/recent", get(list_recent_runs))
 }
 
 #[allow(clippy::result_large_err)]
@@ -142,6 +143,30 @@ async fn list_failed_runs(State(state): State<AppState>, Query(q): Query<FailedQ
         Err(resp) => return resp,
     };
     match diagnostics::recent_failures(runs.as_ref(), q.limit).await {
+        Ok(items) => json_value(json!({ "items": items })).into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+// ----------------------- GET /v1/diagnostics/runs/recent ----------------
+
+#[derive(Debug, Deserialize)]
+struct RecentQuery {
+    /// Cap on the returned list. Default 50.
+    #[serde(default = "default_recent_limit")]
+    limit: u32,
+}
+
+fn default_recent_limit() -> u32 {
+    50
+}
+
+async fn list_recent_runs(State(state): State<AppState>, Query(q): Query<RecentQuery>) -> Response {
+    let runs = match require_run_store(&state) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match diagnostics::recent_runs(runs.as_ref(), q.limit).await {
         Ok(items) => json_value(json!({ "items": items })).into_response(),
         Err(e) => internal_error(e),
     }

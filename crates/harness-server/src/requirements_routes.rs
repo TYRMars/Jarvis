@@ -375,6 +375,14 @@ struct UpdateBody {
     /// Omit to leave as-is; pass `[]` to clear.
     #[serde(default)]
     label_ids: Option<Vec<String>>,
+    /// v1.0 SubAgent — flip the acceptance policy. Wire form: one of
+    /// `subagent` / `human`. Omit to leave as-is. `subagent` (the
+    /// default once Reviewer auto-acceptance lands) hands the
+    /// Review → Done transition off to the reviewer subagent;
+    /// `human` keeps the row at Review until a person clicks
+    /// "complete".
+    #[serde(default)]
+    acceptance_policy: Option<String>,
 }
 
 /// Three-state value for `verification_plan` in PATCH —
@@ -502,6 +510,13 @@ async fn update_requirement(
             .filter(|id| !id.trim().is_empty())
             .collect();
     }
+    let prior_acceptance = item.acceptance_policy;
+    if let Some(s) = body.acceptance_policy.as_deref() {
+        match harness_core::AcceptancePolicy::from_wire(s) {
+            Some(parsed) => item.acceptance_policy = parsed,
+            None => return bad_request(format!("unknown acceptance_policy `{s}`")),
+        }
+    }
     item.touch();
     match store.upsert(&item).await {
         Ok(()) => {
@@ -541,6 +556,20 @@ async fn update_requirement(
                         "kind": "triage_change",
                         "from": prior_triage.as_wire(),
                         "to": item.triage_state.as_wire(),
+                    }),
+                )
+                .await;
+            }
+            if item.acceptance_policy != prior_acceptance {
+                record_activity(
+                    &state,
+                    &item.id,
+                    ActivityKind::Comment,
+                    ActivityActor::Human,
+                    json!({
+                        "kind": "acceptance_policy_change",
+                        "from": prior_acceptance.as_wire(),
+                        "to": item.acceptance_policy.as_wire(),
                     }),
                 )
                 .await;

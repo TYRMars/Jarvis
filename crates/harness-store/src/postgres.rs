@@ -1227,30 +1227,26 @@ impl CommentStore for PostgresCommentStore {
 
     async fn create(&self, comment: &Comment) -> Result<(), BoxError> {
         if let Some(parent_id) = comment.parent_id.as_deref() {
-            let parent: Option<(Option<String>, String)> = sqlx::query_as(
-                r#"SELECT parent_id, requirement_id FROM comments WHERE id = $1"#,
-            )
-            .bind(parent_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(StoreError::from)?;
+            let parent: Option<(Option<String>, String)> =
+                sqlx::query_as(r#"SELECT parent_id, requirement_id FROM comments WHERE id = $1"#)
+                    .bind(parent_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(StoreError::from)?;
             match parent {
                 None => {
-                    return Err(format!(
-                        "parent comment `{parent_id}` not found in requirement"
+                    return Err(
+                        format!("parent comment `{parent_id}` not found in requirement").into(),
                     )
-                    .into())
                 }
                 Some((_, parent_req)) if parent_req != comment.requirement_id => {
-                    return Err(format!(
-                        "parent comment `{parent_id}` not found in requirement"
+                    return Err(
+                        format!("parent comment `{parent_id}` not found in requirement").into(),
                     )
-                    .into())
                 }
                 Some((Some(_), _)) => {
                     return Err(
-                        "comment threading is limited to depth 1 (cannot reply to a reply)"
-                            .into(),
+                        "comment threading is limited to depth 1 (cannot reply to a reply)".into(),
                     )
                 }
                 _ => {}
@@ -1286,14 +1282,13 @@ impl CommentStore for PostgresCommentStore {
     }
 
     async fn update(&self, comment: &Comment) -> Result<bool, BoxError> {
-        let existing: Option<(String,)> = sqlx::query_as(
-            r#"SELECT payload FROM comments WHERE id = $1 AND requirement_id = $2"#,
-        )
-        .bind(&comment.id)
-        .bind(&comment.requirement_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(StoreError::from)?;
+        let existing: Option<(String,)> =
+            sqlx::query_as(r#"SELECT payload FROM comments WHERE id = $1 AND requirement_id = $2"#)
+                .bind(&comment.id)
+                .bind(&comment.requirement_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
         let Some((existing_payload,)) = existing else {
             return Ok(false);
         };
@@ -1331,13 +1326,12 @@ impl CommentStore for PostgresCommentStore {
         };
         let mut to_remove: Vec<String> = vec![comment_id.to_string()];
         if target_parent_id.is_none() {
-            let reply_rows: Vec<(String,)> = sqlx::query_as(
-                r#"SELECT id FROM comments WHERE parent_id = $1"#,
-            )
-            .bind(comment_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(StoreError::from)?;
+            let reply_rows: Vec<(String,)> =
+                sqlx::query_as(r#"SELECT id FROM comments WHERE parent_id = $1"#)
+                    .bind(comment_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(StoreError::from)?;
             for (id,) in reply_rows {
                 to_remove.push(id);
             }
@@ -1384,13 +1378,12 @@ impl PostgresLabelStore {
         name: &str,
         skip_id: Option<&str>,
     ) -> Result<bool, BoxError> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            r#"SELECT id, name FROM labels WHERE project_id = $1"#,
-        )
-        .bind(project_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StoreError::from)?;
+        let rows: Vec<(String, String)> =
+            sqlx::query_as(r#"SELECT id, name FROM labels WHERE project_id = $1"#)
+                .bind(project_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
         Ok(rows.iter().any(|(id, n)| {
             skip_id.map(|s| s != id).unwrap_or(true) && n.eq_ignore_ascii_case(name)
         }))
@@ -1418,19 +1411,21 @@ impl LabelStore for PostgresLabelStore {
     }
 
     async fn get(&self, id: &str) -> Result<Option<Label>, BoxError> {
-        let row: Option<(String,)> =
-            sqlx::query_as(r#"SELECT payload FROM labels WHERE id = $1"#)
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(StoreError::from)?;
+        let row: Option<(String,)> = sqlx::query_as(r#"SELECT payload FROM labels WHERE id = $1"#)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
         row.map(|(payload,)| serde_json::from_str::<Label>(&payload).map_err(StoreError::from))
             .transpose()
             .map_err(|e| -> BoxError { Box::new(e) })
     }
 
     async fn create(&self, label: &Label) -> Result<(), BoxError> {
-        if self.name_clash(&label.project_id, &label.name, None).await? {
+        if self
+            .name_clash(&label.project_id, &label.name, None)
+            .await?
+        {
             return Err(format!("label name `{}` already exists in project", label.name).into());
         }
         let payload = serde_json::to_string(label).map_err(StoreError::from)?;
@@ -1461,19 +1456,17 @@ impl LabelStore for PostgresLabelStore {
     }
 
     async fn update(&self, label: &Label) -> Result<bool, BoxError> {
-        let existing: Option<(String,)> = sqlx::query_as(
-            r#"SELECT payload FROM labels WHERE id = $1 AND project_id = $2"#,
-        )
-        .bind(&label.id)
-        .bind(&label.project_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(StoreError::from)?;
+        let existing: Option<(String,)> =
+            sqlx::query_as(r#"SELECT payload FROM labels WHERE id = $1 AND project_id = $2"#)
+                .bind(&label.id)
+                .bind(&label.project_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::from)?;
         let Some((existing_payload,)) = existing else {
             return Ok(false);
         };
-        let existing: Label =
-            serde_json::from_str(&existing_payload).map_err(StoreError::from)?;
+        let existing: Label = serde_json::from_str(&existing_payload).map_err(StoreError::from)?;
         if self
             .name_clash(&label.project_id, &label.name, Some(&label.id))
             .await?
@@ -1508,14 +1501,12 @@ impl LabelStore for PostgresLabelStore {
     }
 
     async fn delete(&self, project_id: &str, label_id: &str) -> Result<bool, BoxError> {
-        let res = sqlx::query(
-            r#"DELETE FROM labels WHERE id = $1 AND project_id = $2"#,
-        )
-        .bind(label_id)
-        .bind(project_id)
-        .execute(&self.pool)
-        .await
-        .map_err(StoreError::from)?;
+        let res = sqlx::query(r#"DELETE FROM labels WHERE id = $1 AND project_id = $2"#)
+            .bind(label_id)
+            .bind(project_id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::from)?;
         let removed = res.rows_affected() > 0;
         if removed {
             let _ = self.tx.send(LabelEvent::Deleted {

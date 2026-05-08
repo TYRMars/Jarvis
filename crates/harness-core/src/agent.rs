@@ -310,10 +310,7 @@ impl Agent {
         crate::todo::with_turn_budget(self.run_inner(conversation)).await
     }
 
-    async fn run_inner(
-        &self,
-        conversation: &mut Conversation,
-    ) -> Result<(RunOutcome, Usage)> {
+    async fn run_inner(&self, conversation: &mut Conversation) -> Result<(RunOutcome, Usage)> {
         Self::ensure_system_prompt(conversation, self.config.system_prompt.as_deref());
 
         let mut total_usage = Usage::default();

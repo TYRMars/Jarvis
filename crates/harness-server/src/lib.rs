@@ -33,6 +33,7 @@ mod diagnostics_routes;
 mod docs_routes;
 mod labels_routes;
 mod mcp_routes;
+mod observability_routes;
 mod permissions;
 mod plugin_routes;
 mod project_binder;

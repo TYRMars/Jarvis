@@ -140,6 +140,29 @@ function ChatSidebarBody() {
     <>
       <nav className="nav-list" aria-label={t("sidebarModeChat")}>
         <NewConvoButton />
+        <NavLink
+          to="/conversations"
+          className={({ isActive }) =>
+            "nav-item" + (isActive ? " active" : "")
+          }
+        >
+          <svg
+            width="17"
+            height="17"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <path d="M3 9h18" />
+            <path d="M9 21V9" />
+          </svg>
+          <span>{t("sidebarNavConversationsArchive")}</span>
+        </NavLink>
       </nav>
       <ConvoList />
     </>
@@ -202,6 +225,29 @@ function WorkSidebarBody() {
             <rect x="3" y="16" width="7" height="5" rx="1" />
           </svg>
           <span>{t("sidebarNavWorkOverview")}</span>
+        </NavLink>
+        <NavLink
+          to="/projects/auto-mode"
+          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <polyline points="12 7 12 12 15 14" />
+          </svg>
+          <span>{t("sidebarNavAutoMode")}</span>
+        </NavLink>
+        <NavLink
+          to="/projects/worktrees"
+          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M6 3v6a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V3" />
+            <circle cx="6" cy="18" r="3" />
+            <circle cx="18" cy="18" r="3" />
+            <path d="M12 12v3" />
+            <circle cx="12" cy="18" r="3" />
+          </svg>
+          <span>{t("sidebarNavWorktrees")}</span>
         </NavLink>
         <NavLink
           to="/projects/list"

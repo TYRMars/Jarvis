@@ -14,6 +14,34 @@ export interface AutoModeStatus {
   /** Current scheduler state. Independent of `configured` only when
    * the binary is broken — normally `enabled` implies `configured`. */
   enabled: boolean;
+
+  // ---- Read-only config snapshot (only present when configured). ----
+
+  /** Wire form of `JARVIS_WORK_MODE`: `"off"` or `"auto"`. */
+  mode?: "off" | "auto";
+  /** Tick cadence in seconds. */
+  tick_seconds?: number;
+  /** Per-tick burst budget — how many candidates one tick may pick. */
+  max_units_per_tick?: number;
+  /** Global concurrency cap — semaphore pool size for in-flight runs. */
+  max_concurrent_units?: number;
+  /** Retry ceiling per requirement before the loop stops re-picking it. */
+  max_retries?: number;
+  /** Wall-clock budget per agent loop pickup, in milliseconds. */
+  run_timeout_ms?: number;
+  /** When `true`, the loop will pick up Approved Requirements with no assignee. */
+  allow_unassigned?: boolean;
+  /** Optional fallback assignee profile id / display name. */
+  default_assignee?: string;
+
+  // ---- Live runtime state. ----
+
+  /** Free permits in the concurrency semaphore right now. */
+  available_permits?: number;
+  /** RFC-3339 timestamp of the most recent tick observed. `null` until
+   * the first tick fires (early after boot, or in tests that skip the
+   * spawn loop). */
+  last_tick_at?: string | null;
 }
 
 /// Fetch current auto-mode status. Falls back to a "not configured"

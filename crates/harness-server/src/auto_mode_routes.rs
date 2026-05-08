@@ -1,9 +1,12 @@
 //! v1.0 — REST surface for the runtime auto-mode toggle.
 //!
-//! - `GET  /v1/auto-mode` → `{enabled, configured}` (`configured`
-//!   reports whether the binary even wired up an
-//!   [`AutoModeRuntime`]; tests / mcp-serve return `configured:
-//!   false` and `enabled: false`).
+//! - `GET  /v1/auto-mode` → status snapshot. Always 200 — when the
+//!   binary didn't wire a runtime, `configured: false` is returned
+//!   and the config / permits fields are omitted. When configured,
+//!   the response carries the resolved `AutoModeConfig` numbers
+//!   (cadence, caps, retries, run timeout) plus live runtime state
+//!   (`available_permits`, `last_tick_at`) so the dashboard can
+//!   render the scheduler header strip without separate calls.
 //! - `POST /v1/auto-mode` body `{enabled: bool}` flips the flag.
 //!   503 when the binary didn't wire one up.
 //!
@@ -19,7 +22,7 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::state::AppState;
 
@@ -29,11 +32,41 @@ pub(crate) fn router() -> Router<AppState> {
 
 async fn get_auto_mode(State(state): State<AppState>) -> Response {
     let runtime = state.auto_mode_runtime.as_ref();
-    Json(json!({
-        "configured": runtime.is_some(),
-        "enabled": runtime.map(|r| r.is_enabled()).unwrap_or(false),
-    }))
-    .into_response()
+    let mut body = Map::new();
+    body.insert("configured".into(), Value::Bool(runtime.is_some()));
+    body.insert(
+        "enabled".into(),
+        Value::Bool(runtime.map(|r| r.is_enabled()).unwrap_or(false)),
+    );
+    if let Some(rt) = runtime {
+        body.insert(
+            "available_permits".into(),
+            Value::from(rt.available_permits()),
+        );
+        body.insert(
+            "last_tick_at".into(),
+            rt.last_tick_at().map(Value::from).unwrap_or(Value::Null),
+        );
+    }
+    if let Some(cfg) = state.auto_mode_config.as_ref() {
+        body.insert("mode".into(), Value::from(cfg.mode.as_wire()));
+        body.insert("tick_seconds".into(), Value::from(cfg.tick_seconds));
+        body.insert(
+            "max_units_per_tick".into(),
+            Value::from(cfg.max_units_per_tick),
+        );
+        body.insert(
+            "max_concurrent_units".into(),
+            Value::from(cfg.max_concurrent_units),
+        );
+        body.insert("max_retries".into(), Value::from(cfg.max_retries));
+        body.insert("run_timeout_ms".into(), Value::from(cfg.run_timeout_ms));
+        body.insert("allow_unassigned".into(), Value::Bool(cfg.allow_unassigned));
+        if let Some(name) = cfg.default_assignee.as_ref() {
+            body.insert("default_assignee".into(), Value::from(name.as_str()));
+        }
+    }
+    Json(Value::Object(body)).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,5 +199,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read_json(resp).await["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn get_returns_config_snapshot_when_configured() {
+        let runtime = AutoModeRuntime::with_capacity(AutoMode::Auto, 3);
+        runtime.record_tick();
+        let cfg = Arc::new(crate::auto_mode::AutoModeConfig {
+            mode: AutoMode::Auto,
+            tick_seconds: 7,
+            max_units_per_tick: 4,
+            max_concurrent_units: 3,
+            max_retries: 2,
+            run_timeout_ms: 60_000,
+            allow_unassigned: false,
+            default_assignee: Some("alice".into()),
+            workflow_prompt: None,
+            reviewer_auto_accept: false,
+        });
+        let state = base_state(Some(runtime.clone())).with_auto_mode_config(cfg);
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/auto-mode")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v["configured"], true);
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["mode"], "auto");
+        assert_eq!(v["tick_seconds"], 7);
+        assert_eq!(v["max_units_per_tick"], 4);
+        assert_eq!(v["max_concurrent_units"], 3);
+        assert_eq!(v["max_retries"], 2);
+        assert_eq!(v["run_timeout_ms"], 60_000);
+        assert_eq!(v["allow_unassigned"], false);
+        assert_eq!(v["default_assignee"], "alice");
+        assert_eq!(v["available_permits"], 3);
+        assert!(v["last_tick_at"].is_string());
     }
 }

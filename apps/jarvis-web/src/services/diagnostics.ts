@@ -82,3 +82,32 @@ export async function listFailedRuns(limit = 20): Promise<RequirementRun[] | nul
   const body = (await r.json()) as FailedResponse;
   return body.items;
 }
+
+interface RecentResponse {
+  items: RequirementRun[];
+}
+
+/// Newest-first run history across every requirement (mixed status).
+/// Sorted by `finished_at` desc, falling back to `started_at` for
+/// rows still in flight. Returns `null` on 503 (run store absent).
+export async function listRecentRuns(limit = 50): Promise<RequirementRun[] | null> {
+  const r = await fetch(apiUrl(`/v1/diagnostics/runs/recent?limit=${limit}`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`recent runs: ${r.status}`);
+  const body = (await r.json()) as RecentResponse;
+  return body.items;
+}
+
+/// Fetch a single run by id. Used by the auto-mode dashboard's
+/// run-detail drawer. Returns `null` on 404 / 503 / network error
+/// so the drawer can render a friendly empty state.
+export async function getRun(runId: string): Promise<RequirementRun | null> {
+  try {
+    const r = await fetch(apiUrl(`/v1/runs/${encodeURIComponent(runId)}`));
+    if (!r.ok) return null;
+    return (await r.json()) as RequirementRun;
+  } catch (e) {
+    console.warn(`get run ${runId} failed`, e);
+    return null;
+  }
+}

@@ -160,6 +160,10 @@ per-tick; v1.1 routes it to the real concurrency cap)),
 `JARVIS_WORK_MAX_RETRIES` (default `1`),
 `JARVIS_WORK_RUN_TIMEOUT_MS` (default `300000` — 5 min wall-clock
 budget per agent loop pickup),
+`JARVIS_REVIEWER_AUTO_ACCEPT` (any non-empty / non-`0` / non-`false`
+value opts in to reviewer-subagent dispatch on Review → Done under
+`AcceptancePolicy::Subagent`; default off — see "Reviewer
+auto-accept" below),
 `JARVIS_WORKTREE_MODE` (`off` / `per_run` / `per_unit`; auto mode
 upgrades from `off` to `per_run` automatically so the scheduler
 never mutates the main checkout),
@@ -685,11 +689,50 @@ REST surface around triage:
 - All `depends_on` entries reach `RequirementStatus::Done` (topo sort)
 - No in-flight Pending/Running run for the same requirement
 - `failed_count < max_retries`
+- v1.0 SubAgent — rows at Review under
+  `acceptance_policy == AcceptancePolicy::Human` are skipped (the
+  policy gate keeps them at Review until a person clicks
+  "complete"; re-running would burn LLM budget without ever
+  advancing status).
 
-The four guards are silent skips — the row stays in Backlog until
-all conditions clear. Operators see the missing pickups in the
-activity timeline (no `RunStarted` row) rather than via an explicit
-"blocked" signal.
+The guards are silent skips — the row stays in Backlog (or Review,
+under the human-policy gate) until all conditions clear. Operators
+see the missing pickups in the activity timeline (no `RunStarted`
+row) rather than via an explicit "blocked" signal.
+
+**Acceptance policy** — `Requirement.acceptance_policy`
+(v1.0 SubAgent):
+- `Subagent` (default): preserves the pre-v1.0 auto-flip
+  Review → Done semantics **unless** `JARVIS_REVIEWER_AUTO_ACCEPT`
+  is set — see below.
+- `Human`: keeps the row at Review after a Completed run. The
+  picker also skips already-at-Review rows under this policy so
+  the auto loop doesn't burn cycles re-running them. Use it when
+  the verification plan can't model what "done" means
+  (UX/visual design, security-sensitive changes, anything subtly
+  judgment-dependent).
+
+**Reviewer auto-accept** — opt-in via
+`JARVIS_REVIEWER_AUTO_ACCEPT=1` (any non-empty / non-`0` /
+non-`false` value enables it). When enabled and a Completed run
+arrives against a `Subagent`-policy requirement, the auto loop
+holds the row at Review and dispatches the
+[`subagent.review`](crates/harness-subagents/src/reviewer.rs)
+subagent (looked up in `state.tools`). The reviewer's terminal
+call to
+[`requirement.review_verdict`](crates/harness-tools/src/requirement.rs)
+flips the row to Done (`pass`) or InProgress (`fail`) with the
+commentary attached so the next pickup can adapt. Two Activity
+rows fire around the dispatch:
+`{kind:"reviewer_dispatched", run_id}` before, plus
+`{kind:"reviewer_dispatch_failed", run_id, error}` if the
+subagent tool isn't registered or the invocation errors.
+
+Default off so existing deployments keep the synchronous
+auto-flip. Tests live in
+[`auto_mode.rs::tests`](crates/harness-server/src/auto_mode.rs)
+(`advance_dispatches_reviewer_when_flag_enabled_and_policy_subagent`,
+`advance_skips_dispatch_when_flag_disabled`, etc.).
 
 **Roadmap → Work bootstrap** — `POST /v1/roadmap/import`:
 

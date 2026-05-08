@@ -30,6 +30,7 @@
 // `apps/jarvis-web/src/types/frames.ts`.
 
 import type {
+  AcceptancePolicy,
   Activity,
   Requirement,
   RequirementRun,
@@ -243,6 +244,9 @@ export interface UpdateRequirementInput {
   /// Phase 3.8 — replace the label-id list. Order is preserved.
   /// Omit to leave as-is; pass `[]` to clear all chips.
   label_ids?: string[];
+  /// v1.0 SubAgent — flip the acceptance policy. Server returns 400
+  /// for unknown wire values.
+  acceptance_policy?: AcceptancePolicy;
 }
 
 /// Patch a Requirement. Optimistic — applies immediately to cache,
@@ -266,6 +270,9 @@ export function updateRequirement(
       : {}),
     ...("assignee_id" in patch ? { assignee_id: patch.assignee_id ?? null } : {}),
     ...(patch.label_ids !== undefined ? { label_ids: patch.label_ids } : {}),
+    ...(patch.acceptance_policy !== undefined
+      ? { acceptance_policy: patch.acceptance_policy }
+      : {}),
     updated_at: new Date().toISOString(),
   };
   upsertLocal(next);

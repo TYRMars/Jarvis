@@ -22,6 +22,12 @@ import { SettingsPage } from "./components/Settings/SettingsPage";
 import { ProjectsPage } from "./components/Projects/ProjectsPage";
 import { DocsPage } from "./components/Docs/DocsPage";
 import { WorkOverviewPage } from "./components/Projects/WorkOverview/WorkOverviewPage";
+import { AutoModeDashboardPage } from "./components/AutoMode/AutoModeDashboardPage";
+import {
+  ConversationDeepLinkRedirect,
+  ConversationsArchivePage,
+} from "./components/Conversations/ConversationsArchivePage";
+import { WorktreesPage } from "./components/Worktrees/WorktreesPage";
 import { SubAgentDemoPage } from "./components/SubAgent/SubAgentDemoPage";
 import { DesktopStartupOverlay } from "./components/Desktop/DesktopStartupOverlay";
 import { useAppStore, appStore } from "./store/appStore";
@@ -72,6 +78,8 @@ export function App() {
       <Routes>
         <Route path="/" element={<ChatLayout />} />
         <Route path="/projects/overview" element={<WorkOverviewLayout />} />
+        <Route path="/projects/auto-mode" element={<AutoModeDashboardLayout />} />
+        <Route path="/projects/worktrees" element={<WorktreesLayout />} />
         <Route path="/projects/list" element={<ProjectsLayout />} />
         {/* `/projects/:projectId` deep-links into a specific project's
             kanban so browser back, bookmarks, and sidebar links all
@@ -93,6 +101,14 @@ export function App() {
         <Route
           path="/diagnostics"
           element={<Navigate to="/projects/overview" replace />}
+        />
+        <Route path="/conversations" element={<ConversationsArchiveLayout />} />
+        {/* `/conversations/:id` resumes the persisted conversation
+            and redirects to chat. Useful for bookmarks / shared URLs
+            that should land back in the right thread. */}
+        <Route
+          path="/conversations/:id"
+          element={<ConversationDeepLinkRedirect />}
         />
         <Route path="/settings" element={<SettingsPage />} />
         {/* SubAgent UI preview — static prototype with mocked frame
@@ -155,6 +171,80 @@ function DocsLayout() {
       <div id="app" className="page-app docs-app">
         <AppSidebar />
         <DocsPage />
+
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+
+        <QuickSwitcher />
+      </div>
+    </>
+  );
+}
+
+// Conversation history archive — full-page browse over every
+// persisted conversation. Same shell as ProjectsLayout so the
+// sidebar stays put.
+function ConversationsArchiveLayout() {
+  return (
+    <>
+      <a className="skip-link" href="#conversations-archive-page">
+        Skip to main content
+      </a>
+      <div id="app" className="page-app projects-app">
+        <AppSidebar />
+        <ConversationsArchivePage />
+
+        <div
+          id="resize-sidebar"
+          className="resize-handle resize-sidebar"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          tabIndex={-1}
+        />
+
+        <QuickSwitcher />
+      </div>
+    </>
+  );
+}
+
+// Worktree management — sibling to the Auto-mode dashboard under
+// Work mode. Lists orphan git worktrees + cleanup.
+function WorktreesLayout() {
+  return (
+    <>
+      <a className="skip-link" href="#worktrees-page">
+        Skip to main content
+      </a>
+      <div id="app" className="page-app projects-app">
+        <AppSidebar />
+        <WorktreesPage />
+
+        <div
+          id="resize-sidebar"
+          className="resize-handle resize-sidebar"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          tabIndex={-1}
+        />
+
+        <QuickSwitcher />
+      </div>
+    </>
+  );
+}
+
+// Auto-mode scheduler dashboard. Sibling to Overview / List under
+// the Work-mode sidebar; same shell so the sidebar nav stays put as
+// the user moves between Work sub-pages.
+function AutoModeDashboardLayout() {
+  return (
+    <>
+      <a className="skip-link" href="#auto-mode-page">Skip to main content</a>
+      <div id="app" className="page-app projects-app">
+        <AppSidebar />
+        <AutoModeDashboardPage />
 
         <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
 

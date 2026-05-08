@@ -10,6 +10,7 @@ import { ProjectLeaderboard } from "./ProjectLeaderboard";
 import { UsagePanel } from "./UsagePanel";
 import { HarnessEvolutionPanel } from "./HarnessEvolutionPanel";
 import { ModelComparisonPanel } from "./ModelComparisonPanel";
+import { HarnessObservabilityPanel } from "./HarnessObservabilityPanel";
 
 const WINDOW_OPTIONS: WindowDays[] = [7, 30, 90];
 
@@ -54,6 +55,9 @@ export function WorkOverviewPage() {
         <div className="work-overview-header-actions">
           <Link className="work-overview-projects-link" to="/projects/list">
             {t("workOverviewProjectsLink")}
+          </Link>
+          <Link className="work-overview-projects-link" to="/projects/auto-mode">
+            {t("workOverviewAutoModeLink")}
           </Link>
           <div
             className="work-overview-window"
@@ -127,6 +131,8 @@ export function WorkOverviewPage() {
           </div>
         </div>
       </section>
+
+      <HarnessObservabilityPanel windowDays={windowDays} />
 
       <HarnessEvolutionPanel
         overview={state.overview}

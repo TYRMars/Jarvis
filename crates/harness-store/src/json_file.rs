@@ -37,6 +37,7 @@
 //! Concurrent writers to the same id race; last-write-wins is the
 //! contract (the trait offers no read-modify-write semantics).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -44,11 +45,14 @@ use chrono::Utc;
 use harness_core::{
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
     BoxError, Comment, CommentEvent, CommentStore, Conversation, ConversationMetadata,
-    ConversationRecord, ConversationStore, DocDraft, DocEvent, DocProject, DocStore, Label,
-    LabelEvent, LabelStore, Message, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, Tenant, TenantStore,
-    TodoEvent, TodoItem, TodoStore,
+    ConversationRecord, ConversationStore, DashboardSnapshot, DocDraft, DocEvent, DocProject,
+    DocStore, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteRun, Label, LabelEvent,
+    LabelStore, Message, MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome,
+    ObservedRun, ObservedSpanSummary, Project, ProjectStore, Requirement, RequirementEvent,
+    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, Tenant,
+    TenantStore, TimeWindow, TodoEvent, TodoItem, TodoStore,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -1562,7 +1566,246 @@ impl TenantStore for JsonFileTenantStore {
     }
 }
 
+// ---------- observability / eval stores ------------------------------------
+
+pub struct JsonFileObservabilityStore {
+    dir: PathBuf,
+}
+
+impl JsonFileObservabilityStore {
+    pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let dir = dir.into();
+        ensure_dir(&dir)?;
+        ensure_dir(&dir.join("runs"))?;
+        ensure_dir(&dir.join("spans"))?;
+        ensure_dir(&dir.join("metrics"))?;
+        ensure_dir(&dir.join("dashboards"))?;
+        Ok(Self { dir })
+    }
+
+    fn run_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("runs")
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    fn span_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("spans")
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    fn metric_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("metrics")
+            .join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl ObservabilityStore for JsonFileObservabilityStore {
+    async fn append_run(&self, run: &ObservedRun) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(run).map_err(StoreError::from)?;
+        atomic_write(&self.run_path(&run.id), &bytes).await
+    }
+
+    async fn append_span_summary(&self, span: &ObservedSpanSummary) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(span).map_err(StoreError::from)?;
+        atomic_write(&self.span_path(&span.id), &bytes).await
+    }
+
+    async fn append_metric_point(&self, point: &MetricPoint) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(point).map_err(StoreError::from)?;
+        atomic_write(&self.metric_path(&point.id), &bytes).await
+    }
+
+    async fn list_runs(&self, filter: ObservabilityFilter) -> Result<Vec<ObservedRun>, BoxError> {
+        let mut rows: Vec<ObservedRun> = read_json_records(&self.dir.join("runs")).await?;
+        rows.retain(|r| {
+            filter.kind.as_ref().map_or(true, |k| &r.kind == k)
+                && filter.name.as_ref().map_or(true, |n| &r.name == n)
+                && filter.outcome.as_ref().map_or(true, |o| &r.outcome == o)
+                && filter
+                    .project_id
+                    .as_ref()
+                    .map_or(true, |p| r.project_id.as_deref() == Some(p.as_str()))
+        });
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        if let Some(limit) = filter.limit {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
+
+    async fn dashboard(&self, window: TimeWindow) -> Result<DashboardSnapshot, BoxError> {
+        let rows = self
+            .list_runs(ObservabilityFilter {
+                limit: Some(10_000),
+                ..ObservabilityFilter::default()
+            })
+            .await?;
+        let total_runs = rows.len();
+        let successful_runs = rows
+            .iter()
+            .filter(|r| r.outcome == ObservedOutcome::Success)
+            .count();
+        let failed_runs = rows
+            .iter()
+            .filter(|r| r.outcome != ObservedOutcome::Success)
+            .count();
+        let run_success_rate = (total_runs > 0).then(|| successful_runs as f64 / total_runs as f64);
+        let p95_latency_ms = percentile_latency(&rows, 0.95);
+        Ok(DashboardSnapshot {
+            window,
+            generated_at: Utc::now().to_rfc3339(),
+            total_runs,
+            successful_runs,
+            failed_runs,
+            run_success_rate,
+            p95_latency_ms,
+            by_kind: serde_json::json!(count_by(&rows, |r| format!("{:?}", r.kind))),
+            by_name: serde_json::json!(count_by(&rows, |r| r.name.clone())),
+        })
+    }
+}
+
+pub struct JsonFileEvalStore {
+    dir: PathBuf,
+}
+
+impl JsonFileEvalStore {
+    pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let dir = dir.into();
+        ensure_dir(&dir)?;
+        ensure_dir(&dir.join("suites"))?;
+        ensure_dir(&dir.join("cases"))?;
+        ensure_dir(&dir.join("baselines"))?;
+        Ok(Self { dir })
+    }
+
+    fn suite_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("suites")
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    fn case_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("cases")
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    fn baseline_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("baselines")
+            .join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl EvalStore for JsonFileEvalStore {
+    async fn save_suite_run(&self, run: &EvalSuiteRun) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(run).map_err(StoreError::from)?;
+        atomic_write(&self.suite_path(&run.id), &bytes).await
+    }
+
+    async fn save_case_result(&self, result: &EvalCaseResult) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(result).map_err(StoreError::from)?;
+        atomic_write(&self.case_path(&result.id), &bytes).await
+    }
+
+    async fn save_baseline(&self, baseline: &EvalBaseline) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(baseline).map_err(StoreError::from)?;
+        atomic_write(&self.baseline_path(&baseline.id), &bytes).await
+    }
+
+    async fn load_baseline(&self, id: &str) -> Result<Option<EvalBaseline>, BoxError> {
+        read_json_optional(&self.baseline_path(id)).await
+    }
+
+    async fn list_case_results(&self, filter: EvalFilter) -> Result<Vec<EvalCaseResult>, BoxError> {
+        let mut rows: Vec<EvalCaseResult> = read_json_records(&self.dir.join("cases")).await?;
+        rows.retain(|r| {
+            filter.suite.as_ref().map_or(true, |s| &r.suite == s)
+                && filter.case_id.as_ref().map_or(true, |c| &r.case_id == c)
+                && filter.outcome.as_ref().map_or(true, |o| &r.outcome == o)
+        });
+        rows.sort_by(|a, b| b.id.cmp(&a.id));
+        if let Some(limit) = filter.limit {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
+}
+
 // ---------- shared helpers -------------------------------------------------
+
+async fn read_json_optional<T>(path: &Path) -> Result<Option<T>, BoxError>
+where
+    T: DeserializeOwned,
+{
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Box::new(e)),
+    };
+    let value = serde_json::from_slice(&bytes).map_err(StoreError::from)?;
+    Ok(Some(value))
+}
+
+async fn read_json_records<T>(dir: &Path) -> Result<Vec<T>, BoxError>
+where
+    T: DeserializeOwned,
+{
+    let mut out = Vec::new();
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(Box::new(e)),
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.is_dir() || !path.extension().is_some_and(|e| e == "json") {
+            continue;
+        }
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+        if name.ends_with(".json.tmp") {
+            continue;
+        }
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        if let Ok(value) = serde_json::from_slice(&bytes) {
+            out.push(value);
+        }
+    }
+    Ok(out)
+}
+
+fn percentile_latency(rows: &[ObservedRun], percentile: f64) -> Option<u64> {
+    let mut values: Vec<u64> = rows.iter().filter_map(|r| r.duration_ms).collect();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    let idx = ((values.len() as f64 - 1.0) * percentile).ceil() as usize;
+    values.get(idx).copied()
+}
+
+fn count_by<F>(rows: &[ObservedRun], mut key: F) -> BTreeMap<String, usize>
+where
+    F: FnMut(&ObservedRun) -> String,
+{
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        *counts.entry(key(row)).or_insert(0) += 1;
+    }
+    counts
+}
 
 fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
     std::fs::create_dir_all(dir)
@@ -2212,18 +2455,14 @@ mod tests {
     async fn first_start_creates_default_tenant() {
         let dir = tempdir().unwrap();
         let store = JsonFileTenantStore::open(dir.path()).unwrap();
-        crate::ensure_default_tenant(Arc::new(store))
-            .await
-            .unwrap();
+        crate::ensure_default_tenant(Arc::new(store)).await.unwrap();
         let store = JsonFileTenantStore::open(dir.path()).unwrap();
         let t = store.find_by_slug("default").await.unwrap().unwrap();
         assert_eq!(t.slug, "default");
         assert_eq!(t.name, "Default");
 
         // Idempotent.
-        crate::ensure_default_tenant(Arc::new(store))
-            .await
-            .unwrap();
+        crate::ensure_default_tenant(Arc::new(store)).await.unwrap();
         let store = JsonFileTenantStore::open(dir.path()).unwrap();
         let list = store.list().await.unwrap();
         assert_eq!(list.len(), 1);
@@ -2238,5 +2477,85 @@ mod tests {
         store.save(&a).await.unwrap();
         let err = store.save(&b).await.unwrap_err();
         assert!(err.to_string().contains("dup"));
+    }
+
+    // ---- Observability / Eval stores -----------------------------------
+
+    #[tokio::test]
+    async fn observability_store_persists_runs_and_dashboard() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileObservabilityStore::open(dir.path()).unwrap();
+        let run = ObservedRun {
+            id: "run-1".into(),
+            trace_id: Some("trace-1".into()),
+            span_id: Some("span-1".into()),
+            parent_run_id: None,
+            kind: harness_core::ObservedRunKind::Agent,
+            name: "jarvis.agent.run".into(),
+            started_at: "2026-05-08T00:00:00Z".into(),
+            ended_at: Some("2026-05-08T00:00:01Z".into()),
+            duration_ms: Some(1000),
+            outcome: ObservedOutcome::Success,
+            conversation_id: Some("conv-1".into()),
+            project_id: Some("proj-1".into()),
+            workspace_hash: Some("workspace".into()),
+            attributes: serde_json::json!({"transport": "eval"}),
+            metrics: serde_json::json!({"iterations": 2}),
+            artifact_ids: Vec::new(),
+        };
+        store.append_run(&run).await.unwrap();
+
+        let rows = store
+            .list_runs(ObservabilityFilter {
+                project_id: Some("proj-1".into()),
+                ..ObservabilityFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![run]);
+
+        let snapshot = store.dashboard(TimeWindow::last_24h()).await.unwrap();
+        assert_eq!(snapshot.total_runs, 1);
+        assert_eq!(snapshot.successful_runs, 1);
+        assert_eq!(snapshot.p95_latency_ms, Some(1000));
+    }
+
+    #[tokio::test]
+    async fn eval_store_persists_baselines_and_case_results() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileEvalStore::open(dir.path()).unwrap();
+        let baseline = EvalBaseline {
+            id: "base-1".into(),
+            suite: "coding-smoke".into(),
+            created_at: "2026-05-08T00:00:00Z".into(),
+            git_ref: Some("main".into()),
+            model: Some("test-model".into()),
+            summary: serde_json::json!({"pass_rate": 1.0}),
+            cases: serde_json::json!({}),
+        };
+        store.save_baseline(&baseline).await.unwrap();
+        assert_eq!(store.load_baseline("base-1").await.unwrap(), Some(baseline));
+
+        let result = EvalCaseResult {
+            id: "case-result-1".into(),
+            suite_run_id: "suite-run-1".into(),
+            case_id: "case-1".into(),
+            suite: "coding-smoke".into(),
+            scenario: "tool-use".into(),
+            outcome: ObservedOutcome::Error,
+            trace_id: Some("trace-1".into()),
+            scores: serde_json::json!({"tool_sequence": 0.0}),
+            attributes: serde_json::json!({}),
+            artifact_ids: vec!["artifact-1".into()],
+        };
+        store.save_case_result(&result).await.unwrap();
+        let rows = store
+            .list_case_results(EvalFilter {
+                suite: Some("coding-smoke".into()),
+                ..EvalFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![result]);
     }
 }
