@@ -39,7 +39,11 @@ export function ConversationsArchivePage() {
   const projects = useAppStore((s) => s.projects);
   const persistEnabled = useAppStore((s) => s.persistEnabled);
   const [query, setQuery] = useState("");
-  const [projectFilter, setProjectFilter] = useState<string | "all">("all");
+  // Wider type than necessary in spirit, but `string` swallows
+  // the `"all"` literal — eslint flags the union as redundant.
+  // Plain `string` is fine: we use the sentinel `"all"` only in a
+  // single equality check below.
+  const [projectFilter, setProjectFilter] = useState<string>("all");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -142,9 +146,17 @@ export function ConversationsArchivePage() {
                     <button
                       type="button"
                       style={rowMainBtnStyle}
-                      onClick={async () => {
-                        await resumeConversation(row.id);
-                        navigate("/");
+                      onClick={() => {
+                        // Fire-and-forget: navigate as soon as the
+                        // resume frame is in flight; the chat pane
+                        // reconciles on the server's reply. Floating
+                        // promise is intentional here — eslint's
+                        // no-floating-promises wants either await or
+                        // explicit `void`, and the latter is what we
+                        // want at an event-handler boundary.
+                        void resumeConversation(row.id).then(() =>
+                          navigate("/"),
+                        );
                       }}
                       title={row.id}
                     >
