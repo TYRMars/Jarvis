@@ -16,6 +16,7 @@ use harness_core::{active_workspace_or, BoxError, Tool, ToolCategory};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::{instrument, Span};
 
 /// Wraps a `SubAgent` as a `Tool`. The tool name is derived
 /// `subagent.<sub.name()>` so the main agent's tool catalogue
@@ -73,14 +74,28 @@ impl Tool for SubAgentTool {
         }
     }
 
+    #[instrument(
+        skip_all,
+        name = "jarvis.subagent.run",
+        fields(
+            jarvis.subagent.name = %self.sub.name(),
+            jarvis.subagent.requires_approval = self.sub.requires_approval(),
+            jarvis.subagent.task.bytes = tracing::field::Empty,
+            jarvis.subagent.outcome = tracing::field::Empty,
+            jarvis.subagent.output.bytes = tracing::field::Empty,
+        ),
+    )]
     async fn invoke(&self, args: Value) -> std::result::Result<String, BoxError> {
+        let span = Span::current();
         let task = args
             .get("task")
             .and_then(|v| v.as_str())
             .ok_or_else(|| -> BoxError {
+                span.record("jarvis.subagent.outcome", "error");
                 "subagent invocation missing required `task` string".into()
             })?
             .to_owned();
+        span.record("jarvis.subagent.task.bytes", task.len());
 
         let workspace_root = active_workspace_or(&self.default_root);
 
@@ -95,8 +110,17 @@ impl Tool for SubAgentTool {
             caller_chain: vec![self.sub.name().to_owned()],
         };
 
-        let out = self.sub.invoke(input).await?;
-        Ok(out.message)
+        match self.sub.invoke(input).await {
+            Ok(out) => {
+                span.record("jarvis.subagent.outcome", "success");
+                span.record("jarvis.subagent.output.bytes", out.message.len());
+                Ok(out.message)
+            }
+            Err(e) => {
+                span.record("jarvis.subagent.outcome", "error");
+                Err(e)
+            }
+        }
     }
 }
 

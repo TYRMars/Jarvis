@@ -88,6 +88,30 @@ describe("describeStep", () => {
     ).toBe("Searched `TODO` (2 matches)");
   });
 
+  it("describes doc search with query and result count", () => {
+    expect(
+      describeStep([
+        block({
+          name: "doc.search",
+          args: { query: "roadmap" },
+          output: JSON.stringify({ count: 2, items: [] }),
+        }),
+      ]),
+    ).toBe("Searched `roadmap` (2 docs)");
+  });
+
+  it("describes doc upsert as created or updated", () => {
+    expect(
+      describeStep([
+        block({
+          name: "doc.upsert",
+          args: { title: "Launch plan" },
+          output: JSON.stringify({ created: true, project: { title: "Launch plan" } }),
+        }),
+      ]),
+    ).toBe("Updated Launch plan (created)");
+  });
+
   it("joins multiple verb groups with commas (Claude Code pattern)", () => {
     // First phrase keeps its capitalised verb; second-onwards
     // get lowercased so the whole row reads as one sentence.

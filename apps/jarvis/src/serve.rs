@@ -17,21 +17,26 @@ use std::sync::{mpsc, Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use harness_core::{AgentConfig, AlwaysApprove, AlwaysDeny, Approver, Memory, ToolRegistry};
+use harness_core::{
+    AgentConfig, AlwaysApprove, AlwaysDeny, Approver, EvalStore, LlmProvider, Memory,
+    ObservabilityStore, RequirementRunStore, ToolRegistry,
+};
 use harness_llm::{
-    AnthropicConfig, AnthropicProvider, CodexAuth, GoogleConfig, GoogleProvider, OpenAiConfig,
-    OpenAiProvider, ResponsesConfig, ResponsesProvider,
+    canonical_kind, AnthropicConfig, AnthropicProvider, CapabilityValidatingProvider, CodexAuth,
+    FallbackEntry, FallbackProvider,
+    GoogleConfig, GoogleProvider, ModelCapability, OpenAiConfig, OpenAiProvider, ProfileRegistry,
+    ProviderProfile, ProviderTransport, ResponsesConfig, ResponsesProvider,
 };
 use harness_mcp::{serve_registry_stdio, McpClientConfig, McpManager, McpTransport};
 use harness_memory::{SlidingWindowMemory, SummarizingMemory};
 use harness_plugin::PluginManager;
 use harness_server::{
-    default_skill_roots, serve, AppState, PermissionMode, ProjectMemoryConfig, ProviderRegistry,
-    ServerInfo,
+    default_skill_roots, serve, AppState, ModelRoutePolicy, ModelTarget, PermissionMode,
+    ProjectMemoryConfig, ProviderRegistry, ServerInfo,
 };
 use harness_skill::SkillCatalog;
 use harness_store::{default_workspaces_path, WorkspaceStore};
-use harness_tools::{register_builtins, BuiltinsConfig, Sandbox, ShellLimits};
+use harness_tools::{register_builtins, BuiltinsConfig, HarnessHealthTool, Sandbox, ShellLimits};
 use tracing::{info, warn};
 
 use crate::auth_store;
@@ -42,7 +47,12 @@ const PROJECT_CONTEXT_LOAD_TIMEOUT_MS: u64 = 1_500;
 const SKILL_CATALOG_LOAD_TIMEOUT_MS: u64 = 1_500;
 
 /// `jarvis serve` (default subcommand).
-pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathBuf>) -> Result<()> {
+pub async fn run(
+    cfg: Option<Config>,
+    args: ServeArgs,
+    config_path: Option<PathBuf>,
+    telemetry: Option<harness_server::TelemetryStatus>,
+) -> Result<()> {
     let cfg = cfg.unwrap_or_default();
 
     let mut tools = ToolRegistry::new();
@@ -191,6 +201,11 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     }
 
     register_builtins(&mut tools, bcfg);
+    tools.register(HarnessHealthTool::new(
+        observability_store.clone(),
+        eval_store.clone(),
+        requirement_run_store.clone(),
+    ));
     info!(workspace = %workspace_root.display(), "workspace root resolved");
 
     let provider_name = pick_string(
@@ -209,7 +224,8 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     // The "primary" provider — the one that drives the default
     // request route, the active model display, and (importantly)
     // the LLM the summarising-memory backend uses.
-    let (llm, model) = build_provider(&provider_name, model_override, &cfg).await?;
+    let mut primary_built = build_provider(&provider_name, model_override, &cfg).await?;
+    let model = primary_built.model.clone();
 
     // Other enabled providers come from two sources:
     //   1. `providers.<name>.enabled = true` in config.json
@@ -221,12 +237,7 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     // the operator.
     let mut seen = std::collections::HashSet::new();
     seen.insert(provider_name.clone());
-    type Extra = (
-        String,
-        Arc<dyn harness_core::LlmProvider>,
-        String,
-        Vec<String>,
-    );
+    type Extra = (String, BuiltProvider, Vec<String>);
     let mut extras: Vec<Extra> = Vec::new();
     let from_cfg = cfg
         .providers
@@ -239,10 +250,56 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
             continue;
         }
         let extra_section = cfg.provider(&name);
-        let (extra_llm, extra_model) =
-            build_provider(&name, extra_section.default_model.clone(), &cfg).await?;
-        extras.push((name, extra_llm, extra_model, extra_section.models.clone()));
+        let extra_built = build_provider(&name, extra_section.default_model.clone(), &cfg).await?;
+        extras.push((name, extra_built, extra_section.models.clone()));
     }
+
+    // Phase 4.5 — fallback retry wrapper. When the route policy
+    // declares a non-empty `fallbacks` chain, wrap the primary
+    // provider so 429/5xx/timeout failures walk the chain. Targets
+    // are looked up against the already-built primary + extras —
+    // entries pointing at unconfigured providers are dropped with
+    // a WARN. Does nothing when `policy.fallbacks` is empty.
+    let route_policy = build_route_policy(&cfg);
+    if !route_policy.is_empty() {
+        info!(
+            slots = route_policy_summary(&route_policy),
+            "route policy resolved",
+        );
+    }
+    if !route_policy.fallbacks.is_empty() {
+        let chain: Vec<FallbackEntry> = route_policy
+            .fallbacks
+            .iter()
+            .filter_map(|target| {
+                if target.provider == provider_name {
+                    return None;
+                }
+                let entry = extras
+                    .iter()
+                    .find(|(name, _, _)| name == &target.provider)
+                    .map(|(name, built, _)| FallbackEntry::new(name, built.provider.clone()));
+                if entry.is_none() {
+                    warn!(
+                        provider = %target.provider,
+                        "fallback target's provider is not configured/enabled — skipping",
+                    );
+                }
+                entry
+            })
+            .collect();
+        if !chain.is_empty() {
+            let wrapped =
+                FallbackProvider::new(provider_name.clone(), primary_built.provider.clone(), chain);
+            info!(
+                primary = %provider_name,
+                chain = wrapped.fallback_count(),
+                "primary provider wrapped with fallback chain",
+            );
+            primary_built.provider = Arc::new(wrapped);
+        }
+    }
+    let llm = primary_built.provider.clone();
 
     // Hand the built-ins to the canonical, mutable registry. The
     // MCP manager (and, later, the plugin manager) share this Arc so
@@ -270,18 +327,39 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         "tools registered",
     );
 
+    // The route policy was built earlier so the fallback wrapper
+    // could see it. Reuse the same Arc for the SubAgent factories
+    // and AppState below.
+    let route_policy_arc = Arc::new(route_policy.clone());
+
     // Built-in subagents (`subagent.read_doc` / `.review` / `.codex`
     // / `.claude_code`). Each one carves a per-subagent tool subset
     // from the canonical registry and registers as a wrapper tool;
     // see `crate::subagents::register_builtins` for the per-kind
     // toolset rationale. Non-fatal: missing ClaudeCode SDK only
     // skips that one subagent.
+    // Snapshot every constructed provider keyed by name so the
+    // subagent factories can resolve `RouteSlot` targets that point
+    // at a *different* provider than the primary (e.g. a
+    // `[routing] coding = "codex/gpt-5.4-codex"` when the primary is
+    // OpenAI). Falls back to `primary_provider` when the slot points
+    // at an unconfigured provider — better to run on a working one
+    // than to silently disable the subagent.
+    let mut providers_by_name: std::collections::HashMap<String, Arc<dyn LlmProvider>> =
+        std::collections::HashMap::new();
+    providers_by_name.insert(provider_name.clone(), primary_built.provider.clone());
+    for (name, built, _) in &extras {
+        providers_by_name.insert(name.clone(), built.provider.clone());
+    }
     let _subagent_count = crate::subagents::register_builtins(
         &canonical_tools,
         llm.clone(),
+        model.clone(),
         workspace_root.clone(),
         requirement_store.clone(),
         activity_store.clone(),
+        route_policy_arc.clone(),
+        providers_by_name,
     )
     .await;
 
@@ -343,11 +421,38 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         .with_system_prompt(system_prompt)
         .with_tools(template_tools)
         .with_max_iterations(30);
-    if let Some(mem) = build_memory(&cfg, &llm, &model, store.as_ref())? {
+    // Build a route resolver for `RouteSlot::Summarization` so the
+    // summariser memory can target a cheaper / dedicated model. The
+    // closure captures cloned Arcs of every built provider keyed by
+    // name + the resolved `ModelRoutePolicy`, so it has nothing to
+    // borrow from this scope and lives for the lifetime of the
+    // memory object.
+    let summary_resolver = build_route_resolver_for_slot(
+        harness_server::RouteSlot::Summarization,
+        &provider_name,
+        &primary_built,
+        &extras,
+        &route_policy,
+    );
+    if let Some(mem) = build_memory(&cfg, &llm, &model, store.as_ref(), summary_resolver)? {
         agent_cfg = agent_cfg.with_memory(mem);
     }
     if let Some(approver) = build_approver(&cfg)? {
         agent_cfg = agent_cfg.with_approver(approver);
+    }
+    // Parallel tool-call dispatch — env var wins over config flag,
+    // both default off. When on, a multi-call assistant turn runs
+    // its tools concurrently *and* the wire request advertises
+    // `parallel_tool_calls=true` so capable models emit several at
+    // once. The capability-validating wrapper still downgrades for
+    // models without `supports_parallel_tool_calls`.
+    let parallel = std::env::var("JARVIS_PARALLEL_TOOL_CALLS")
+        .ok()
+        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or_else(|| cfg.agent.parallel_tool_calls.unwrap_or(false));
+    if parallel {
+        agent_cfg = agent_cfg.with_parallel_tool_calls(true);
+        info!("agent loop opted into parallel tool-call dispatch");
     }
 
     // Build the provider registry. Default = primary provider name;
@@ -364,16 +469,25 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         .with_prefix_rule("claude-", "anthropic")
         .with_prefix_rule("gemini-", "google")
         .with_prefix_rule("gpt-5.", "codex");
-    registry.insert_with_models(
+    registry.insert_with_capabilities(
         provider_name.clone(),
-        llm,
-        model.clone(),
+        primary_built.provider.clone(),
+        primary_built.model.clone(),
         primary_section.models.clone(),
+        primary_built.kind.clone(),
+        primary_built.capabilities.clone(),
     );
     let mut active_models: Vec<String> = vec![format!("{provider_name}={model}")];
-    for (name, extra_llm, extra_model, extra_models) in extras {
-        active_models.push(format!("{name}={extra_model}"));
-        registry.insert_with_models(name, extra_llm, extra_model, extra_models);
+    for (name, built, extra_models) in extras {
+        active_models.push(format!("{name}={}", built.model));
+        registry.insert_with_capabilities(
+            name,
+            built.provider,
+            built.model,
+            extra_models,
+            built.kind,
+            built.capabilities,
+        );
     }
     info!(
         primary = %provider_name,
@@ -427,7 +541,7 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         .map(PathBuf::from)
         .or_else(|| dirs_user_config().ok().map(|d| d.join("skills")));
     let workspace_skills_dir = Some(workspace_root.join(".jarvis").join("skills"));
-    let skill_roots = default_skill_roots(user_skills_dir, workspace_skills_dir);
+    let skill_roots = default_skill_roots(user_skills_dir.clone(), workspace_skills_dir);
     let mut catalog = SkillCatalog::new();
     catalog.merge_bundled(harness_skill::bundled_defaults());
     catalog = merge_skill_roots_bounded(catalog, skill_roots);
@@ -509,9 +623,16 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
         .with_tools(Arc::clone(&canonical_tools))
         .with_mcp(Arc::clone(&mcp_manager))
         .with_skills(Arc::clone(&skill_catalog))
+        .with_user_skills_dir(
+            user_skills_dir
+                .clone()
+                .unwrap_or_else(|| workspace_root.join(".jarvis").join("skills")),
+        )
         .with_plugins(Arc::clone(&plugin_manager))
         .with_workspaces(Arc::clone(&workspaces))
-        .with_worktree_config(worktree_mode, worktree_root, worktree_allow_dirty);
+        .with_worktree_config(worktree_mode, worktree_root, worktree_allow_dirty)
+        .with_route_policy(route_policy)
+        .with_subagent_runs(harness_server::SubAgentRunRegistry::new());
     if let Some(pm) = project_memory_runtime.clone() {
         state = state.with_project_memory(pm);
     }
@@ -550,6 +671,9 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     }
     if let Some(es) = eval_store {
         state = state.with_eval_store(es);
+    }
+    if let Some(ts) = telemetry {
+        state = state.with_telemetry_status(ts);
     }
     // Project-scoped long-term memory. The auto loop captures
     // `gotcha` rows from failed runs and prepends recent rows into
@@ -813,9 +937,86 @@ pub async fn run_mcp(cfg: Option<Config>) -> Result<()> {
     let cfg = cfg.unwrap_or_default();
     let mut tools = ToolRegistry::new();
     register_builtins(&mut tools, builtins_config(&cfg));
+    let (requirement_runs, observability, evals) = connect_harness_health_sources(&cfg).await;
+    tools.register(HarnessHealthTool::new(
+        observability,
+        evals,
+        requirement_runs,
+    ));
     info!(registered = tools.len(), "serving tools over mcp stdio");
     serve_registry_stdio(Arc::new(tools)).await?;
     Ok(())
+}
+
+async fn connect_harness_health_sources(
+    cfg: &Config,
+) -> (
+    Option<Arc<dyn RequirementRunStore>>,
+    Option<Arc<dyn ObservabilityStore>>,
+    Option<Arc<dyn EvalStore>>,
+) {
+    let persistence_url = pick_string_opt("JARVIS_DB_URL", cfg.persistence.url.as_deref())
+        .or_else(default_json_persistence_url);
+    let requirement_runs = match persistence_url.as_deref() {
+        Some(url) => match harness_store::connect_requirement_runs(url).await {
+            Ok(store) => {
+                info!(url = %url, "requirement-run store connected for harness.health mcp tool");
+                Some(store)
+            }
+            Err(e) => {
+                warn!(url = %url, error = %e, "requirement-run store unavailable for harness.health mcp tool");
+                None
+            }
+        },
+        None => {
+            warn!("persistence URL not resolved; harness.health mcp tool will not include requirement-run data");
+            None
+        }
+    };
+
+    let observability_url = std::env::var("JARVIS_OBSERVABILITY_STORE_URL")
+        .ok()
+        .or_else(default_json_observability_url);
+    let observability = match observability_url.as_deref() {
+        Some(url) => match harness_store::connect_observability(url).await {
+            Ok(store) => {
+                info!(url = %url, "observability store connected for harness.health mcp tool");
+                Some(store)
+            }
+            Err(e) => {
+                warn!(url = %url, error = %e, "observability store unavailable for harness.health mcp tool");
+                None
+            }
+        },
+        None => {
+            warn!("observability store URL not resolved; harness.health mcp tool will not include observed-run data");
+            None
+        }
+    };
+
+    let eval_url = std::env::var("JARVIS_EVAL_STORE_URL")
+        .ok()
+        .or_else(default_json_eval_url);
+    let evals = match eval_url.as_deref() {
+        Some(url) => match harness_store::connect_evals(url).await {
+            Ok(store) => {
+                info!(url = %url, "eval store connected for harness.health mcp tool");
+                Some(store)
+            }
+            Err(e) => {
+                warn!(url = %url, error = %e, "eval store unavailable for harness.health mcp tool");
+                None
+            }
+        },
+        None => {
+            warn!(
+                "eval store URL not resolved; harness.health mcp tool will not include eval data"
+            );
+            None
+        }
+    };
+
+    (requirement_runs, observability, evals)
 }
 
 /// `jarvis workspace` — print the resolved workspace root + git
@@ -1028,71 +1229,272 @@ fn pick_shell_sandbox(cfg: &Config) -> Sandbox {
     }
 }
 
+/// What a provider construction yields. The registry consumes
+/// `provider` + `model` + `models` to route requests; `kind`
+/// records the canonical profile so `/v1/model-catalog` and the
+/// settings UI can correlate with [`harness_llm::ProfileRegistry`].
+pub(crate) struct BuiltProvider {
+    pub provider: Arc<dyn harness_core::LlmProvider>,
+    pub model: String,
+    /// Canonical kind (e.g. `"moonshot"` for both `kimi` and
+    /// `moonshot` config entries) — keys into [`ProfileRegistry::get`].
+    pub kind: String,
+    /// Static capability snapshots for the user-advertised model
+    /// list. Models without an entry in the profile catalog are
+    /// silently dropped (the picker falls back to "unknown").
+    pub capabilities: Vec<ModelCapability>,
+}
+
 async fn build_provider(
     name: &str,
     model_override: Option<String>,
     cfg: &Config,
-) -> Result<(Arc<dyn harness_core::LlmProvider>, String)> {
+) -> Result<BuiltProvider> {
     let section = cfg.provider(name);
-    match name {
-        "openai" => {
-            let api_key = resolve_api_key("openai", "OPENAI_API_KEY")?;
-            let model = model_override.unwrap_or_else(|| "gpt-4o-mini".to_string());
-            let mut oacfg = OpenAiConfig::new(api_key).with_default_model(&model);
-            if let Some(base) = pick_string_opt("OPENAI_BASE_URL", section.base_url.as_deref()) {
-                oacfg = oacfg.with_base_url(base);
-            }
-            if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
-                if !key.is_empty() {
-                    oacfg = oacfg.with_prompt_cache_key(key);
-                }
-            }
-            Ok((Arc::new(OpenAiProvider::new(oacfg)), model))
+    let kind_raw = name;
+    let kind = canonical_kind(kind_raw);
+
+    // The Kimi-Code provider needs a custom `reqwest::Client`
+    // (User-Agent gating on the `kimi.com/coding/v1` endpoint),
+    // which the profile registry can't model directly. Stay as a
+    // one-off arm — every other transport flows through the
+    // profile dispatch below.
+    if kind == "kimi-code" {
+        return build_kimi_code(name, model_override, &section);
+    }
+
+    let profile = ProfileRegistry::get(kind).ok_or_else(|| {
+        anyhow::anyhow!(
+            "provider kind=`{kind}` is not recognised. Known kinds: {}. \
+             Use one of these in your config's `kind` field, or pick a \
+             matching map key (e.g. `\"openai\"`, `\"openrouter\"`, `\"kimi\"`).",
+            ProfileRegistry::all()
+                .iter()
+                .map(|p| p.kind)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+
+    let mut built = match profile.transport {
+        ProviderTransport::OpenAiChatCompletions => {
+            build_openai_compat(name, profile, model_override, &section)?
         }
-        "anthropic" => {
-            let api_key = resolve_api_key("anthropic", "ANTHROPIC_API_KEY")?;
-            let model = model_override.unwrap_or_else(|| "claude-3-5-sonnet-latest".to_string());
-            let mut acfg = AnthropicConfig::new(api_key);
-            if let Some(base) = pick_string_opt("ANTHROPIC_BASE_URL", section.base_url.as_deref()) {
-                acfg = acfg.with_base_url(base);
-            }
-            if let Some(version) = pick_string_opt("ANTHROPIC_VERSION", section.version.as_deref())
-            {
-                acfg = acfg.with_anthropic_version(version);
-            }
-            Ok((Arc::new(AnthropicProvider::new(acfg)), model))
+        ProviderTransport::OpenAiResponses => {
+            build_responses(name, profile, model_override, &section, cfg)?
         }
-        "google" => {
-            // Google has two equivalent env-var names, plus the
-            // auth-store entry. Try in order: GOOGLE_API_KEY,
-            // GEMINI_API_KEY, auth file.
-            let api_key = std::env::var("GOOGLE_API_KEY")
-                .ok()
-                .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-                .or_else(|| auth_store::load_api_key("google").ok().flatten())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no GOOGLE_API_KEY / GEMINI_API_KEY env var or auth file \
-                         for provider=google. Run `jarvis init` or set the env var."
-                    )
-                })?;
-            let model = model_override.unwrap_or_else(|| "gemini-1.5-flash".to_string());
-            let mut gcfg = GoogleConfig::new(api_key);
-            if let Some(base) = pick_string_opt("GOOGLE_BASE_URL", section.base_url.as_deref()) {
-                gcfg = gcfg.with_base_url(base);
-            }
-            Ok((Arc::new(GoogleProvider::new(gcfg)), model))
+        ProviderTransport::AnthropicMessages => {
+            build_anthropic(name, profile, model_override, &section)?
         }
-        "codex" => {
-            // Auth source priority:
-            //   1. CODEX_ACCESS_TOKEN env var (dev backdoor — static,
-            //      no refresh)
-            //   2. <jarvis-config>/auth/codex.json (the file
-            //      `jarvis login --provider codex` writes; preferred
-            //      because jarvis owns the lifecycle)
-            //   3. $CODEX_HOME/auth.json (default ~/.codex/auth.json
-            //      — falls back to the file the OpenAI Codex CLI
-            //      writes, for users who already ran `codex login`)
+        ProviderTransport::GoogleGenerateContent => {
+            build_google(name, profile, model_override, &section)?
+        }
+    };
+    // Wrap with capability validation so requests against
+    // unsupported model/tool combinations surface a clear error
+    // before reaching the upstream API. The wrapper is transparent
+    // for models not in the catalog and for compatible requests.
+    if !built.capabilities.is_empty() {
+        built.provider = Arc::new(CapabilityValidatingProvider::new(
+            built.provider.clone(),
+            built.capabilities.clone(),
+        ));
+    }
+    Ok(built)
+}
+
+/// Resolve an API key for the given entry, walking the profile's
+/// `api_key_env` list in order and then falling back to the
+/// auth-store entry keyed by `entry_name`. Returns a clear error
+/// pointing at `jarvis init` / `jarvis login` if nothing is
+/// configured.
+fn resolve_api_key_for_profile(entry_name: &str, profile: &ProviderProfile) -> Result<String> {
+    for env in profile.api_key_env {
+        if let Ok(v) = std::env::var(env) {
+            if !v.is_empty() {
+                return Ok(v);
+            }
+        }
+    }
+    if let Ok(Some(v)) = auth_store::load_api_key(entry_name) {
+        return Ok(v);
+    }
+    let env_list = if profile.api_key_env.is_empty() {
+        "(none — pass --provider config or use auth file)".to_string()
+    } else {
+        profile.api_key_env.join(" / ")
+    };
+    anyhow::bail!(
+        "no {env_list} env var or auth file for provider=`{entry_name}` (kind=`{kind}`). \
+         Run `jarvis init` (or `jarvis login --provider {entry_name}`) to set one.",
+        kind = profile.kind,
+    )
+}
+
+/// Resolve an API key for an "auth-optional" provider (Ollama,
+/// LM Studio). Falls back to a sentinel string when nothing is
+/// configured — the upstream endpoint either ignores it or
+/// echoes it without checking.
+fn resolve_optional_api_key(entry_name: &str, profile: &ProviderProfile, fallback: &str) -> String {
+    for env in profile.api_key_env {
+        if let Ok(v) = std::env::var(env) {
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    auth_store::load_api_key(entry_name)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn capabilities_for(profile: &ProviderProfile, advertised: &[String]) -> Vec<ModelCapability> {
+    profile
+        .model_catalog
+        .iter()
+        .filter(|c| advertised.iter().any(|m| m == &c.model))
+        .cloned()
+        .collect()
+}
+
+fn advertised_models(default_model: &str, section: &crate::config::ProviderConfig) -> Vec<String> {
+    let mut out: Vec<String> = vec![default_model.to_string()];
+    for m in &section.models {
+        if !out.contains(m) {
+            out.push(m.clone());
+        }
+    }
+    out
+}
+
+fn build_openai_compat(
+    name: &str,
+    profile: &ProviderProfile,
+    model_override: Option<String>,
+    section: &crate::config::ProviderConfig,
+) -> Result<BuiltProvider> {
+    let kind = profile.kind;
+    // For the auth-less local providers (Ollama / LM Studio),
+    // missing keys aren't fatal.
+    let auth_optional = matches!(profile.auth, harness_llm::AuthKind::None);
+
+    let api_key = if auth_optional {
+        resolve_optional_api_key(name, profile, kind)
+    } else {
+        resolve_api_key_for_profile(name, profile)?
+    };
+
+    let model = model_override.unwrap_or_else(|| profile.default_model.to_string());
+
+    // Pick the per-kind primary base-url env var when the user
+    // hasn't named one in config. Keeps backwards compat with all
+    // the historical env vars (OPENAI_BASE_URL, KIMI_BASE_URL,
+    // OLLAMA_BASE_URL, etc.) without hard-coding them in the
+    // provider arms.
+    let base_url = base_url_for_kind(kind, section.base_url.as_deref())
+        .or_else(|| profile.default_base_url.map(str::to_string));
+
+    let mut oacfg = OpenAiConfig::new(api_key).with_default_model(&model);
+    if let Some(base) = base_url {
+        oacfg = oacfg.with_base_url(base);
+    }
+    // Moonshot requires `reasoning_content` to be a string
+    // (not null) when forwarding tool calls. Apply only to the
+    // Kimi/Moonshot kind so other OpenAI-compatible endpoints
+    // don't accidentally send the field.
+    if kind == "moonshot" {
+        oacfg = oacfg.with_empty_reasoning_content_for_tool_calls(true);
+    }
+    // OpenAI's prompt cache key — historically global, applied to
+    // both `openai` and `codex`. Other kinds shouldn't ride this
+    // namespace.
+    if kind == "openai" {
+        if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
+            if !key.is_empty() {
+                oacfg = oacfg.with_prompt_cache_key(key);
+            }
+        }
+    }
+
+    let advertised = advertised_models(&model, section);
+    let capabilities = capabilities_for(profile, &advertised);
+    Ok(BuiltProvider {
+        provider: Arc::new(OpenAiProvider::new(oacfg)),
+        model,
+        kind: kind.to_string(),
+        capabilities,
+    })
+}
+
+fn build_anthropic(
+    name: &str,
+    profile: &ProviderProfile,
+    model_override: Option<String>,
+    section: &crate::config::ProviderConfig,
+) -> Result<BuiltProvider> {
+    let api_key = resolve_api_key_for_profile(name, profile)?;
+    let model = model_override.unwrap_or_else(|| profile.default_model.to_string());
+    let mut acfg = AnthropicConfig::new(api_key);
+    if let Some(base) = pick_string_opt("ANTHROPIC_BASE_URL", section.base_url.as_deref())
+        .or_else(|| profile.default_base_url.map(str::to_string))
+    {
+        acfg = acfg.with_base_url(base);
+    }
+    if let Some(version) = pick_string_opt("ANTHROPIC_VERSION", section.version.as_deref()) {
+        acfg = acfg.with_anthropic_version(version);
+    }
+    let advertised = advertised_models(&model, section);
+    let capabilities = capabilities_for(profile, &advertised);
+    Ok(BuiltProvider {
+        provider: Arc::new(AnthropicProvider::new(acfg)),
+        model,
+        kind: profile.kind.to_string(),
+        capabilities,
+    })
+}
+
+fn build_google(
+    name: &str,
+    profile: &ProviderProfile,
+    model_override: Option<String>,
+    section: &crate::config::ProviderConfig,
+) -> Result<BuiltProvider> {
+    let api_key = resolve_api_key_for_profile(name, profile)?;
+    let model = model_override.unwrap_or_else(|| profile.default_model.to_string());
+    let mut gcfg = GoogleConfig::new(api_key);
+    if let Some(base) = pick_string_opt("GOOGLE_BASE_URL", section.base_url.as_deref())
+        .or_else(|| profile.default_base_url.map(str::to_string))
+    {
+        gcfg = gcfg.with_base_url(base);
+    }
+    let advertised = advertised_models(&model, section);
+    let capabilities = capabilities_for(profile, &advertised);
+    Ok(BuiltProvider {
+        provider: Arc::new(GoogleProvider::new(gcfg)),
+        model,
+        kind: profile.kind.to_string(),
+        capabilities,
+    })
+}
+
+fn build_responses(
+    name: &str,
+    profile: &ProviderProfile,
+    model_override: Option<String>,
+    section: &crate::config::ProviderConfig,
+    cfg: &Config,
+) -> Result<BuiltProvider> {
+    let kind = profile.kind;
+    let model = model_override.unwrap_or_else(|| profile.default_model.to_string());
+
+    let mut rcfg = match profile.auth {
+        harness_llm::AuthKind::CodexOAuth => {
+            // Auth source priority for codex:
+            //   1. CODEX_ACCESS_TOKEN env var (dev backdoor —
+            //      static, no refresh)
+            //   2. <jarvis-config>/auth/codex.json (`jarvis login`)
+            //   3. $CODEX_HOME/auth.json (Codex CLI compat)
             let auth = if let Ok(token) = std::env::var("CODEX_ACCESS_TOKEN") {
                 let account = std::env::var("CODEX_ACCOUNT_ID").ok();
                 CodexAuth::from_static(token, account)
@@ -1106,194 +1508,188 @@ async fn build_provider(
             } else {
                 load_codex_from_cli_home(cfg)?
             };
-            let model = model_override.unwrap_or_else(|| "gpt-5.4-mini".to_string());
-            let mut rcfg = ResponsesConfig::codex(auth).with_default_model(&model);
-            if let Some(base) = pick_string_opt("CODEX_BASE_URL", section.base_url.as_deref()) {
-                rcfg = rcfg.with_base_url(base);
-            }
-            if let Some(path) = pick_string_opt("CODEX_RESPONSES_PATH", section.path.as_deref()) {
-                rcfg = rcfg.with_path(path);
-            }
-            if let Some(originator) =
-                pick_string_opt("CODEX_ORIGINATOR", section.originator.as_deref())
-            {
-                rcfg = rcfg.with_originator(originator);
-            }
-            if let Some(summary) = pick_string_opt(
-                "CODEX_REASONING_SUMMARY",
-                section.reasoning_summary.as_deref(),
-            ) {
-                rcfg = rcfg.with_reasoning_summary(summary);
-            }
-            if let Some(effort) = pick_string_opt(
-                "CODEX_REASONING_EFFORT",
-                section.reasoning_effort.as_deref(),
-            ) {
-                rcfg = rcfg.with_reasoning_effort(effort);
-            }
-            if pick_bool_flag(
-                "CODEX_INCLUDE_ENCRYPTED_REASONING",
-                section.include_encrypted_reasoning,
-                false,
-            ) {
-                rcfg = rcfg.with_encrypted_reasoning(true);
-            }
-            if let Some(tier) =
-                pick_string_opt("CODEX_SERVICE_TIER", section.service_tier.as_deref())
-            {
-                rcfg = rcfg.with_service_tier(tier);
-            }
-            // Codex inherits the same OpenAI cache-key namespace —
-            // if a user set `OPENAI_PROMPT_CACHE_KEY` they likely
-            // want it across both flavours.
-            if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
-                if !key.is_empty() {
-                    rcfg = rcfg.with_prompt_cache_key(key);
-                }
-            }
-            let provider = ResponsesProvider::new(rcfg);
-            info!(
-                endpoint = %provider.endpoint(),
-                "codex provider enabled (subject to ChatGPT Terms of Service)",
-            );
-            Ok((Arc::new(provider), model))
+            ResponsesConfig::codex(auth).with_default_model(&model)
         }
-        "openai-responses" => {
-            // Same auth surface as `openai`; reuse the openai key
-            // from env or auth file.
-            let api_key = resolve_api_key("openai", "OPENAI_API_KEY")?;
-            let model = model_override.unwrap_or_else(|| "gpt-4o-mini".to_string());
-            let mut rcfg = ResponsesConfig::openai_responses(api_key).with_default_model(&model);
-            if let Some(base) = pick_string_opt("OPENAI_BASE_URL", section.base_url.as_deref()) {
-                rcfg = rcfg.with_base_url(base);
-            }
-            if let Some(summary) = pick_string_opt(
-                "OPENAI_REASONING_SUMMARY",
-                section.reasoning_summary.as_deref(),
-            ) {
-                rcfg = rcfg.with_reasoning_summary(summary);
-            }
-            if let Some(effort) = pick_string_opt(
-                "OPENAI_REASONING_EFFORT",
-                section.reasoning_effort.as_deref(),
-            ) {
-                rcfg = rcfg.with_reasoning_effort(effort);
-            }
-            if pick_bool_flag(
-                "OPENAI_INCLUDE_ENCRYPTED_REASONING",
-                section.include_encrypted_reasoning,
-                false,
-            ) {
-                rcfg = rcfg.with_encrypted_reasoning(true);
-            }
-            if let Some(tier) =
-                pick_string_opt("OPENAI_SERVICE_TIER", section.service_tier.as_deref())
-            {
-                rcfg = rcfg.with_service_tier(tier);
-            }
-            if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
-                if !key.is_empty() {
-                    rcfg = rcfg.with_prompt_cache_key(key);
-                }
-            }
-            let provider = ResponsesProvider::new(rcfg);
-            info!(endpoint = %provider.endpoint(), "openai responses provider enabled");
-            Ok((Arc::new(provider), model))
+        _ => {
+            let api_key = resolve_api_key_for_profile(name, profile)?;
+            ResponsesConfig::openai_responses(api_key).with_default_model(&model)
         }
-        "ollama" => {
-            // Ollama exposes an OpenAI-compatible chat-completions
-            // endpoint at `<base>/chat/completions` (default base
-            // `http://localhost:11434/v1`). It ignores the
-            // `Authorization` header entirely, so we send a dummy
-            // bearer to satisfy reqwest's `bearer_auth` builder.
-            //
-            // No auth file or env var is *required*, but we still
-            // honour `OLLAMA_API_KEY` (some hosted Ollama proxies
-            // such as OpenWebUI sit behind a real API key) and the
-            // jarvis auth-store entry, in that order.
-            let api_key = std::env::var("OLLAMA_API_KEY")
-                .ok()
-                .or_else(|| auth_store::load_api_key("ollama").ok().flatten())
-                .unwrap_or_else(|| "ollama".to_string());
-            let model = model_override.unwrap_or_else(|| "llama3.2".to_string());
-            let base = pick_string_opt("OLLAMA_BASE_URL", section.base_url.as_deref())
-                .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
-            let oacfg = OpenAiConfig::new(api_key)
-                .with_base_url(base)
-                .with_default_model(&model);
-            Ok((Arc::new(OpenAiProvider::new(oacfg)), model))
-        }
-        "kimi" | "moonshot" => {
-            // Moonshot's Kimi platform (`api.moonshot.cn` /
-            // `api.moonshot.ai`) is OpenAI-Chat-Completions
-            // wire-compatible, so we reuse `OpenAiProvider` and just
-            // point it at the Moonshot endpoint with a Kimi key.
-            let api_key = std::env::var("KIMI_API_KEY")
-                .ok()
-                .or_else(|| std::env::var("MOONSHOT_API_KEY").ok())
-                .or_else(|| auth_store::load_api_key("kimi").ok().flatten())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no KIMI_API_KEY / MOONSHOT_API_KEY env var or auth file \
-                         for provider=kimi. Run `jarvis init` (or \
-                         `jarvis login --provider kimi`) to set one."
-                    )
-                })?;
-            let model = model_override.unwrap_or_else(|| "kimi-k2-thinking".to_string());
-            let base = pick_string_opt("KIMI_BASE_URL", section.base_url.as_deref())
-                .unwrap_or_else(|| "https://api.moonshot.cn/v1".to_string());
-            let oacfg = OpenAiConfig::new(api_key)
-                .with_base_url(base)
-                .with_empty_reasoning_content_for_tool_calls(true)
-                .with_default_model(&model);
-            Ok((Arc::new(OpenAiProvider::new(oacfg)), model))
-        }
-        "kimi-code" => {
-            // Kimi Code (`api.kimi.com/coding/v1`) is the
-            // subscription / flat-rate sibling of the Moonshot
-            // platform. Same OpenAI-Chat-Completions wire shape but
-            // a different account system, key prefix (`sk-kimi-…`),
-            // and a single canonical model id (`kimi-for-coding`,
-            // marketed as Kimi-k2.6).
-            //
-            // Critically, the endpoint also gates by `User-Agent`
-            // — only known coding agents (`claude-code/...`,
-            // `KimiCLI/...`, etc.) are accepted. Without spoofing
-            // an allowed UA, the API returns
-            // `403 access_terminated_error: Kimi For Coding is
-            // currently only available for Coding Agents`. We send
-            // `claude-code/0.1.0` by default, overridable via
-            // `KIMI_CODE_USER_AGENT` for forward-compat.
-            let api_key = std::env::var("KIMI_CODE_API_KEY")
-                .ok()
-                .or_else(|| auth_store::load_api_key("kimi-code").ok().flatten())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no KIMI_CODE_API_KEY env var or auth file for provider=kimi-code. \
-                         Run `jarvis login --provider kimi-code` to paste your \
-                         kimi.com subscription key."
-                    )
-                })?;
-            let model = model_override.unwrap_or_else(|| "kimi-for-coding".to_string());
-            let base = pick_string_opt("KIMI_CODE_BASE_URL", section.base_url.as_deref())
-                .unwrap_or_else(|| "https://api.kimi.com/coding/v1".to_string());
-            let user_agent = std::env::var("KIMI_CODE_USER_AGENT")
-                .unwrap_or_else(|_| "claude-code/0.1.0".to_string());
-            let http = reqwest::Client::builder()
-                .user_agent(user_agent)
-                .build()
-                .context("build http client for kimi-code")?;
-            let oacfg = OpenAiConfig::new(api_key)
-                .with_base_url(base)
-                .with_empty_reasoning_content_for_tool_calls(true)
-                .with_default_model(&model);
-            Ok((Arc::new(OpenAiProvider::with_client(oacfg, http)), model))
-        }
-        other => anyhow::bail!(
-            "provider=`{other}` is not recognised; \
-             use openai, openai-responses, anthropic, google, codex, kimi, kimi-code, or ollama"
+    };
+
+    // Per-kind env vars and config field names: codex uses CODEX_*
+    // / `path` / `originator`; openai-responses uses OPENAI_*.
+    let (env_base, env_summary, env_effort, env_encrypted, env_tier) = match kind {
+        "codex" => (
+            "CODEX_BASE_URL",
+            "CODEX_REASONING_SUMMARY",
+            "CODEX_REASONING_EFFORT",
+            "CODEX_INCLUDE_ENCRYPTED_REASONING",
+            "CODEX_SERVICE_TIER",
         ),
+        _ => (
+            "OPENAI_BASE_URL",
+            "OPENAI_REASONING_SUMMARY",
+            "OPENAI_REASONING_EFFORT",
+            "OPENAI_INCLUDE_ENCRYPTED_REASONING",
+            "OPENAI_SERVICE_TIER",
+        ),
+    };
+
+    if let Some(base) = pick_string_opt(env_base, section.base_url.as_deref())
+        .or_else(|| profile.default_base_url.map(str::to_string))
+    {
+        rcfg = rcfg.with_base_url(base);
     }
+    if kind == "codex" {
+        if let Some(path) = pick_string_opt("CODEX_RESPONSES_PATH", section.path.as_deref()) {
+            rcfg = rcfg.with_path(path);
+        }
+        if let Some(originator) = pick_string_opt("CODEX_ORIGINATOR", section.originator.as_deref())
+        {
+            rcfg = rcfg.with_originator(originator);
+        }
+    }
+    if let Some(summary) = pick_string_opt(env_summary, section.reasoning_summary.as_deref()) {
+        rcfg = rcfg.with_reasoning_summary(summary);
+    }
+    if let Some(effort) = pick_string_opt(env_effort, section.reasoning_effort.as_deref()) {
+        rcfg = rcfg.with_reasoning_effort(effort);
+    }
+    if pick_bool_flag(env_encrypted, section.include_encrypted_reasoning, false) {
+        rcfg = rcfg.with_encrypted_reasoning(true);
+    }
+    if let Some(tier) = pick_string_opt(env_tier, section.service_tier.as_deref()) {
+        rcfg = rcfg.with_service_tier(tier);
+    }
+    // Both flavours share the OpenAI prompt-cache namespace.
+    if let Ok(key) = std::env::var("OPENAI_PROMPT_CACHE_KEY") {
+        if !key.is_empty() {
+            rcfg = rcfg.with_prompt_cache_key(key);
+        }
+    }
+
+    let provider = ResponsesProvider::new(rcfg);
+    if kind == "codex" {
+        info!(
+            endpoint = %provider.endpoint(),
+            "codex provider enabled (subject to ChatGPT Terms of Service)",
+        );
+    } else {
+        info!(endpoint = %provider.endpoint(), "openai responses provider enabled");
+    }
+
+    let advertised = advertised_models(&model, section);
+    let capabilities = capabilities_for(profile, &advertised);
+    Ok(BuiltProvider {
+        provider: Arc::new(provider),
+        model,
+        kind: kind.to_string(),
+        capabilities,
+    })
+}
+
+fn build_kimi_code(
+    name: &str,
+    model_override: Option<String>,
+    section: &crate::config::ProviderConfig,
+) -> Result<BuiltProvider> {
+    // Kimi Code (`api.kimi.com/coding/v1`) is the subscription /
+    // flat-rate sibling of the Moonshot platform. Same OpenAI-Chat-
+    // Completions wire shape but a different account system, key
+    // prefix (`sk-kimi-…`), and a single canonical model id
+    // (`kimi-for-coding`, marketed as Kimi-k2.6).
+    //
+    // Critically, the endpoint also gates by `User-Agent` — only
+    // known coding agents (`claude-code/...`, `KimiCLI/...`, etc.)
+    // are accepted. Without spoofing an allowed UA, the API returns
+    // `403 access_terminated_error: Kimi For Coding is currently
+    // only available for Coding Agents`. The custom `reqwest::Client`
+    // is what makes this kind not fit the profile dispatch.
+    let api_key = std::env::var("KIMI_CODE_API_KEY")
+        .ok()
+        .or_else(|| auth_store::load_api_key("kimi-code").ok().flatten())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no KIMI_CODE_API_KEY env var or auth file for provider=kimi-code. \
+                 Run `jarvis login --provider kimi-code` to paste your \
+                 kimi.com subscription key."
+            )
+        })?;
+    let model = model_override.unwrap_or_else(|| "kimi-for-coding".to_string());
+    let base = pick_string_opt("KIMI_CODE_BASE_URL", section.base_url.as_deref())
+        .unwrap_or_else(|| "https://api.kimi.com/coding/v1".to_string());
+    let user_agent =
+        std::env::var("KIMI_CODE_USER_AGENT").unwrap_or_else(|_| "claude-code/0.1.0".to_string());
+    let http = reqwest::Client::builder()
+        .user_agent(user_agent)
+        .build()
+        .context("build http client for kimi-code")?;
+    let oacfg = OpenAiConfig::new(api_key)
+        .with_base_url(base)
+        .with_empty_reasoning_content_for_tool_calls(true)
+        .with_default_model(&model);
+    let _ = name; // kept for symmetry with profile-driven builders
+    Ok(BuiltProvider {
+        provider: Arc::new(OpenAiProvider::with_client(oacfg, http)),
+        model,
+        kind: "kimi-code".to_string(),
+        // No static catalog entry for kimi-code today — capability
+        // is "single model, supports tools" implicitly.
+        capabilities: Vec::new(),
+    })
+}
+
+/// Per-kind override env-var names for the wire base URL. Keeps
+/// existing operator habits (`KIMI_BASE_URL=…`, `OLLAMA_BASE_URL=…`)
+/// working without hardcoding them in the provider arm.
+fn base_url_for_kind(kind: &str, file: Option<&str>) -> Option<String> {
+    match kind {
+        "openai" => pick_string_opt("OPENAI_BASE_URL", file),
+        "openrouter" => pick_string_opt("OPENROUTER_BASE_URL", file),
+        "moonshot" => pick_string_opt("KIMI_BASE_URL", file),
+        "ollama" => pick_string_opt("OLLAMA_BASE_URL", file),
+        "lmstudio" => pick_string_opt("LMSTUDIO_BASE_URL", file),
+        "nvidia-nim" => pick_string_opt("NIM_BASE_URL", file),
+        "nous" => pick_string_opt("NOUS_BASE_URL", file),
+        "minimax" => pick_string_opt("MINIMAX_BASE_URL", file),
+        "mimo" => pick_string_opt("MIMO_BASE_URL", file),
+        "huggingface" => pick_string_opt("HF_BASE_URL", file),
+        // Fallthrough: only the config field, no env override.
+        _ => file.map(str::to_string),
+    }
+}
+
+/// Snapshot every constructed provider keyed by name and pair it with
+/// a route policy lookup. The returned closure resolves the requested
+/// slot on every call: if the slot's target points at a configured
+/// provider in the snapshot, it returns `Some((llm, model))`; on any
+/// miss (slot unset, target's provider not configured), it returns
+/// `None` so callers fall through to their default. Returns `None`
+/// outright when the policy has nothing for this slot, so callers
+/// don't pay for an empty closure on every compaction.
+fn build_route_resolver_for_slot(
+    slot: harness_server::RouteSlot,
+    primary_name: &str,
+    primary_built: &BuiltProvider,
+    extras: &[(String, BuiltProvider, Vec<String>)],
+    policy: &harness_server::ModelRoutePolicy,
+) -> Option<Arc<harness_memory::LlmRouteResolver>> {
+    // Cheap pre-flight: if the slot has no configured target (and
+    // `default` is also unset), the resolver would always return
+    // `None` — skip building it.
+    policy.target_for(slot)?;
+    use std::collections::HashMap;
+    let mut providers: HashMap<String, Arc<dyn harness_core::LlmProvider>> = HashMap::new();
+    providers.insert(primary_name.to_string(), primary_built.provider.clone());
+    for (name, built, _) in extras {
+        providers.insert(name.clone(), built.provider.clone());
+    }
+    let policy = policy.clone();
+    Some(Arc::new(move || {
+        let target = policy.target_for(slot)?;
+        let llm = providers.get(&target.provider)?.clone();
+        Some((llm, target.model.clone()))
+    }))
 }
 
 fn build_memory(
@@ -1301,6 +1697,7 @@ fn build_memory(
     llm: &Arc<dyn harness_core::LlmProvider>,
     active_model: &str,
     store: Option<&Arc<dyn harness_core::ConversationStore>>,
+    route_resolver: Option<Arc<harness_memory::LlmRouteResolver>>,
 ) -> Result<Option<Arc<dyn Memory>>> {
     let budget = std::env::var("JARVIS_MEMORY_TOKENS")
         .ok()
@@ -1325,10 +1722,19 @@ fn build_memory(
             if let Some(s) = store {
                 sm = sm.with_persistence(s.clone());
             }
+            // Route override only matters for summary mode — sliding
+            // window doesn't call the LLM at all. Wired here so the
+            // operator's `[routing] summarization = "kimi/kimi-k2"`
+            // entry actually swaps the summariser's target.
+            let routed = route_resolver.is_some();
+            if let Some(r) = route_resolver {
+                sm = sm.with_route_resolver(r);
+            }
             info!(
                 memory_tokens = budget,
                 summary_model = %summary_model,
                 persisted,
+                routed,
                 "summarising memory enabled",
             );
             Arc::new(sm)
@@ -1733,6 +2139,88 @@ fn pick_string(flag: Option<&str>, env_var: &str, file: Option<&str>, default: &
         .unwrap_or_else(|| default.to_string())
 }
 
+/// Build the [`ModelRoutePolicy`] from the `[routing]` config block,
+/// applying env-var overrides per slot. Each env var is the slash
+/// form `<provider>/<model>`. Unparseable values fall through with a
+/// WARN — the config either misses a slot, the slot stays empty, and
+/// the caller falls back to its primary provider.
+fn build_route_policy(cfg: &Config) -> ModelRoutePolicy {
+    fn parse_slot(env_name: &str, file_value: Option<&str>) -> Option<ModelTarget> {
+        let raw = pick_string_opt(env_name, file_value)?;
+        match ModelTarget::parse(&raw) {
+            Some(t) => Some(t),
+            None => {
+                warn!(
+                    env = env_name,
+                    value = %raw,
+                    "ignoring routing slot — expected `<provider>/<model>` slash form",
+                );
+                None
+            }
+        }
+    }
+    let r = &cfg.routing;
+    ModelRoutePolicy {
+        default: parse_slot("JARVIS_ROUTE_DEFAULT", r.default.as_deref()),
+        coding: parse_slot("JARVIS_ROUTE_CODING", r.coding.as_deref()),
+        review: parse_slot("JARVIS_ROUTE_REVIEW", r.review.as_deref()),
+        summarization: parse_slot(
+            "JARVIS_ROUTE_SUMMARIZATION",
+            r.summarization.as_deref(),
+        ),
+        doc_reader: parse_slot("JARVIS_ROUTE_DOC_READER", r.doc_reader.as_deref()),
+        vision: parse_slot("JARVIS_ROUTE_VISION", r.vision.as_deref()),
+        local_private: parse_slot("JARVIS_ROUTE_LOCAL_PRIVATE", r.local_private.as_deref()),
+        fallbacks: r
+            .fallbacks
+            .iter()
+            .filter_map(|s| match ModelTarget::parse(s) {
+                Some(t) => Some(t),
+                None => {
+                    warn!(value = %s, "ignoring fallback target — expected `<provider>/<model>` slash form");
+                    None
+                }
+            })
+            .collect(),
+    }
+}
+
+/// One-line summary of which slots are populated, for the startup
+/// log. Avoids leaking the full policy when the operator's config
+/// is large.
+fn route_policy_summary(p: &ModelRoutePolicy) -> String {
+    let mut filled: Vec<&'static str> = Vec::new();
+    if p.default.is_some() {
+        filled.push("default");
+    }
+    if p.coding.is_some() {
+        filled.push("coding");
+    }
+    if p.review.is_some() {
+        filled.push("review");
+    }
+    if p.summarization.is_some() {
+        filled.push("summarization");
+    }
+    if p.doc_reader.is_some() {
+        filled.push("doc_reader");
+    }
+    if p.vision.is_some() {
+        filled.push("vision");
+    }
+    if p.local_private.is_some() {
+        filled.push("local_private");
+    }
+    let mut out = filled.join(",");
+    if !p.fallbacks.is_empty() {
+        if !out.is_empty() {
+            out.push(';');
+        }
+        out.push_str(&format!("fallbacks={}", p.fallbacks.len()));
+    }
+    out
+}
+
 fn pick_string_opt(env_var: &str, file: Option<&str>) -> Option<String> {
     std::env::var(env_var)
         .ok()
@@ -1795,24 +2283,4 @@ fn load_codex_from_cli_home(cfg: &Config) -> Result<CodexAuth> {
              from the OpenAI Codex CLI; or set CODEX_ACCESS_TOKEN for dev)."
         )
     })
-}
-
-/// Resolve a provider's bearer/API key with this priority order:
-/// env var first, then the on-disk auth file written by `jarvis
-/// init`. Returns a clear error pointing the operator at `jarvis
-/// init` if neither is set. API keys deliberately are never read
-/// from the JSON config file — secrets and preferences live in
-/// different files.
-fn resolve_api_key(provider: &str, env_var: &str) -> Result<String> {
-    if let Ok(v) = std::env::var(env_var) {
-        return Ok(v);
-    }
-    if let Some(v) = auth_store::load_api_key(provider).ok().flatten() {
-        return Ok(v);
-    }
-    anyhow::bail!(
-        "no {env_var} env var or auth file for provider=`{provider}`. \
-         Run `jarvis init` (or `jarvis login --provider {provider}`) to set one, \
-         or export {env_var}."
-    )
 }

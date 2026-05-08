@@ -13,6 +13,7 @@ pub mod comment;
 pub mod conversation;
 pub mod doc;
 pub mod error;
+pub mod fallback_event;
 pub mod hitl;
 pub mod label;
 pub mod llm;
@@ -31,6 +32,7 @@ pub mod subagent;
 pub mod tenant;
 pub mod todo;
 pub mod tool;
+pub mod tool_metadata;
 pub mod workspace;
 
 pub use activity::{Activity, ActivityActor, ActivityEvent, ActivityKind};
@@ -44,6 +46,10 @@ pub use comment::{Comment, CommentEvent};
 pub use conversation::Conversation;
 pub use doc::{DocDraft, DocEvent, DocKind, DocProject};
 pub use error::{BoxError, Error, Result};
+pub use fallback_event::{
+    emit as emit_fallback, is_active as fallback_listener_active, with_fallback_listener,
+    FallbackEvent,
+};
 pub use hitl::{
     request as request_human, with_hitl, HitlKind, HitlOption, HitlRequest, HitlResponse,
     HitlStatus, HitlTransport, PendingHitl,
@@ -58,8 +64,9 @@ pub use memory::{
 };
 pub use message::{CacheHint, Message, ToolCall};
 pub use observability::{
-    DashboardSnapshot, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteRun,
-    MetricKind, MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun,
+    DashboardSnapshot, EvalBaseline, EvalCaseResult, EvalFailureClass, EvalFilter, EvalGraderKind,
+    EvalGraderResult, EvalGraderVerdict, EvalStore, EvalSuiteKind, EvalSuiteRun, MetricKind,
+    MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun,
     ObservedRunKind, ObservedSpanSummary, TimeWindow,
 };
 pub use permission::{
@@ -91,8 +98,8 @@ pub use store::{
     RequirementStore, TodoStore,
 };
 pub use subagent::{
-    emit as emit_subagent, is_active as subagent_active, with_subagent, SubAgentEvent,
-    SubAgentFrame,
+    active_sender as subagent_active_sender, emit as emit_subagent, is_active as subagent_active,
+    with_subagent, SubAgentEvent, SubAgentFrame,
 };
 /// Tenant (multi-tenant isolation boundary) value types and store trait.
 ///
@@ -103,6 +110,9 @@ pub use subagent::{
 pub use tenant::{Tenant, TenantSettings, TenantStore};
 pub use todo::{TodoEvent, TodoItem, TodoPriority, TodoStatus};
 pub use tool::{Tool, ToolCategory, ToolRegistry, ToolSpec};
+pub use tool_metadata::{
+    derive_pack, derive_risk, ToolMetadata, ToolPackCategory, ToolRisk, ToolSource,
+};
 pub use workspace::{
     active_workspace, active_workspace_or, canonicalize_workspace, with_session_workspace,
 };

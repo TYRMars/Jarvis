@@ -140,7 +140,9 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
     }
     const lastIdx = msgs.length - 1;
     const last = msgs[lastIdx] as Extract<UiMessage, { kind: "assistant" }>;
-    const updated = { ...last, content: last.content + text };
+    const nextContent = mergeStreamText(last.content, text);
+    if (nextContent === last.content) return;
+    const updated = { ...last, content: nextContent };
     const next = msgs.slice(0, lastIdx).concat(updated);
     set({ messages: next, emptyHintIdShort: null });
   },
@@ -357,4 +359,13 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
 function sameAssistantContent(a: string, b: string): boolean {
   if (!a || !b) return false;
   return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+}
+
+function mergeStreamText(current: string, incoming: string): string {
+  if (!incoming) return current;
+  if (current) {
+    if (incoming === current) return current;
+    if (incoming.startsWith(current)) return incoming;
+  }
+  return current + incoming;
 }

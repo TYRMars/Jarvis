@@ -20,6 +20,14 @@ import {
 } from "react-router-dom";
 import { t } from "../utils/i18n";
 import { chipColor } from "../utils/chipColor";
+
+/// Translate the i18n key when present, fall back to the supplied
+/// literal otherwise. Used for sidebar entries whose i18n keys
+/// haven't been seeded into every locale yet.
+function translateOrFallback(key: string, fallback: string): string {
+  const v = t(key);
+  return v === key ? fallback : v;
+}
 import {
   setDocScope,
   useDocScope,
@@ -163,6 +171,35 @@ function ChatSidebarBody() {
           </svg>
           <span>{t("sidebarNavConversationsArchive")}</span>
         </NavLink>
+        <NavLink
+          to="/customize"
+          className={({ isActive }) =>
+            "nav-item" + (isActive ? " active" : "")
+          }
+        >
+          <svg
+            width="17"
+            height="17"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 3v3" />
+            <path d="M12 18v3" />
+            <path d="M5.6 5.6l2.1 2.1" />
+            <path d="M16.3 16.3l2.1 2.1" />
+            <path d="M3 12h3" />
+            <path d="M18 12h3" />
+            <path d="M5.6 18.4l2.1-2.1" />
+            <path d="M16.3 7.7l2.1-2.1" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          <span>{translateOrFallback("sidebarNavCustomize", "能力市场")}</span>
+        </NavLink>
       </nav>
       <ConvoList />
     </>
@@ -225,29 +262,6 @@ function WorkSidebarBody() {
             <rect x="3" y="16" width="7" height="5" rx="1" />
           </svg>
           <span>{t("sidebarNavWorkOverview")}</span>
-        </NavLink>
-        <NavLink
-          to="/projects/auto-mode"
-          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
-        >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <polyline points="12 7 12 12 15 14" />
-          </svg>
-          <span>{t("sidebarNavAutoMode")}</span>
-        </NavLink>
-        <NavLink
-          to="/projects/worktrees"
-          className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
-        >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M6 3v6a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V3" />
-            <circle cx="6" cy="18" r="3" />
-            <circle cx="18" cy="18" r="3" />
-            <path d="M12 12v3" />
-            <circle cx="12" cy="18" r="3" />
-          </svg>
-          <span>{t("sidebarNavWorktrees")}</span>
         </NavLink>
         <NavLink
           to="/projects/list"

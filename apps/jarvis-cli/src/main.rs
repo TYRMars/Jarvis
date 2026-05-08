@@ -25,12 +25,12 @@ mod provider;
 mod render;
 mod runner;
 mod web;
+mod telemetry;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -151,12 +151,10 @@ pub struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     // tracing → stderr so streamed assistant text on stdout stays
-    // pipe-clean. RUST_LOG=info or higher keeps the terminal quiet
-    // by default; set RUST_LOG=debug for tool-level logs.
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()))
-        .with_writer(std::io::stderr)
-        .init();
+    // pipe-clean. Default baseline is `warn`; bumped to `info`
+    // automatically when OTel export is enabled so the instrumented
+    // spans actually fire. Set RUST_LOG explicitly to override.
+    let _telemetry_guard = telemetry::init();
 
     let args = Args::parse();
 

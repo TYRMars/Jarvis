@@ -38,6 +38,10 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
     showError(t("turnInProgress"));
     return false;
   }
+  if (appStore.getState().isConversationRunning(opts.conversationId)) {
+    showError(t("turnInProgress"));
+    return false;
+  }
   closeConversationSocket(opts.conversationId);
 
   const ws = new WebSocket(wsUrl());

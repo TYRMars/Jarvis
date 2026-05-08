@@ -10,9 +10,18 @@ use harness_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, instrument, Span};
 
 use crate::tokens::TiktokenEstimator;
+
+fn finish_reason_label(r: &FinishReason) -> &'static str {
+    match r {
+        FinishReason::Stop => "stop",
+        FinishReason::ToolCalls => "tool_calls",
+        FinishReason::Length => "length",
+        FinishReason::Other(_) => "other",
+    }
+}
 
 /// Tool-name policy for OpenAI Chat Completions:
 /// `^[a-zA-Z0-9_-]+$`. Some forks (Kimi Code, others) tighten
@@ -150,6 +159,20 @@ impl OpenAiProvider {
 
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "openai",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = false,
+            gen_ai.usage.input_tokens = tracing::field::Empty,
+            gen_ai.usage.output_tokens = tracing::field::Empty,
+            gen_ai.response.finish_reason = tracing::field::Empty,
+            jarvis.llm.tool_call.count = tracing::field::Empty,
+        ),
+    )]
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse> {
         let Outbound {
             request: body,
@@ -185,9 +208,38 @@ impl LlmProvider for OpenAiProvider {
         let parsed: OpenAiResponse = serde_json::from_str(&text)
             .map_err(|e| Error::Provider(format!("decode: {e}; body={text}")))?;
 
-        parsed.into_chat_response(&name_map)
+        let span = Span::current();
+        let chat = parsed.into_chat_response(&name_map)?;
+        if let Some(u) = chat.usage.as_ref() {
+            if let Some(t) = u.prompt_tokens {
+                span.record("gen_ai.usage.input_tokens", t);
+            }
+            if let Some(t) = u.completion_tokens {
+                span.record("gen_ai.usage.output_tokens", t);
+            }
+        }
+        span.record(
+            "gen_ai.response.finish_reason",
+            finish_reason_label(&chat.finish_reason),
+        );
+        if let Message::Assistant { tool_calls, .. } = &chat.message {
+            span.record("jarvis.llm.tool_call.count", tool_calls.len());
+        } else {
+            span.record("jarvis.llm.tool_call.count", 0u64);
+        }
+        Ok(chat)
     }
 
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "openai",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = true,
+        ),
+    )]
     async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream> {
         let Outbound {
             request: body,
@@ -292,6 +344,13 @@ struct OpenAiRequest {
     /// one explicitly.
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
+    /// Mirrors [`harness_core::ChatRequest::parallel_tool_calls`]. When
+    /// `Some`, OpenAI Chat Completions honours the toggle (default
+    /// upstream is `true` on capable models). Skipped from the wire
+    /// when `None` so we keep the upstream default behaviour for
+    /// callers that don't care.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -392,6 +451,7 @@ impl OpenAiRequest {
                 include_usage: true,
             }),
             prompt_cache_key,
+            parallel_tool_calls: r.parallel_tool_calls,
         };
         Outbound { request, name_map }
     }
@@ -745,15 +805,12 @@ impl StreamAccumulator {
         };
 
         if let Some(reasoning) = choice.delta.reasoning_content {
-            if !reasoning.is_empty() {
-                self.reasoning_content.push_str(&reasoning);
-            }
+            let _ = append_stream_fragment(&mut self.reasoning_content, reasoning);
         }
 
         if let Some(text) = choice.delta.content {
-            if !text.is_empty() {
-                self.content.push_str(&text);
-                out.push(LlmChunk::ContentDelta(text));
+            if let Some(fragment) = append_stream_fragment(&mut self.content, text) {
+                out.push(LlmChunk::ContentDelta(fragment));
             }
         }
 
@@ -842,6 +899,24 @@ impl StreamAccumulator {
     }
 }
 
+fn append_stream_fragment(accumulated: &mut String, incoming: String) -> Option<String> {
+    if incoming.is_empty() {
+        return None;
+    }
+    if !accumulated.is_empty() {
+        if incoming == accumulated.as_str() {
+            return None;
+        }
+        if incoming.starts_with(accumulated.as_str()) {
+            let fragment = incoming[accumulated.len()..].to_string();
+            *accumulated = incoming;
+            return (!fragment.is_empty()).then_some(fragment);
+        }
+    }
+    accumulated.push_str(&incoming);
+    Some(incoming)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -891,6 +966,44 @@ mod tests {
                     _ => panic!("expected assistant message"),
                 }
             }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalises_cumulative_content_snapshots() {
+        let mut acc = StreamAccumulator::default();
+        let out1 = acc
+            .ingest(parse_chunk(json!({
+                "choices": [{ "delta": { "content": "Hel" } }]
+            })))
+            .unwrap();
+        let out2 = acc
+            .ingest(parse_chunk(json!({
+                "choices": [{ "delta": { "content": "Hello" } }]
+            })))
+            .unwrap();
+        let out3 = acc
+            .ingest(parse_chunk(json!({
+                "choices": [{ "delta": { "content": "Hello world" } }]
+            })))
+            .unwrap();
+        let out4 = acc
+            .ingest(parse_chunk(json!({
+                "choices": [{ "delta": {}, "finish_reason": "stop" }]
+            })))
+            .unwrap();
+
+        assert!(matches!(out1.as_slice(), [LlmChunk::ContentDelta(s)] if s == "Hel"));
+        assert!(matches!(out2.as_slice(), [LlmChunk::ContentDelta(s)] if s == "lo"));
+        assert!(matches!(out3.as_slice(), [LlmChunk::ContentDelta(s)] if s == " world"));
+        match &out4[..] {
+            [LlmChunk::Finish { message, .. }] => match message {
+                Message::Assistant { content, .. } => {
+                    assert_eq!(content.as_deref(), Some("Hello world"));
+                }
+                _ => panic!("expected assistant message"),
+            },
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -975,7 +1088,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,
+            chain_origin: None,            parallel_tool_calls: None,
         }
     }
 
@@ -1051,7 +1164,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,
+            chain_origin: None,            parallel_tool_calls: None,
         };
         let outbound = OpenAiRequest::from_request(req, false, false, None);
         let body = serde_json::to_value(&outbound.request).unwrap();
@@ -1090,7 +1203,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,
+            chain_origin: None,            parallel_tool_calls: None,
         };
         let outbound = OpenAiRequest::from_request(req, false, true, None);
         let body = serde_json::to_value(&outbound.request).unwrap();

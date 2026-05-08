@@ -5,20 +5,28 @@
 //
 // Routing: react-router-dom (`BrowserRouter`) wraps the tree so the
 // app can host multiple pages at the server root (`/`, `/settings`,
-// future `/conversations/:id`) without the URL gaining a `/ui/`
+// `/sessions/:id`) without the URL gaining a `/ui/`
 // prefix. The Rust side serves `index.html` for any extension-less
 // path (see `crates/harness-server/src/ui.rs::spa_fallback`), so
 // reloading on `/settings` works like a real route, not just a
 // hash-based shim.
 
 import { useEffect } from "react";
-import { BrowserRouter, HashRouter, Route, Routes, Navigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  HashRouter,
+  Navigate,
+  Route,
+  Routes,
+  useParams,
+} from "react-router-dom";
 import { AppSidebar } from "./components/AppSidebar";
 import { AppChatPane } from "./components/AppChatPane";
 import { AppWorkspaceRail } from "./components/AppWorkspaceRail";
 import { AppApprovalsRail } from "./components/AppApprovalsRail";
 import { QuickSwitcher } from "./components/QuickSwitcher/QuickSwitcher";
 import { SettingsPage } from "./components/Settings/SettingsPage";
+import { CustomizePage } from "./components/Customize/CustomizePage";
 import { ProjectsPage } from "./components/Projects/ProjectsPage";
 import { DocsPage } from "./components/Docs/DocsPage";
 import { WorkOverviewPage } from "./components/Projects/WorkOverview/WorkOverviewPage";
@@ -35,6 +43,7 @@ import { boot, applyI18n } from "./services/boot";
 import { isDesktopRuntime } from "./services/desktop";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { showHelpOverlay } from "./services/slash_commands";
+import { newConversation, resumeConversation } from "./services/conversations";
 import { loadProviders } from "./services/providers";
 import { apiUrl } from "./services/api";
 import "./styles.css";
@@ -76,7 +85,8 @@ export function App() {
     <Router>
       <DesktopStartupOverlay />
       <Routes>
-        <Route path="/" element={<ChatLayout />} />
+        <Route path="/" element={<ChatLayout newDraftOnMount />} />
+        <Route path="/sessions/:id" element={<ChatSessionLayout />} />
         <Route path="/projects/overview" element={<WorkOverviewLayout />} />
         <Route path="/projects/auto-mode" element={<AutoModeDashboardLayout />} />
         <Route path="/projects/worktrees" element={<WorktreesLayout />} />
@@ -104,13 +114,15 @@ export function App() {
         />
         <Route path="/conversations" element={<ConversationsArchiveLayout />} />
         {/* `/conversations/:id` resumes the persisted conversation
-            and redirects to chat. Useful for bookmarks / shared URLs
-            that should land back in the right thread. */}
+            and redirects to the stable session URL. Useful for old
+            bookmarks / shared URLs that should land back in the
+            right thread. */}
         <Route
           path="/conversations/:id"
           element={<ConversationDeepLinkRedirect />}
         />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/customize" element={<CustomizeLayout />} />
         {/* SubAgent UI preview — static prototype with mocked frame
             data. Reachable directly only; not linked from nav. Will
             be replaced by the real components consuming WS events
@@ -129,7 +141,17 @@ export function App() {
 /// handles, and the Cmd+P quick switcher. Lives at `/`. Extracted
 /// from `App` so other routes (Settings, future Conversations
 /// archive) don't carry the chat-specific chrome.
-function ChatLayout() {
+function ChatLayout({ newDraftOnMount = false }: { newDraftOnMount?: boolean }) {
+  useEffect(() => {
+    if (!newDraftOnMount) return;
+    const store = appStore.getState();
+    newConversation({
+      projectId: store.activeProjectFilter ?? store.draftProjectId ?? null,
+      workspacePath: store.draftWorkspacePath ?? null,
+    });
+    window.setTimeout(() => document.getElementById("input")?.focus(), 0);
+  }, [newDraftOnMount]);
+
   return (
     <>
       <a className="skip-link" href="#chat">Skip to main content</a>
@@ -146,6 +168,15 @@ function ChatLayout() {
       </div>
     </>
   );
+}
+
+function ChatSessionLayout() {
+  const { id } = useParams<{ id: string }>();
+  useEffect(() => {
+    if (!id) return;
+    void resumeConversation(id);
+  }, [id]);
+  return <ChatLayout />;
 }
 
 function ProjectsLayout() {
@@ -192,6 +223,35 @@ function ConversationsArchiveLayout() {
       <div id="app" className="page-app projects-app">
         <AppSidebar />
         <ConversationsArchivePage />
+
+        <div
+          id="resize-sidebar"
+          className="resize-handle resize-sidebar"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          tabIndex={-1}
+        />
+
+        <QuickSwitcher />
+      </div>
+    </>
+  );
+}
+
+// Customize — unified entry point for Skills / MCP / Plugins.
+// Reachable from the chat sidebar under "全部会话". Shares the same
+// shell as ProjectsLayout so the global sidebar still anchors the
+// page.
+function CustomizeLayout() {
+  return (
+    <>
+      <a className="skip-link" href="#customize-page">
+        Skip to main content
+      </a>
+      <div id="app" className="page-app projects-app">
+        <AppSidebar />
+        <CustomizePage />
 
         <div
           id="resize-sidebar"

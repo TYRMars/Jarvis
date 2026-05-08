@@ -41,6 +41,15 @@ const VERB_TABLE: Record<string, VerbSpec> = {
   "project.checks":    { verb: "Suggested", noun: "check",     nounPlural: "checks" },
   "plan.update":       { verb: "Updated",   noun: "plan",      nounPlural: "plan" },
   "exit_plan":         { verb: "Proposed",  noun: "plan",      nounPlural: "plan" },
+  "doc.list":          { verb: "Listed",    noun: "doc",       nounPlural: "docs" },
+  "doc.search":        { verb: "Searched",  noun: "doc",       nounPlural: "docs" },
+  "doc.get":           { verb: "Read",      noun: "doc",       nounPlural: "docs" },
+  "doc.draft.get":     { verb: "Read",      noun: "draft",     nounPlural: "drafts" },
+  "doc.upsert":        { verb: "Updated",   noun: "doc",       nounPlural: "docs" },
+  "doc.create":        { verb: "Created",   noun: "doc",       nounPlural: "docs" },
+  "doc.update":        { verb: "Updated",   noun: "doc",       nounPlural: "docs" },
+  "doc.delete":        { verb: "Deleted",   noun: "doc",       nounPlural: "docs" },
+  "doc.draft.save":    { verb: "Saved",     noun: "draft",     nounPlural: "drafts" },
   "http.fetch":        { verb: "Fetched",   noun: "URL",       nounPlural: "URLs" },
   "time.now":          { verb: "Checked",   noun: "time",      nounPlural: "time" },
   "echo":              { verb: "Echoed",    noun: "value",     nounPlural: "values" },
@@ -57,8 +66,12 @@ function specFor(name: string): VerbSpec {
 /// Pull a short, render-friendly target string out of a tool's args
 /// for the single-call inline form. `null` when the tool has no
 /// natural single-noun target (workspace.context, plan.update, etc.).
-function singleInlineTarget(name: string, args: any): string | null {
-  if (!args || typeof args !== "object") return null;
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
+function singleInlineTarget(name: string, args: unknown): string | null {
+  if (!isRecord(args)) return null;
   switch (name) {
     case "fs.read":
     case "fs.list":
@@ -84,8 +97,37 @@ function singleInlineTarget(name: string, args: any): string | null {
       return typeof args.pattern === "string" ? `\`${args.pattern}\`` : null;
     case "git.show":
       return typeof args.revision === "string" ? args.revision : null;
+    case "doc.search":
+      return typeof args.query === "string" && args.query.trim()
+        ? `\`${args.query.trim()}\``
+        : null;
+    case "doc.get":
+      return typeof args.id === "string" ? args.id : null;
+    case "doc.upsert":
+    case "doc.create":
+    case "doc.update":
+      return typeof args.title === "string"
+        ? args.title
+        : typeof args.id === "string"
+          ? args.id
+          : null;
+    case "doc.delete":
+      return typeof args.id === "string" ? args.id : null;
+    case "doc.draft.get":
+    case "doc.draft.save":
+      return typeof args.project_id === "string" ? args.project_id : null;
     default:
       return null;
+  }
+}
+
+function parseJsonObject(output: string | null): Record<string, unknown> | null {
+  if (output == null || output.trim() === "" || output.trim() === "null") return null;
+  try {
+    const parsed = JSON.parse(output);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -98,7 +140,7 @@ function singleInlineTarget(name: string, args: any): string | null {
 /// surfaces).
 function singleInlineStat(
   name: string,
-  args: any,
+  _args: unknown,
   output: string | null,
 ): string | null {
   if (output == null) return null;
@@ -146,6 +188,42 @@ function singleInlineStat(
       if (modified > 0) parts.push(`M:${modified}`);
       if (untracked > 0) parts.push(`?:${untracked}`);
       return parts.length > 0 ? parts.join(" ") : "clean";
+    }
+    case "doc.list":
+    case "doc.search": {
+      const parsed = parseJsonObject(output);
+      const count = typeof parsed?.count === "number" ? parsed.count : null;
+      return count == null ? null : `${count} doc${count === 1 ? "" : "s"}`;
+    }
+    case "doc.get": {
+      const parsed = parseJsonObject(output);
+      const project = isRecord(parsed?.project) ? parsed.project : null;
+      const title = project?.title;
+      return typeof title === "string" && title ? title : null;
+    }
+    case "doc.draft.get":
+    case "doc.draft.save": {
+      const parsed = parseJsonObject(output);
+      const content = parsed?.content;
+      if (typeof content !== "string") return output?.trim() === "null" ? "empty" : null;
+      const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+      return `${words} word${words === 1 ? "" : "s"}`;
+    }
+    case "doc.upsert": {
+      const parsed = parseJsonObject(output);
+      if (!parsed) return null;
+      return parsed.created === true ? "created" : "updated";
+    }
+    case "doc.create":
+    case "doc.update": {
+      const parsed = parseJsonObject(output);
+      const title = parsed?.title;
+      return typeof title === "string" && title ? title : null;
+    }
+    case "doc.delete": {
+      const parsed = parseJsonObject(output);
+      if (!parsed) return null;
+      return parsed.deleted === true ? "deleted" : "not found";
     }
     default:
       return null;

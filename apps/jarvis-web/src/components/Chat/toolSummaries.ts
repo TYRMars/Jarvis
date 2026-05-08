@@ -38,6 +38,10 @@ export const SUMMARISABLE_TOOLS: ReadonlySet<string> = new Set([
   "code.grep",
   "project.checks",
   "plan.update",
+  "doc.list",
+  "doc.search",
+  "doc.get",
+  "doc.draft.get",
 ]);
 
 /// Tools that mutate state (approval-gated). Default to OPEN after
@@ -50,6 +54,11 @@ export const APPROVAL_GATED_TOOLS: ReadonlySet<string> = new Set([
   "fs.write",
   "fs.patch",
   "shell.exec",
+  "doc.upsert",
+  "doc.create",
+  "doc.update",
+  "doc.delete",
+  "doc.draft.save",
 ]);
 
 /// Anything larger than this we refuse to scan. Massive grep dumps
@@ -109,6 +118,14 @@ function dispatch(name: string, args: unknown, output: string | null): string | 
       return summariseChecks(output);
     case "plan.update":
       return summarisePlan(args, output);
+    case "doc.list":
+      return summariseDocList(output);
+    case "doc.search":
+      return summariseDocSearch(output);
+    case "doc.get":
+      return summariseDocGet(output);
+    case "doc.draft.get":
+      return summariseDocDraftGet(output);
     default:
       return null;
   }
@@ -126,6 +143,10 @@ function tryParseJson(s: string): unknown {
   } catch {
     return null;
   }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === "object" && !Array.isArray(v);
 }
 
 // ---------------- per-tool parsers ----------------
@@ -304,4 +325,49 @@ export function summarisePlan(args: unknown, _output: string | null): string | n
     if (it && typeof it === "object" && (it as { status?: unknown }).status === "completed") done += 1;
   }
   return t("toolSummaryPlan", items.length, done);
+}
+
+export function summariseDocList(output: string | null): string | null {
+  if (isBlank(output)) return null;
+  const parsed = tryParseJson(output!);
+  if (!isRecord(parsed)) return null;
+  const count = parsed.count;
+  if (typeof count === "number") return t("toolSummaryDocList", count);
+  const items = parsed.items;
+  if (Array.isArray(items)) return t("toolSummaryDocList", items.length);
+  return null;
+}
+
+export function summariseDocSearch(output: string | null): string | null {
+  if (isBlank(output)) return null;
+  const parsed = tryParseJson(output!);
+  if (!isRecord(parsed)) return null;
+  const count = parsed.count;
+  const query = parsed.query;
+  if (typeof count !== "number") return null;
+  return typeof query === "string" && query.trim()
+    ? t("toolSummaryDocSearch", count, query.trim())
+    : t("toolSummaryDocList", count);
+}
+
+export function summariseDocGet(output: string | null): string | null {
+  if (isBlank(output)) return null;
+  const parsed = tryParseJson(output!);
+  if (!isRecord(parsed)) return null;
+  const project = isRecord(parsed.project) ? parsed.project : null;
+  const title = project && typeof project.title === "string" ? project.title : null;
+  const hasDraft = parsed.draft != null;
+  if (!title) return null;
+  return hasDraft ? t("toolSummaryDocGetWithDraft", title) : title;
+}
+
+export function summariseDocDraftGet(output: string | null): string | null {
+  if (isBlank(output)) return null;
+  if (output!.trim() === "null") return t("toolSummaryDocDraftEmpty");
+  const parsed = tryParseJson(output!);
+  if (!isRecord(parsed)) return null;
+  const content = parsed.content;
+  if (typeof content !== "string") return null;
+  const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+  return t("toolSummaryDocDraft", words);
 }

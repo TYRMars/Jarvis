@@ -40,6 +40,12 @@ pub fn score_skill(
             continue;
         }
         let kw_lc = kw.to_lowercase();
+        let substring_match =
+            !kw_lc.is_ascii() && query_tokens.iter().any(|tok| tok.contains(&kw_lc));
+        if substring_match {
+            score = score.saturating_add(KEYWORD_WEIGHT);
+            continue;
+        }
         // Multi-word keywords match if every word is in the query.
         let parts: Vec<&str> = kw_lc.split_whitespace().filter(|p| !p.is_empty()).collect();
         if !parts.is_empty() && parts.iter().all(|p| query_tokens.contains(*p)) {
@@ -184,6 +190,20 @@ mod tests {
         let with_keyword = score_skill("a", "x", &["pdf".into()], SkillActivation::Auto, &q);
         let only_desc = score_skill("b", "pdf is mentioned here", &[], SkillActivation::Auto, &q);
         assert!(with_keyword > only_desc, "keyword weight should dominate");
+    }
+
+    #[test]
+    fn cjk_keywords_match_inside_longer_query_tokens() {
+        let mut cat = SkillCatalog::new();
+        cat.insert(entry(
+            "doc",
+            "管理 Jarvis 的文档库。",
+            &["文档", "草稿"],
+            SkillActivation::Both,
+        ));
+
+        let picks = pick_auto_skills(&cat, "帮我写一篇产品需求文档", 2, &[]);
+        assert_eq!(picks, vec!["doc".to_string()]);
     }
 
     #[test]

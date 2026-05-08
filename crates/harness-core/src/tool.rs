@@ -115,12 +115,26 @@ pub struct ToolSpec {
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    /// Names the operator has explicitly muted at runtime. Muted
+    /// tools stay registered (so unmuting is fast and doesn't lose
+    /// the underlying `Arc<dyn Tool>`) but are excluded from
+    /// [`specs`](Self::specs) / [`specs_filtered`](Self::specs_filtered)
+    /// — which means the LLM never sees them — and
+    /// [`resolve`](Self::resolve) returns `None` so any in-flight
+    /// call against a freshly-muted tool fails cleanly with
+    /// `ToolNotFound`.
+    ///
+    /// Lives next to `tools` rather than as a separate type so the
+    /// existing `RwLock<ToolRegistry>` lock contract still covers
+    /// it without a second lock.
+    muted: std::collections::HashSet<String>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            muted: std::collections::HashSet::new(),
         }
     }
 
@@ -138,6 +152,7 @@ impl ToolRegistry {
     /// Used by the MCP / plugin manager when a server or plugin is
     /// dropped at runtime.
     pub fn unregister(&mut self, name: &str) -> bool {
+        self.muted.remove(name);
         self.tools.remove(name).is_some()
     }
 
@@ -154,17 +169,81 @@ impl ToolRegistry {
             .collect();
         for name in &drop {
             self.tools.remove(name);
+            self.muted.remove(name);
         }
         drop
     }
 
     /// True iff a tool with this name is currently registered.
+    /// Mute state does not affect this — `contains` reports
+    /// presence in the registry, not visibility to the LLM. The
+    /// admin / settings UI uses this to render the tool catalog
+    /// regardless of mute state.
     pub fn contains(&self, name: &str) -> bool {
         self.tools.contains_key(name)
     }
 
+    /// Mark a tool as muted. Returns `true` when the tool exists
+    /// in the registry (whether or not it was already muted) and
+    /// `false` when the name doesn't match a registered tool.
+    /// Idempotent: muting an already-muted tool is a no-op success.
+    pub fn mute(&mut self, name: &str) -> bool {
+        if !self.tools.contains_key(name) {
+            return false;
+        }
+        self.muted.insert(name.to_string());
+        true
+    }
+
+    /// Clear the mute state for a tool. Returns `true` when the
+    /// tool was previously muted; `false` for unknown / already-
+    /// active tools.
+    pub fn unmute(&mut self, name: &str) -> bool {
+        self.muted.remove(name)
+    }
+
+    pub fn is_muted(&self, name: &str) -> bool {
+        self.muted.contains(name)
+    }
+
+    /// Snapshot of every currently-muted tool name, sorted for
+    /// stable wire output.
+    pub fn muted_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.muted.iter().cloned().collect();
+        out.sort();
+        out
+    }
+
+    /// Resolve a tool by name. Muted tools return `None` so the
+    /// agent loop's `invoke_tool` reports `ToolNotFound` — same
+    /// surface the model sees when it asks for a tool that doesn't
+    /// exist. The settings UI looks up tools via the parallel
+    /// [`contains`](Self::contains) / [`is_muted`](Self::is_muted)
+    /// pair and skips this call entirely.
     pub fn resolve(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if self.muted.contains(name) {
+            return None;
+        }
         self.tools.get(name).cloned()
+    }
+
+    /// Admin-side resolve that returns the underlying `Arc` even
+    /// when the tool is muted. Used by `GET /v1/tools` to render
+    /// the catalog UI — muted tools must still appear (greyed out
+    /// with a disabled toggle) so the operator can flip them back
+    /// on. Never use this from the agent loop; the path that
+    /// actually invokes the tool must respect mute state.
+    pub fn resolve_unchecked(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).cloned()
+    }
+
+    /// Every registered tool name, sorted, regardless of mute
+    /// state. Counterpart to [`specs`](Self::specs) for the
+    /// settings UI.
+    pub fn all_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.tools.keys().cloned().collect();
+        out.sort();
+        out
     }
 
     /// Provider-agnostic descriptions of every registered tool, sorted
@@ -174,6 +253,9 @@ impl ToolRegistry {
     /// order means the prefix bytes that go into a request stay
     /// identical turn-to-turn, which is what every provider's prompt
     /// cache keys on. Free win.
+    ///
+    /// Muted tools are filtered out so the LLM never sees a tool
+    /// the operator has disabled.
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.specs_filtered(|_| true)
     }
@@ -181,14 +263,18 @@ impl ToolRegistry {
     /// Like [`Self::specs`] but only includes tools for which `pred`
     /// returns `true`. Used by the agent's Plan-Mode `tool_filter`
     /// to hide write/exec/network tools from the LLM catalogue while
-    /// keeping them resolvable for in-flight calls.
+    /// keeping them resolvable for in-flight calls. Muted tools are
+    /// excluded regardless of the predicate (mute is the stronger
+    /// signal — operator intent always wins).
     pub fn specs_filtered<F>(&self, pred: F) -> Vec<ToolSpec>
     where
         F: Fn(&dyn Tool) -> bool,
     {
         let mut specs: Vec<ToolSpec> = self
             .tools
-            .values()
+            .iter()
+            .filter(|(name, _)| !self.muted.contains(*name))
+            .map(|(_, t)| t)
             .filter(|t| pred(t.as_ref()))
             .map(|t| ToolSpec {
                 name: t.name().to_string(),
@@ -318,6 +404,80 @@ mod tests {
         registry.register(NamedTool("plain"));
         let specs = registry.specs();
         assert!(!specs[0].cacheable);
+    }
+
+    #[test]
+    fn mute_hides_tool_from_specs_and_resolve() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool("alpha"));
+        registry.register(NamedTool("beta"));
+        assert!(registry.mute("alpha"));
+        // specs() omits muted; resolve() returns None.
+        let specs = registry.specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["beta"]);
+        assert!(registry.resolve("alpha").is_none());
+        assert!(registry.resolve("beta").is_some());
+        // contains() reports presence regardless (settings UI uses this).
+        assert!(registry.contains("alpha"));
+        assert!(registry.is_muted("alpha"));
+    }
+
+    #[test]
+    fn unmute_restores_visibility() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool("alpha"));
+        assert!(registry.mute("alpha"));
+        assert!(registry.unmute("alpha"));
+        assert!(!registry.is_muted("alpha"));
+        let specs = registry.specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha"]);
+        assert!(registry.resolve("alpha").is_some());
+    }
+
+    #[test]
+    fn mute_unknown_tool_returns_false() {
+        let mut registry = ToolRegistry::new();
+        assert!(!registry.mute("nope"));
+        assert!(!registry.is_muted("nope"));
+    }
+
+    #[test]
+    fn unregister_clears_mute_state() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool("alpha"));
+        assert!(registry.mute("alpha"));
+        assert!(registry.unregister("alpha"));
+        // Re-register and confirm we don't carry stale mute state.
+        registry.register(NamedTool("alpha"));
+        assert!(!registry.is_muted("alpha"));
+        assert!(registry.resolve("alpha").is_some());
+    }
+
+    #[test]
+    fn muted_names_is_sorted() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool("alpha"));
+        registry.register(NamedTool("beta"));
+        registry.register(NamedTool("gamma"));
+        registry.mute("gamma");
+        registry.mute("alpha");
+        assert_eq!(registry.muted_names(), vec!["alpha", "gamma"]);
+    }
+
+    #[test]
+    fn specs_filtered_still_excludes_muted() {
+        // The Plan-Mode predicate filters by category, but mute
+        // wins regardless — operator intent is the stronger signal.
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool("alpha"));
+        registry.register(NamedTool("beta"));
+        registry.mute("beta");
+        // Predicate accepts everything; mute still hides "beta".
+        let specs = registry.specs_filtered(|_| true);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha"]);
     }
 
     #[test]

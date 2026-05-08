@@ -32,6 +32,7 @@ mod diagnostics;
 mod diagnostics_routes;
 mod docs_routes;
 mod labels_routes;
+mod market_routes;
 mod mcp_routes;
 mod observability_routes;
 mod permissions;
@@ -42,9 +43,12 @@ mod projects;
 mod provider_registry;
 mod requirements_routes;
 mod roadmap_routes;
+mod route_policy;
 mod routes;
 mod skill_routes;
 mod state;
+mod subagent_runs;
+mod subagent_runs_routes;
 mod subagents_routes;
 mod todo_binder;
 mod todos_routes;
@@ -62,8 +66,10 @@ pub use skill_routes::default_roots as default_skill_roots;
 
 pub use project_memory::{spawn_project_memory_sync, ProjectMemoryConfig};
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
+pub use route_policy::{ModelRoutePolicy, ModelTarget, RouteSlot};
 pub use routes::router;
-pub use state::{AppState, ServerInfo};
+pub use subagent_runs::{SubAgentRunRecord, SubAgentRunRegistry, SubAgentRunStatus};
+pub use state::{AppState, ServerInfo, TelemetryStatus};
 
 // Re-export so binaries can construct stores / modes without depending
 // on harness-core directly when they only need the permission types.

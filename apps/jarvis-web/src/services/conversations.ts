@@ -65,6 +65,7 @@ export function newConversation(
     if (!sendFrame({ type: "reset" })) return;
     store.clearMessages();
     store.setActiveId(null);
+    clearSessionRoute();
     return;
   }
   store.clearMessages();
@@ -79,11 +80,15 @@ export function newConversation(
     store.setDraftWorkspace(opts.workspacePath, null);
   }
   store.setActiveId(null);
+  clearSessionRoute();
 }
 
 export async function resumeConversation(id: string): Promise<void> {
   const store = appStore.getState();
-  if (store.activeId === id) return;
+  if (store.activeId === id) {
+    syncSessionRoute(id);
+    return;
+  }
   if (store.activeId) store.saveConversationSurface(store.activeId);
   store.setLoadingConvoId(id);
   try {
@@ -111,11 +116,16 @@ export async function resumeConversation(id: string): Promise<void> {
     const { provider, model } = pickedRouting();
     if (provider) frame.provider = provider;
     if (model) frame.model = model;
+    // Flip activeId BEFORE sending the frame so any reply
+    // (including resumed/error/delta from an in-flight per-turn
+    // socket for the same id) lands on the active path in
+    // handleFrameForConversation, not the scoped-background path.
+    store.setActiveId(id);
+    syncSessionRoute(id);
     if (!sendFrame(frame)) {
       store.setLoadingConvoId(null);
       return;
     }
-    store.setActiveId(id);
   } catch (e: any) {
     store.setLoadingConvoId(null);
     showError(t("resumeFailed", e.message));
@@ -139,6 +149,7 @@ export async function deleteConversation(id: string): Promise<void> {
       store.clearMessages();
       store.setActiveId(null);
       sendFrame({ type: "reset" });
+      clearSessionRoute();
     }
     // GC the local-only metadata so a recycled UUID doesn't inherit
     // a stale title / pin / routing from a previous conversation.
@@ -149,6 +160,58 @@ export async function deleteConversation(id: string): Promise<void> {
   } catch (e: any) {
     showError(t("deleteFailed", e.message));
   }
+}
+
+export function sessionRoute(id: string): string {
+  return `/sessions/${encodeURIComponent(id)}`;
+}
+
+function syncSessionRoute(id: string): void {
+  updateAppRoute(sessionRoute(id), "push");
+}
+
+export function clearSessionRoute(): void {
+  if (typeof window === "undefined") return;
+  const hashPath = hashRouterPath();
+  if (hashPath?.startsWith("/sessions/")) {
+    updateAppRoute("/", "replace");
+    return;
+  }
+  if (window.location.pathname.startsWith("/sessions/")) {
+    updateAppRoute("/", "replace");
+  }
+}
+
+function updateAppRoute(path: string, mode: "push" | "replace"): void {
+  if (typeof window === "undefined") return;
+  const hashPath = hashRouterPath();
+  if (hashPath !== null) {
+    const next = `#${path}`;
+    if (window.location.hash === next) return;
+    const url = `${window.location.pathname}${window.location.search}${next}`;
+    if (mode === "replace") {
+      window.history.replaceState(null, "", url);
+    } else {
+      window.history.pushState(null, "", url);
+    }
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    return;
+  }
+  if (window.location.pathname === path) return;
+  if (mode === "replace") {
+    window.history.replaceState(null, "", path);
+  } else {
+    window.history.pushState(null, "", path);
+  }
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function hashRouterPath(): string | null {
+  if (typeof window === "undefined") return null;
+  const hash = window.location.hash;
+  if (!hash.startsWith("#/")) return null;
+  const queryIdx = hash.indexOf("?");
+  return queryIdx >= 0 ? hash.slice(1, queryIdx) : hash.slice(1);
 }
 
 /// Read the current routing off the store and split into the

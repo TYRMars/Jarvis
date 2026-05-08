@@ -16,7 +16,8 @@ use axum::{
 };
 use harness_core::{
     EvalCaseResult, EvalFilter, EvalStore, ObservabilityFilter, ObservabilityStore,
-    ObservedOutcome, ObservedRun, ObservedRunKind, TimeWindow,
+    ObservedOutcome, ObservedRun, ObservedRunKind, RequirementRun, RequirementRunStatus,
+    TimeWindow, VerificationStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -30,7 +31,34 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/v1/observability/tools", get(list_tool_summary))
         .route("/v1/observability/subagents", get(list_subagent_summary))
         .route("/v1/observability/direction", get(get_direction))
+        .route(
+            "/v1/observability/capability-score",
+            get(get_capability_score),
+        )
+        .route("/v1/observability/exporter", get(get_exporter_status))
+        .route("/v1/evals/summary", get(get_eval_summary))
         .route("/v1/evals/cases", get(list_eval_cases))
+}
+
+async fn get_exporter_status(State(state): State<AppState>) -> Response {
+    let status = state.telemetry.clone().unwrap_or_default();
+    Json(json!({
+        "enabled": status.enabled,
+        "endpoint": status.endpoint,
+        "protocol": status.protocol,
+        "service_name": if status.service_name.is_empty() {
+            "jarvis".to_string()
+        } else {
+            status.service_name
+        },
+        "service_env": if status.service_env.is_empty() {
+            "local".to_string()
+        } else {
+            status.service_env
+        },
+        "sample_ratio": status.sample_ratio,
+    }))
+    .into_response()
 }
 
 fn observability_store(state: &AppState) -> Option<Arc<dyn ObservabilityStore>> {
@@ -125,6 +153,11 @@ struct DirectionQuery {
     limit: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CapabilityScoreQuery {
+    limit: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct HarnessDirectionComponent {
     key: String,
@@ -152,6 +185,47 @@ struct HarnessDirectionSnapshot {
     components: Vec<HarnessDirectionComponent>,
     recommendations: Vec<HarnessDirectionRecommendation>,
     sample: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilityDriver {
+    key: String,
+    label: String,
+    value: Option<f64>,
+    weight: f64,
+    score: u8,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilityEvidence {
+    kind: String,
+    id: String,
+    title: String,
+    detail: String,
+    metric: Option<String>,
+    tone: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilityDimensionScore {
+    key: String,
+    label: String,
+    score: u8,
+    confidence: f64,
+    summary: String,
+    drivers: Vec<CapabilityDriver>,
+    evidence: Vec<CapabilityEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilityScoreSnapshot {
+    generated_at: String,
+    overall_score: u8,
+    confidence: f64,
+    sample_count: usize,
+    dimensions: Vec<CapabilityDimensionScore>,
+    rules: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -247,6 +321,81 @@ async fn get_direction(State(state): State<AppState>, Query(q): Query<DirectionQ
     };
 
     Json(direction_snapshot(&runs, eval_cases.as_deref())).into_response()
+}
+
+async fn get_capability_score(
+    State(state): State<AppState>,
+    Query(q): Query<CapabilityScoreQuery>,
+) -> Response {
+    let scan_limit = q.limit.unwrap_or(2_000).min(10_000);
+    let obs_runs = match observability_store(&state) {
+        Some(store) => match store
+            .list_runs(ObservabilityFilter {
+                limit: Some(scan_limit),
+                ..ObservabilityFilter::default()
+            })
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
+        },
+        None => Vec::new(),
+    };
+    let eval_cases = match eval_store(&state) {
+        Some(store) => match store
+            .list_case_results(EvalFilter {
+                limit: Some(scan_limit),
+                ..EvalFilter::default()
+            })
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
+        },
+        None => Vec::new(),
+    };
+    let requirement_runs = match state.requirement_runs.as_ref() {
+        Some(store) => match store.list_all(scan_limit).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
+        },
+        None => Vec::new(),
+    };
+
+    if obs_runs.is_empty()
+        && eval_cases.is_empty()
+        && requirement_runs.is_empty()
+        && observability_store(&state).is_none()
+        && eval_store(&state).is_none()
+        && state.requirement_runs.is_none()
+    {
+        return unavailable("capability scoring stores not configured");
+    }
+
+    Json(capability_score_snapshot(
+        &obs_runs,
+        &eval_cases,
+        &requirement_runs,
+    ))
+    .into_response()
 }
 
 async fn list_kind_summary(
@@ -580,6 +729,656 @@ fn direction_snapshot(
     }
 }
 
+fn capability_score_snapshot(
+    obs_runs: &[ObservedRun],
+    eval_cases: &[EvalCaseResult],
+    requirement_runs: &[RequirementRun],
+) -> CapabilityScoreSnapshot {
+    let facts = CapabilityFacts::new(obs_runs, eval_cases, requirement_runs);
+    let dimensions = vec![
+        score_task_understanding(&facts),
+        score_planning_execution(&facts),
+        score_capability_invocation(&facts),
+        score_task_delivery(&facts),
+    ];
+    let raw_overall =
+        dimensions.iter().map(|d| d.score as f64).sum::<f64>() / dimensions.len() as f64;
+    let delivery_score = dimensions
+        .iter()
+        .find(|d| d.key == "task_delivery")
+        .map(|d| d.score)
+        .unwrap_or(50);
+    let mut overall_score = score_from_float(raw_overall);
+    if delivery_score < 60 {
+        overall_score = overall_score.min(69);
+    }
+    let confidence = average(
+        dimensions.iter().map(|d| d.confidence).sum(),
+        dimensions.len(),
+    )
+    .unwrap_or(0.0);
+
+    CapabilityScoreSnapshot {
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        overall_score,
+        confidence,
+        sample_count: facts.sample_count,
+        dimensions,
+        rules: json!({
+            "scale": "0-100",
+            "weights": {
+                "task_understanding": 0.25,
+                "planning_execution": 0.25,
+                "capability_invocation": 0.25,
+                "task_delivery": 0.25
+            },
+            "caps": [
+                "if task_delivery < 60, overall_score <= 69",
+                "confidence is reduced when eval, verification, observability, or requirement-run signals are missing"
+            ]
+        }),
+    }
+}
+
+#[derive(Debug)]
+struct CapabilityFacts<'a> {
+    obs_runs: &'a [ObservedRun],
+    eval_cases: &'a [EvalCaseResult],
+    requirement_runs: &'a [RequirementRun],
+    agent_runs: Vec<ObservedRun>,
+    tool_runs: Vec<ObservedRun>,
+    subagent_runs: Vec<ObservedRun>,
+    terminal_runs: Vec<&'a RequirementRun>,
+    completed_runs: usize,
+    failed_runs: usize,
+    cancelled_runs: usize,
+    timeout_like: usize,
+    max_iteration_like: usize,
+    verified_runs: usize,
+    verification_passed: usize,
+    sample_count: usize,
+}
+
+impl<'a> CapabilityFacts<'a> {
+    fn new(
+        obs_runs: &'a [ObservedRun],
+        eval_cases: &'a [EvalCaseResult],
+        requirement_runs: &'a [RequirementRun],
+    ) -> Self {
+        let agent_runs = runs_by_kind(obs_runs, ObservedRunKind::Agent);
+        let tool_runs = runs_by_kind(obs_runs, ObservedRunKind::Tool);
+        let subagent_runs = runs_by_kind(obs_runs, ObservedRunKind::Subagent);
+        let terminal_runs = requirement_runs
+            .iter()
+            .filter(|run| run.status.is_terminal())
+            .collect::<Vec<_>>();
+        let completed_runs = requirement_runs
+            .iter()
+            .filter(|run| run.status == RequirementRunStatus::Completed)
+            .count();
+        let failed_runs = requirement_runs
+            .iter()
+            .filter(|run| run.status == RequirementRunStatus::Failed)
+            .count();
+        let cancelled_runs = requirement_runs
+            .iter()
+            .filter(|run| run.status == RequirementRunStatus::Cancelled)
+            .count();
+        let timeout_like = requirement_runs
+            .iter()
+            .filter(|run| {
+                run.error
+                    .as_deref()
+                    .is_some_and(|e| e.to_ascii_lowercase().contains("timed out"))
+            })
+            .count()
+            + obs_runs
+                .iter()
+                .filter(|run| run.outcome == ObservedOutcome::Timeout)
+                .count();
+        let max_iteration_like = requirement_runs
+            .iter()
+            .filter(|run| {
+                run.error
+                    .as_deref()
+                    .is_some_and(|e| e.to_ascii_lowercase().contains("max iterations"))
+            })
+            .count()
+            + obs_runs
+                .iter()
+                .filter(|run| run.outcome == ObservedOutcome::MaxIterations)
+                .count();
+        let verified_runs = requirement_runs
+            .iter()
+            .filter(|run| run.verification.is_some())
+            .count();
+        let verification_passed = requirement_runs
+            .iter()
+            .filter(|run| {
+                run.verification
+                    .as_ref()
+                    .is_some_and(|v| v.status == VerificationStatus::Passed)
+            })
+            .count();
+        let sample_count = obs_runs.len() + eval_cases.len() + requirement_runs.len();
+
+        Self {
+            obs_runs,
+            eval_cases,
+            requirement_runs,
+            agent_runs,
+            tool_runs,
+            subagent_runs,
+            terminal_runs,
+            completed_runs,
+            failed_runs,
+            cancelled_runs,
+            timeout_like,
+            max_iteration_like,
+            verified_runs,
+            verification_passed,
+            sample_count,
+        }
+    }
+
+    fn completion_rate(&self) -> Option<f64> {
+        ratio(self.completed_runs, self.terminal_runs.len())
+    }
+
+    fn terminal_rate(&self) -> Option<f64> {
+        ratio(self.terminal_runs.len(), self.requirement_runs.len())
+    }
+
+    fn verification_pass_rate(&self) -> Option<f64> {
+        ratio(self.verification_passed, self.verified_runs)
+    }
+
+    fn verification_coverage(&self) -> Option<f64> {
+        ratio(self.verified_runs, self.terminal_runs.len())
+    }
+
+    fn eval_pass_rate(&self) -> Option<f64> {
+        eval_success_rate(self.eval_cases)
+    }
+
+    fn capability_eval_pass_rate(&self) -> Option<f64> {
+        let rows = self
+            .eval_cases
+            .iter()
+            .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Capability)
+            .cloned()
+            .collect::<Vec<_>>();
+        eval_success_rate(&rows)
+    }
+
+    fn regression_eval_pass_rate(&self) -> Option<f64> {
+        let rows = self
+            .eval_cases
+            .iter()
+            .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Regression)
+            .cloned()
+            .collect::<Vec<_>>();
+        eval_success_rate(&rows)
+    }
+
+    fn timeout_free_rate(&self) -> Option<f64> {
+        ratio(
+            self.terminal_runs
+                .len()
+                .saturating_sub(self.timeout_like + self.max_iteration_like),
+            self.terminal_runs.len(),
+        )
+    }
+}
+
+fn score_task_understanding(facts: &CapabilityFacts<'_>) -> CapabilityDimensionScore {
+    let capability_eval = facts
+        .capability_eval_pass_rate()
+        .or_else(|| facts.eval_pass_rate());
+    let verification = facts.verification_pass_rate();
+    let completion = facts.completion_rate();
+    let misunderstanding_free = eval_failure_free_rate(
+        facts.eval_cases,
+        &["understanding", "instruction", "constraint", "acceptance"],
+    );
+    let drivers = vec![
+        driver(
+            "capability_eval_pass_rate",
+            "Capability eval pass rate",
+            capability_eval,
+            0.40,
+            "Repeatable eval cases that target task comprehension",
+        ),
+        driver(
+            "verification_pass_rate",
+            "Verification pass rate",
+            verification,
+            0.25,
+            "Requirement runs whose verification checks passed",
+        ),
+        driver(
+            "completion_rate",
+            "Completion rate",
+            completion,
+            0.20,
+            "Terminal requirement runs that reached completed",
+        ),
+        driver(
+            "misunderstanding_free_rate",
+            "No misunderstanding failure class",
+            misunderstanding_free,
+            0.15,
+            "Eval cases not classified as instruction, constraint, or acceptance misses",
+        ),
+    ];
+    dimension(
+        "task_understanding",
+        "Task understanding",
+        "Whether Jarvis understood goal, constraints, and acceptance criteria",
+        drivers,
+        confidence_for(facts, 0.45, 0.25, 0.20, 0.10),
+        evidence_for_understanding(facts),
+    )
+}
+
+fn score_planning_execution(facts: &CapabilityFacts<'_>) -> CapabilityDimensionScore {
+    let terminal = facts.terminal_rate();
+    let completion = facts.completion_rate();
+    let timeout_free = facts.timeout_free_rate();
+    let agent_success = success_rate(&facts.agent_runs).or_else(|| success_rate(facts.obs_runs));
+    let drivers = vec![
+        driver(
+            "terminal_rate",
+            "Terminal-state rate",
+            terminal,
+            0.25,
+            "Runs that leave pending/running and settle into a terminal state",
+        ),
+        driver(
+            "completion_rate",
+            "Execution completion rate",
+            completion,
+            0.30,
+            "Terminal requirement runs that completed successfully",
+        ),
+        driver(
+            "timeout_free_rate",
+            "Timeout/max-iteration avoidance",
+            timeout_free,
+            0.25,
+            "Runs that did not hit timeout or max-iteration boundaries",
+        ),
+        driver(
+            "agent_success_rate",
+            "Observed agent success",
+            agent_success,
+            0.20,
+            "Observed Jarvis agent runs marked successful",
+        ),
+    ];
+    dimension(
+        "planning_execution",
+        "Planning execution",
+        "Whether Jarvis can decompose, sequence, and finish the work loop",
+        drivers,
+        confidence_for(facts, 0.15, 0.15, 0.55, 0.15),
+        evidence_for_planning(facts),
+    )
+}
+
+fn score_capability_invocation(facts: &CapabilityFacts<'_>) -> CapabilityDimensionScore {
+    let tool_success = success_rate(&facts.tool_runs);
+    let subagent_success = success_rate(&facts.subagent_runs);
+    let agent_success = success_rate(&facts.agent_runs).or_else(|| success_rate(facts.obs_runs));
+    let latency =
+        latency_score(duration_percentile(facts.obs_runs, 0.95), 20_000, 180_000) as f64 / 100.0;
+    let delegation_visibility = (!facts.subagent_runs.is_empty()).then_some(
+        subagent_success.unwrap_or(0.0) * 0.70
+            + latency_score(
+                duration_percentile(&facts.subagent_runs, 0.95),
+                30_000,
+                180_000,
+            ) as f64
+                / 100.0
+                * 0.30,
+    );
+    let drivers = vec![
+        driver(
+            "tool_success_rate",
+            "Tool success rate",
+            tool_success,
+            0.35,
+            "Observed tool calls that completed without error",
+        ),
+        driver(
+            "subagent_success_rate",
+            "SubAgent success rate",
+            subagent_success,
+            0.25,
+            "Delegated worker runs that completed successfully",
+        ),
+        driver(
+            "agent_recovery_rate",
+            "Agent recovery proxy",
+            agent_success,
+            0.20,
+            "Agent run success after using available capabilities",
+        ),
+        driver(
+            "latency_efficiency",
+            "Latency efficiency",
+            Some(latency),
+            0.10,
+            "P95 latency converted into an efficiency score",
+        ),
+        driver(
+            "delegation_visibility",
+            "Delegation visibility",
+            delegation_visibility,
+            0.10,
+            "Whether SubAgent paths are exercised and successful",
+        ),
+    ];
+    dimension(
+        "capability_invocation",
+        "Capability invocation",
+        "Whether Jarvis chooses tools and SubAgents effectively",
+        drivers,
+        confidence_for(facts, 0.45, 0.20, 0.10, 0.25),
+        evidence_for_invocation(facts),
+    )
+}
+
+fn score_task_delivery(facts: &CapabilityFacts<'_>) -> CapabilityDimensionScore {
+    let completion = facts.completion_rate();
+    let verification = facts.verification_pass_rate();
+    let regression = facts
+        .regression_eval_pass_rate()
+        .or_else(|| facts.eval_pass_rate());
+    let verification_coverage = facts.verification_coverage();
+    let failure_free = ratio(
+        facts
+            .terminal_runs
+            .len()
+            .saturating_sub(facts.failed_runs + facts.cancelled_runs),
+        facts.terminal_runs.len(),
+    );
+    let drivers = vec![
+        driver(
+            "completion_rate",
+            "Completion rate",
+            completion,
+            0.35,
+            "Terminal requirement runs that reached completed",
+        ),
+        driver(
+            "verification_pass_rate",
+            "Verification pass rate",
+            verification,
+            0.30,
+            "Attached verification results that passed",
+        ),
+        driver(
+            "regression_eval_pass_rate",
+            "Regression eval pass rate",
+            regression,
+            0.20,
+            "Regression suites that still pass",
+        ),
+        driver(
+            "verification_coverage",
+            "Verification coverage",
+            verification_coverage,
+            0.10,
+            "Terminal runs with attached verification evidence",
+        ),
+        driver(
+            "failure_free_rate",
+            "Failure-free terminal rate",
+            failure_free,
+            0.05,
+            "Terminal runs not marked failed or cancelled",
+        ),
+    ];
+    dimension(
+        "task_delivery",
+        "Task delivery",
+        "Whether Jarvis produces verifiable completed work",
+        drivers,
+        confidence_for(facts, 0.20, 0.25, 0.45, 0.10),
+        evidence_for_delivery(facts),
+    )
+}
+
+fn dimension(
+    key: &str,
+    label: &str,
+    summary: &str,
+    drivers: Vec<CapabilityDriver>,
+    confidence: f64,
+    evidence: Vec<CapabilityEvidence>,
+) -> CapabilityDimensionScore {
+    let score = weighted_driver_score(&drivers);
+    CapabilityDimensionScore {
+        key: key.into(),
+        label: label.into(),
+        score,
+        confidence,
+        summary: summary.into(),
+        drivers,
+        evidence,
+    }
+}
+
+fn driver(
+    key: &str,
+    label: &str,
+    value: Option<f64>,
+    weight: f64,
+    detail: &str,
+) -> CapabilityDriver {
+    let score = value
+        .map(|v| score_from_float(v.clamp(0.0, 1.0) * 100.0))
+        .unwrap_or(50);
+    CapabilityDriver {
+        key: key.into(),
+        label: label.into(),
+        value,
+        weight,
+        score,
+        detail: detail.into(),
+    }
+}
+
+fn weighted_driver_score(drivers: &[CapabilityDriver]) -> u8 {
+    let weight_sum = drivers.iter().map(|d| d.weight).sum::<f64>();
+    if weight_sum <= f64::EPSILON {
+        return 50;
+    }
+    score_from_float(
+        drivers
+            .iter()
+            .map(|d| d.score as f64 * d.weight)
+            .sum::<f64>()
+            / weight_sum,
+    )
+}
+
+fn confidence_for(
+    facts: &CapabilityFacts<'_>,
+    obs_weight: f64,
+    eval_weight: f64,
+    run_weight: f64,
+    verification_weight: f64,
+) -> f64 {
+    let sample_conf = ((facts.sample_count as f64 + 1.0).ln() / 31_f64.ln()).clamp(0.0, 1.0);
+    let obs = (!facts.obs_runs.is_empty()) as u8 as f64;
+    let eval = (!facts.eval_cases.is_empty()) as u8 as f64;
+    let runs = (!facts.requirement_runs.is_empty()) as u8 as f64;
+    let verification = (facts.verified_runs > 0) as u8 as f64;
+    let coverage = obs * obs_weight
+        + eval * eval_weight
+        + runs * run_weight
+        + verification * verification_weight;
+    (sample_conf * coverage).clamp(0.0, 1.0)
+}
+
+fn eval_failure_free_rate(cases: &[EvalCaseResult], needles: &[&str]) -> Option<f64> {
+    if cases.is_empty() {
+        return None;
+    }
+    let matching = cases
+        .iter()
+        .filter(|case| {
+            case.failure_class.as_ref().is_some_and(|class| {
+                let key = json_key(class);
+                needles.iter().any(|needle| key.contains(needle))
+            })
+        })
+        .count();
+    Some((cases.len().saturating_sub(matching)) as f64 / cases.len() as f64)
+}
+
+fn evidence_for_understanding(facts: &CapabilityFacts<'_>) -> Vec<CapabilityEvidence> {
+    let mut rows = eval_failure_evidence(facts, 3);
+    rows.extend(requirement_failure_evidence(facts, 2));
+    rows.truncate(4);
+    rows
+}
+
+fn evidence_for_planning(facts: &CapabilityFacts<'_>) -> Vec<CapabilityEvidence> {
+    let mut rows = facts
+        .requirement_runs
+        .iter()
+        .filter(|run| {
+            run.error.as_deref().is_some_and(|e| {
+                let lower = e.to_ascii_lowercase();
+                lower.contains("timed out") || lower.contains("max iterations")
+            })
+        })
+        .take(4)
+        .map(requirement_run_evidence)
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        rows = requirement_failure_evidence(facts, 4);
+    }
+    rows
+}
+
+fn evidence_for_invocation(facts: &CapabilityFacts<'_>) -> Vec<CapabilityEvidence> {
+    let mut rows = facts
+        .tool_runs
+        .iter()
+        .filter(|run| is_bad_outcome(&run.outcome))
+        .take(3)
+        .map(observed_run_evidence)
+        .collect::<Vec<_>>();
+    rows.extend(
+        facts
+            .subagent_runs
+            .iter()
+            .filter(|run| is_bad_outcome(&run.outcome))
+            .take(2)
+            .map(observed_run_evidence),
+    );
+    rows
+}
+
+fn evidence_for_delivery(facts: &CapabilityFacts<'_>) -> Vec<CapabilityEvidence> {
+    let mut rows = requirement_failure_evidence(facts, 4);
+    rows.extend(eval_failure_evidence(facts, 2));
+    rows.truncate(4);
+    rows
+}
+
+fn requirement_failure_evidence(
+    facts: &CapabilityFacts<'_>,
+    limit: usize,
+) -> Vec<CapabilityEvidence> {
+    facts
+        .requirement_runs
+        .iter()
+        .filter(|run| {
+            matches!(
+                run.status,
+                RequirementRunStatus::Failed | RequirementRunStatus::Cancelled
+            )
+        })
+        .take(limit)
+        .map(requirement_run_evidence)
+        .collect()
+}
+
+fn eval_failure_evidence(facts: &CapabilityFacts<'_>, limit: usize) -> Vec<CapabilityEvidence> {
+    facts
+        .eval_cases
+        .iter()
+        .filter(|case| case.outcome != ObservedOutcome::Success)
+        .take(limit)
+        .map(|case| CapabilityEvidence {
+            kind: "eval_case".into(),
+            id: case.id.clone(),
+            title: case.scenario.clone(),
+            detail: case
+                .failure_class
+                .as_ref()
+                .map(json_key)
+                .unwrap_or_else(|| json_key(&case.outcome)),
+            metric: Some(format!("{} / {}", case.suite, json_key(&case.suite_kind))),
+            tone: "danger".into(),
+        })
+        .collect()
+}
+
+fn requirement_run_evidence(run: &RequirementRun) -> CapabilityEvidence {
+    CapabilityEvidence {
+        kind: "requirement_run".into(),
+        id: run.id.clone(),
+        title: run
+            .summary
+            .clone()
+            .unwrap_or_else(|| format!("requirement {}", short_id(&run.requirement_id))),
+        detail: run.error.clone().unwrap_or_else(|| json_key(&run.status)),
+        metric: Some(format!("status {}", json_key(&run.status))),
+        tone: match run.status {
+            RequirementRunStatus::Failed | RequirementRunStatus::Cancelled => "danger",
+            RequirementRunStatus::Pending | RequirementRunStatus::Running => "warn",
+            RequirementRunStatus::Completed => "ok",
+        }
+        .into(),
+    }
+}
+
+fn observed_run_evidence(run: &ObservedRun) -> CapabilityEvidence {
+    CapabilityEvidence {
+        kind: json_key(&run.kind),
+        id: run.id.clone(),
+        title: run.name.clone(),
+        detail: json_key(&run.outcome),
+        metric: run.duration_ms.map(|ms| format!("{ms}ms")),
+        tone: if is_bad_outcome(&run.outcome) {
+            "danger"
+        } else {
+            "neutral"
+        }
+        .into(),
+    }
+}
+
+fn is_bad_outcome(outcome: &ObservedOutcome) -> bool {
+    matches!(
+        outcome,
+        ObservedOutcome::Error
+            | ObservedOutcome::Timeout
+            | ObservedOutcome::Cancelled
+            | ObservedOutcome::MaxIterations
+    )
+}
+
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
 fn component(
     key: &str,
     label: &str,
@@ -719,9 +1518,62 @@ fn score_from_float(value: f64) -> u8 {
 #[derive(Debug, Deserialize)]
 struct EvalCasesQuery {
     suite: Option<String>,
+    suite_kind: Option<harness_core::EvalSuiteKind>,
     case_id: Option<String>,
     outcome: Option<ObservedOutcome>,
     limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EvalSummaryQuery {
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EvalTrialReliability {
+    task_groups: usize,
+    pass_at_k: Option<f64>,
+    pass_all: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EvalSummarySnapshot {
+    generated_at: String,
+    total_cases: usize,
+    passed_cases: usize,
+    pass_rate: Option<f64>,
+    capability_pass_rate: Option<f64>,
+    regression_pass_rate: Option<f64>,
+    trial_reliability: EvalTrialReliability,
+    by_suite_kind: serde_json::Value,
+    by_grader_kind: serde_json::Value,
+    by_failure_class: serde_json::Value,
+    transcript_cases: usize,
+}
+
+async fn get_eval_summary(
+    State(state): State<AppState>,
+    Query(q): Query<EvalSummaryQuery>,
+) -> Response {
+    let store = match eval_store(&state) {
+        Some(store) => store,
+        None => return unavailable("eval store not configured"),
+    };
+    let limit = q.limit.unwrap_or(2_000).min(10_000);
+    match store
+        .list_case_results(EvalFilter {
+            limit: Some(limit),
+            ..EvalFilter::default()
+        })
+        .await
+    {
+        Ok(cases) => Json(eval_summary(&cases)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn list_eval_cases(
@@ -736,6 +1588,7 @@ async fn list_eval_cases(
     match store
         .list_case_results(EvalFilter {
             suite: q.suite,
+            suite_kind: q.suite_kind,
             case_id: q.case_id,
             outcome: q.outcome,
             limit: Some(limit),
@@ -749,6 +1602,116 @@ async fn list_eval_cases(
         )
             .into_response(),
     }
+}
+
+fn eval_summary(cases: &[EvalCaseResult]) -> EvalSummarySnapshot {
+    let passed_cases = cases
+        .iter()
+        .filter(|case| case.outcome == ObservedOutcome::Success)
+        .count();
+    let capability = cases
+        .iter()
+        .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Capability)
+        .cloned()
+        .collect::<Vec<_>>();
+    let regression = cases
+        .iter()
+        .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Regression)
+        .cloned()
+        .collect::<Vec<_>>();
+    let transcript_cases = cases
+        .iter()
+        .filter(|case| case.transcript_artifact_id.is_some())
+        .count();
+
+    EvalSummarySnapshot {
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        total_cases: cases.len(),
+        passed_cases,
+        pass_rate: ratio(passed_cases, cases.len()),
+        capability_pass_rate: eval_success_rate(&capability),
+        regression_pass_rate: eval_success_rate(&regression),
+        trial_reliability: trial_reliability(cases),
+        by_suite_kind: json!(count_by(cases, |case| json_key(&case.suite_kind))),
+        by_grader_kind: json!(count_grader_kinds(cases)),
+        by_failure_class: json!(count_failure_classes(cases)),
+        transcript_cases,
+    }
+}
+
+fn trial_reliability(cases: &[EvalCaseResult]) -> EvalTrialReliability {
+    let mut groups: BTreeMap<(String, String), Vec<&EvalCaseResult>> = BTreeMap::new();
+    for case in cases {
+        groups
+            .entry((case.suite.clone(), case.case_id.clone()))
+            .or_default()
+            .push(case);
+    }
+    let task_groups = groups.len();
+    let any_pass = groups
+        .values()
+        .filter(|trials| {
+            trials
+                .iter()
+                .any(|case| case.outcome == ObservedOutcome::Success)
+        })
+        .count();
+    let all_pass = groups
+        .values()
+        .filter(|trials| {
+            !trials.is_empty()
+                && trials
+                    .iter()
+                    .all(|case| case.outcome == ObservedOutcome::Success)
+        })
+        .count();
+    EvalTrialReliability {
+        task_groups,
+        pass_at_k: ratio(any_pass, task_groups),
+        pass_all: ratio(all_pass, task_groups),
+    }
+}
+
+fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
+    (denominator > 0).then(|| numerator as f64 / denominator as f64)
+}
+
+fn json_key<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn count_grader_kinds(cases: &[EvalCaseResult]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for case in cases {
+        for grader in &case.grader_results {
+            *counts.entry(json_key(&grader.kind)).or_default() += 1;
+        }
+    }
+    counts
+}
+
+fn count_failure_classes(cases: &[EvalCaseResult]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for case in cases {
+        if let Some(class) = &case.failure_class {
+            *counts.entry(json_key(class)).or_default() += 1;
+        }
+    }
+    counts
+}
+
+fn count_by<T, F>(rows: &[T], mut f: F) -> BTreeMap<String, usize>
+where
+    F: FnMut(&T) -> String,
+{
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        *counts.entry(f(row)).or_default() += 1;
+    }
+    counts
 }
 
 #[cfg(test)]
@@ -789,6 +1752,50 @@ mod tests {
         attrs: serde_json::Value,
     ) -> ObservedRun {
         run_kind(name, ObservedRunKind::Tool, outcome, duration_ms, attrs)
+    }
+
+    fn eval_case(
+        case_id: &str,
+        suite_kind: harness_core::EvalSuiteKind,
+        trial_index: u32,
+        outcome: ObservedOutcome,
+    ) -> EvalCaseResult {
+        EvalCaseResult {
+            id: format!("{case_id}-{trial_index}"),
+            suite_run_id: "suite-run-1".into(),
+            case_id: case_id.into(),
+            suite: "coding-smoke".into(),
+            suite_kind,
+            scenario: "tool-use".into(),
+            trial_index,
+            trial_count: Some(2),
+            outcome,
+            trace_id: None,
+            transcript_artifact_id: Some(format!("transcript-{case_id}-{trial_index}")),
+            failure_class: None,
+            grader_results: vec![harness_core::EvalGraderResult {
+                id: format!("grader-{case_id}-{trial_index}"),
+                kind: harness_core::EvalGraderKind::DeterministicTest,
+                verdict: harness_core::EvalGraderVerdict::Pass,
+                score: Some(1.0),
+                explanation: None,
+                attributes: serde_json::json!({}),
+                artifact_ids: Vec::new(),
+            }],
+            scores: serde_json::json!({}),
+            attributes: serde_json::json!({}),
+            artifact_ids: Vec::new(),
+        }
+    }
+
+    fn requirement_run(status: RequirementRunStatus, error: Option<&str>) -> RequirementRun {
+        let mut run = RequirementRun::new("req-1", "conv-1");
+        run.status = status;
+        if status.is_terminal() {
+            run.finished_at = Some("2026-05-08T00:00:02Z".into());
+        }
+        run.error = error.map(str::to_string);
+        run
     }
 
     #[test]
@@ -852,5 +1859,97 @@ mod tests {
             .recommendations
             .iter()
             .any(|rec| rec.key == "expand_eval_coverage"));
+    }
+
+    #[test]
+    fn eval_summary_splits_suite_kind_and_trial_reliability() {
+        let cases = vec![
+            eval_case(
+                "case-1",
+                harness_core::EvalSuiteKind::Regression,
+                0,
+                ObservedOutcome::Success,
+            ),
+            eval_case(
+                "case-1",
+                harness_core::EvalSuiteKind::Regression,
+                1,
+                ObservedOutcome::Error,
+            ),
+            eval_case(
+                "case-2",
+                harness_core::EvalSuiteKind::Capability,
+                0,
+                ObservedOutcome::Error,
+            ),
+        ];
+        let summary = eval_summary(&cases);
+        assert_eq!(summary.total_cases, 3);
+        assert_eq!(summary.regression_pass_rate, Some(0.5));
+        assert_eq!(summary.capability_pass_rate, Some(0.0));
+        assert_eq!(summary.trial_reliability.task_groups, 2);
+        assert_eq!(summary.trial_reliability.pass_at_k, Some(0.5));
+        assert_eq!(summary.trial_reliability.pass_all, Some(0.0));
+        assert_eq!(summary.transcript_cases, 3);
+        assert_eq!(
+            summary
+                .by_grader_kind
+                .get("deterministic_test")
+                .and_then(serde_json::Value::as_u64),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn capability_score_caps_overall_when_delivery_is_weak() {
+        let obs = vec![
+            run_kind(
+                "jarvis.agent.run",
+                ObservedRunKind::Agent,
+                ObservedOutcome::Timeout,
+                300_000,
+                serde_json::json!({}),
+            ),
+            run_kind(
+                "fs.read",
+                ObservedRunKind::Tool,
+                ObservedOutcome::Success,
+                20,
+                serde_json::json!({"output_bytes": 100}),
+            ),
+        ];
+        let evals = vec![eval_case(
+            "case-1",
+            harness_core::EvalSuiteKind::Regression,
+            0,
+            ObservedOutcome::Error,
+        )];
+        let runs = vec![
+            requirement_run(
+                RequirementRunStatus::Failed,
+                Some("agent timed out after 300000ms"),
+            ),
+            requirement_run(
+                RequirementRunStatus::Failed,
+                Some("agent reached max iterations (30) without terminating"),
+            ),
+        ];
+        let snapshot = capability_score_snapshot(&obs, &evals, &runs);
+        assert!(snapshot.overall_score <= 69);
+        let delivery = snapshot
+            .dimensions
+            .iter()
+            .find(|d| d.key == "task_delivery")
+            .unwrap();
+        assert!(delivery.score < 60);
+        let planning = snapshot
+            .dimensions
+            .iter()
+            .find(|d| d.key == "planning_execution")
+            .unwrap();
+        assert!(planning
+            .evidence
+            .iter()
+            .any(|e| e.detail.contains("timed out")));
     }
 }

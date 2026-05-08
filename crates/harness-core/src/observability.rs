@@ -169,16 +169,82 @@ pub trait ObservabilityStore: Send + Sync {
     async fn dashboard(&self, window: TimeWindow) -> Result<DashboardSnapshot, BoxError>;
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalSuiteKind {
+    #[default]
+    Capability,
+    Regression,
+    Smoke,
+    Other,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalGraderKind {
+    #[default]
+    DeterministicTest,
+    StaticAnalysis,
+    StateCheck,
+    ToolCall,
+    Transcript,
+    LlmRubric,
+    HumanReview,
+    Other,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalGraderVerdict {
+    Pass,
+    Fail,
+    NeedsReview,
+    Flaky,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalFailureClass {
+    AgentError,
+    GraderBug,
+    AmbiguousTask,
+    InfraFlake,
+    SafetyRefusal,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvalGraderResult {
+    pub id: String,
+    pub kind: EvalGraderKind,
+    pub verdict: EvalGraderVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    #[serde(default)]
+    pub attributes: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EvalSuiteRun {
     pub id: String,
     pub suite: String,
+    #[serde(default)]
+    pub suite_kind: EvalSuiteKind,
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
     pub outcome: ObservedOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trials_requested: Option<u32>,
     #[serde(default)]
     pub attributes: Value,
 }
@@ -189,10 +255,22 @@ pub struct EvalCaseResult {
     pub suite_run_id: String,
     pub case_id: String,
     pub suite: String,
+    #[serde(default)]
+    pub suite_kind: EvalSuiteKind,
     pub scenario: String,
+    #[serde(default)]
+    pub trial_index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_count: Option<u32>,
     pub outcome: ObservedOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<EvalFailureClass>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grader_results: Vec<EvalGraderResult>,
     #[serde(default)]
     pub scores: Value,
     #[serde(default)]
@@ -205,6 +283,8 @@ pub struct EvalCaseResult {
 pub struct EvalBaseline {
     pub id: String,
     pub suite: String,
+    #[serde(default)]
+    pub suite_kind: EvalSuiteKind,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_ref: Option<String>,
@@ -220,6 +300,8 @@ pub struct EvalBaseline {
 pub struct EvalFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_kind: Option<EvalSuiteKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

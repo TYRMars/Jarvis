@@ -14,6 +14,7 @@ use harness_store::WorkspaceStore;
 
 use crate::project_memory::ProjectMemoryConfig;
 use crate::provider_registry::{ProviderRegistry, RouteError, Routed};
+use crate::route_policy::ModelRoutePolicy;
 use crate::worktree::WorktreeMode;
 
 /// Runtime metadata the binary populates at startup so the
@@ -69,6 +70,22 @@ pub struct ServerInfo {
     pub mcp_prefixes: Vec<String>,
     /// Crate version (`env!("CARGO_PKG_VERSION")` from the binary).
     pub version: Option<String>,
+}
+
+/// Snapshot of the resolved OTel exporter configuration. Built once
+/// at startup by `apps/jarvis::telemetry::init` and surfaced read-only
+/// to the Web UI via `GET /v1/observability/exporter`.
+///
+/// Never carries credentials — `endpoint` is the bare URL (typically
+/// `http://127.0.0.1:4317` for OTLP gRPC).
+#[derive(Debug, Clone, Default)]
+pub struct TelemetryStatus {
+    pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub protocol: Option<String>,
+    pub service_name: String,
+    pub service_env: String,
+    pub sample_ratio: f64,
 }
 
 /// Shared application state injected into every handler.
@@ -140,6 +157,11 @@ pub struct AppState {
     /// [`std::sync::RwLock::write`] — both critical sections are
     /// HashMap-sized so contention is negligible.
     pub skills: Option<Arc<RwLock<SkillCatalog>>>,
+    /// User-writable skill root. Online skill-market installs write
+    /// `<skill-name>/SKILL.md` under this directory, then insert the
+    /// parsed entry into [`skills`](Self::skills). `None` means the
+    /// binary did not expose a writable skill root.
+    pub user_skills_dir: Option<PathBuf>,
     /// Optional plugin manager. When present, `/v1/plugins*`
     /// endpoints expose install / uninstall / list and the
     /// manager mutates the shared `skills` catalog + `mcp` manager
@@ -208,6 +230,11 @@ pub struct AppState {
     /// product-facing facts store for dashboard summaries; full
     /// traces still flow through OTLP when configured.
     pub observability: Option<Arc<dyn ObservabilityStore>>,
+    /// Optional snapshot of the resolved OTel exporter config, surfaced
+    /// to the Web UI via `GET /v1/observability/exporter`. Populated by
+    /// `apps/jarvis` from `telemetry::init`. `None` ⇒ the route returns
+    /// the default "exporter disabled" payload.
+    pub telemetry: Option<TelemetryStatus>,
     /// Optional eval result / baseline store. Backed by local JSON
     /// by default in the binary, with SQL backends planned behind
     /// the same trait.
@@ -266,6 +293,18 @@ pub struct AppState {
     /// this to recover server-side run status after a sidebar refresh
     /// or a second browser window opens.
     pub chat_runs: Arc<crate::chat_runs::ChatRunRegistry>,
+    /// Phase 4 — model route policy. Empty by default; the
+    /// composition root populates it from the `[routing]` config
+    /// block + env overrides. Read by SubAgent factories and (in a
+    /// follow-up) the LlmProvider retry wrapper.
+    pub route_policy: Arc<RwLock<ModelRoutePolicy>>,
+    /// In-process ledger of recent SubAgent invocations. Populated
+    /// by the WS handler as it relays `AgentEvent::SubAgentEvent`
+    /// frames; surfaced via `/v1/subagents/runs*`. `None` when the
+    /// binary didn't wire a registry — the routes return 503 in
+    /// that case so callers can distinguish "not configured" from
+    /// "really broken".
+    pub subagent_runs: Option<Arc<crate::subagent_runs::SubAgentRunRegistry>>,
 }
 
 impl AppState {
@@ -287,6 +326,7 @@ impl AppState {
             tools: Arc::new(RwLock::new(seed)),
             mcp: None,
             skills: None,
+            user_skills_dir: None,
             plugins: None,
             workspaces: None,
             todos: None,
@@ -298,6 +338,7 @@ impl AppState {
             comments: None,
             labels: None,
             observability: None,
+            telemetry: None,
             evals: None,
             project_memories: None,
             todos_in_prompt: true,
@@ -307,6 +348,8 @@ impl AppState {
             auto_mode_runtime: None,
             auto_mode_config: None,
             chat_runs: crate::chat_runs::ChatRunRegistry::new(),
+            route_policy: Arc::new(RwLock::new(ModelRoutePolicy::default())),
+            subagent_runs: None,
         }
     }
 
@@ -333,6 +376,7 @@ impl AppState {
             tools: Arc::new(RwLock::new(seed)),
             mcp: None,
             skills: None,
+            user_skills_dir: None,
             plugins: None,
             workspaces: None,
             todos: None,
@@ -344,6 +388,7 @@ impl AppState {
             comments: None,
             labels: None,
             observability: None,
+            telemetry: None,
             evals: None,
             project_memories: None,
             todos_in_prompt: true,
@@ -353,6 +398,8 @@ impl AppState {
             auto_mode_runtime: None,
             auto_mode_config: None,
             chat_runs: crate::chat_runs::ChatRunRegistry::new(),
+            route_policy: Arc::new(RwLock::new(ModelRoutePolicy::default())),
+            subagent_runs: None,
         }
     }
 
@@ -432,6 +479,14 @@ impl AppState {
     /// uninstall propagate to live `/v1/skills*` reads.
     pub fn with_skills(mut self, catalog: Arc<RwLock<SkillCatalog>>) -> Self {
         self.skills = Some(catalog);
+        self
+    }
+
+    /// Attach the user-writable skill root used by online skill
+    /// installs. The catalog itself is still attached separately by
+    /// [`with_skills`](Self::with_skills).
+    pub fn with_user_skills_dir(mut self, dir: PathBuf) -> Self {
+        self.user_skills_dir = Some(dir);
         self
     }
 
@@ -543,6 +598,14 @@ impl AppState {
         self
     }
 
+    /// Pin the resolved OTel exporter snapshot, surfaced read-only
+    /// via `GET /v1/observability/exporter`. Pass the value returned
+    /// by `apps/jarvis::telemetry::init`.
+    pub fn with_telemetry_status(mut self, status: TelemetryStatus) -> Self {
+        self.telemetry = Some(status);
+        self
+    }
+
     /// Toggle the per-turn TODO injection into the system prompt.
     /// The binary flips this to `false` when
     /// `JARVIS_NO_TODOS_IN_PROMPT` is set.
@@ -581,6 +644,24 @@ impl AppState {
     /// the same numbers `spawn` is enforcing.
     pub fn with_auto_mode_config(mut self, config: Arc<crate::auto_mode::AutoModeConfig>) -> Self {
         self.auto_mode_config = Some(config);
+        self
+    }
+
+    /// Phase 4 — install a populated [`ModelRoutePolicy`].
+    pub fn with_route_policy(mut self, policy: ModelRoutePolicy) -> Self {
+        self.route_policy = Arc::new(RwLock::new(policy));
+        self
+    }
+
+    /// Install a [`SubAgentRunRegistry`] so the WS handler can
+    /// observe `AgentEvent::SubAgentEvent` frames and the
+    /// `/v1/subagents/runs*` endpoints become reachable. When unset,
+    /// those endpoints return 503.
+    pub fn with_subagent_runs(
+        mut self,
+        runs: Arc<crate::subagent_runs::SubAgentRunRegistry>,
+    ) -> Self {
+        self.subagent_runs = Some(runs);
         self
     }
 

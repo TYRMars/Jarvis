@@ -4,31 +4,28 @@
 // project filter, and date grouping. Click a row → resume the
 // conversation and land on the chat layout.
 //
-// Deep-link: `/conversations/:id` directly resumes that id and
-// redirects to `/`. Useful for chat URLs that survive bookmarks /
-// browser back even when the row scrolled out of the sidebar.
+// Deep-link: `/conversations/:id` is the legacy URL. It redirects
+// to `/sessions/:id`, where the chat layout resumes and keeps the
+// URL pinned to the current session.
 
 import { useEffect, useMemo, useState } from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { Navigate, useParams } from "react-router-dom";
 
-import { resumeConversation, refreshConvoList } from "../../services/conversations";
+import {
+  resumeConversation,
+  refreshConvoList,
+  sessionRoute,
+} from "../../services/conversations";
 import { useAppStore } from "../../store/appStore";
 import type { ConvoListRow } from "../../types/frames";
 import { t } from "../../utils/i18n";
 import { convoGroupLabel, relTime } from "../../utils/time";
 
-/// `/conversations/:id` — resumes the conversation server-side then
-/// redirects to chat. Renders nothing visible.
+/// `/conversations/:id` — old conversation deep-link route.
 export function ConversationDeepLinkRedirect() {
   const { id } = useParams<{ id: string }>();
-  const [done, setDone] = useState(false);
-  useEffect(() => {
-    if (!id) return;
-    void resumeConversation(id).finally(() => setDone(true));
-  }, [id]);
   if (!id) return <Navigate to="/conversations" replace />;
-  if (!done) return null;
-  return <Navigate to="/" replace />;
+  return <Navigate to={sessionRoute(id)} replace />;
 }
 
 /// `/conversations` — full-page archive browse.
@@ -44,7 +41,6 @@ export function ConversationsArchivePage() {
   // Plain `string` is fine: we use the sentinel `"all"` only in a
   // single equality check below.
   const [projectFilter, setProjectFilter] = useState<string>("all");
-  const navigate = useNavigate();
 
   useEffect(() => {
     void refreshConvoList();
@@ -147,16 +143,9 @@ export function ConversationsArchivePage() {
                       type="button"
                       style={rowMainBtnStyle}
                       onClick={() => {
-                        // Fire-and-forget: navigate as soon as the
-                        // resume frame is in flight; the chat pane
-                        // reconciles on the server's reply. Floating
-                        // promise is intentional here — eslint's
-                        // no-floating-promises wants either await or
-                        // explicit `void`, and the latter is what we
-                        // want at an event-handler boundary.
-                        void resumeConversation(row.id).then(() =>
-                          navigate("/"),
-                        );
+                        // Fire-and-forget: resumeConversation also
+                        // pins the browser to /sessions/:id.
+                        void resumeConversation(row.id);
                       }}
                       title={row.id}
                     >

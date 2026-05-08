@@ -362,12 +362,22 @@ Plus 一组持久化对话路由(挂了 `JARVIS_DB_URL` 才工作)和一个静�
 ### MCP server 模式
 
 ```bash
-cargo run -p jarvis -- --mcp-serve
+cargo run -p jarvis -- mcp-serve
 ```
 
 不起 HTTP,改用 stdio 暴露 Jarvis 内置工具集为一个 MCP server。这样
 其他支持 MCP 的 agent(包括另一个 Jarvis 实例)可以把 Jarvis 当工具
 来调。这种模式下**不读 `OPENAI_API_KEY`**,也不需要任何 LLM 凭据。
+
+其中 `harness.health` 会读取同一套本地健康数据源:
+
+- `JARVIS_DB_URL` 或默认 JSON persistence,用于 RequirementRun / 自动调度交付历史。
+- `JARVIS_OBSERVABILITY_STORE_URL` 或默认 JSON observability,用于 agent/tool/SubAgent 运行记录。
+- `JARVIS_EVAL_STORE_URL` 或默认 JSON evals,用于 capability / regression eval 结果。
+
+Claude Code、Codex 或另一个 Jarvis 可以把这个 MCP server 配成外部工具,
+调用 `harness.health` 获取 `overall_score`、四个能力分、信号置信度、
+真实失败证据和建议动作,再决定下一步代码优化方向。
 
 ---
 

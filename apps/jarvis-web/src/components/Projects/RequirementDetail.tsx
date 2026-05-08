@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type {
   Activity,
   Requirement,
@@ -14,6 +15,7 @@ import type {
 import { t } from "../../utils/i18n";
 import { appStore } from "../../store/appStore";
 import { currentJarvisSoulPrompt } from "../../store/persistence";
+import { sessionRoute } from "../../services/conversations";
 import { startConversationTurn } from "../../services/conversationSockets";
 import {
   listActivitiesForRequirement,
@@ -1079,6 +1081,12 @@ function RunDetail({
       {run.summary && (
         <p className="requirement-detail-run-text">{run.summary}</p>
       )}
+      <Link
+        to={sessionRoute(run.conversation_id)}
+        className="requirement-detail-run-session-link"
+      >
+        {sessionRoute(run.conversation_id)}
+      </Link>
       {run.error && (
         <p className="requirement-detail-run-text run-error">{run.error}</p>
       )}

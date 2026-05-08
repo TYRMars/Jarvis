@@ -24,9 +24,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use harness_core::{LlmProvider, ToolRegistry};
+use harness_server::{ModelRoutePolicy, RouteSlot};
 use harness_subagents::{
     claude_code, claude_code::ClaudeCodeSubAgent, codex, doc_reader, reviewer, SubAgent,
-    SubAgentTool,
+    SubAgentBatchTool, SubAgentRegistry, SubAgentTool, DEFAULT_MAX_CONCURRENCY,
 };
 use harness_tools::RequirementReviewVerdictTool;
 use tracing::{info, warn};
@@ -65,6 +66,9 @@ fn build_doc_reader_tools(canonical: &ToolRegistry) -> ToolRegistry {
         "todo.update",
         "todo.delete",
         "doc.upsert",
+        "doc.create",
+        "doc.update",
+        "doc.draft.save",
         "doc.delete",
         "project.create",
         "project.update",
@@ -105,6 +109,9 @@ fn build_reviewer_tools(
         "todo.update",
         "todo.delete",
         "doc.upsert",
+        "doc.create",
+        "doc.update",
+        "doc.draft.save",
         "doc.delete",
         "project.create",
         "project.update",
@@ -159,13 +166,35 @@ fn build_codex_tools(canonical: &ToolRegistry) -> ToolRegistry {
 /// `ToolRegistry`. Returns the count of subagents actually added so
 /// the caller can log it. Fully non-fatal: missing dependencies
 /// (e.g. ClaudeCode SDK) just skip the affected subagent.
+#[allow(clippy::too_many_arguments)]
 pub async fn register_builtins(
     canonical: &Arc<RwLock<ToolRegistry>>,
     primary_provider: Arc<dyn LlmProvider>,
+    primary_model: String,
     workspace_root: PathBuf,
     requirement_store: Option<Arc<dyn harness_core::RequirementStore>>,
     activity_store: Option<Arc<dyn harness_core::ActivityStore>>,
+    route_policy: Arc<ModelRoutePolicy>,
+    // Lookup table of `provider_name → built provider Arc`. When a
+    // route slot points at a provider in this map, the subagent
+    // uses *that* provider (in addition to the slot's model);
+    // otherwise it falls back to `primary_provider`. Pass an empty
+    // map (or one containing only the primary) when no extras are
+    // configured — the subagent then routes by model only.
+    providers_by_name: std::collections::HashMap<String, Arc<dyn LlmProvider>>,
 ) -> usize {
+    // Resolve a route slot into a (provider, model) pair. Returns the
+    // primary provider when the slot's target points at an unknown /
+    // unconfigured provider name — better to run the subagent on a
+    // working provider than to silently disable it.
+    let resolve_slot = |slot: RouteSlot| -> Option<(Arc<dyn LlmProvider>, String)> {
+        let target = route_policy.target_for(slot)?;
+        let provider = providers_by_name
+            .get(&target.provider)
+            .cloned()
+            .unwrap_or_else(|| primary_provider.clone());
+        Some((provider, target.model.clone()))
+    };
     if std::env::var_os("JARVIS_DISABLE_SUBAGENTS").is_some() {
         info!("subagents disabled via JARVIS_DISABLE_SUBAGENTS");
         return 0;
@@ -181,13 +210,32 @@ pub async fn register_builtins(
         .unwrap_or_else(|_| ToolRegistry::new());
 
     let mut to_register: Vec<Arc<dyn harness_core::Tool>> = Vec::new();
+    // Parallel collection: the same Arc<dyn SubAgent> instances feed
+    // a shared SubAgentRegistry the batch tool dispatches against.
+    let mut subagents: Vec<Arc<dyn SubAgent>> = Vec::new();
 
     // -- doc reader --
     let read_doc_tools = Arc::new(build_doc_reader_tools(&snapshot));
-    let read_doc_model = std::env::var("JARVIS_SUBAGENT_READER_MODEL").ok();
-    let read_doc = doc_reader::build(primary_provider.clone(), read_doc_tools, read_doc_model);
+    // Per-subagent model + provider resolution: explicit env wins,
+    // else the route policy's slot (which may also swap the
+    // provider), else fall back to the primary agent's
+    // (provider, model). Without that final fallback the inner
+    // factory hits a hard-coded `"default"` literal, which Codex
+    // (and most managed backends) reject — see the runaway loop
+    // incident at `auto_mode.rs::tick_does_not_re_pick_review_subagent_after_completed_run_under_reviewer_flag`.
+    let (read_doc_provider, read_doc_model) =
+        match std::env::var("JARVIS_SUBAGENT_READER_MODEL").ok() {
+            Some(m) => (primary_provider.clone(), Some(m)),
+            None => match resolve_slot(RouteSlot::DocReader) {
+                Some((p, m)) => (p, Some(m)),
+                None => (primary_provider.clone(), Some(primary_model.clone())),
+            },
+        };
+    let read_doc = doc_reader::build(read_doc_provider, read_doc_tools, read_doc_model);
+    let read_doc_arc: Arc<dyn SubAgent> = Arc::new(read_doc);
+    subagents.push(read_doc_arc.clone());
     to_register.push(Arc::new(SubAgentTool::new(
-        Arc::new(read_doc) as Arc<dyn SubAgent>,
+        read_doc_arc,
         workspace_root.clone(),
     )));
 
@@ -197,10 +245,19 @@ pub async fn register_builtins(
         requirement_store.clone(),
         activity_store.clone(),
     ));
-    let reviewer_model = std::env::var("JARVIS_SUBAGENT_REVIEWER_MODEL").ok();
-    let reviewer = reviewer::build(primary_provider.clone(), reviewer_tools, reviewer_model);
+    let (reviewer_provider, reviewer_model) =
+        match std::env::var("JARVIS_SUBAGENT_REVIEWER_MODEL").ok() {
+            Some(m) => (primary_provider.clone(), Some(m)),
+            None => match resolve_slot(RouteSlot::Review) {
+                Some((p, m)) => (p, Some(m)),
+                None => (primary_provider.clone(), Some(primary_model.clone())),
+            },
+        };
+    let reviewer = reviewer::build(reviewer_provider, reviewer_tools, reviewer_model);
+    let reviewer_arc: Arc<dyn SubAgent> = Arc::new(reviewer);
+    subagents.push(reviewer_arc.clone());
     to_register.push(Arc::new(SubAgentTool::new(
-        Arc::new(reviewer) as Arc<dyn SubAgent>,
+        reviewer_arc,
         workspace_root.clone(),
     )));
 
@@ -211,10 +268,19 @@ pub async fn register_builtins(
     // can be extended to thread that provider in here. For now the
     // primary provider is used so this subagent always works.
     let codex_tools = Arc::new(build_codex_tools(&snapshot));
-    let codex_model = std::env::var("JARVIS_SUBAGENT_CODEX_MODEL").ok();
-    let codex = codex::build(primary_provider.clone(), codex_tools, codex_model);
+    let (codex_provider, codex_model) =
+        match std::env::var("JARVIS_SUBAGENT_CODEX_MODEL").ok() {
+            Some(m) => (primary_provider.clone(), Some(m)),
+            None => match resolve_slot(RouteSlot::Coding) {
+                Some((p, m)) => (p, Some(m)),
+                None => (primary_provider.clone(), Some(primary_model.clone())),
+            },
+        };
+    let codex = codex::build(codex_provider, codex_tools, codex_model);
+    let codex_arc: Arc<dyn SubAgent> = Arc::new(codex);
+    subagents.push(codex_arc.clone());
     to_register.push(Arc::new(SubAgentTool::new(
-        Arc::new(codex) as Arc<dyn SubAgent>,
+        codex_arc,
         workspace_root.clone(),
     )));
 
@@ -232,16 +298,42 @@ pub async fn register_builtins(
                 model: std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_MODEL").ok(),
             };
             let cc = ClaudeCodeSubAgent::new(cc_cfg);
-            to_register.push(Arc::new(SubAgentTool::new(
-                Arc::new(cc) as Arc<dyn SubAgent>,
-                workspace_root.clone(),
-            )));
+            let cc_arc: Arc<dyn SubAgent> = Arc::new(cc);
+            subagents.push(cc_arc.clone());
+            to_register.push(Arc::new(SubAgentTool::new(cc_arc, workspace_root.clone())));
             info!("subagent.claude_code registered (claude CLI probe ok)");
         }
         Err(reason) => {
             info!(reason = %reason, "subagent.claude_code skipped (claude CLI probe failed; install Claude Code from https://claude.com/claude-code and run `claude /login`)");
         }
     }
+
+    // -- subagent.batch (Phase 3) --
+    // Wraps a fresh SubAgentRegistry seeded with every subagent we
+    // just built. Concurrency cap is the spec default (3) unless
+    // overridden via env. Spawns parallel children; each child runs
+    // under its own with_subagent scope so frames stream out per
+    // child id and the WS transport renders them as concurrent
+    // timelines.
+    let mut sub_registry = SubAgentRegistry::new();
+    for s in &subagents {
+        sub_registry.register(s.clone());
+    }
+    let max_concurrency = std::env::var("JARVIS_SUBAGENT_MAX_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_CONCURRENCY);
+    let batch_tool = SubAgentBatchTool::new(
+        Arc::new(sub_registry),
+        workspace_root.clone(),
+        max_concurrency,
+    );
+    to_register.push(Arc::new(batch_tool));
+    info!(
+        max_concurrency,
+        "subagent.batch registered (parallel sub-agent dispatch enabled)",
+    );
 
     let count = to_register.len();
     match canonical.write() {

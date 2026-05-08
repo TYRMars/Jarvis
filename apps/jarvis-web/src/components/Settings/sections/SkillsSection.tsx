@@ -22,7 +22,13 @@ type LoadState =
   | { kind: "ready"; skills: SkillSummary[] }
   | { kind: "error"; message: string };
 
-export function SkillsSection({ embedded }: { embedded?: boolean } = {}) {
+export function SkillsSection({
+  embedded,
+  refreshToken = 0,
+}: {
+  embedded?: boolean;
+  refreshToken?: number;
+} = {}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const active = useAppStore((s) => s.activeSkills);
   const [opened, setOpened] = useState<string | null>(null);
@@ -36,7 +42,7 @@ export function SkillsSection({ embedded }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [refreshToken]);
 
   const toggle = (name: string, on: boolean) => {
     sendFrame({ type: on ? "activate_skill" : "deactivate_skill", name });

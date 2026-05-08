@@ -14,6 +14,7 @@ import { subAgentFrameHandlers } from "./subAgentFrames";
 import { hitlFrameHandlers } from "./hitlFrames";
 import { lifecycleFrameHandlers } from "./lifecycleFrames";
 import { domainFrameHandlers } from "./domainFrames";
+import { fallbackFrameHandlers } from "./fallbackFrames";
 
 export const frameHandlers: Map<string, (ev: any) => void> = new Map(
   Object.entries({
@@ -24,6 +25,7 @@ export const frameHandlers: Map<string, (ev: any) => void> = new Map(
     ...subAgentFrameHandlers,
     ...hitlFrameHandlers,
     ...lifecycleFrameHandlers,
+    ...fallbackFrameHandlers,
     ...domainFrameHandlers,
   }),
 );

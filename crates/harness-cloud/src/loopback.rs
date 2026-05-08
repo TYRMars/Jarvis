@@ -71,13 +71,13 @@ pub fn loopback_transport() -> (LoopbackTransport, LoopbackTransport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{EdgeCapabilities, EdgeToolSpec, ToolRisk};
     use crate::protocol::{
-        RuntimeHeartbeat, RuntimeLoadStatus, RuntimeRegister, TaskCancel, TaskClaim,
-        TaskComplete, TaskDispatch, TaskFail, TaskProgress, TaskProgressEvent,
+        RuntimeHeartbeat, RuntimeLoadStatus, RuntimeRegister, TaskCancel, TaskClaim, TaskComplete,
+        TaskDispatch, TaskFail, TaskProgress, TaskProgressEvent,
     };
     use crate::{Envelope, Payload};
     use harness_core::{Conversation, PlanItem, PlanStatus};
-    use crate::model::{EdgeCapabilities, EdgeToolSpec, ToolRisk};
 
     #[tokio::test]
     async fn loopback_dispatch_progress_complete_e2e() {

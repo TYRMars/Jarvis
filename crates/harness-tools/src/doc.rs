@@ -29,6 +29,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 const MAX_DRAFT_BYTES: usize = 50 * 1024;
+const DEFAULT_DOC_SEARCH_LIMIT: usize = 10;
+const MAX_DOC_SEARCH_LIMIT: usize = 50;
+const DOC_SNIPPET_CHARS: usize = 240;
 
 fn resolve_workspace(default_root: &Path, override_path: Option<&str>) -> String {
     let path = match override_path {
@@ -54,6 +57,58 @@ fn project_to_json(p: &DocProject) -> Value {
 
 fn draft_to_json(d: &DocDraft) -> Value {
     serde_json::to_value(d).unwrap_or_else(|e| json!({ "error": e.to_string() }))
+}
+
+fn lower(s: &str) -> String {
+    s.to_lowercase()
+}
+
+fn contains_query(haystack: &str, query: &str) -> bool {
+    query.is_empty() || lower(haystack).contains(query)
+}
+
+fn content_snippet(content: &str, query: &str) -> String {
+    let content = content.trim();
+    if content.is_empty() {
+        return String::new();
+    }
+    let start_byte = if query.is_empty() {
+        0
+    } else {
+        lower(content).find(query).unwrap_or(0)
+    };
+    let start = content
+        .char_indices()
+        .take_while(|(idx, _)| *idx < start_byte)
+        .count();
+    let mut snippet: String = content
+        .chars()
+        .skip(start)
+        .take(DOC_SNIPPET_CHARS)
+        .collect();
+    if start_byte > 0 {
+        snippet.insert_str(0, "...");
+    }
+    if content.chars().skip(start).nth(DOC_SNIPPET_CHARS).is_some() {
+        snippet.push_str("...");
+    }
+    snippet
+}
+
+fn clean_tags(tags: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    tags.into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty() && seen.insert(t.clone()))
+        .collect()
+}
+
+async fn touch_project(store: &Arc<dyn DocStore>, project_id: &str) -> Result<(), BoxError> {
+    if let Some(mut project) = store.get_project(project_id).await? {
+        project.touch();
+        store.upsert_project(&project).await?;
+    }
+    Ok(())
 }
 
 // ---------- doc.list -------------------------------------------------------
@@ -141,6 +196,140 @@ impl Tool for DocListTool {
     }
 }
 
+// ---------- doc.search -----------------------------------------------------
+
+pub struct DocSearchTool {
+    store: Arc<dyn DocStore>,
+    default_root: PathBuf,
+}
+
+impl DocSearchTool {
+    pub fn new(store: Arc<dyn DocStore>, default_root: PathBuf) -> Self {
+        Self {
+            store,
+            default_root,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for DocSearchTool {
+    fn name(&self) -> &str {
+        "doc.search"
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Read
+    }
+
+    fn description(&self) -> &str {
+        "Search doc projects in the current workspace by title, tags, kind, \
+         and latest draft body. Use this before editing/deleting when the \
+         user names a document naturally instead of giving an id."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Free-text query. Blank returns recent docs."
+                },
+                "workspace": {
+                    "type": "string",
+                    "description": "Absolute path. Optional; defaults to the agent's pinned workspace."
+                },
+                "archived": {
+                    "type": "boolean",
+                    "description": "Include archived docs. Defaults to false."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Max results. Defaults to 10."
+                }
+            }
+        })
+    }
+
+    async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        #[derive(Deserialize, Default)]
+        struct Args {
+            #[serde(default)]
+            query: Option<String>,
+            #[serde(default)]
+            workspace: Option<String>,
+            #[serde(default)]
+            archived: bool,
+            #[serde(default)]
+            limit: Option<usize>,
+        }
+        let parsed: Args = if args.is_null() {
+            Args::default()
+        } else {
+            serde_json::from_value(args)
+                .map_err(|e| -> BoxError { format!("doc.search: bad args: {e}").into() })?
+        };
+        let workspace = resolve_workspace(&self.default_root, parsed.workspace.as_deref());
+        let query_raw = parsed.query.unwrap_or_default();
+        let query = query_raw.trim().to_lowercase();
+        let limit = parsed
+            .limit
+            .unwrap_or(DEFAULT_DOC_SEARCH_LIMIT)
+            .clamp(1, MAX_DOC_SEARCH_LIMIT);
+        let mut results = Vec::new();
+        let projects = self.store.list_projects(&workspace).await?;
+        for project in projects {
+            if !parsed.archived && project.archived {
+                continue;
+            }
+            let latest = self.store.latest_draft(&project.id).await?;
+            let mut matched_fields = Vec::new();
+            if contains_query(&project.title, &query) {
+                matched_fields.push("title");
+            }
+            if contains_query(project.kind.as_wire(), &query) {
+                matched_fields.push("kind");
+            }
+            if project.tags.iter().any(|t| contains_query(t, &query)) {
+                matched_fields.push("tags");
+            }
+            if latest
+                .as_ref()
+                .is_some_and(|d| contains_query(&d.content, &query))
+            {
+                matched_fields.push("content");
+            }
+            if matched_fields.is_empty() {
+                continue;
+            }
+            results.push(json!({
+                "project": project_to_json(&project),
+                "matched_fields": matched_fields,
+                "latest_draft": latest.as_ref().map(|d| json!({
+                    "id": d.id,
+                    "format": d.format,
+                    "created_at": d.created_at,
+                    "updated_at": d.updated_at,
+                    "snippet": content_snippet(&d.content, &query),
+                })).unwrap_or(Value::Null),
+            }));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(json!({
+            "workspace": workspace,
+            "query": query_raw,
+            "count": results.len(),
+            "items": results,
+        })
+        .to_string())
+    }
+}
+
 // ---------- doc.get --------------------------------------------------------
 
 pub struct DocGetTool {
@@ -203,6 +392,193 @@ impl Tool for DocGetTool {
             out["draft"] = draft.as_ref().map(draft_to_json).unwrap_or(Value::Null);
         }
         Ok(out.to_string())
+    }
+}
+
+// ---------- doc.upsert -----------------------------------------------------
+
+pub struct DocUpsertTool {
+    store: Arc<dyn DocStore>,
+    default_root: PathBuf,
+}
+
+impl DocUpsertTool {
+    pub fn new(store: Arc<dyn DocStore>, default_root: PathBuf) -> Self {
+        Self {
+            store,
+            default_root,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for DocUpsertTool {
+    fn name(&self) -> &str {
+        "doc.upsert"
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Write
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
+    fn description(&self) -> &str {
+        "Create or update one doc project and optionally append a latest \
+         markdown draft in a single operation. If `id` is provided, updates \
+         that project. Otherwise an exact title match in the workspace is \
+         updated; no match creates a new doc. Ambiguous title matches error."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Existing doc id. Preferred when editing a known doc."
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Title for create, rename, or exact-title lookup when id is absent."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Markdown body to save as a new latest draft. Up to ~50KB."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["note", "research", "report", "design", "guide"]
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "pinned": { "type": "boolean" },
+                "archived": { "type": "boolean" },
+                "workspace": {
+                    "type": "string",
+                    "description": "Absolute path. Optional; defaults to the agent's pinned workspace."
+                }
+            }
+        })
+    }
+
+    fn summary_for_audit(&self, args: &Value) -> Option<String> {
+        args.get("title")
+            .or_else(|| args.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    async fn invoke(&self, args: Value) -> Result<String, BoxError> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            id: Option<String>,
+            #[serde(default)]
+            title: Option<String>,
+            #[serde(default)]
+            content: Option<String>,
+            #[serde(default)]
+            kind: Option<String>,
+            #[serde(default)]
+            tags: Option<Vec<String>>,
+            #[serde(default)]
+            pinned: Option<bool>,
+            #[serde(default)]
+            archived: Option<bool>,
+            #[serde(default)]
+            workspace: Option<String>,
+        }
+        let parsed: Args = serde_json::from_value(args)
+            .map_err(|e| -> BoxError { format!("doc.upsert: bad args: {e}").into() })?;
+        let title = parsed
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        let workspace = resolve_workspace(&self.default_root, parsed.workspace.as_deref());
+        let mut created = false;
+        let mut project = if let Some(id) = parsed.id.as_deref().filter(|s| !s.trim().is_empty()) {
+            self.store
+                .get_project(id.trim())
+                .await?
+                .ok_or_else(|| -> BoxError { format!("doc not found: `{}`", id.trim()).into() })?
+        } else {
+            let Some(title) = title else {
+                return Err("doc.upsert: `title` is required when `id` is absent".into());
+            };
+            let title_lc = title.to_lowercase();
+            let matches: Vec<DocProject> = self
+                .store
+                .list_projects(&workspace)
+                .await?
+                .into_iter()
+                .filter(|p| p.title.trim().to_lowercase() == title_lc)
+                .collect();
+            match matches.len() {
+                0 => {
+                    created = true;
+                    DocProject::new(workspace.clone(), title.to_string())
+                }
+                1 => matches.into_iter().next().expect("one match"),
+                _ => {
+                    let ids: Vec<String> = matches
+                        .into_iter()
+                        .map(|p| format!("{} ({})", p.title, p.id))
+                        .collect();
+                    return Err(format!(
+                        "doc.upsert: title `{title}` matched multiple docs; pass `id`. matches: {}",
+                        ids.join(", ")
+                    )
+                    .into());
+                }
+            }
+        };
+
+        if let Some(t) = title {
+            project.title = t.to_string();
+        }
+        if let Some(k) = parsed.kind.as_deref() {
+            project.kind = parse_kind(k)?;
+        }
+        if let Some(tags) = parsed.tags {
+            project.tags = clean_tags(tags);
+        }
+        if let Some(pinned) = parsed.pinned {
+            project.pinned = pinned;
+        }
+        if let Some(archived) = parsed.archived {
+            project.archived = archived;
+        }
+        project.touch();
+        self.store.upsert_project(&project).await?;
+
+        let draft = if let Some(content) = parsed.content {
+            if content.len() > MAX_DRAFT_BYTES {
+                return Err(format!(
+                    "doc.upsert: content too large ({} bytes) — cap is {} bytes",
+                    content.len(),
+                    MAX_DRAFT_BYTES
+                )
+                .into());
+            }
+            let draft = DocDraft::new(project.id.clone(), content);
+            self.store.upsert_draft(&draft).await?;
+            Some(draft)
+        } else {
+            None
+        };
+
+        Ok(json!({
+            "created": created,
+            "project": project_to_json(&project),
+            "draft": draft.as_ref().map(draft_to_json).unwrap_or(Value::Null),
+        })
+        .to_string())
     }
 }
 
@@ -297,7 +673,7 @@ impl Tool for DocCreateTool {
             project.kind = parse_kind(k)?;
         }
         if let Some(tags) = parsed.tags {
-            project.tags = tags;
+            project.tags = clean_tags(tags);
         }
         project.pinned = parsed.pinned;
         self.store.upsert_project(&project).await?;
@@ -398,7 +774,7 @@ impl Tool for DocUpdateTool {
             changed = true;
         }
         if let Some(tags) = parsed.tags {
-            project.tags = tags;
+            project.tags = clean_tags(tags);
             changed = true;
         }
         if let Some(p) = parsed.pinned {
@@ -618,6 +994,7 @@ impl Tool for DocDraftSaveTool {
             }
         }
         self.store.upsert_draft(&draft).await?;
+        touch_project(&self.store, &draft.project_id).await?;
         Ok(draft_to_json(&draft).to_string())
     }
 }
@@ -807,6 +1184,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_matches_title_tags_and_latest_content() {
+        let s = store();
+        let create = DocCreateTool::new(s.clone(), root());
+        let update = DocUpdateTool::new(s.clone());
+        let save = DocDraftSaveTool::new(s.clone());
+        let search = DocSearchTool::new(s.clone(), root());
+        let out = create
+            .invoke(json!({ "title": "季度复盘", "workspace": "/r" }))
+            .await
+            .unwrap();
+        let id = serde_json::from_str::<Value>(&out).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        update
+            .invoke(json!({ "id": &id, "tags": ["增长", "Q2"] }))
+            .await
+            .unwrap();
+        save.invoke(json!({ "project_id": &id, "content": "本季度重点是自然语言 docs 工作流。" }))
+            .await
+            .unwrap();
+
+        let by_title = search
+            .invoke(json!({ "workspace": "/r", "query": "复盘" }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&by_title).unwrap();
+        assert_eq!(v["count"], 1);
+        assert_eq!(v["items"][0]["project"]["id"], id);
+        assert!(v["items"][0]["matched_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "title"));
+
+        let by_content = search
+            .invoke(json!({ "workspace": "/r", "query": "自然语言" }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&by_content).unwrap();
+        assert_eq!(v["count"], 1);
+        assert!(v["items"][0]["latest_draft"]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("自然语言"));
+    }
+
+    #[tokio::test]
+    async fn upsert_creates_and_then_updates_by_exact_title() {
+        let s = store();
+        let upsert = DocUpsertTool::new(s.clone(), root());
+        let out = upsert
+            .invoke(json!({
+                "workspace": "/r",
+                "title": "Agent docs",
+                "kind": "guide",
+                "tags": ["docs", "docs", " agent "],
+                "content": "# v1"
+            }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["created"], true);
+        assert_eq!(v["project"]["kind"], "guide");
+        assert_eq!(v["project"]["tags"], json!(["docs", "agent"]));
+        let id = v["project"]["id"].as_str().unwrap().to_string();
+
+        let out = upsert
+            .invoke(json!({
+                "workspace": "/r",
+                "title": "Agent docs",
+                "content": "# v2"
+            }))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["created"], false);
+        assert_eq!(v["project"]["id"], id);
+        assert_eq!(v["draft"]["content"], "# v2");
+        assert_eq!(s.list_projects("/r").await.unwrap().len(), 1);
+        assert_eq!(s.list_drafts(&id).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn upsert_rejects_ambiguous_title_matches() {
+        let s = store();
+        let create = DocCreateTool::new(s.clone(), root());
+        let upsert = DocUpsertTool::new(s.clone(), root());
+        create
+            .invoke(json!({ "title": "Same", "workspace": "/r" }))
+            .await
+            .unwrap();
+        create
+            .invoke(json!({ "title": "Same", "workspace": "/r" }))
+            .await
+            .unwrap();
+
+        let err = upsert
+            .invoke(json!({ "title": "Same", "workspace": "/r", "content": "x" }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("matched multiple docs"));
+    }
+
+    #[tokio::test]
     async fn draft_save_appends_new_revision() {
         let s = store();
         let create = DocCreateTool::new(s.clone(), root());
@@ -833,6 +1315,28 @@ mod tests {
 
         let all = s.list_drafts(&id).await.unwrap();
         assert_eq!(all.len(), 2, "save must append, not overwrite");
+    }
+
+    #[tokio::test]
+    async fn draft_save_bumps_parent_project_updated_at() {
+        let s = store();
+        let create = DocCreateTool::new(s.clone(), root());
+        let save = DocDraftSaveTool::new(s.clone());
+        let out = create
+            .invoke(json!({ "title": "x", "workspace": "/r" }))
+            .await
+            .unwrap();
+        let id = serde_json::from_str::<Value>(&out).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let before = s.get_project(&id).await.unwrap().unwrap().updated_at;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        save.invoke(json!({ "project_id": &id, "content": "v1" }))
+            .await
+            .unwrap();
+        let after = s.get_project(&id).await.unwrap().unwrap().updated_at;
+        assert!(after > before);
     }
 
     #[tokio::test]

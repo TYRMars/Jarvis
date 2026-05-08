@@ -216,7 +216,7 @@ Jarvis ships with a namespaced toolset:
 - `requirement.{list,create,update,delete,start,complete,block}` — kanban row CRUD; agent-created rows default to `triage_state=proposed_by_agent` and wait for human approval
 - `triage.scan_candidates` — surface follow-up Requirement candidates from `TODO|FIXME|XXX|HACK` markers (more sources planned)
 - `roadmap.import` — bootstrap a project + Requirements from `docs/proposals/`, `docs/roadmap/`, or `ROADMAP.md`
-- `doc.{list,get,create,update,delete,draft.{get,save}}` — long-form document CRUD
+- `doc.{list,search,get,upsert,create,update,delete,draft.{get,save}}` — long-form document CRUD; `search` + `upsert` are tuned for natural-language doc workflows
 - `codex.run`, `claude_code.run` — opt-in sub-agent runners
 
 Mutation tools are opt-in and approval-aware. The binary composition root decides which tools are registered; `harness-core` only sees the `ToolRegistry`.

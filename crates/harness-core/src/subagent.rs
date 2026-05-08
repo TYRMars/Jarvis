@@ -115,6 +115,14 @@ pub fn is_active() -> bool {
     SUBAGENT_TX.try_with(|_| ()).is_ok()
 }
 
+/// Clone of the currently-installed sender, if any. Used by the
+/// parallel-batch tool so each spawned child task can re-enter a
+/// fresh `with_subagent` scope and forward frames into the same
+/// outer transport. Returns `None` outside an agent invocation.
+pub fn active_sender() -> Option<mpsc::UnboundedSender<SubAgentFrame>> {
+    SUBAGENT_TX.try_with(|tx| tx.clone()).ok()
+}
+
 /// Run `fut` with `tx` installed as the active subagent sender.
 /// Used by the agent loop to scope a sender to a single subagent
 /// tool invocation, mirroring [`crate::plan::with_plan`]. The sender

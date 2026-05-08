@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
 
-use crate::{Envelope, EdgeTransport};
+use crate::{EdgeTransport, Envelope};
 use harness_core::BoxError;
 
 /// Configuration for a WebSocket edge transport.
@@ -23,7 +23,16 @@ pub struct WsEdgeTransportConfig {
 /// In **Edge** mode this connects outbound to a Cloud URL.
 /// In **Cloud** mode this wraps an already-upgraded server-side socket.
 pub struct WebSocketTransport {
-    tx: Arc<Mutex<futures::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, tokio_tungstenite::tungstenite::Message>>>,
+    tx: Arc<
+        Mutex<
+            futures::stream::SplitSink<
+                tokio_tungstenite::WebSocketStream<
+                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+                >,
+                tokio_tungstenite::tungstenite::Message,
+            >,
+        >,
+    >,
 }
 
 impl WebSocketTransport {
@@ -31,7 +40,9 @@ impl WebSocketTransport {
     /// after axum upgrades the connection).
     #[allow(dead_code)]
     pub fn from_stream(
-        ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        ws: tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
     ) -> Self {
         let (tx, _rx) = ws.split();
         Self {

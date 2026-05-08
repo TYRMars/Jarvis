@@ -20,6 +20,7 @@ pub mod exit_plan;
 pub mod fs;
 pub mod git;
 pub mod grep;
+pub mod harness_health;
 pub mod http;
 pub mod patch;
 pub mod plan;
@@ -39,7 +40,7 @@ pub use claude_code::{ClaudeCodeRunTool, PermissionMode as ClaudeCodePermissionM
 pub use codex::{CodexRunTool, SandboxMode as CodexSandboxMode};
 pub use doc::{
     DocCreateTool, DocDeleteTool, DocDraftGetTool, DocDraftSaveTool, DocGetTool, DocListTool,
-    DocUpdateTool,
+    DocSearchTool, DocUpdateTool, DocUpsertTool,
 };
 pub use echo::EchoTool;
 pub use exit_plan::ExitPlanTool;
@@ -48,6 +49,7 @@ pub use git::{
     GitAddTool, GitCommitTool, GitDiffTool, GitLogTool, GitMergeTool, GitShowTool, GitStatusTool,
 };
 pub use grep::CodeGrepTool;
+pub use harness_health::HarnessHealthTool;
 pub use http::HttpFetchTool;
 pub use patch::FsPatchTool;
 pub use plan::PlanUpdateTool;
@@ -139,7 +141,7 @@ pub struct BuiltinsConfig {
     pub project_store: Option<Arc<dyn ProjectStore>>,
     /// Backing store for [`DocProject`](harness_core::DocProject) +
     /// [`DocDraft`](harness_core::DocDraft) CRUD. When `Some(_)`,
-    /// the seven `doc.*` / `doc.draft.*` tools are registered. When
+    /// the `doc.*` / `doc.draft.*` tools are registered. When
     /// `None` (default), they're skipped. Write operations
     /// (`create`, `update`, `delete`, `draft.save`) are
     /// approval-gated.
@@ -271,7 +273,9 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     }
     if let Some(store) = cfg.doc_store {
         registry.register(DocListTool::new(store.clone(), root.clone()));
+        registry.register(DocSearchTool::new(store.clone(), root.clone()));
         registry.register(DocGetTool::new(store.clone()));
+        registry.register(DocUpsertTool::new(store.clone(), root.clone()));
         registry.register(DocCreateTool::new(store.clone(), root.clone()));
         registry.register(DocUpdateTool::new(store.clone()));
         registry.register(DocDeleteTool::new(store.clone()));

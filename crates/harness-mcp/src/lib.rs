@@ -25,5 +25,5 @@ pub mod server;
 
 pub use client::{connect_all as connect_all_mcp, McpClient, McpClientConfig, McpTransport};
 pub use error::McpError;
-pub use manager::{McpManager, McpServerInfo, McpServerStatus};
+pub use manager::{BootstrapReport, McpManager, McpServerInfo, McpServerStatus};
 pub use server::{serve_registry_stdio, McpServer};

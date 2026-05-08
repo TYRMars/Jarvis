@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
 import { t } from "../../../utils/i18n";
 import { resumeConversation } from "../../../services/conversations";
 import type {
@@ -105,10 +104,8 @@ function FailureRow({
 }
 
 export function OperationalPanel({ overview }: Props) {
-  const navigate = useNavigate();
   const open = (id: string) => {
     void resumeConversation(id);
-    void navigate("/");
   };
 
   const running = overview?.running_now ?? [];

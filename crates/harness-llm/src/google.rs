@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use crate::tokens::TiktokenEstimator;
 
@@ -94,6 +94,16 @@ impl GoogleProvider {
 
 #[async_trait]
 impl LlmProvider for GoogleProvider {
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "google",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = false,
+        ),
+    )]
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse> {
         let body = GoogleRequest::from_request(&req);
         let url = self.endpoint(&req.model);
@@ -123,6 +133,16 @@ impl LlmProvider for GoogleProvider {
         parsed.into_chat_response()
     }
 
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "google",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = true,
+        ),
+    )]
     async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream> {
         let body = GoogleRequest::from_request(&req);
         let url = self.stream_endpoint(&req.model);
@@ -661,7 +681,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,
+            chain_origin: None,            parallel_tool_calls: None,
         }
     }
 

@@ -17,6 +17,7 @@ import { MarkdownView } from "../Chat/MarkdownView";
 import { OpenSidebarButton } from "../Workspace/WorkspaceToggles";
 import { EmptyState } from "../shared/EmptyState";
 import { t } from "../../utils/i18n";
+import { sendFrame } from "../../services/socket";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 import { DocOutline } from "./DocOutline";
 import { BlockEditor, createMockUploadAdapter } from "./Editor";
@@ -241,6 +242,19 @@ export function DocsPage() {
     await updateDocProject(selected.id, { archived: !selected.archived });
   };
 
+  const onAskAgent = () => {
+    if (!selected) return;
+    sendFrame({ type: "activate_skill", name: "doc" });
+    const excerpt = draftBuffer.trim().slice(0, 800);
+    useAppStore
+      .getState()
+      .setComposerValue(
+        t("docsAskAgentPrompt", selected.id, selected.title, excerpt),
+      );
+    void navigate("/");
+    requestAnimationFrame(() => document.getElementById("input")?.focus());
+  };
+
   const onDelete = async () => {
     if (!confirmingDelete) return;
     const id = confirmingDelete.id;
@@ -286,7 +300,14 @@ export function DocsPage() {
         <DocsEditorColumn
           project={selected}
           draftBuffer={draftBuffer}
-          setDraftBuffer={setDraftBuffer}
+          setDraftBuffer={(next) => {
+            setDraftBuffer(next);
+            setSaveState((prev) =>
+              prev.kind === "saving" || prev.kind === "offline"
+                ? prev
+                : { kind: "idle" },
+            );
+          }}
           draftReady={draftReady}
           previewing={previewing}
           setPreviewing={setPreviewing}
@@ -299,6 +320,7 @@ export function DocsPage() {
           onChangeTags={onChangeTags}
           onTogglePinned={onTogglePinned}
           onToggleArchived={onToggleArchived}
+          onAskAgent={onAskAgent}
           onDelete={() => setConfirmingDelete(selected)}
           tagSuggestions={tagSuggestions}
         />
@@ -391,6 +413,7 @@ interface EditorColumnProps {
   onChangeTags: (next: string[]) => void;
   onTogglePinned: () => void;
   onToggleArchived: () => void;
+  onAskAgent: () => void;
   onDelete: () => void;
   tagSuggestions: string[];
 }
@@ -556,6 +579,30 @@ function DocsEditorMeta(props: EditorColumnProps) {
           <button
             type="button"
             className="docs-icon-btn"
+            aria-label={t("docsActionSave")}
+            title={t("docsActionSave")}
+            onClick={props.onFlush}
+            disabled={props.saveState.kind === "saving"}
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <path d="M17 21v-8H7v8" />
+              <path d="M7 3v5h8" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="docs-icon-btn"
             aria-label={
               project.archived
                 ? t("docsActionRestore")
@@ -578,6 +625,29 @@ function DocsEditorMeta(props: EditorColumnProps) {
             onClick={() => props.setPreviewing(!props.previewing)}
           >
             {props.previewing ? t("docsToggleEdit") : t("docsTogglePreview")}
+          </button>
+          <button
+            type="button"
+            className="docs-icon-btn"
+            aria-label={t("docsAskAgent")}
+            title={t("docsAskAgent")}
+            onClick={props.onAskAgent}
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+              <path d="M8 9h8" />
+              <path d="M8 13h5" />
+            </svg>
           </button>
           <button
             type="button"

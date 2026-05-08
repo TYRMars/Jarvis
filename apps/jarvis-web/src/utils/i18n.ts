@@ -28,7 +28,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     connecting: "connecting...",
     configured: "Model configured",
     conversations: "Conversations",
-    customize: "Customize",
+    customize: "Capability Marketplace",
     delete: "delete",
     deleteConfirm: (id) => `Delete conversation ${id}?`,
     deleteFailed: (msg) => `delete failed: ${msg}`,
@@ -303,6 +303,54 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsSearchPlaceholder: "Search settings…",
     settingsSearchEmpty: "No matches.",
     settingsPermsAnchorsLabel: "Jump to section",
+    // Chat customize page
+    customizeTitle: "Capability Marketplace",
+    customizeHeroTitle: "Let Jarvis work your way",
+    customizeSubtitle: "Manage the Skills, MCP servers, and Plugins available to this chat.",
+    customizeBack: "Back to chat",
+    customizeNavLabel: "Capability marketplace sections",
+    customizeNavSkills: "Skills",
+    customizeNavMcp: "MCP",
+    customizeNavPlugins: "Plugins",
+    customizeMarketTabs: "Marketplace sections",
+    customizeMarketPlugins: "Plugins",
+    customizeMarketSkills: "Skills",
+    customizeMarketMcp: "MCP",
+    customizeManage: "Manage",
+    customizeManageTabs: "Manage sections",
+    customizeManageSearch: "Search installed",
+    customizeSearchPlugins: "Search plugins",
+    customizeFeatured: "Featured",
+    customizeFeaturePrompt: "Install a workflow pack and try it in chat",
+    customizeTryInChat: "Try in chat",
+    customizeDescSkills: "Install and activate prompt capabilities for this chat session.",
+    customizeDescMcp: "Connect runtime tool servers and monitor their status.",
+    customizeDescPlugins: "Bundle skills and MCP servers into one installable extension.",
+    customizeSkillsStat: (active: number, total: number) => `${active} active · ${total} total`,
+    customizeMcpStat: (running: number, total: number) => `${running} running · ${total} total`,
+    customizePluginsStat: (total: number) => `${total} installed`,
+    marketSkillTitle: "Online Skill market",
+    marketSkillHint: "Search open-source Skills and install them into this workspace.",
+    marketSkillSearchPlaceholder: "Search pnpm, docs, git…",
+    marketMcpTitle: "Online MCP market",
+    marketMcpHint: "Search the official MCP registry and add stdio servers directly.",
+    marketMcpSearchPlaceholder: "Search filesystem, git, browser…",
+    marketSearchBtn: "Search",
+    marketInstallBtn: "Install",
+    marketInstalling: "Installing…",
+    marketAddBtn: "Add",
+    marketAdding: "Adding…",
+    marketOfficial: "Official",
+    marketLatest: "Latest",
+    marketEmpty: "No matching entries.",
+    marketLoadFailed: (msg: string) => `Load failed: ${msg}`,
+    marketSkillInstalled: (name: string) => `Installed and activated ${name}.`,
+    marketSkillInstallFailed: (msg: string) => `Install failed: ${msg}`,
+    marketMcpInstalled: (prefix: string) => `Added MCP server ${prefix}.`,
+    marketMcpInstallFailed: (msg: string) => `Add failed: ${msg}`,
+    marketMcpRemoteOnly: "HTTP remote, not supported by this runtime yet",
+    marketMcpNeedsEnv: "Needs manual command or environment variables",
+    marketInstalls: (n: number) => `${n} install${n === 1 ? "" : "s"}`,
     // MCP runtime management
     settingsMcpTitle: "MCP servers",
     settingsMcpDesc: "Add or remove external MCP servers at runtime. Tools register as <prefix>.<remote-name>.",
@@ -317,6 +365,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     mcpAdding: "Adding…",
     mcpRemoveBtn: "Remove",
     mcpHealthBtn: "Health",
+    mcpReloadBtn: "Reload",
     mcpStatusRunning: "running",
     mcpStatusStopped: "stopped",
     mcpStatusUnhealthy: "unhealthy",
@@ -326,6 +375,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     mcpHealthFail: (msg: string) => `Failed: ${msg}`,
     mcpAddFailed: (msg: string) => `Add failed: ${msg}`,
     mcpRemoveFailed: (msg: string) => `Remove failed: ${msg}`,
+    mcpReloadFailed: (msg: string) => `Reload failed: ${msg}`,
     mcpListFailed: (msg: string) => `List failed: ${msg}`,
     // Skills
     settingsNavSkills: "Skills",
@@ -365,6 +415,8 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     pluginsListFailed: (msg: string) => `List failed: ${msg}`,
     pluginsInstallFailed: (msg: string) => `Install failed: ${msg}`,
     pluginsRemoveFailed: (msg: string) => `Remove failed: ${msg}`,
+    pluginsInstallSucceeded: (skills: number, mcp: number) =>
+      `Installed. Activated ${skills} skill${skills === 1 ? "" : "s"} · added ${mcp} MCP server${mcp === 1 ? "" : "s"}.`,
     // Workspace badge / picker
     workspaceBadgeNone: "no workspace",
     workspaceCurrent: "Current",
@@ -575,6 +627,21 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     toolSummaryPlan: (total, done) =>
       `${total} step${total === 1 ? "" : "s"} · ${done} done`,
     toolSummaryPlanFallback: "plan updated",
+    toolSummaryDocList: (n) => `${n} doc${n === 1 ? "" : "s"}`,
+    toolSummaryDocSearch: (n, query) =>
+      `${n} doc${n === 1 ? "" : "s"} for "${query}"`,
+    toolSummaryDocGetWithDraft: (title) => `${title} · latest draft`,
+    toolSummaryDocDraft: (words) => `${words} word${words === 1 ? "" : "s"}`,
+    toolSummaryDocDraftEmpty: "empty draft",
+    docToolNoDraft: "No draft",
+    docToolSearchResults: "Search results",
+    docToolDocs: "Docs",
+    docToolCreatedDoc: "Created doc",
+    docToolUpdatedDoc: "Updated doc",
+    docToolDeletedDoc: "Deleted doc",
+    docToolNotFound: "Doc not found",
+    docToolLatestDraft: "Latest draft",
+    docToolOpen: "Open doc",
     // Approval-decision source chips (audit timeline)
     decisionSourceModeChip: (mode) => `auto · ${mode}`,
     decisionSourceModeTooltip: (mode) => `auto-allowed by mode default: ${mode}`,
@@ -913,6 +980,48 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     workOverviewSubtitle:
       "Real-time view of agent runs, throughput, and quality across all projects.",
     workOverviewProjectsLink: "Project list",
+    workOverviewDiagnoseButton: "One-click diagnosis",
+    workOverviewDiagnoseHint:
+      "Start a new Jarvis session and send the current run-health issues for diagnosis and repair.",
+    workOverviewDiagnoseNoData: "no data",
+    workOverviewDiagnoseUnknownProject: "Unknown project",
+    workOverviewDiagnoseNoError: "No error recorded",
+    workOverviewDiagnoseNoBlockedReason: "No blocked reason recorded",
+    workOverviewDiagnoseNoMissingStores: "none",
+    workOverviewDiagnoseNoFailures: "No recent failed runs in this window.",
+    workOverviewDiagnoseNoBlocked: "No blocked requirements in this window.",
+    workOverviewDiagnosePrompt: (
+      days: number,
+      failed: number,
+      blocked: number,
+      running: number,
+      passRate: string,
+      missingStores: string,
+      failures: string,
+      blockedRows: string,
+    ) =>
+      `Please diagnose and fix the run issues surfaced in Jarvis Work overview.
+
+Scope:
+- Window: last ${days} days
+- Failed runs: ${failed}
+- Blocked requirements: ${blocked}
+- Running now: ${running}
+- Verification pass rate: ${passRate}
+- Missing stores/signals: ${missingStores}
+
+Recent failed runs:
+${failures}
+
+Blocked requirements:
+${blockedRows}
+
+Expected workflow:
+1. Identify the most likely root causes from the run history and project context.
+2. Inspect the relevant project/workspace code before changing anything.
+3. Make the smallest safe fix for the highest-impact run issue.
+4. Run the relevant verification command.
+5. Summarize what was fixed, what was verified, and what remains.`,
     workOverviewWindow: "Time window",
     workOverviewWindow7d: "7d",
     workOverviewWindow30d: "30d",
@@ -927,8 +1036,8 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     workOverviewDiagnosticsSubtitle:
       "Orphan worktrees, runs stuck > 1 hour, and recent failures. Inspect and clean up here when something looks off.",
     kpiRunningNow: "Running now",
-    kpiFailedInWindow: "Failed in window",
-    kpiCompletedInWindow: "Completed in window",
+    kpiFailedInWindow: "Failed runs",
+    kpiCompletedInWindow: "Completed runs",
     kpiVerificationPassRate: "Verification pass rate",
     kpiVerificationPassRateNoData: "No verified runs yet",
     panelOperational: "Operational",
@@ -1398,11 +1507,32 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     docsOutlineAria: "Document outline",
     docsTogglePreview: "Preview",
     docsToggleEdit: "Edit",
+    docsAskAgent: "Ask Agent",
+    docsAskAgentPrompt: (id: string, title: string, excerpt: string) =>
+      excerpt
+        ? `Help me work on this doc: id=${id}, title "${title}". First read the saved doc body with doc.get/doc.draft.get, then use this current editor excerpt as extra context:\n\n${excerpt}\n\nNext, help me add, delete, update, or query the doc based on my next instruction.`
+        : `Help me work on this doc: id=${id}, title "${title}". First read the saved doc body with doc.get/doc.draft.get, then help me add, delete, update, or query the doc based on my next instruction.`,
     docsActionPin: "Pin",
     docsActionUnpin: "Unpin",
+    docsActionSave: "Save now",
     docsActionArchive: "Archive",
     docsActionRestore: "Restore",
     docsActionDeleteDoc: "Delete doc",
+    docsContextBold: "Bold",
+    docsContextItalic: "Italic",
+    docsContextInlineCode: "Inline code",
+    docsContextHeading1: "Heading 1",
+    docsContextHeading2: "Heading 2",
+    docsContextBulletList: "Bulleted list",
+    docsContextOrderedList: "Numbered list",
+    docsContextTaskList: "Task list",
+    docsContextQuote: "Quote",
+    docsContextCodeBlock: "Code block",
+    docsContextLink: "Link",
+    docsContextLinkPrompt: "Paste a URL. Leave blank to remove the link.",
+    docsContextCopy: "Copy text",
+    docsContextDelete: "Delete selection",
+    docsContextClear: "Clear formatting",
     docsCardActionDelete: "Delete",
     docsQuickActionsAria: "Quick actions",
     docsSnippetAria: "Search match preview",
@@ -1514,6 +1644,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     worktreesCleanupReportCount: (removed: number, attempted: number) =>
       `${removed} removed, ${attempted - removed} failed`,
     worktreesCleanupReportNoErrors: "All orphans removed cleanly.",
+    projectWorktreesButton: "Worktrees",
 
     // ---- Conversations archive page ----
     conversationsArchiveTitle: "Conversations",
@@ -1689,6 +1820,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     exceptionsSubtitle:
       "Errors grouped by signature — same root cause shows up once with an occurrence count.",
     healthCenterTitle: "Run center",
+    healthCenterAutoModeDashboard: "Auto-mode dashboard",
     healthCenterMetrics: "Health metrics",
     healthCenterNextActions: "What needs attention",
     healthCenterContext: "Context",
@@ -1730,13 +1862,13 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     workInsightsTitle: "Output & cost",
     workInsightsSubtitle:
       "Throughput, project activity, and token spend grouped as the production lens.",
-    harnessEvolutionTitle: "System optimization",
+    harnessEvolutionTitle: "Optimization readiness",
     harnessEvolutionSubtitle:
       "Signals that point to where the system should improve next.",
-    harnessEvolutionRecommendations: "Suggested next moves",
-    harnessObsTitle: "Harness observability",
+    harnessEvolutionRecommendations: "Optimization roadmap",
+    harnessObsTitle: "Harness health",
     harnessObsSubtitle:
-      "Project-level telemetry for Jarvis, tools, SubAgents, and eval cases.",
+      "Operational health, eval maturity, and SubAgent telemetry for the agent harness.",
     harnessObsWindow: (days: number) => `${days}d window`,
     harnessObsUnavailable:
       "Observability history is unavailable. Jarvis will use the default local JSON store unless JARVIS_OBSERVABILITY_STORE_URL is disabled or invalid.",
@@ -1745,13 +1877,25 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     harnessObsMetricRunsDetail: (days: number) => `Recorded in the ${days}d dashboard window`,
     harnessObsMetricDirection: "Direction score",
     harnessObsMetricDirectionDetail: (focus: string) => `Primary focus: ${focus}`,
+    harnessObsMetricDirectionHintFormula:
+      "Direction score = weighted health score across reliability, verification, SubAgent ROI, efficiency, and observability.",
+    harnessObsMetricDirectionHintFocus:
+      "Primary focus is the weakest component; it tells the next optimization area, not a task result.",
     harnessObsMetricSuccess: "Run success",
     harnessObsMetricSuccessDetail: (success: number, failed: number) =>
-      `${success} success · ${failed} failed`,
+      `Completed agent runs that ended successfully: ${success} success · ${failed} failed.`,
+    harnessObsMetricSuccessHint:
+      "Run success = successful observed runs / all observed terminal runs. It reflects loop stability, not business correctness.",
     harnessObsMetricLatency: "P95 latency",
-    harnessObsMetricLatencyDetail: "Across recorded agent, tool, and SubAgent runs",
+    harnessObsMetricLatencyDetail:
+      "95% of recorded agent/tool/SubAgent runs finished within this time. Lower is better.",
+    harnessObsMetricLatencyHint:
+      "P95 ignores the slowest 5% outliers and shows tail latency pressure. High values usually mean slow tools, long retries, or expensive SubAgent hops.",
     harnessObsMetricEval: "Eval pass rate",
-    harnessObsMetricEvalDetail: (suite: string) => `Latest suite: ${suite}`,
+    harnessObsMetricEvalDetail: (suite: string) =>
+      `Passed eval cases / total eval cases. Latest suite: ${suite}.`,
+    harnessObsMetricEvalHint:
+      "Eval pass rate only counts recorded eval case results. It is the repeatable test signal for whether harness behavior still meets expectations.",
     harnessObsToolsTitle: "Tool behavior",
     harnessObsSubagentsTitle: "SubAgent behavior",
     harnessObsRuns: "Runs",
@@ -1760,7 +1904,104 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     harnessObsDelegation: "Calls",
     harnessObsNoTools: "No tool runs recorded yet.",
     harnessObsNoSubagents: "No SubAgent runs recorded yet.",
-    harnessObsRecommendations: "Direction guidance",
+    harnessObsEvalMaturity: "Eval maturity",
+    harnessObsEvalCapability: "Capability",
+    harnessObsEvalRegression: "Regression",
+    harnessObsEvalPassAtK: "pass@k",
+    harnessObsEvalPassAll: "pass^k",
+    harnessObsEvalGraders: "Graders",
+    harnessObsEvalTranscripts: "Transcripts",
+    harnessObsRecommendations: "Immediate findings",
+    harnessCapabilityTitle: "Jarvis capability score",
+    harnessCapabilitySubtitle:
+      "Objective scoring for understanding, planning, capability use, and delivery, backed by real runs and eval cases.",
+    harnessCapabilityOverall: "Overall",
+    harnessCapabilityPrimaryDriver: "Primary driver",
+    harnessCapabilityEvidence: "Case",
+    harnessCapabilityNoEvidence: "No concrete case attached to this dimension yet.",
+    harnessCapabilityFormulaLabel: "Score formula and signal explanation",
+    harnessCapabilityOverallFormula:
+      "Overall = average of the four dimension scores, each weighted 25%.",
+    harnessCapabilityDeliveryCapFormula:
+      "Guardrail: when Task delivery < 60, Overall is capped at 69.",
+    harnessCapabilityConfidenceFormula: (samples: number, confidence: string) =>
+      `Confidence = log(1 + samples) / log(31) × signal coverage. Current: ${samples} samples · ${confidence}.`,
+    harnessCapabilityDimensionFormula: (formula: string) => `Score = ${formula}.`,
+    harnessCapabilityMissingFormula:
+      "If a signal is missing, that driver contributes a neutral 50 until real data exists.",
+    harnessCapabilityDimensionConfidenceFormula:
+      "Confidence combines sample volume with coverage across observability, eval, requirement-run, and verification signals.",
+    harnessCapabilityConfidenceHigh: "high confidence",
+    harnessCapabilityConfidenceMedium: "medium confidence",
+    harnessCapabilityConfidenceLow: "low confidence",
+    harnessCapabilityConfidence: (label: string) => `Confidence: ${label}`,
+    harnessCapability_task_understanding: "Task understanding",
+    harnessCapability_planning_execution: "Planning execution",
+    harnessCapability_capability_invocation: "Capability invocation",
+    harnessCapability_task_delivery: "Task delivery",
+    harnessCapabilitySummary_task_understanding:
+      "Goal, constraints, and acceptance criteria are inferred from evals, verification, and completion signals.",
+    harnessCapabilitySummary_planning_execution:
+      "Planning health is derived from terminal-state hygiene, completion rate, timeout avoidance, and observed agent success.",
+    harnessCapabilitySummary_capability_invocation:
+      "Tool and SubAgent success, recovery proxy, and latency efficiency describe whether Jarvis calls the right capabilities.",
+    harnessCapabilitySummary_task_delivery:
+      "Delivery is scored from completed runs, verification results, regression evals, and case coverage.",
+    harnessCapabilityDriver_capability_eval_pass_rate: "Capability eval pass rate",
+    harnessCapabilityDriver_verification_pass_rate: "Verification pass rate",
+    harnessCapabilityDriver_completion_rate: "Completion rate",
+    harnessCapabilityDriver_misunderstanding_free_rate: "Misunderstanding-free rate",
+    harnessCapabilityDriver_terminal_rate: "Terminal-state rate",
+    harnessCapabilityDriver_timeout_free_rate: "Timeout/max-iteration avoidance",
+    harnessCapabilityDriver_agent_success_rate: "Agent success rate",
+    harnessCapabilityDriver_tool_success_rate: "Tool success rate",
+    harnessCapabilityDriver_subagent_success_rate: "SubAgent success rate",
+    harnessCapabilityDriver_agent_recovery_rate: "Agent recovery proxy",
+    harnessCapabilityDriver_latency_efficiency: "Latency efficiency",
+    harnessCapabilityDriver_delegation_visibility: "Delegation visibility",
+    harnessCapabilityDriver_regression_eval_pass_rate: "Regression eval pass rate",
+    harnessCapabilityDriver_verification_coverage: "Verification coverage",
+    harnessCapabilityDriver_failure_free_rate: "Failure-free terminal rate",
+    harnessCaseEvidenceTitle: "Cases",
+    harnessCaseEvidenceEmpty: "No concrete failure, blocked, running, or failed-eval cases in this window.",
+    harnessCaseFailedRun: "Failed run",
+    harnessCaseBlocked: "Blocked",
+    harnessCaseRunning: "Running",
+    harnessCaseEval: "Eval case",
+    harnessCaseNoError: "No error message captured.",
+    harnessCaseNoReason: "No block reason captured.",
+    harnessCaseRunningNow: "Run is still active.",
+    harnessCaseRunningDuration: (duration: string) => `Running for ${duration}`,
+    harnessCaseRunMeta: (project: string, when: string, id: string) =>
+      `${project} · ${when} · run ${id}`,
+    harnessCaseRequirementMeta: (project: string, when: string, id: string) =>
+      `${project} · ${when} · req ${id}`,
+    harnessCaseEvalMeta: (suite: string, kind: string, trial: string) =>
+      `${suite} · ${kind} · trial ${trial}`,
+    harnessMetricFormulaLabel: "Metric definition",
+    harnessEvolutionHintMeaning:
+      "Optimization readiness answers: is the harness stable enough to improve safely, or should we first fix run-loop health?",
+    harnessEvolutionHintFormula:
+      "Evolution score starts at 100 and subtracts penalties for failed runs, blocked requirements, weak verification pass rate, negative quality trend, low automation coverage, and missing stores.",
+    harnessEvolutionHintInterpretation:
+      "80+ means ready to optimize capability; 60-79 means watch and fix the weakest signal; below 60 means stabilize delivery first.",
+    harnessMetricScoreHintFormula:
+      "Evolution score is a penalty score: 100 minus reliability, verification, automation, and observability penalties.",
+    harnessMetricScoreHintPenalty:
+      "Failed runs, blocked work, low verification pass rate, falling quality, low automation coverage, and missing stores reduce the score.",
+    harnessMetricReliabilityDebtHint:
+      "Reliability debt = failed runs + blocked requirements in the selected window. It estimates how much operational cleanup is pending.",
+    harnessMetricVerificationHint:
+      "Verification maturity = latest verification pass rate from requirement runs. It answers whether completed work has executable checks behind it.",
+    harnessMetricAutomationCoverageHint:
+      "Automation coverage = active projects with auto-mode enabled / active projects. It shows how broadly the harness can operate without manual kickoff.",
+    harnessMetricObservabilityHint:
+      "Observability checks whether required local stores are present. Missing stores reduce trust in every dashboard score.",
+    harnessMetricThroughputHint:
+      "Run flow counts started/completed/running requirement runs in the window. It is activity volume, not success quality.",
+    harnessDirectionComponentsTitle: "Direction score components",
+    harnessDirectionComponentsHint:
+      "The bars decompose direction score. The lowest bar usually explains why the primary focus was selected.",
     harnessObsFocus_reliability: "reliability",
     harnessObsFocus_verification: "verification",
     harnessObsFocus_subagent_roi: "SubAgent ROI",
@@ -1939,7 +2180,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     connecting: "连接中...",
     configured: "模型已切换",
     conversations: "会话",
-    customize: "自定义",
+    customize: "能力市场",
     delete: "删除",
     deleteConfirm: (id) => `删除会话 ${id}？`,
     deleteFailed: (msg) => `删除失败：${msg}`,
@@ -2214,6 +2455,54 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsSearchPlaceholder: "搜索设置…",
     settingsSearchEmpty: "无匹配结果。",
     settingsPermsAnchorsLabel: "跳到分区",
+    // Chat customize page
+    customizeTitle: "能力市场",
+    customizeHeroTitle: "让 Jarvis 按你的方式工作",
+    customizeSubtitle: "管理当前 chat 可用的 Skills、MCP 服务器和 Plugins。",
+    customizeBack: "返回聊天",
+    customizeNavLabel: "能力市场分区",
+    customizeNavSkills: "Skills",
+    customizeNavMcp: "MCP",
+    customizeNavPlugins: "Plugins",
+    customizeMarketTabs: "市场分区",
+    customizeMarketPlugins: "插件",
+    customizeMarketSkills: "技能",
+    customizeMarketMcp: "MCP",
+    customizeManage: "管理",
+    customizeManageTabs: "管理分区",
+    customizeManageSearch: "搜索已安装",
+    customizeSearchPlugins: "搜索插件",
+    customizeFeatured: "Featured",
+    customizeFeaturePrompt: "安装一个工作流插件，并在对话中试用",
+    customizeTryInChat: "在对话中试用",
+    customizeDescSkills: "安装并开启当前会话使用的 prompt 能力。",
+    customizeDescMcp: "连接运行时工具服务器，并监控它们的状态。",
+    customizeDescPlugins: "把 Skills 与 MCP 服务器打包成可安装扩展。",
+    customizeSkillsStat: (active: number, total: number) => `已启 ${active} 个 · 共 ${total} 个`,
+    customizeMcpStat: (running: number, total: number) => `运行中 ${running} 个 · 共 ${total} 个`,
+    customizePluginsStat: (total: number) => `已安装 ${total} 个`,
+    marketSkillTitle: "在线 Skill 市场",
+    marketSkillHint: "搜索开源 Skills，并下载安装到当前工作区。",
+    marketSkillSearchPlaceholder: "搜索 pnpm、docs、git…",
+    marketMcpTitle: "在线 MCP 市场",
+    marketMcpHint: "搜索官方 MCP registry，并直接添加 stdio 服务器。",
+    marketMcpSearchPlaceholder: "搜索 filesystem、git、browser…",
+    marketSearchBtn: "搜索",
+    marketInstallBtn: "安装",
+    marketInstalling: "安装中…",
+    marketAddBtn: "添加",
+    marketAdding: "添加中…",
+    marketOfficial: "官方",
+    marketLatest: "最新",
+    marketEmpty: "没有匹配结果。",
+    marketLoadFailed: (msg: string) => `加载失败：${msg}`,
+    marketSkillInstalled: (name: string) => `已安装并开启 ${name}。`,
+    marketSkillInstallFailed: (msg: string) => `安装失败：${msg}`,
+    marketMcpInstalled: (prefix: string) => `已添加 MCP 服务器 ${prefix}。`,
+    marketMcpInstallFailed: (msg: string) => `添加失败：${msg}`,
+    marketMcpRemoteOnly: "HTTP remote 当前运行时暂不支持",
+    marketMcpNeedsEnv: "需要手动命令或环境变量",
+    marketInstalls: (n: number) => `${n} 次安装`,
     // MCP runtime management
     settingsMcpTitle: "MCP 服务器",
     settingsMcpDesc: "运行时增删外部 MCP 服务器，工具注册名为 <前缀>.<远程名>。",
@@ -2228,6 +2517,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     mcpAdding: "添加中…",
     mcpRemoveBtn: "移除",
     mcpHealthBtn: "检查",
+    mcpReloadBtn: "重载",
     mcpStatusRunning: "运行中",
     mcpStatusStopped: "已停止",
     mcpStatusUnhealthy: "异常",
@@ -2237,6 +2527,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     mcpHealthFail: (msg: string) => `失败：${msg}`,
     mcpAddFailed: (msg: string) => `添加失败：${msg}`,
     mcpRemoveFailed: (msg: string) => `移除失败：${msg}`,
+    mcpReloadFailed: (msg: string) => `重载失败：${msg}`,
     mcpListFailed: (msg: string) => `加载失败：${msg}`,
     // Skills
     settingsNavSkills: "Skills",
@@ -2276,6 +2567,8 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     pluginsListFailed: (msg: string) => `加载失败：${msg}`,
     pluginsInstallFailed: (msg: string) => `安装失败：${msg}`,
     pluginsRemoveFailed: (msg: string) => `卸载失败：${msg}`,
+    pluginsInstallSucceeded: (skills: number, mcp: number) =>
+      `安装完成，已默认开启 ${skills} 个 skill，并添加 ${mcp} 个 MCP。`,
     // Workspace badge / picker
     workspaceBadgeNone: "未指定工作区",
     workspaceCurrent: "当前",
@@ -2476,6 +2769,20 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     toolSummaryChecksEmpty: "无建议",
     toolSummaryPlan: (total, done) => `${total} 步 · 完成 ${done}`,
     toolSummaryPlanFallback: "计划已更新",
+    toolSummaryDocList: (n) => `${n} 篇文档`,
+    toolSummaryDocSearch: (n, query) => `${n} 篇文档 · “${query}”`,
+    toolSummaryDocGetWithDraft: (title) => `${title} · 最新草稿`,
+    toolSummaryDocDraft: (words) => `${words} 个词`,
+    toolSummaryDocDraftEmpty: "空草稿",
+    docToolNoDraft: "暂无草稿",
+    docToolSearchResults: "搜索结果",
+    docToolDocs: "文档",
+    docToolCreatedDoc: "已创建文档",
+    docToolUpdatedDoc: "已更新文档",
+    docToolDeletedDoc: "已删除文档",
+    docToolNotFound: "未找到文档",
+    docToolLatestDraft: "最新草稿",
+    docToolOpen: "打开文档",
     // Approval-decision source chips
     decisionSourceModeChip: (mode) => `自动 · ${mode}`,
     decisionSourceModeTooltip: (mode) => `由模式默认自动放行：${mode}`,
@@ -2631,10 +2938,10 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsPermsUnavailable: "未启用权限存储。请用 --workspace 指向可写目录后重启。",
 
     // ---- Projects / Kanban ----
-    colBacklog: "待办",
-    colInProgress: "进行中",
-    colReview: "评审中",
-    colDone: "已完成",
+    colBacklog: "待办 (Backlog)",
+    colInProgress: "进行中 (In progress)",
+    colReview: "评审中 (Review)",
+    colDone: "已完成 (Done)",
 
     // ---- Composer 会话标签（chips）----
     sessionChipPickWorkspace: "选择工作区文件夹",
@@ -2779,9 +3086,51 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     projectGridProjectCount: (n: number) => `${n} 个项目`,
     projectGridTotal: (n: number) => `共 ${n} 条需求`,
     // Work-mode 数据看板
-    workOverviewTitle: "工作总览",
+    workOverviewTitle: "工作总览 (Work overview)",
     workOverviewSubtitle: "实时呈现各项目的智能体执行、产出与质量信号。",
     workOverviewProjectsLink: "项目列表",
+    workOverviewDiagnoseButton: "一键诊断 (Diagnose)",
+    workOverviewDiagnoseHint:
+      "新建 Jarvis 会话，并发送当前运行健康问题，让 Jarvis 诊断和修复。",
+    workOverviewDiagnoseNoData: "无数据",
+    workOverviewDiagnoseUnknownProject: "未知项目",
+    workOverviewDiagnoseNoError: "未记录错误",
+    workOverviewDiagnoseNoBlockedReason: "未记录阻塞原因",
+    workOverviewDiagnoseNoMissingStores: "无",
+    workOverviewDiagnoseNoFailures: "当前窗口没有最近失败运行。",
+    workOverviewDiagnoseNoBlocked: "当前窗口没有阻塞需求。",
+    workOverviewDiagnosePrompt: (
+      days: number,
+      failed: number,
+      blocked: number,
+      running: number,
+      passRate: string,
+      missingStores: string,
+      failures: string,
+      blockedRows: string,
+    ) =>
+      `请诊断并修复 Jarvis 工作总览暴露的运行问题。
+
+范围：
+- 时间窗口：近 ${days} 天
+- 失败运行：${failed}
+- 阻塞需求：${blocked}
+- 当前运行中：${running}
+- 验证通过率：${passRate}
+- 缺失存储/信号：${missingStores}
+
+最近失败运行：
+${failures}
+
+阻塞需求：
+${blockedRows}
+
+期望流程：
+1. 基于运行历史和项目上下文判断最可能的根因。
+2. 修改前先检查相关项目/工作区代码。
+3. 优先修复影响最大的运行问题，保持改动尽量小。
+4. 运行相关验证命令。
+5. 总结修复内容、验证结果和剩余风险。`,
     workOverviewWindow: "时间范围",
     workOverviewWindow7d: "近 7 天",
     workOverviewWindow30d: "近 30 天",
@@ -2795,18 +3144,18 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     workOverviewDiagnosticsHeading: "异常排查",
     workOverviewDiagnosticsSubtitle:
       "孤儿 worktree、卡住超过 1 小时的 run、近期失败。看到异常时来这里查看并清理。",
-    kpiRunningNow: "正在运行",
-    kpiFailedInWindow: "窗口内失败",
-    kpiCompletedInWindow: "窗口内完成",
-    kpiVerificationPassRate: "验证通过率",
+    kpiRunningNow: "正在运行 (Running now)",
+    kpiFailedInWindow: "失败运行 (Failed runs)",
+    kpiCompletedInWindow: "已完成运行 (Completed runs)",
+    kpiVerificationPassRate: "验证通过率 (Verification pass rate)",
     kpiVerificationPassRateNoData: "尚无验证数据",
-    panelOperational: "运营健康",
-    panelThroughput: "吞吐与产出",
-    panelQuality: "质量信号",
-    panelLeaderboard: "项目",
-    workSectionRunning: "运行中",
-    workSectionFailures: "最近失败",
-    workSectionBlocked: "阻塞中",
+    panelOperational: "运营健康 (Operational health)",
+    panelThroughput: "吞吐与产出 (Throughput)",
+    panelQuality: "质量信号 (Quality signal)",
+    panelLeaderboard: "项目 (Projects)",
+    workSectionRunning: "运行中 (Running)",
+    workSectionFailures: "最近失败 (Recent failures)",
+    workSectionBlocked: "阻塞中 (Blocked)",
     workNoRunning: "暂无智能体在运行。",
     workNoFailures: "窗口内没有失败。",
     workNoBlocked: "没有阻塞项。",
@@ -2816,13 +3165,13 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     workNoLeaderboardData: "窗口内没有项目活动。",
     workOpenConversation: "打开",
     workThroughputTotal: (n: number) => `共 ${n} 个 Run`,
-    workLegendCompleted: "已完成",
-    workLegendFailed: "失败",
-    workLegendOther: "进行中/取消",
-    workQualitySparkLabel: "通过率趋势",
-    workQualityTopFailing: "高频失败命令",
-    workReqStatusBreakdown: "需求状态分布",
-    workLeaderboardTopProjects: "最活跃项目",
+    workLegendCompleted: "已完成 (Completed)",
+    workLegendFailed: "失败 (Failed)",
+    workLegendOther: "进行中/取消 (Other)",
+    workQualitySparkLabel: "通过率趋势 (Pass-rate trend)",
+    workQualityTopFailing: "高频失败命令 (Top failing commands)",
+    workReqStatusBreakdown: "需求状态分布 (Requirement status)",
+    workLeaderboardTopProjects: "最活跃项目 (Most active)",
     workRunsCount: (n: number) => `${n} 个 Run`,
     relSecondsAgo: (n: number) => `${n} 秒前`,
     relMinutesAgo: (n: number) => `${n} 分钟前`,
@@ -3239,11 +3588,32 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     docsOutlineAria: "文档大纲",
     docsTogglePreview: "预览",
     docsToggleEdit: "编辑",
+    docsAskAgent: "让 Agent 处理",
+    docsAskAgentPrompt: (id: string, title: string, excerpt: string) =>
+      excerpt
+        ? `帮我处理这篇文档：id=${id}，标题「${title}」。请先用 doc.get/doc.draft.get 读取已保存正文，再把下面这段当前编辑器片段作为额外上下文：\n\n${excerpt}\n\n接下来请根据我的下一步要求，对这篇文档做增删改查。`
+        : `帮我处理这篇文档：id=${id}，标题「${title}」。请先用 doc.get/doc.draft.get 读取已保存正文，再根据我的下一步要求，对这篇文档做增删改查。`,
     docsActionPin: "置顶",
     docsActionUnpin: "取消置顶",
+    docsActionSave: "立即保存",
     docsActionArchive: "归档",
     docsActionRestore: "取消归档",
     docsActionDeleteDoc: "删除文档",
+    docsContextBold: "加粗",
+    docsContextItalic: "斜体",
+    docsContextInlineCode: "行内代码",
+    docsContextHeading1: "一级标题",
+    docsContextHeading2: "二级标题",
+    docsContextBulletList: "项目列表",
+    docsContextOrderedList: "编号列表",
+    docsContextTaskList: "任务列表",
+    docsContextQuote: "引用",
+    docsContextCodeBlock: "代码块",
+    docsContextLink: "链接",
+    docsContextLinkPrompt: "粘贴 URL。留空会移除链接。",
+    docsContextCopy: "复制文本",
+    docsContextDelete: "删除选区",
+    docsContextClear: "清除格式",
     docsCardActionDelete: "删除",
     docsQuickActionsAria: "快捷操作",
     docsSnippetAria: "搜索命中预览",
@@ -3314,12 +3684,12 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     projectTabsAria: "项目分区",
     projectTabData: "数据",
     projectAutomationOverview: "项目自动化概览",
-    projectAutoEligible: "可执行",
-    projectAutoRunning: "运行中",
-    projectAutoCompleted: "已完成",
-    projectAutoFailed: "失败",
-    projectAutoRecentRuns: "最近运行",
-    projectAutoFailures: "失败诊断",
+    projectAutoEligible: "可执行 (Eligible)",
+    projectAutoRunning: "运行中 (Running)",
+    projectAutoCompleted: "已完成 (Completed)",
+    projectAutoFailed: "失败 (Failed)",
+    projectAutoRecentRuns: "最近运行 (Recent runs)",
+    projectAutoFailures: "失败诊断 (Failure diagnostics)",
     // v1.0 Diagnostics page (additions; reuses existing diagnostics*
     // keys defined for the Settings panel)
     sidebarNavDiagnostics: "诊断",
@@ -3350,6 +3720,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     worktreesCleanupReportCount: (removed: number, attempted: number) =>
       `成功 ${removed} / 失败 ${attempted - removed}`,
     worktreesCleanupReportNoErrors: "全部孤儿已清理。",
+    projectWorktreesButton: "Worktree 管理",
 
     // ---- Conversations archive page ----
     conversationsArchiveTitle: "会话归档",
@@ -3432,14 +3803,14 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     runDetailCloseAria: "关闭",
     runDetailDialogAria: "运行详情",
     // v1.0 SystemStatusBanner (总览页顶部)
-    statusHealthRunning: "运行中",
-    statusHealthActive: "活跃",
-    statusHealthDegraded: "降级",
-    statusHealthIdle: "空闲",
-    statusHealthUnavailable: "不可用",
-    statusAutoOn: "自动开",
-    statusAutoOff: "自动关",
-    statusAutoUnconfigured: "自动模式未配置",
+    statusHealthRunning: "运行中 (Running)",
+    statusHealthActive: "活跃 (Active)",
+    statusHealthDegraded: "降级 (Degraded)",
+    statusHealthIdle: "空闲 (Idle)",
+    statusHealthUnavailable: "不可用 (Unavailable)",
+    statusAutoOn: "自动开 (On)",
+    statusAutoOff: "自动关 (Off)",
+    statusAutoUnconfigured: "自动模式未配置 (Unconfigured)",
     statusAutoOffHint: "Auto-mode runtime 未挂（mcp-serve / 测试场景）。",
     statusJustNow: "刚刚",
     statusSecondsAgo: (n: number) => `${n} 秒前`,
@@ -3450,8 +3821,8 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     statusManualRefresh: "立即刷新 (R)",
     statusRefresh: "刷新",
     // v1.0 SystemStatusBanner — 带标签的状态药丸 + 一句话摘要
-    statusPillLabelHealth: "状态",
-    statusPillLabelAuto: "自动",
+    statusPillLabelHealth: "状态 (Health)",
+    statusPillLabelAuto: "自动 (Auto)",
     statusHealthTooltip: (label: string) =>
       `运行时综合状态：${label}。基于正在运行的 run、阻塞项与最近失败综合判断。`,
     statusAutoToggleHintOn: "点击开启自动模式（后台调度器会接管已审核的需求）",
@@ -3474,23 +3845,23 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     statusSummaryIdleManual: "系统空闲，自动模式关闭。请审核并启动一个需求，或开启自动模式让调度器接管。",
     statusSummaryIdleNoAuto: "系统空闲。本实例未启用自动模式 —— 请到项目看板手动启动需求。",
     // QualityPanel additions
-    workQualitySparkDeltaTitle: "相对窗口起点的变化",
-    workQualitySampleSize: "验证次数",
+    workQualitySparkDeltaTitle: "相对窗口起点的变化 (Delta from window start)",
+    workQualitySampleSize: "验证次数 (Verified runs)",
     workQualityShowSample: "显示 stderr 样本",
     workQualityHideSample: "收起样本",
     // ProjectLeaderboard additions
     leaderRank: (n: number) => `#${n}`,
-    leaderCompletion: "完成率",
+    leaderCompletion: "完成率 (Completion)",
     // UsagePanel
-    usagePanelTitle: "Token 与成本",
-    usagePanelToday: "今天",
+    usagePanelTitle: "Token 与成本 (Tokens & cost)",
+    usagePanelToday: "今天 (Today)",
     usagePanelWindow: (n: number) => `近 ${n} 天`,
     usagePanelPrompt: "Prompt",
     usagePanelCompletion: "Completion",
-    usagePanelCached: "缓存",
+    usagePanelCached: "缓存 (Cached)",
     usagePanelCachedHint: "Prompt 中由缓存命中的部分（按约 50% 计费）。",
-    usagePanelCalls: "LLM 调用",
-    usagePanelTotal: "合计",
+    usagePanelCalls: "LLM 调用 (LLM calls)",
+    usagePanelTotal: "合计 (Total)",
     usagePanelNoData: "本窗口内尚无 token 用量记录。",
     usagePanelSparkLabel: "每日 token 总量",
     usagePanelModelsLabel: "按模型统计用量",
@@ -3510,14 +3881,15 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     diagnosticsStuckEntry: (status: string, age: string) =>
       `${status} 已 ${age}`,
     // v1.0 Sentry 风格异常面板（替代总览页中原本的 3 段诊断列表）
-    exceptionsTitle: "异常",
+    exceptionsTitle: "异常 (Exceptions)",
     exceptionsSubtitle: "按签名聚合的错误 —— 同一根因只显示一条，并附带发生次数。",
-    healthCenterTitle: "运行中心",
-    healthCenterMetrics: "健康指标",
-    healthCenterNextActions: "需要关注",
-    healthCenterContext: "上下文",
-    healthCenterLastUpdated: "更新",
-    healthCenterQualityDelta: "质量变化",
+    healthCenterTitle: "运行中心 (Run center)",
+    healthCenterAutoModeDashboard: "自动调度看板 (Auto-mode)",
+    healthCenterMetrics: "健康指标 (Health metrics)",
+    healthCenterNextActions: "需要关注 (Needs attention)",
+    healthCenterContext: "上下文 (Context)",
+    healthCenterLastUpdated: "更新 (Updated)",
+    healthCenterQualityDelta: "质量变化 (Quality delta)",
     healthCenterStateOk: "健康",
     healthCenterStateWarn: "关注",
     healthCenterStateDanger: "需要处理",
@@ -3541,7 +3913,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
       `${n} 个 run 正在执行；除非下方信号变红，否则无需立即介入。`,
     healthCenterSummaryOk: (passRate: string) =>
       `暂无紧急健康问题。验证通过率 ${passRate}。`,
-    healthCenterSignalException: "异常",
+    healthCenterSignalException: "异常 (Exception)",
     healthCenterRecentRunFailed: "最近一次 run 失败",
     healthCenterQualityTopCommand: (count: number, command: string) =>
       `${command} 失败 ${count} 次`,
@@ -3551,82 +3923,191 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
       title ? `正在运行：${title}` : "有智能体 run 正在执行。",
     healthCenterSignalAllClear: "全部正常",
     healthCenterAllClearDetail: "没有需要关注的失败、阻塞项或聚合异常。",
-    workInsightsTitle: "产出与成本",
+    workInsightsTitle: "产出与成本 (Output & cost)",
     workInsightsSubtitle: "把吞吐、项目活跃度和 token 成本放在同一组，作为生产视角。",
-    harnessEvolutionTitle: "系统优化",
-    harnessEvolutionSubtitle: "把运行信号压成指标，提示系统下一步该优化在哪里。",
-    harnessEvolutionRecommendations: "建议动作",
-    harnessObsTitle: "Harness 可观测性",
-    harnessObsSubtitle: "项目级遥测：Jarvis、工具、SubAgent 与 eval case。",
+    harnessEvolutionTitle: "优化准备度 (Optimization readiness)",
+    harnessEvolutionSubtitle: "判断当前系统是否适合继续做能力优化，还是应先修复运行问题。",
+    harnessEvolutionRecommendations: "优化路线图 (Optimization roadmap)",
+    harnessObsTitle: "Harness 健康 (Harness health)",
+    harnessObsSubtitle: "展示 Jarvis、工具、子智能体和评测用例的运行状态。",
     harnessObsWindow: (days: number) => `${days} 天窗口`,
     harnessObsUnavailable:
       "可观测性历史不可用。默认会使用本地 JSON 存储；请检查 JARVIS_OBSERVABILITY_STORE_URL 是否被禁用或配置错误。",
-    harnessObsNoData: "当前窗口还没有记录到 harness 遥测。",
-    harnessObsMetricRuns: "已观测 Run",
+    harnessObsNoData: "当前窗口还没有记录到运行观测数据。",
+    harnessObsMetricRuns: "已记录运行 (Observed runs)",
     harnessObsMetricRunsDetail: (days: number) => `计入 ${days} 天看板窗口`,
-    harnessObsMetricDirection: "方向分",
-    harnessObsMetricDirectionDetail: (focus: string) => `优先方向：${focus}`,
-    harnessObsMetricSuccess: "Run 成功率",
+    harnessObsMetricDirection: "优化方向评分 (Direction score)",
+    harnessObsMetricDirectionDetail: (focus: string) => `建议优先优化：${focus}`,
+    harnessObsMetricDirectionHintFormula:
+      "优化方向评分 = 可靠性、验证覆盖、子智能体收益、效率、数据完整性这五类健康信号的加权综合分。",
+    harnessObsMetricDirectionHintFocus:
+      "优先方向取当前最弱的组件；它表示下一步优化领域，不等于某个任务是否完成。",
+    harnessObsMetricSuccess: "运行成功率 (Run success rate)",
     harnessObsMetricSuccessDetail: (success: number, failed: number) =>
-      `${success} 个成功 · ${failed} 个失败`,
-    harnessObsMetricLatency: "P95 延迟",
-    harnessObsMetricLatencyDetail: "覆盖已记录的 agent、工具和 SubAgent run",
-    harnessObsMetricEval: "Eval 通过率",
-    harnessObsMetricEvalDetail: (suite: string) => `最近 suite：${suite}`,
-    harnessObsToolsTitle: "工具行为",
-    harnessObsSubagentsTitle: "SubAgent 行为",
-    harnessObsRuns: "次数",
-    harnessObsSuccess: "成功",
-    harnessObsOutput: "平均输出",
-    harnessObsDelegation: "调用",
-    harnessObsNoTools: "还没有记录到工具 run。",
-    harnessObsNoSubagents: "还没有记录到 SubAgent run。",
-    harnessObsRecommendations: "方向建议",
-    harnessObsFocus_reliability: "可靠性",
-    harnessObsFocus_verification: "验证覆盖",
-    harnessObsFocus_subagent_roi: "SubAgent 投产比",
-    harnessObsFocus_efficiency: "效率",
-    harnessObsFocus_observability: "可观测性",
-    harnessObsComponent_reliability: "可靠性",
-    harnessObsComponent_verification: "验证覆盖",
-    harnessObsComponent_subagent_roi: "SubAgent ROI",
-    harnessObsComponent_efficiency: "效率",
-    harnessObsComponent_observability: "可观测性",
+      `已结束的智能体运行中成功结束的比例：${success} 个成功 · ${failed} 个失败。`,
+    harnessObsMetricSuccessHint:
+      "运行成功率 = 成功的已记录运行 / 全部已结束运行。它反映运行循环稳定性，不直接代表业务交付正确。",
+    harnessObsMetricLatency: "95分位耗时 (P95 latency)",
+    harnessObsMetricLatencyDetail:
+      "95% 已记录的智能体、工具、子智能体运行都能在该耗时内完成；越低越好。",
+    harnessObsMetricLatencyHint:
+      "95分位耗时也叫 P95，会忽略最慢 5% 的极端异常，用来观察尾部耗时压力。过高通常说明工具慢、重试链长或子智能体委派成本高。",
+    harnessObsMetricEval: "评测通过率 (Eval pass rate)",
+    harnessObsMetricEvalDetail: (suite: string) =>
+      `通过的评测用例 / 全部评测用例；最近评测集：${suite}。`,
+    harnessObsMetricEvalHint:
+      "评测通过率只统计已记录的评测用例结果，是判断 Harness 行为是否仍满足预期的可重复测试信号。",
+    harnessObsToolsTitle: "工具行为 (Tool behavior)",
+    harnessObsSubagentsTitle: "子智能体表现 (SubAgent behavior)",
+    harnessObsRuns: "次数 (Runs)",
+    harnessObsSuccess: "成功 (Success)",
+    harnessObsOutput: "平均输出 (Avg output)",
+    harnessObsDelegation: "调用 (Calls)",
+    harnessObsNoTools: "还没有记录到工具调用。",
+    harnessObsNoSubagents: "还没有记录到子智能体运行。",
+    harnessObsEvalMaturity: "评测成熟度 (Eval maturity)",
+    harnessObsEvalCapability: "能力评测 (Capability eval)",
+    harnessObsEvalRegression: "回归评测 (Regression eval)",
+    harnessObsEvalPassAtK: "至少一次通过 (Pass@K)",
+    harnessObsEvalPassAll: "多次全通过 (Pass all)",
+    harnessObsEvalGraders: "评分器 (Graders)",
+    harnessObsEvalTranscripts: "过程记录 (Transcripts)",
+    harnessObsRecommendations: "即时诊断 (Instant diagnosis)",
+    harnessCapabilityTitle: "Jarvis 四项能力评分 (Capability score)",
+    harnessCapabilitySubtitle:
+      "用真实运行、工具/子智能体调用、验证结果和评测用例，客观刻画理解、规划、调用与交付。",
+    harnessCapabilityOverall: "综合分 (Overall)",
+    harnessCapabilityPrimaryDriver: "主要影响指标 (Primary driver)",
+    harnessCapabilityEvidence: "案例 (Case)",
+    harnessCapabilityNoEvidence: "该维度还没有可下钻的真实案例。",
+    harnessCapabilityFormulaLabel: "评分公式与信号说明",
+    harnessCapabilityOverallFormula:
+      "综合分 = 四个能力维度分数的平均值，每项权重 25%。",
+    harnessCapabilityDeliveryCapFormula:
+      "保护规则：交付完成能力 < 60 时，综合分最高为 69。",
+    harnessCapabilityConfidenceFormula: (samples: number, confidence: string) =>
+      `置信度 = log(1 + 样本数) / log(31) × 信号覆盖度。当前：${samples} 个样本 · ${confidence}。`,
+    harnessCapabilityDimensionFormula: (formula: string) => `分数 = ${formula}。`,
+    harnessCapabilityMissingFormula:
+      "缺失信号按中性 50 分计入，直到有真实数据替代。",
+    harnessCapabilityDimensionConfidenceFormula:
+      "置信度综合样本量，以及运行观测、评测、需求执行、验证结果的信号覆盖。",
+    harnessCapabilityConfidenceHigh: "高置信度",
+    harnessCapabilityConfidenceMedium: "中置信度",
+    harnessCapabilityConfidenceLow: "低置信度",
+    harnessCapabilityConfidence: (label: string) => `置信度：${label}`,
+    harnessCapability_task_understanding: "任务理解力 (Task understanding)",
+    harnessCapability_planning_execution: "规划执行力 (Planning execution)",
+    harnessCapability_capability_invocation: "工具调用能力 (Capability invocation)",
+    harnessCapability_task_delivery: "交付完成能力 (Task delivery)",
+    harnessCapabilitySummary_task_understanding:
+      "从评测、验证和完成情况判断目标、约束、验收标准是否被正确理解。",
+    harnessCapabilitySummary_planning_execution:
+      "从运行收敛、完成率、超时/最大轮次规避和智能体成功率判断规划执行是否稳定。",
+    harnessCapabilitySummary_capability_invocation:
+      "从工具与子智能体成功率、恢复能力和耗时效率判断能力调用是否有效。",
+    harnessCapabilitySummary_task_delivery:
+      "从完成运行、验证结果、回归评测和案例覆盖判断是否真正交付可验证结果。",
+    harnessCapabilityDriver_capability_eval_pass_rate: "能力评测通过率 (Capability eval pass rate)",
+    harnessCapabilityDriver_verification_pass_rate: "验证通过率 (Verification pass rate)",
+    harnessCapabilityDriver_completion_rate: "完成率 (Completion rate)",
+    harnessCapabilityDriver_misunderstanding_free_rate: "无误解失败率 (Misunderstanding-free rate)",
+    harnessCapabilityDriver_terminal_rate: "运行收敛率 (Terminal rate)",
+    harnessCapabilityDriver_timeout_free_rate: "超时/最大轮次规避率 (Timeout-free rate)",
+    harnessCapabilityDriver_agent_success_rate: "智能体成功率 (Agent success rate)",
+    harnessCapabilityDriver_tool_success_rate: "工具成功率 (Tool success rate)",
+    harnessCapabilityDriver_subagent_success_rate: "子智能体成功率 (SubAgent success rate)",
+    harnessCapabilityDriver_agent_recovery_rate: "智能体恢复能力 (Agent recovery rate)",
+    harnessCapabilityDriver_latency_efficiency: "耗时效率 (Latency efficiency)",
+    harnessCapabilityDriver_delegation_visibility: "委派可见度 (Delegation visibility)",
+    harnessCapabilityDriver_regression_eval_pass_rate: "回归评测通过率 (Regression eval pass rate)",
+    harnessCapabilityDriver_verification_coverage: "验证覆盖率 (Verification coverage)",
+    harnessCapabilityDriver_failure_free_rate: "结束后无失败率 (Failure-free rate)",
+    harnessCaseEvidenceTitle: "真实案例",
+    harnessCaseEvidenceEmpty: "当前窗口没有失败、阻塞、运行中或评测失败的真实样本。",
+    harnessCaseFailedRun: "失败运行",
+    harnessCaseBlocked: "阻塞项",
+    harnessCaseRunning: "运行中",
+    harnessCaseEval: "评测用例",
+    harnessCaseNoError: "未记录错误信息。",
+    harnessCaseNoReason: "未记录阻塞原因。",
+    harnessCaseRunningNow: "运行仍在执行。",
+    harnessCaseRunningDuration: (duration: string) => `已运行 ${duration}`,
+    harnessCaseRunMeta: (project: string, when: string, id: string) =>
+      `${project} · ${when} · 运行 ${id}`,
+    harnessCaseRequirementMeta: (project: string, when: string, id: string) =>
+      `${project} · ${when} · req ${id}`,
+    harnessCaseEvalMeta: (suite: string, kind: string, trial: string) =>
+      `${suite} · ${kind} · trial ${trial}`,
+    harnessMetricFormulaLabel: "指标说明",
+    harnessEvolutionHintMeaning:
+      "优化准备度回答：当前系统是否已经稳定到可以继续优化能力，还是应该先修运行健康。",
+    harnessEvolutionHintFormula:
+      "准备度评分从 100 开始，按失败运行、阻塞需求、验证通过率不足、质量趋势下降、自动接管范围不足、存储信号缺失逐项扣分。",
+    harnessEvolutionHintInterpretation:
+      "80+ 表示适合继续优化能力；60-79 表示需要关注最弱信号；低于 60 应优先稳定交付闭环。",
+    harnessMetricScoreHintFormula:
+      "准备度评分是扣分制：100 减去可靠性、验证、自动接管、数据完整性的风险扣分。",
+    harnessMetricScoreHintPenalty:
+      "失败运行、阻塞项、验证通过率低、质量趋势下降、自动接管范围低、存储缺失都会扣分。",
+    harnessMetricReliabilityDebtHint:
+      "待处理运行问题 = 当前窗口内失败运行 + 阻塞需求，用来估计还需要清理多少运行问题。",
+    harnessMetricVerificationHint:
+      "验证通过情况 = 最近需求运行的验证通过率，用来判断交付是否有可执行检查支撑。",
+    harnessMetricAutomationCoverageHint:
+      "自动接管范围 = 开启自动调度的活跃项目 / 全部活跃项目，表示系统能自动接管的范围。",
+    harnessMetricObservabilityHint:
+      "数据完整性检查关键本地存储是否齐全。存储缺失会降低所有看板分数的可信度。",
+    harnessMetricThroughputHint:
+      "运行流转统计窗口内启动、完成、运行中的需求运行数量。它表示活跃度，不表示成功质量。",
+    harnessDirectionComponentsTitle: "优化方向拆解 (Direction components)",
+    harnessDirectionComponentsHint:
+      "这些条形图拆解优化方向评分。最低的组件通常解释为什么系统建议优先优化该方向。",
+    harnessObsFocus_reliability: "可靠性 (Reliability)",
+    harnessObsFocus_verification: "验证覆盖 (Verification)",
+    harnessObsFocus_subagent_roi: "子智能体收益 (SubAgent ROI)",
+    harnessObsFocus_efficiency: "效率 (Efficiency)",
+    harnessObsFocus_observability: "数据完整性 (Observability)",
+    harnessObsComponent_reliability: "可靠性 (Reliability)",
+    harnessObsComponent_verification: "验证覆盖 (Verification)",
+    harnessObsComponent_subagent_roi: "子智能体收益 (SubAgent ROI)",
+    harnessObsComponent_efficiency: "效率 (Efficiency)",
+    harnessObsComponent_observability: "数据完整性 (Observability)",
     harnessObsRec_stabilize_run_loop_title: "先稳住运行循环",
     harnessObsRec_stabilize_run_loop_detail:
-      "先处理 provider 报错、终态清理和重试行为，再继续增加新能力。",
+      "先处理模型服务报错、结束状态清理和重试行为，再继续增加新能力。",
     harnessObsRec_fix_tool_hotspot_title: "先修最高噪声工具",
     harnessObsRec_fix_tool_hotspot_detail:
       "改进 schema 校验、超时策略或错误文本，让模型更容易从该工具错误簇中恢复。",
     harnessObsRec_reduce_tool_errors_title: "降低工具错误压力",
     harnessObsRec_reduce_tool_errors_detail:
       "复查权限拒绝、参数格式错误，以及是否给出了可恢复的错误信息。",
-    harnessObsRec_expand_eval_coverage_title: "扩展 Eval 覆盖",
+    harnessObsRec_expand_eval_coverage_title: "扩展评测覆盖",
     harnessObsRec_expand_eval_coverage_detail:
-      "补齐规划、工具使用、文件编辑、SubAgent 委派和工具错误恢复场景。",
-    harnessObsRec_tune_subagent_delegation_title: "调优 SubAgent 委派",
+      "补齐规划、工具使用、文件编辑、子智能体委派和工具错误恢复场景。",
+    harnessObsRec_tune_subagent_delegation_title: "调优子智能体委派",
     harnessObsRec_tune_subagent_delegation_detail:
-      "把 SubAgent 路由到复杂任务，补清晰完成标准；短任务减少不必要委派。",
-    harnessObsRec_exercise_subagent_path_title: "跑通 SubAgent 路径",
+      "把子智能体路由到复杂任务，补清晰完成标准；短任务减少不必要委派。",
+    harnessObsRec_exercise_subagent_path_title: "跑通子智能体路径",
     harnessObsRec_exercise_subagent_path_detail:
-      "加一个小型委派 smoke eval，让 Claude Code / Codex 类 worker 被纳入方向分。",
-    harnessObsRec_cut_latency_pressure_title: "降低延迟压力",
+      "加一个小型委派冒烟评测，让 Claude Code / Codex 类执行器被纳入优化方向评分。",
+    harnessObsRec_cut_latency_pressure_title: "降低耗时压力",
     harnessObsRec_cut_latency_pressure_detail:
-      "检查长耗时工具、流式卡顿、重试放大和不必要的 SubAgent 跳转。",
-    harnessObsRec_fill_signal_gaps_title: "补齐遥测缺口",
+      "检查长耗时工具、流式卡顿、重试放大和不必要的子智能体跳转。",
+    harnessObsRec_fill_signal_gaps_title: "补齐观测数据缺口",
     harnessObsRec_fill_signal_gaps_detail:
-      "保持 JSON 持久化开启，并补 span summary 以支持 trace 下钻。",
+      "保持 JSON 持久化开启，并补充运行摘要以支持问题下钻。",
     harnessObsRec_promote_release_gate_title: "提升为发布门禁",
     harnessObsRec_promote_release_gate_detail:
-      "当前信号足够稳定，可以把 eval baseline 和 score delta 用作发布前门禁。",
-    modelScoreTitle: "模型评分",
+      "当前信号足够稳定，可以把评测基线和评分变化用作发布前门禁。",
+    modelScoreTitle: "模型评分 (Model score)",
     modelScoreWindow: (days: number) => `${days} 天窗口`,
     modelScoreNoData: "当前窗口还没有记录到模型用量。",
-    modelScoreBest: "最高评分",
-    modelScoreConfidence: "最高置信度",
-    modelScoreModel: "模型",
-    modelScoreScore: "评分",
-    modelScoreSignals: "信号",
+    modelScoreBest: "最高评分 (Best score)",
+    modelScoreConfidence: "最高置信度 (Best confidence)",
+    modelScoreModel: "模型 (Model)",
+    modelScoreScore: "评分 (Score)",
+    modelScoreSignals: "信号 (Signals)",
     modelScoreUsageLine: (calls: number, tokens: string, cost: string) =>
       `${calls} 次调用 · ${tokens} tokens · ${cost}/次`,
     modelScoreCostEfficiency: (value: string) => `成本 ${value}`,
@@ -3635,37 +4116,37 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     modelScoreOutputBalance: (value: string) => `输出 ${value}`,
     modelScoreNote:
       "评分基于用量与估算成本信号；如果要做按模型归因的质量分，需要在 run 历史里记录所选模型。",
-    harnessMetricScore: "进化分",
-    harnessMetricScoreDetail: "综合可靠性、验证、自动化与可观测性。",
-    harnessMetricReliabilityDebt: "可靠性债务",
+    harnessMetricScore: "准备度评分 (Readiness score)",
+    harnessMetricScoreDetail: "综合运行可靠性、验证、自动接管与数据完整性。",
+    harnessMetricReliabilityDebt: "待处理运行问题 (Reliability debt)",
     harnessMetricReliabilityDebtDetail: (failed: number, blocked: number) =>
       `${failed} 个失败 · ${blocked} 个阻塞`,
-    harnessMetricVerification: "验证成熟度",
+    harnessMetricVerification: "验证通过情况 (Verification)",
     harnessMetricVerificationDetail: (samples: number, delta: string) =>
       `${samples} 次验证 · 变化 ${delta}`,
-    harnessMetricAutomationCoverage: "自动化覆盖",
+    harnessMetricAutomationCoverage: "自动接管范围 (Automation coverage)",
     harnessMetricAutomationCoverageDetail: (enabled: number, total: number) =>
       `${enabled}/${total} 个活跃项目可自动接管`,
-    harnessMetricObservability: "可观测性",
-    harnessMetricReady: "就绪",
+    harnessMetricObservability: "数据完整性 (Observability)",
+    harnessMetricReady: "就绪 (Ready)",
     harnessMetricObservabilityReady: "当前数据足够支撑总览指标。",
     harnessMetricObservabilityMissing: (n: number) => `${n} 个存储信号缺失`,
-    harnessMetricThroughput: "Run 流动",
+    harnessMetricThroughput: "运行流转 (Throughput)",
     harnessMetricThroughputDetail: (completed: number, running: number) =>
       `${completed} 个完成 · ${running} 个运行中`,
     harnessRecStabilizeTitle: "先稳住运行循环",
     harnessRecStabilizeDetail: (failed: number) =>
-      `窗口内有 ${failed} 个失败 run。优先处理 provider 报错、重试策略与终态清理。`,
-    harnessRecVerificationTitle: "提升验证成熟度",
+      `窗口内有 ${failed} 个失败运行。优先处理模型服务报错、重试策略与结束状态清理。`,
+    harnessRecVerificationTitle: "提升验证通过情况",
     harnessRecVerificationDetail: (rate: string) =>
       `当前通过率 ${rate}。建议把重复检查沉淀为 verification plan 模板。`,
     harnessRecCommandTitle: "产品化高噪声命令",
     harnessRecCommandDetail: (count: number, command: string) =>
       `${command} 失败 ${count} 次。可考虑命令画像、更合适的超时或更清晰的 stderr 摘要。`,
-    harnessRecAutomationTitle: "提高自动化覆盖",
+    harnessRecAutomationTitle: "扩大自动接管范围",
     harnessRecAutomationDetail: (enabled: number, total: number) =>
       `${enabled}/${total} 个活跃项目允许自动接管。建议复查暂停项目和默认策略。`,
-    harnessRecObservabilityTitle: "补齐可观测性缺口",
+    harnessRecObservabilityTitle: "补齐数据完整性缺口",
     harnessRecObservabilityDetail:
       "补齐缺失 store，让健康、质量和进化指标不依赖片段化历史。",
     harnessRecThroughputTitle: "制造一次执行种子",

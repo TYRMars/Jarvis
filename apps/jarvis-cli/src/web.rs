@@ -49,7 +49,11 @@ fn locate_jarvis_binary() -> PathBuf {
     //    and this picks the matching one.
     if let Ok(self_exe) = std::env::current_exe() {
         if let Some(parent) = self_exe.parent() {
-            let bin_name = if cfg!(windows) { "jarvis.exe" } else { "jarvis" };
+            let bin_name = if cfg!(windows) {
+                "jarvis.exe"
+            } else {
+                "jarvis"
+            };
             let candidate = parent.join(bin_name);
             if candidate.is_file() {
                 return candidate;
@@ -57,7 +61,11 @@ fn locate_jarvis_binary() -> PathBuf {
         }
     }
     // 3. Bare name — let the OS search PATH.
-    PathBuf::from(if cfg!(windows) { "jarvis.exe" } else { "jarvis" })
+    PathBuf::from(if cfg!(windows) {
+        "jarvis.exe"
+    } else {
+        "jarvis"
+    })
 }
 
 /// Spawn `jarvis serve --workspace <ws>` as a background child

@@ -1,6 +1,6 @@
 ---
 name: doc
-description: 管理 Jarvis 的文档库（DocProject + DocDraft）—— 列出文档、新建、改元数据、保存草稿、删除。当用户提到"文档"、"笔记"、"写一篇"、"草稿"、"研究报告"、"设计方案"等场景时使用。
+description: 管理 Jarvis 的文档库（DocProject + DocDraft）—— 搜索文档、读取正文、新建、改元数据、保存草稿、归档/删除。当用户想通过自然语言增删改查 docs、笔记、草稿、研究报告、设计方案、指南时使用。
 activation: both
 keywords: [doc, docs, document, 文档, 笔记, note, draft, 草稿, research, report, design, guide, 写作]
 version: "0.1.0"
@@ -17,8 +17,15 @@ version: "0.1.0"
 - `doc.list { workspace?, archived?, pinned_only? }`
   列当前 workspace 下所有 DocProject。`workspace` 留空 = 用 agent 当前 pin 的
   根。`archived` 默认 false（不含归档）。
+- `doc.search { query?, workspace?, archived?, limit? }`
+  按标题、tags、kind、最新草稿正文搜索。用户用自然语言提到某篇文档但没给 id
+  时，先用它定位候选；`query` 留空可看最近文档。
 - `doc.get { id, with_draft? }`
   元数据 + 可选最新草稿（`with_draft: true` 时附带）。
+- `doc.upsert { id?, title?, content?, kind?, tags?, pinned?, archived?, workspace? }`
+  面向自然语言的一步创建/更新：有 `id` 就更新该文档；没 id 时用 workspace
+  内的精确标题匹配，匹配不到则创建。`content` 会追加为最新 markdown 草稿。
+  标题匹配到多篇会报错，此时改用 `doc.search` 找候选并让用户确认。
 - `doc.create { title, kind?, tags?, pinned?, workspace? }`
   创建空 DocProject。`kind` ∈ {`note`, `research`, `report`, `design`, `guide`}，
   缺省 `note`。
@@ -31,11 +38,15 @@ version: "0.1.0"
 
 ## 行为约定
 
-1. **写一篇文档** = `doc.create` 拿到 id → `doc.draft.save` 写正文。两步审批。
-2. **修改正文** = `doc.draft.get` 当起点 → 改完 → `doc.draft.save` 提新版本。
+1. **写一篇文档**：优先 `doc.upsert { title, content, kind?, tags? }`，一次完成元数据
+   + 正文；需要精细控制时再拆成 `doc.create` → `doc.draft.save`。
+2. **查一篇文档**：用户没给 id 时先 `doc.search`，候选唯一再 `doc.get { with_draft:
+   true }` 或 `doc.draft.get`。
+3. **修改正文** = `doc.search`/`doc.get` 定位 → `doc.draft.get` 当起点 → 改完 →
+   `doc.upsert { id, content }` 或 `doc.draft.save` 提新版本。
    不要试图"原地改" —— 草稿是 append-only。
-3. **kind 选型**：随手记 `note`、调研结论 `research`、对外汇报 `report`、
+4. **kind 选型**：随手记 `note`、调研结论 `research`、对外汇报 `report`、
    方案设计 `design`、操作指南 `guide`。
-4. 草稿单篇 ≤ 50KB；超长内容拆多篇 DocProject 互相引用。
-5. **删除整篇前必须确认用户意图** —— 草稿历史会一并消失。
+5. 草稿单篇 ≤ 50KB；超长内容拆多篇 DocProject 互相引用。
+6. **删除整篇前必须确认用户意图** —— 草稿历史会一并消失。
    用户不确定时，建议先 `doc.update { archived: true }` 而不是 delete。

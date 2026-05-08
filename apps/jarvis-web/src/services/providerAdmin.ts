@@ -114,3 +114,31 @@ export async function deleteProvider(
 export async function setDefaultProvider(name: string): Promise<void> {
   await rest("PUT", "/v1/providers/default", { name });
 }
+
+/// Reply shape for `POST /v1/providers/:name/probe`. All capability
+/// fields are nullable — the endpoint reports unknown rather than
+/// guessing.
+export interface ProbeResult {
+  name: string;
+  model: string;
+  auth_ok: boolean;
+  default_model_ok: boolean;
+  supports_tool_calls: boolean | null;
+  supports_streaming: boolean | null;
+  latency_ms: number;
+  error?: string | null;
+}
+
+export async function probeProvider(
+  name: string,
+  opts?: { model?: string; testTools?: boolean },
+): Promise<ProbeResult> {
+  const body: Record<string, unknown> = {};
+  if (opts?.model) body.model = opts.model;
+  if (opts?.testTools !== undefined) body.test_tools = opts.testTools;
+  return await rest<ProbeResult>(
+    "POST",
+    `/v1/providers/${encodeURIComponent(name)}/probe`,
+    body,
+  );
+}

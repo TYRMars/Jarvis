@@ -55,9 +55,14 @@ function handleScopedFrame(conversationId: string, ev: any): void {
     store.setProposedPlan(null);
     store.clearSubAgentRuns();
   }
-  appStore.getState().setActiveId(conversationId);
-
-  legacyDispatchFrame(ev);
+  // Note: do NOT flip activeId during scoped processing. Streaming
+  // delta frames can arrive ten-plus per second; thrashing activeId
+  // back-and-forth corrupts any React subscriber that reads it
+  // during a render or effect, and it surfaces to the user as the
+  // "session-switching confusion" bug. Background frames only
+  // mutate `conversationSurfaces[conversationId]` via the
+  // save/restore dance below; legacyDispatchFrame is also skipped
+  // so useWebSocket subscribers see only active-conversation traffic.
   const handler = frameHandlers.get(ev.type);
   if (handler) handler(ev);
   else console.warn("unknown frame", ev);
@@ -67,7 +72,6 @@ function handleScopedFrame(conversationId: string, ev: any): void {
   if (before && before !== conversationId) {
     appStore.getState().restoreConversationSurface(before);
   }
-  appStore.getState().setActiveId(before);
   const activeRunning = before
     ? appStore.getState().isConversationRunning(before)
     : false;

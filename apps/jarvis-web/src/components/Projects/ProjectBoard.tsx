@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import type { Project, Requirement, RequirementRun, RequirementStatus } from "../../types/frames";
 import { t } from "../../utils/i18n";
 import { relTime } from "../../utils/time";
@@ -8,6 +9,7 @@ import {
   rejectRequirement,
   updateRequirement,
 } from "../../services/requirements";
+import { sessionRoute } from "../../services/conversations";
 import {
   fetchProjectRuns,
   type ProjectRunHistoryItem,
@@ -265,6 +267,31 @@ export function ProjectBoard({
             </svg>
             <span>{t("projectLessonsTitle")}</span>
           </button>
+          <Link
+            to="/projects/worktrees"
+            className="settings-btn project-board-columns-btn project-board-secondary-action"
+            aria-label={t("projectWorktreesButton")}
+            title={t("projectWorktreesButton")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M6 3v6a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V3" />
+              <circle cx="6" cy="18" r="3" />
+              <circle cx="18" cy="18" r="3" />
+              <path d="M12 12v3" />
+              <circle cx="12" cy="18" r="3" />
+            </svg>
+            <span>{t("projectWorktreesButton")}</span>
+          </Link>
           <button
             type="button"
             className="settings-btn project-board-columns-btn project-board-secondary-action"
@@ -767,13 +794,15 @@ function RequirementCard({
         >
           {statusLabel}
         </span>
-        {sessions > 0 && (
-          <span
+        {sessions > 0 && latestConversationId && (
+          <Link
+            to={sessionRoute(latestConversationId)}
             className="requirement-card-sessions shrink-0 px-1 text-soft tabular-nums"
-            title={t("reqSessions", sessions)}
+            title={`${t("reqSessions", sessions)} · ${sessionRoute(latestConversationId)}`}
+            onClick={(e) => e.stopPropagation()}
           >
             {sessions}×
-          </span>
+          </Link>
         )}
         {requirement.acceptance_policy === "human" && (
           <span

@@ -393,7 +393,10 @@ pub async fn run_repl(mut args: Args, workspace: PathBuf) -> Result<()> {
                 continue;
             }
             args.model = Some(model.to_string());
-            println!("{}", dim(&format!("(model set to `{model}` for next turn)")));
+            println!(
+                "{}",
+                dim(&format!("(model set to `{model}` for next turn)"))
+            );
             continue;
         }
 
@@ -601,6 +604,16 @@ async fn run_one_turn(
                     AgentEvent::Done { conversation, .. } => {
                         if delta_open { println!(); }
                         return TurnOutcome::Done(conversation);
+                    }
+                    AgentEvent::ProviderFallback { event } => {
+                        if delta_open { println!(); delta_open = false; }
+                        eprintln!(
+                            "{} provider fallback: {} → {} ({})",
+                            yellow("↻"),
+                            event.from,
+                            event.to,
+                            event.reason,
+                        );
                     }
                     AgentEvent::Error { message } => {
                         if delta_open { println!(); }

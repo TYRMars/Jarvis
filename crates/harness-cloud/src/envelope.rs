@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::protocol::{
-    RuntimeHeartbeat, RuntimeRegister, TaskCancel, TaskClaim, TaskComplete, TaskDispatch,
-    TaskFail, TaskProgress,
+    RuntimeHeartbeat, RuntimeRegister, TaskCancel, TaskClaim, TaskComplete, TaskDispatch, TaskFail,
+    TaskProgress,
 };
 
 /// Common envelope for all cloud / edge messages.
@@ -39,7 +39,12 @@ pub enum Payload {
 }
 
 impl Envelope {
-    pub fn new(ty: impl Into<String>, tenant_slug: impl Into<String>, runtime_id: impl Into<String>, payload: Value) -> Self {
+    pub fn new(
+        ty: impl Into<String>,
+        tenant_slug: impl Into<String>,
+        runtime_id: impl Into<String>,
+        payload: Value,
+    ) -> Self {
         Self {
             v: 1,
             ty: ty.into(),
@@ -73,20 +78,12 @@ impl Envelope {
             "runtime.heartbeat" => {
                 Payload::RuntimeHeartbeat(serde_json::from_value(self.payload.clone())?)
             }
-            "task.dispatch" => {
-                Payload::TaskDispatch(serde_json::from_value(self.payload.clone())?)
-            }
+            "task.dispatch" => Payload::TaskDispatch(serde_json::from_value(self.payload.clone())?),
             "task.claim" => Payload::TaskClaim(serde_json::from_value(self.payload.clone())?),
-            "task.progress" => {
-                Payload::TaskProgress(serde_json::from_value(self.payload.clone())?)
-            }
-            "task.complete" => {
-                Payload::TaskComplete(serde_json::from_value(self.payload.clone())?)
-            }
+            "task.progress" => Payload::TaskProgress(serde_json::from_value(self.payload.clone())?),
+            "task.complete" => Payload::TaskComplete(serde_json::from_value(self.payload.clone())?),
             "task.fail" => Payload::TaskFail(serde_json::from_value(self.payload.clone())?),
-            "task.cancel" => {
-                Payload::TaskCancel(serde_json::from_value(self.payload.clone())?)
-            }
+            "task.cancel" => Payload::TaskCancel(serde_json::from_value(self.payload.clone())?),
             _ => Payload::Unknown(self.payload.clone()),
         })
     }
@@ -129,9 +126,7 @@ impl Payload {
 mod tests {
     use super::*;
     use crate::model::{EdgeCapabilities, EdgeToolSpec, ToolRisk};
-    use crate::protocol::{
-        RuntimeLoadStatus, TaskProgressEvent,
-    };
+    use crate::protocol::{RuntimeLoadStatus, TaskProgressEvent};
     use harness_core::{Conversation, PlanItem, PlanStatus};
 
     fn sample_register() -> RuntimeRegister {

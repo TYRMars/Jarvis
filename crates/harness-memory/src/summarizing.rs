@@ -72,6 +72,18 @@ const SUMMARY_RESERVE_TOKENS: usize = 256;
 /// Cap on how many tokens the summarisation call is allowed to emit.
 const DEFAULT_SUMMARY_MAX_TOKENS: u32 = 400;
 
+/// Optional resolver consulted before each summarisation call. When
+/// it returns `Some((llm, model))`, that pair overrides the
+/// constructor-time `(llm, model)` for this call only — useful when
+/// the operator routes summarisation to a cheaper / smaller model
+/// via [`harness_server::ModelRoutePolicy`]'s `summarization` slot.
+/// `None` (or no resolver) keeps the constructor-time default.
+///
+/// `harness-memory` doesn't depend on `harness-server`, so the
+/// resolver is a closure provided by the composition root which
+/// holds the policy + provider registry.
+pub type LlmRouteResolver = dyn Fn() -> Option<(Arc<dyn LlmProvider>, String)> + Send + Sync;
+
 /// Compact a conversation by summarising the oldest turns.
 pub struct SummarizingMemory {
     llm: Arc<dyn LlmProvider>,
@@ -85,6 +97,9 @@ pub struct SummarizingMemory {
     /// survive process restarts and are shared across workers.
     persistence: Option<Arc<dyn ConversationStore>>,
     estimator: Arc<dyn TokenEstimator>,
+    /// Optional `(llm, model)` override resolved on every
+    /// summarisation call. See [`LlmRouteResolver`].
+    route_resolver: Option<Arc<LlmRouteResolver>>,
 }
 
 struct CachedSummary {
@@ -103,7 +118,19 @@ impl SummarizingMemory {
             cache: Arc::new(Mutex::new(None)),
             persistence: None,
             estimator: default_estimator(),
+            route_resolver: None,
         }
+    }
+
+    /// Install a per-call route override. The resolver fires before
+    /// each summarisation call; when it returns `Some((llm, model))`,
+    /// that pair is used instead of the constructor-time default.
+    /// `None` falls through. Composition roots typically wire this
+    /// to [`harness_server::ModelRoutePolicy`]'s
+    /// `RouteSlot::Summarization` slot.
+    pub fn with_route_resolver(mut self, resolver: Arc<LlmRouteResolver>) -> Self {
+        self.route_resolver = Some(resolver);
+        self
     }
 
     pub fn with_summary_prompt(mut self, prompt: impl Into<String>) -> Self {
@@ -269,7 +296,18 @@ impl SummarizingMemory {
             }
         }
 
-        // Tier 3: ask the LLM.
+        // Tier 3: ask the LLM. Consult the route resolver first so a
+        // configured `RouteSlot::Summarization` target wins over the
+        // constructor-time `(llm, model)`. Falls back when the
+        // resolver returns `None` (no slot configured / target
+        // unresolvable).
+        let (llm, model) = match self.route_resolver.as_ref().and_then(|r| r()) {
+            Some((llm, model)) => {
+                debug!(model = %model, "summariser using route-policy override");
+                (llm, model)
+            }
+            None => (self.llm.clone(), self.model.clone()),
+        };
         let convo = vec![
             Message::system(self.summary_prompt.clone()),
             Message::user(format!(
@@ -278,13 +316,14 @@ impl SummarizingMemory {
             )),
         ];
         let req = ChatRequest {
-            model: self.model.clone(),
+            model,
             messages: convo,
             tools: Vec::new(),
             temperature: Some(0.0),
             max_tokens: Some(self.summary_max_tokens),
             previous_response_id: None,
             chain_origin: None,
+            parallel_tool_calls: None,
         };
 
         // One retry on transient transport errors — the summariser
@@ -292,12 +331,11 @@ impl SummarizingMemory {
         // sometimes hits a half-closed keep-alive on first send.
         // Auth refreshes / 401s / 4xxs are NOT retried (the second
         // attempt would just fail the same way).
-        let resp = match self.llm.complete(req.clone()).await {
+        let resp = match llm.complete(req.clone()).await {
             Ok(r) => r,
             Err(e) if is_transport_error(&e) => {
                 warn!(error = %e, "summary llm transport error; retrying once");
-                self.llm
-                    .complete(req)
+                llm.complete(req)
                     .await
                     .map_err(|e| -> BoxError { format!("summary llm error: {e}").into() })?
             }
@@ -493,7 +531,7 @@ mod tests {
                 message: Message::assistant_text(&self.reply),
                 finish_reason: FinishReason::Stop,
                 response_id: None,
-                    usage: None,
+                usage: None,
             })
         }
 

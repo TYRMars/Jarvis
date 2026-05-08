@@ -176,7 +176,7 @@ The full list is in [CLAUDE.md](CLAUDE.md). What matters for ops:
 | `JARVIS_WORK_TICK_SECONDS` | `30` | Scheduler tick interval |
 | `JARVIS_WORK_MAX_UNITS_PER_TICK` | `1` | Concurrency cap per tick |
 | `JARVIS_WORK_MAX_RETRIES` | `1` | Retry ceiling per requirement |
-| `JARVIS_WORK_RUN_TIMEOUT_MS` | `300000` | Wall-clock budget per agent run; the watchdog reaps stuck Pending after this and stuck Running after `× 3` |
+| `JARVIS_WORK_RUN_TIMEOUT_MS` | `600000` | Wall-clock budget per agent run; the watchdog reaps stuck Pending after this and stuck Running after `× 3` |
 | `JARVIS_WORKTREE_MODE` | `off` (auto upgrades to `per_run`) | `off` / `per_run` |
 | `JARVIS_WORKTREE_ROOT` | `.jarvis/worktrees` | Where per-run git worktrees live |
 

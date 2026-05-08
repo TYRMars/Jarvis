@@ -32,7 +32,7 @@ use harness_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use crate::tokens::TiktokenEstimator;
 
@@ -94,6 +94,16 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "anthropic",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = false,
+        ),
+    )]
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse> {
         let body = AnthropicRequest::from_request(req, false);
         let url = self.endpoint();
@@ -125,6 +135,16 @@ impl LlmProvider for AnthropicProvider {
         parsed.into_chat_response()
     }
 
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "anthropic",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = true,
+        ),
+    )]
     async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream> {
         let body = AnthropicRequest::from_request(req, true);
         let url = self.endpoint();
@@ -1220,7 +1240,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             false,
         );
@@ -1241,7 +1261,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             false,
         );
@@ -1263,7 +1283,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             false,
         );
@@ -1288,7 +1308,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             false,
         );
@@ -1317,7 +1337,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             false,
         );
@@ -1350,7 +1370,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             false,
         );
