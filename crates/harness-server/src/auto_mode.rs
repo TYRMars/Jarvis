@@ -3575,34 +3575,46 @@ Do {{ requirement.title }} in {{ issue.state }}.
         // upper bound: 4 reqs × 80 ms hold ÷ 2 permits ≈ 160 ms,
         // plus per-task setup + agent loop overhead. 5s is plenty
         // and only matters when the cap is broken.
+        //
+        // Three-way exit condition: (1) no LLM calls in flight,
+        // (2) the store has all four run rows (i.e. every spawned
+        // drive task got past its initial `Pending` upsert), and
+        // (3) none of those rows is still Pending/Running. Without
+        // (2) the loop can race-exit on a slow CI runner where the
+        // last two drive tasks haven't started yet — leaving a
+        // mysterious "completed=2 of 4" failure downstream.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             tokio::time::sleep(Duration::from_millis(20)).await;
+            let runs = state
+                .requirement_runs
+                .as_ref()
+                .unwrap()
+                .list_all(50)
+                .await
+                .unwrap();
+            let pending_or_running = runs
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r.status,
+                        RequirementRunStatus::Pending | RequirementRunStatus::Running
+                    )
+                })
+                .count();
             if inflight.load(AtomicOrdering::SeqCst) == 0
-                && state
-                    .requirement_runs
-                    .as_ref()
-                    .unwrap()
-                    .list_all(50)
-                    .await
-                    .unwrap()
-                    .iter()
-                    .filter(|r| {
-                        matches!(
-                            r.status,
-                            RequirementRunStatus::Pending | RequirementRunStatus::Running
-                        )
-                    })
-                    .count()
-                    == 0
+                && runs.len() >= 4
+                && pending_or_running == 0
             {
                 break;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "drive tasks did not finish within 5s; inflight={} peak={}",
+                "drive tasks did not finish within 5s; inflight={} peak={} runs_total={} pending_or_running={}",
                 inflight.load(AtomicOrdering::SeqCst),
                 peak.load(AtomicOrdering::SeqCst),
+                runs.len(),
+                pending_or_running,
             );
         }
 
