@@ -18,6 +18,7 @@ pub mod label;
 pub mod llm;
 pub mod memory;
 pub mod message;
+pub mod observability;
 pub mod permission;
 pub mod plan;
 pub mod progress;
@@ -56,6 +57,11 @@ pub use memory::{
     CharRatioEstimator, Memory, TokenEstimator,
 };
 pub use message::{CacheHint, Message, ToolCall};
+pub use observability::{
+    DashboardSnapshot, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteRun,
+    MetricKind, MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun,
+    ObservedRunKind, ObservedSpanSummary, TimeWindow,
+};
 pub use permission::{
     glob_match, Decision, HitSource, PermissionMode, PermissionRule, PermissionStore,
     PermissionTable, RuleHit, Scope as PermissionScope, ScopedRule,

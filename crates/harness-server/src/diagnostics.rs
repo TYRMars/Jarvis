@@ -198,6 +198,34 @@ pub async fn stuck_runs(
     Ok(out)
 }
 
+/// Recent runs across every requirement, newest-first by
+/// `finished_at` (falling back to `started_at` for rows that are
+/// still in flight). `limit` caps the returned slice; the upstream
+/// scan defaults to a comfortable multiple so terminal rows don't
+/// get crowded out by noisy in-flight ones.
+///
+/// Unlike [`recent_failures`], this is a status-agnostic feed —
+/// the dashboard's "Recent runs" panel renders Completed / Failed /
+/// Cancelled / Running side by side and lets the user filter
+/// client-side.
+pub async fn recent_runs(
+    run_store: &dyn RequirementRunStore,
+    limit: u32,
+) -> Result<Vec<RequirementRun>, harness_core::BoxError> {
+    // Same 5x rule as `recent_failures` so a request for "20 recent
+    // runs" still surfaces the latest 20 even when the store has a
+    // long tail of stale rows.
+    let scan = limit.saturating_mul(5).max(limit).max(1);
+    let mut rows = run_store.list_all(scan).await?;
+    rows.sort_by(|a, b| {
+        let a_key = a.finished_at.as_deref().unwrap_or(&a.started_at);
+        let b_key = b.finished_at.as_deref().unwrap_or(&b.started_at);
+        b_key.cmp(a_key)
+    });
+    rows.truncate(limit as usize);
+    Ok(rows)
+}
+
 /// Recent failed runs, newest-first. `limit` caps both the
 /// `list_all` scan and the returned slice.
 pub async fn recent_failures(
@@ -449,6 +477,52 @@ mod tests {
         let failed = recent_failures(&store, 10).await.unwrap();
         let ids: Vec<&str> = failed.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["late-fail", "early-fail"]);
+    }
+
+    #[tokio::test]
+    async fn recent_runs_sorts_by_finished_at_then_truncates() {
+        let store = MemoryRequirementRunStore::new();
+
+        // Three terminal rows finished at distinct points in the
+        // past so the ordering can't collapse to "all stamped now".
+        let mut early = RequirementRun::new("req-a", "conv-1");
+        early.id = "early".into();
+        early.started_at = rfc3339_seconds_ago(1200);
+        early.finish(RequirementRunStatus::Completed);
+        early.finished_at = Some(rfc3339_seconds_ago(900));
+        store.upsert(&early).await.unwrap();
+
+        let mut middle = RequirementRun::new("req-a", "conv-2");
+        middle.id = "middle".into();
+        middle.started_at = rfc3339_seconds_ago(600);
+        middle.finish(RequirementRunStatus::Failed);
+        middle.finished_at = Some(rfc3339_seconds_ago(300));
+        store.upsert(&middle).await.unwrap();
+
+        let mut late = RequirementRun::new("req-a", "conv-3");
+        late.id = "late".into();
+        late.started_at = rfc3339_seconds_ago(120);
+        late.finish(RequirementRunStatus::Cancelled);
+        late.finished_at = Some(rfc3339_seconds_ago(30));
+        store.upsert(&late).await.unwrap();
+
+        // In-flight row: finished_at is None, falls back to
+        // started_at for ordering. Started ~10s ago — newer than
+        // any finished_at, so it should sort first.
+        let mut running = RequirementRun::new("req-a", "conv-4");
+        running.id = "running".into();
+        running.status = RequirementRunStatus::Running;
+        running.started_at = rfc3339_seconds_ago(10);
+        store.upsert(&running).await.unwrap();
+
+        let recent = recent_runs(&store, 10).await.unwrap();
+        let ids: Vec<&str> = recent.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["running", "late", "middle", "early"]);
+
+        // Limit truncates without mutating the order.
+        let two = recent_runs(&store, 2).await.unwrap();
+        let two_ids: Vec<&str> = two.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(two_ids, vec!["running", "late"]);
     }
 
     #[tokio::test]

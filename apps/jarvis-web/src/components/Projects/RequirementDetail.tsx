@@ -308,6 +308,8 @@ export function RequirementDetail({
 
           <RequirementLabelsRow requirement={requirement} />
 
+          <AcceptancePolicyRow requirement={requirement} />
+
           <RequirementNextStep
             latestRun={latestRun}
             todos={todos}
@@ -1375,6 +1377,56 @@ function RequirementLabelsRow({ requirement }: { requirement: Requirement }) {
           updateRequirement(requirement.id, { label_ids: nextIds });
         }}
       />
+    </div>
+  );
+}
+
+// =============================================================
+// Acceptance-policy row — v1.0 SubAgent.
+// =============================================================
+//
+// Lets the user flip Review→Done auto-acceptance between the
+// reviewer subagent (default) and human-only. Server treats absence
+// of the field as the default (`subagent`), so we coerce undefined
+// to "subagent" for display + write the selection through a
+// PATCH /v1/requirements/:id with `acceptance_policy`. Activity log
+// records the flip.
+
+function AcceptancePolicyRow({ requirement }: { requirement: Requirement }) {
+  const current = requirement.acceptance_policy ?? "subagent";
+  const onChange = (next: string) => {
+    if (next !== "subagent" && next !== "human") return;
+    if (next === current) return;
+    updateRequirement(requirement.id, { acceptance_policy: next });
+  };
+  return (
+    <div className="requirement-detail-acceptance-row">
+      <span className="requirement-detail-acceptance-label">
+        {t("reqAcceptancePolicyLabel")}
+      </span>
+      <Select
+        className="requirement-detail-acceptance-select"
+        value={current}
+        onChange={onChange}
+        options={[
+          {
+            value: "subagent",
+            label: t("reqAcceptancePolicySubagent"),
+            searchText: "subagent reviewer auto",
+          },
+          {
+            value: "human",
+            label: t("reqAcceptancePolicyHuman"),
+            searchText: "human manual",
+          },
+        ]}
+        ariaLabel={t("reqAcceptancePolicyLabel")}
+      />
+      <span className="requirement-detail-acceptance-hint">
+        {current === "subagent"
+          ? t("reqAcceptancePolicySubagentHint")
+          : t("reqAcceptancePolicyHumanHint")}
+      </span>
     </div>
   );
 }

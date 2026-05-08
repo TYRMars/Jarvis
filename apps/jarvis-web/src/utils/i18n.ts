@@ -689,6 +689,10 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
       "Switch to BYPASS mode?\n\nEvery gated tool — fs.write, fs.edit, shell.exec, git.commit, etc. — will run with NO approval prompt until you switch back. Only enable this in a sandbox you trust.",
     permModeBypassActiveBanner:
       "Bypass mode is active — every tool runs without approval. Click the mode pill to switch back.",
+    permModePlanActiveBanner:
+      "Plan mode is active — the agent will draft a plan first; nothing will execute until you accept it.",
+    permModePlanExitBtn: "Exit plan mode",
+    permModePlanExitHint: "Switch back to ask mode (every gated tool will prompt for approval).",
     permModeSwitchFailed: (msg) => `Could not switch mode: ${msg}`,
     settingsPermsBypassProjectBlocked:
       "Bypass cannot be saved to project scope (would commit to git and affect every teammate). Switch to user or session scope.",
@@ -1197,6 +1201,15 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     commentsEdited: " (edited)",
     commentsDeleteConfirm:
       "Delete this comment? Replies underneath will be removed too.",
+    // Acceptance policy (v1.0 SubAgent) ---------------------------
+    reqAcceptancePolicyLabel: "Acceptance",
+    reqAcceptancePolicySubagent: "Reviewer subagent",
+    reqAcceptancePolicyHuman: "Human review only",
+    reqAcceptancePolicySubagentHint:
+      "When the work agent flips this row to Review, the reviewer subagent runs the verification plan and decides pass/fail.",
+    reqAcceptancePolicyHumanHint:
+      "Row stops at Review until a person clicks 'complete'. Use for changes the verification plan can't model.",
+    reqAcceptancePolicyHumanBadge: "human review",
     // Labels (Phase 3.8) ------------------------------------------
     labelsEmptyHint: "No labels yet",
     labelsEditButton: "Edit labels",
@@ -1440,6 +1453,12 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     triageRejectPrompt: "Reason for rejecting this candidate?",
     triageExpand: "Show triage queue",
     triageCollapse: "Hide triage queue",
+    triageApproveAll: (n: number) => `Approve all (${n})`,
+    triageApproveAllBusy: "Approving…",
+    triageApproveAllHint:
+      "Approve every visible candidate. Each row gets the same Activity row a single approve produces.",
+    triageApproveAllConfirm: (n: number) =>
+      `Approve all ${n} candidates? They'll become eligible for auto-mode pickup.`,
     // v1.0 Auto-mode toggle
     autoModeOn: "Auto on",
     autoModeOff: "Auto off",
@@ -1468,7 +1487,118 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     // diagnostics* keys defined above for the Settings panel)
     sidebarNavDiagnostics: "Diagnostics",
     sidebarNavWorkOverview: "Overview",
+    sidebarNavAutoMode: "Auto-mode",
     sidebarNavProjectList: "Project list",
+    sidebarNavConversationsArchive: "All conversations",
+    sidebarNavWorktrees: "Worktrees",
+    workOverviewAutoModeLink: "Auto-mode dashboard →",
+
+    // ---- Worktrees page ----
+    worktreesTitle: "Worktrees",
+    worktreesSubtitle:
+      "Per-run git worktrees the auto-mode loop minted. Orphans are dirs with no matching run row — clean them up here.",
+    worktreesLoading: "Loading worktree state…",
+    worktreesFeatureDisabled:
+      "Worktree feature is not enabled. Set JARVIS_WORKTREE_MODE=per_run to opt in.",
+    worktreesLoadError: (msg: string) => `Failed to load worktrees: ${msg}`,
+    worktreesEmpty: "No orphan worktrees — everything tracked is accounted for.",
+    worktreesOrphansTitle: "Orphan worktrees",
+    worktreesOrphansCount: (n: number) =>
+      `${n} orphan${n === 1 ? "" : "s"}`,
+    worktreesRunIdLabel: "Run id",
+    worktreesCleanupBtn: (n: number) => `Clean up ${n} orphan${n === 1 ? "" : "s"}`,
+    worktreesCleaningBtn: "Cleaning…",
+    worktreesCleanupConfirm: (n: number) =>
+      `Delete ${n} orphan worktree${n === 1 ? "" : "s"}? This runs git worktree remove --force on each path.`,
+    worktreesCleanupReportTitle: "Last cleanup report",
+    worktreesCleanupReportCount: (removed: number, attempted: number) =>
+      `${removed} removed, ${attempted - removed} failed`,
+    worktreesCleanupReportNoErrors: "All orphans removed cleanly.",
+
+    // ---- Conversations archive page ----
+    conversationsArchiveTitle: "Conversations",
+    conversationsArchiveSubtitle:
+      "Every persisted conversation, searchable. Click a row to resume it.",
+    conversationsArchiveSearchPlaceholder: "Search title, id, requirement…",
+    conversationsArchiveSearchAria: "Search conversations",
+    conversationsArchiveProjectFilterAria: "Filter by project",
+    conversationsArchiveProjectAll: "All projects",
+    conversationsArchivePersistDisabled:
+      "Conversation persistence is not configured. Set JARVIS_DB_URL or use the default JSON store.",
+    conversationsArchiveEmpty: "No conversations yet — start one from the chat pane.",
+    conversationsArchiveNoMatch: "No conversations match the current filters.",
+    conversationsArchiveUntitled: "Untitled conversation",
+    conversationsArchiveFreeChat: "Free chat",
+    conversationsArchiveMessageSuffix: "messages",
+    conversationsArchiveLinkedRequirement: (title: string) =>
+      `Linked to requirement: ${title}`,
+    conversationsArchiveGroupCount: (n: number) =>
+      `${n} conversation${n === 1 ? "" : "s"}`,
+
+    // ---- Auto-mode dashboard ----
+    autoModePageTitle: "Auto-mode dashboard",
+    autoModePageSubtitle:
+      "What the background scheduler is doing right now. Read-only — change cadence / cap by restarting with new env vars.",
+    autoModeLoading: "Loading scheduler status…",
+    autoModeNotConfigured:
+      "Auto-mode runtime is not configured. Set JARVIS_WORK_MODE=auto and (optionally) wire stores to enable the scheduler.",
+    autoModeSchedulerRunning: "Scheduler running",
+    autoModeSchedulerPaused: "Scheduler paused",
+    autoModeOnLabel: "On",
+    autoModeOffLabel: "Off",
+    autoModePauseHint: "Click to pause",
+    autoModeResumeHint: "Click to resume",
+    autoModeStatMode: "Mode",
+    autoModeStatTick: "Tick",
+    autoModeStatPermits: "Permits",
+    autoModeStatBurstPerTick: "Burst / tick",
+    autoModeStatRetries: "Retries",
+    autoModeStatRunTimeout: "Run timeout",
+    autoModeStatLastTick: "Last tick",
+    autoModePanelInFlight: "In-flight runs",
+    autoModePanelInFlightCount: (n: number) => `${n} active`,
+    autoModePanelRecentRuns: "Recent runs",
+    autoModePanelRecentRunsCount: (n: number) => `${n} shown (newest first)`,
+    autoModePanelFailures: "Recent failures",
+    autoModePanelFailuresCount: (n: number) => `${n} shown`,
+    autoModePanelBlocked: "Blocked / waiting",
+    autoModePanelPendingTriage: "Pending triage",
+    autoModeEmptyPendingTriage:
+      "No proposed candidates pending review — the agent and scanner haven't surfaced anything new.",
+    autoModePendingTriageOpenHint: (project: string) =>
+      `Open ${project} kanban to approve / reject`,
+    autoModeEmptyInFlight: "Nothing running.",
+    autoModeEmptyFailures: "No failed runs in the recent window.",
+    autoModeEmptyRuns:
+      "No runs yet — assign and approve a Requirement to kick the loop.",
+    autoModeEmptyBlocked:
+      "Nothing blocked — every approved requirement is either running, queued, or already done.",
+    autoModeBlockedReasonAssignee: "missing assignee",
+    autoModeBlockedReasonDeps: (n: number) =>
+      `${n} unmet dep${n > 1 ? "s" : ""}`,
+    autoModeBlockedReasonRetries: (failed: number, max: number) =>
+      `retries exhausted (${failed}/${max})`,
+    autoModeRetryButton: "Retry",
+    autoModeRetryHint: "Mint a fresh run for this requirement",
+    autoModeFallbackTitle: (id8: string) => `requirement ${id8}…`,
+    autoModeAgeStartedSeconds: (n: number) => `${n}s ago started`,
+    autoModeAgeStartedMinutes: (n: number) => `${n}m ago started`,
+    autoModeAgeStartedHours: (n: string) => `${n}h ago started`,
+    runDetailTitle: "Run detail",
+    runDetailLoading: "Loading…",
+    runDetailNotFound: "Run not found (may have been deleted).",
+    runDetailRunId: "Run id",
+    runDetailStatusLabel: "Status",
+    runDetailRequirementLabel: "Requirement",
+    runDetailConversationLabel: "Conversation",
+    runDetailStartedLabel: "Started",
+    runDetailFinishedLabel: "Finished",
+    runDetailSummaryLabel: "Summary",
+    runDetailErrorLabel: "Error",
+    runDetailVerificationLabel: "Verification",
+    runDetailLogsLabel: "Logs",
+    runDetailCloseAria: "Close",
+    runDetailDialogAria: "Run details",
     // v1.0 SystemStatusBanner (top of WorkOverview)
     statusHealthRunning: "Running",
     statusHealthActive: "Active",
@@ -1604,6 +1734,70 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     harnessEvolutionSubtitle:
       "Signals that point to where the system should improve next.",
     harnessEvolutionRecommendations: "Suggested next moves",
+    harnessObsTitle: "Harness observability",
+    harnessObsSubtitle:
+      "Project-level telemetry for Jarvis, tools, SubAgents, and eval cases.",
+    harnessObsWindow: (days: number) => `${days}d window`,
+    harnessObsUnavailable:
+      "Observability history is unavailable. Jarvis will use the default local JSON store unless JARVIS_OBSERVABILITY_STORE_URL is disabled or invalid.",
+    harnessObsNoData: "No harness telemetry has been recorded in this window.",
+    harnessObsMetricRuns: "Observed runs",
+    harnessObsMetricRunsDetail: (days: number) => `Recorded in the ${days}d dashboard window`,
+    harnessObsMetricDirection: "Direction score",
+    harnessObsMetricDirectionDetail: (focus: string) => `Primary focus: ${focus}`,
+    harnessObsMetricSuccess: "Run success",
+    harnessObsMetricSuccessDetail: (success: number, failed: number) =>
+      `${success} success · ${failed} failed`,
+    harnessObsMetricLatency: "P95 latency",
+    harnessObsMetricLatencyDetail: "Across recorded agent, tool, and SubAgent runs",
+    harnessObsMetricEval: "Eval pass rate",
+    harnessObsMetricEvalDetail: (suite: string) => `Latest suite: ${suite}`,
+    harnessObsToolsTitle: "Tool behavior",
+    harnessObsSubagentsTitle: "SubAgent behavior",
+    harnessObsRuns: "Runs",
+    harnessObsSuccess: "Success",
+    harnessObsOutput: "Avg output",
+    harnessObsDelegation: "Calls",
+    harnessObsNoTools: "No tool runs recorded yet.",
+    harnessObsNoSubagents: "No SubAgent runs recorded yet.",
+    harnessObsRecommendations: "Direction guidance",
+    harnessObsFocus_reliability: "reliability",
+    harnessObsFocus_verification: "verification",
+    harnessObsFocus_subagent_roi: "SubAgent ROI",
+    harnessObsFocus_efficiency: "efficiency",
+    harnessObsFocus_observability: "observability",
+    harnessObsComponent_reliability: "Reliability",
+    harnessObsComponent_verification: "Verification",
+    harnessObsComponent_subagent_roi: "SubAgent ROI",
+    harnessObsComponent_efficiency: "Efficiency",
+    harnessObsComponent_observability: "Observability",
+    harnessObsRec_stabilize_run_loop_title: "Stabilize the run loop",
+    harnessObsRec_stabilize_run_loop_detail:
+      "Prioritize provider errors, terminal-state cleanup, and retry behavior before adding new capabilities.",
+    harnessObsRec_fix_tool_hotspot_title: "Fix the noisiest tool first",
+    harnessObsRec_fix_tool_hotspot_detail:
+      "Improve schema validation, timeout policy, or error text so the model can recover from this tool cluster.",
+    harnessObsRec_reduce_tool_errors_title: "Reduce tool error pressure",
+    harnessObsRec_reduce_tool_errors_detail:
+      "Review permission denials, malformed arguments, and recoverable error messages.",
+    harnessObsRec_expand_eval_coverage_title: "Expand eval coverage",
+    harnessObsRec_expand_eval_coverage_detail:
+      "Add cases for planning, tool use, file edits, SubAgent delegation, and recovery from tool errors.",
+    harnessObsRec_tune_subagent_delegation_title: "Tune SubAgent delegation",
+    harnessObsRec_tune_subagent_delegation_detail:
+      "Route SubAgents to complex work, add clearer completion criteria, or reduce delegation on short tasks.",
+    harnessObsRec_exercise_subagent_path_title: "Exercise the SubAgent path",
+    harnessObsRec_exercise_subagent_path_detail:
+      "Add a small delegation smoke eval so Claude Code / Codex style workers are visible in the harness score.",
+    harnessObsRec_cut_latency_pressure_title: "Reduce latency pressure",
+    harnessObsRec_cut_latency_pressure_detail:
+      "Check long-running tools, streaming stalls, retry fan-out, and unnecessary SubAgent hops.",
+    harnessObsRec_fill_signal_gaps_title: "Fill telemetry gaps",
+    harnessObsRec_fill_signal_gaps_detail:
+      "Keep JSON persistence on and add span summaries for trace drill-down.",
+    harnessObsRec_promote_release_gate_title: "Promote the harness gate",
+    harnessObsRec_promote_release_gate_detail:
+      "Signals are stable enough to use eval baselines and score deltas as a pre-release gate.",
     modelScoreTitle: "Model score",
     modelScoreWindow: (days: number) => `${days}d window`,
     modelScoreNoData: "No model usage has been recorded in this window.",
@@ -2386,6 +2580,10 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     permModeBypassConfirm:
       "确认切换到「全跳过」模式？\n\n所有需审批的工具 —— fs.write、fs.edit、shell.exec、git.commit 等 —— 都将在无任何提示下直接执行，直到你切回其他模式。请仅在你完全信任的沙箱中启用。",
     permModeBypassActiveBanner: "全跳过模式已激活 —— 所有工具直接放行，无审批。点击模式 pill 切回。",
+    permModePlanActiveBanner:
+      "Plan 模式已激活 —— Agent 会先给出计划；未经你批准前不会执行任何动作。",
+    permModePlanExitBtn: "退出 Plan 模式",
+    permModePlanExitHint: "切回 Ask 模式（所有需审批的工具会逐一弹出确认）。",
     permModeSwitchFailed: (msg) => `切换模式失败：${msg}`,
     settingsPermsBypassProjectBlocked:
       "Bypass 不能保存到项目作用域（会被提交到 git 影响所有协作者）。请切到用户或会话作用域。",
@@ -2851,6 +3049,15 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     commentsSave: "保存",
     commentsEdited: "（已编辑）",
     commentsDeleteConfirm: "确定删除这条评论？下面的回复也会一并清掉。",
+    // Acceptance policy (v1.0 SubAgent) ---------------------------
+    reqAcceptancePolicyLabel: "验收策略",
+    reqAcceptancePolicySubagent: "由 Reviewer 子代理验收",
+    reqAcceptancePolicyHuman: "仅人工验收",
+    reqAcceptancePolicySubagentHint:
+      "Agent 把该需求切到 Review 后，Reviewer 子代理会按 verification plan 跑验证并判定通过/失败。",
+    reqAcceptancePolicyHumanHint:
+      "需求停在 Review，等人手动点击「完成」。适合 verification plan 描述不了的改动。",
+    reqAcceptancePolicyHumanBadge: "人工验收",
     // Labels (Phase 3.8) ------------------------------------------
     labelsEmptyHint: "暂无标签",
     labelsEditButton: "编辑标签",
@@ -3085,6 +3292,11 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     triageRejectPrompt: "请填写拒绝理由：",
     triageExpand: "展开 Triage 队列",
     triageCollapse: "收起 Triage 队列",
+    triageApproveAll: (n: number) => `全部通过（${n}）`,
+    triageApproveAllBusy: "通过中…",
+    triageApproveAllHint: "一键通过当前面板的所有候选；每一条都会写入与单条通过相同的 Activity。",
+    triageApproveAllConfirm: (n: number) =>
+      `确认批量通过 ${n} 条候选？通过后它们会进入自动调度可挑选队列。`,
     // v1.0 Auto-mode toggle
     autoModeOn: "自动开",
     autoModeOff: "自动关",
@@ -3112,7 +3324,113 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     // keys defined for the Settings panel)
     sidebarNavDiagnostics: "诊断",
     sidebarNavWorkOverview: "总览",
+    sidebarNavAutoMode: "自动调度",
     sidebarNavProjectList: "项目列表",
+    sidebarNavConversationsArchive: "全部会话",
+    sidebarNavWorktrees: "Worktree 管理",
+    workOverviewAutoModeLink: "自动调度看板 →",
+
+    // ---- Worktrees page ----
+    worktreesTitle: "Worktree 管理",
+    worktreesSubtitle:
+      "自动调度按运行铸造的 git worktree。无对应运行记录的目录视为孤儿 — 在此清理。",
+    worktreesLoading: "正在加载 worktree 状态…",
+    worktreesFeatureDisabled:
+      "Worktree 功能未启用。设置 JARVIS_WORKTREE_MODE=per_run 启用。",
+    worktreesLoadError: (msg: string) => `加载 worktree 失败：${msg}`,
+    worktreesEmpty: "无孤儿 worktree — 已记录的全部对得上。",
+    worktreesOrphansTitle: "孤儿 worktree",
+    worktreesOrphansCount: (n: number) => `共 ${n} 项`,
+    worktreesRunIdLabel: "运行 ID",
+    worktreesCleanupBtn: (n: number) => `清理 ${n} 个孤儿`,
+    worktreesCleaningBtn: "清理中…",
+    worktreesCleanupConfirm: (n: number) =>
+      `确认删除 ${n} 个孤儿 worktree？将对每个路径执行 git worktree remove --force。`,
+    worktreesCleanupReportTitle: "上次清理报告",
+    worktreesCleanupReportCount: (removed: number, attempted: number) =>
+      `成功 ${removed} / 失败 ${attempted - removed}`,
+    worktreesCleanupReportNoErrors: "全部孤儿已清理。",
+
+    // ---- Conversations archive page ----
+    conversationsArchiveTitle: "会话归档",
+    conversationsArchiveSubtitle: "全部已持久化的会话，可搜索。点击任一行即可恢复。",
+    conversationsArchiveSearchPlaceholder: "搜索标题 / ID / 关联需求…",
+    conversationsArchiveSearchAria: "搜索会话",
+    conversationsArchiveProjectFilterAria: "按项目筛选",
+    conversationsArchiveProjectAll: "全部项目",
+    conversationsArchivePersistDisabled:
+      "会话持久化未配置。设置 JARVIS_DB_URL 或使用默认 JSON 存储。",
+    conversationsArchiveEmpty: "暂无会话 — 在聊天面板新建一条。",
+    conversationsArchiveNoMatch: "当前筛选下没有匹配的会话。",
+    conversationsArchiveUntitled: "未命名会话",
+    conversationsArchiveFreeChat: "自由聊天",
+    conversationsArchiveMessageSuffix: "条消息",
+    conversationsArchiveLinkedRequirement: (title: string) =>
+      `关联需求：${title}`,
+    conversationsArchiveGroupCount: (n: number) => `${n} 条会话`,
+
+    // ---- Auto-mode dashboard ----
+    autoModePageTitle: "自动调度看板",
+    autoModePageSubtitle:
+      "调度器实时状态。配置只读 — 修改节奏或并发上限请重启服务并更新环境变量。",
+    autoModeLoading: "正在加载调度器状态…",
+    autoModeNotConfigured:
+      "自动调度运行时未配置。设置 JARVIS_WORK_MODE=auto 并（可选）配置存储以启用调度器。",
+    autoModeSchedulerRunning: "调度器运行中",
+    autoModeSchedulerPaused: "调度器已暂停",
+    autoModeOnLabel: "开启",
+    autoModeOffLabel: "关闭",
+    autoModePauseHint: "点击暂停",
+    autoModeResumeHint: "点击恢复",
+    autoModeStatMode: "模式",
+    autoModeStatTick: "节奏",
+    autoModeStatPermits: "并发槽",
+    autoModeStatBurstPerTick: "每 tick 上限",
+    autoModeStatRetries: "重试上限",
+    autoModeStatRunTimeout: "运行超时",
+    autoModeStatLastTick: "上次 tick",
+    autoModePanelInFlight: "运行中",
+    autoModePanelInFlightCount: (n: number) => `${n} 项进行中`,
+    autoModePanelRecentRuns: "最近运行",
+    autoModePanelRecentRunsCount: (n: number) => `共 ${n} 项（由新到旧）`,
+    autoModePanelFailures: "最近失败",
+    autoModePanelFailuresCount: (n: number) => `共 ${n} 项`,
+    autoModePanelBlocked: "阻塞 / 等待",
+    autoModePanelPendingTriage: "待审需求",
+    autoModeEmptyPendingTriage:
+      "暂无待审候选 — Agent 和巡检都没有提出新的提议。",
+    autoModePendingTriageOpenHint: (project: string) =>
+      `打开 ${project} 看板以审批`,
+    autoModeEmptyInFlight: "暂无运行中的任务。",
+    autoModeEmptyFailures: "最近窗口内没有失败任务。",
+    autoModeEmptyRuns: "尚无运行记录 — 分配并审批一个 Requirement 以触发调度。",
+    autoModeEmptyBlocked:
+      "无阻塞 — 所有已审批的 Requirement 都在运行、排队或已完成。",
+    autoModeBlockedReasonAssignee: "缺少负责人",
+    autoModeBlockedReasonDeps: (n: number) => `${n} 个未达成依赖`,
+    autoModeBlockedReasonRetries: (failed: number, max: number) =>
+      `重试已用尽（${failed}/${max}）`,
+    autoModeRetryButton: "重试",
+    autoModeRetryHint: "为该 Requirement 启动一次新的运行",
+    autoModeFallbackTitle: (id8: string) => `需求 ${id8}…`,
+    autoModeAgeStartedSeconds: (n: number) => `${n} 秒前启动`,
+    autoModeAgeStartedMinutes: (n: number) => `${n} 分钟前启动`,
+    autoModeAgeStartedHours: (n: string) => `${n} 小时前启动`,
+    runDetailTitle: "运行详情",
+    runDetailLoading: "加载中…",
+    runDetailNotFound: "运行记录未找到（可能已被删除）。",
+    runDetailRunId: "运行 ID",
+    runDetailStatusLabel: "状态",
+    runDetailRequirementLabel: "需求",
+    runDetailConversationLabel: "会话",
+    runDetailStartedLabel: "开始时间",
+    runDetailFinishedLabel: "结束时间",
+    runDetailSummaryLabel: "摘要",
+    runDetailErrorLabel: "错误",
+    runDetailVerificationLabel: "验证",
+    runDetailLogsLabel: "日志",
+    runDetailCloseAria: "关闭",
+    runDetailDialogAria: "运行详情",
     // v1.0 SystemStatusBanner (总览页顶部)
     statusHealthRunning: "运行中",
     statusHealthActive: "活跃",
@@ -3238,6 +3556,69 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     harnessEvolutionTitle: "系统优化",
     harnessEvolutionSubtitle: "把运行信号压成指标，提示系统下一步该优化在哪里。",
     harnessEvolutionRecommendations: "建议动作",
+    harnessObsTitle: "Harness 可观测性",
+    harnessObsSubtitle: "项目级遥测：Jarvis、工具、SubAgent 与 eval case。",
+    harnessObsWindow: (days: number) => `${days} 天窗口`,
+    harnessObsUnavailable:
+      "可观测性历史不可用。默认会使用本地 JSON 存储；请检查 JARVIS_OBSERVABILITY_STORE_URL 是否被禁用或配置错误。",
+    harnessObsNoData: "当前窗口还没有记录到 harness 遥测。",
+    harnessObsMetricRuns: "已观测 Run",
+    harnessObsMetricRunsDetail: (days: number) => `计入 ${days} 天看板窗口`,
+    harnessObsMetricDirection: "方向分",
+    harnessObsMetricDirectionDetail: (focus: string) => `优先方向：${focus}`,
+    harnessObsMetricSuccess: "Run 成功率",
+    harnessObsMetricSuccessDetail: (success: number, failed: number) =>
+      `${success} 个成功 · ${failed} 个失败`,
+    harnessObsMetricLatency: "P95 延迟",
+    harnessObsMetricLatencyDetail: "覆盖已记录的 agent、工具和 SubAgent run",
+    harnessObsMetricEval: "Eval 通过率",
+    harnessObsMetricEvalDetail: (suite: string) => `最近 suite：${suite}`,
+    harnessObsToolsTitle: "工具行为",
+    harnessObsSubagentsTitle: "SubAgent 行为",
+    harnessObsRuns: "次数",
+    harnessObsSuccess: "成功",
+    harnessObsOutput: "平均输出",
+    harnessObsDelegation: "调用",
+    harnessObsNoTools: "还没有记录到工具 run。",
+    harnessObsNoSubagents: "还没有记录到 SubAgent run。",
+    harnessObsRecommendations: "方向建议",
+    harnessObsFocus_reliability: "可靠性",
+    harnessObsFocus_verification: "验证覆盖",
+    harnessObsFocus_subagent_roi: "SubAgent 投产比",
+    harnessObsFocus_efficiency: "效率",
+    harnessObsFocus_observability: "可观测性",
+    harnessObsComponent_reliability: "可靠性",
+    harnessObsComponent_verification: "验证覆盖",
+    harnessObsComponent_subagent_roi: "SubAgent ROI",
+    harnessObsComponent_efficiency: "效率",
+    harnessObsComponent_observability: "可观测性",
+    harnessObsRec_stabilize_run_loop_title: "先稳住运行循环",
+    harnessObsRec_stabilize_run_loop_detail:
+      "先处理 provider 报错、终态清理和重试行为，再继续增加新能力。",
+    harnessObsRec_fix_tool_hotspot_title: "先修最高噪声工具",
+    harnessObsRec_fix_tool_hotspot_detail:
+      "改进 schema 校验、超时策略或错误文本，让模型更容易从该工具错误簇中恢复。",
+    harnessObsRec_reduce_tool_errors_title: "降低工具错误压力",
+    harnessObsRec_reduce_tool_errors_detail:
+      "复查权限拒绝、参数格式错误，以及是否给出了可恢复的错误信息。",
+    harnessObsRec_expand_eval_coverage_title: "扩展 Eval 覆盖",
+    harnessObsRec_expand_eval_coverage_detail:
+      "补齐规划、工具使用、文件编辑、SubAgent 委派和工具错误恢复场景。",
+    harnessObsRec_tune_subagent_delegation_title: "调优 SubAgent 委派",
+    harnessObsRec_tune_subagent_delegation_detail:
+      "把 SubAgent 路由到复杂任务，补清晰完成标准；短任务减少不必要委派。",
+    harnessObsRec_exercise_subagent_path_title: "跑通 SubAgent 路径",
+    harnessObsRec_exercise_subagent_path_detail:
+      "加一个小型委派 smoke eval，让 Claude Code / Codex 类 worker 被纳入方向分。",
+    harnessObsRec_cut_latency_pressure_title: "降低延迟压力",
+    harnessObsRec_cut_latency_pressure_detail:
+      "检查长耗时工具、流式卡顿、重试放大和不必要的 SubAgent 跳转。",
+    harnessObsRec_fill_signal_gaps_title: "补齐遥测缺口",
+    harnessObsRec_fill_signal_gaps_detail:
+      "保持 JSON 持久化开启，并补 span summary 以支持 trace 下钻。",
+    harnessObsRec_promote_release_gate_title: "提升为发布门禁",
+    harnessObsRec_promote_release_gate_detail:
+      "当前信号足够稳定，可以把 eval baseline 和 score delta 用作发布前门禁。",
     modelScoreTitle: "模型评分",
     modelScoreWindow: (days: number) => `${days} 天窗口`,
     modelScoreNoData: "当前窗口还没有记录到模型用量。",

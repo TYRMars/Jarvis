@@ -39,9 +39,9 @@ mod workspace;
 pub use error::StoreError;
 pub use json_file::{
     JsonFileActivityStore, JsonFileAgentProfileStore, JsonFileCommentStore,
-    JsonFileConversationStore, JsonFileDocStore, JsonFileLabelStore, JsonFileProjectStore,
-    JsonFileRequirementRunStore, JsonFileRequirementStore, JsonFileTenantStore,
-    JsonFileTodoStore,
+    JsonFileConversationStore, JsonFileDocStore, JsonFileEvalStore, JsonFileLabelStore,
+    JsonFileObservabilityStore, JsonFileProjectStore, JsonFileRequirementRunStore,
+    JsonFileRequirementStore, JsonFileTenantStore, JsonFileTodoStore,
 };
 pub use memory::{
     MemoryActivityStore, MemoryAgentProfileStore, MemoryCommentStore, MemoryConversationStore,
@@ -81,8 +81,9 @@ pub use mysql::{
 use std::sync::Arc;
 
 use harness_core::{
-    ActivityStore, AgentProfileStore, CommentStore, ConversationStore, DocStore, LabelStore,
-    ProjectStore, RequirementRunStore, RequirementStore, TenantStore, TodoStore,
+    ActivityStore, AgentProfileStore, CommentStore, ConversationStore, DocStore, EvalStore,
+    LabelStore, ObservabilityStore, ProjectStore, RequirementRunStore, RequirementStore,
+    TenantStore, TodoStore,
 };
 
 /// Bundle of stores returned by [`connect_all`]. The backends share
@@ -149,8 +150,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let docs = Arc::new(JsonFileDocStore::open(&path)?) as Arc<dyn DocStore>;
             let comments = Arc::new(JsonFileCommentStore::open(&path)?) as Arc<dyn CommentStore>;
             let labels = Arc::new(JsonFileLabelStore::open(&path)?) as Arc<dyn LabelStore>;
-            let tenants =
-                Arc::new(JsonFileTenantStore::open(&path)?) as Arc<dyn TenantStore>;
+            let tenants = Arc::new(JsonFileTenantStore::open(&path)?) as Arc<dyn TenantStore>;
             Ok(StoreBundle {
                 conversations,
                 projects,
@@ -252,7 +252,6 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
     }
 }
 
-
 /// Open just the conversation store for a given URL. Equivalent to
 /// `connect_all(url).await?.conversations`. Preserved for callers that
 /// don't yet know about [`ProjectStore`].
@@ -309,6 +308,34 @@ pub async fn connect_docs(url: &str) -> Result<Arc<dyn DocStore>, StoreError> {
 /// `connect_all(url).await?.tenants`.
 pub async fn connect_tenants(url: &str) -> Result<Arc<dyn TenantStore>, StoreError> {
     Ok(connect_all(url).await?.tenants)
+}
+
+/// Open the local observability summary store for a given URL. Phase 1
+/// implements the JSON-file backend; SQL backends will follow the same
+/// scheme selection pattern once their migrations land.
+pub async fn connect_observability(url: &str) -> Result<Arc<dyn ObservabilityStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileObservabilityStore::open(path)?) as Arc<dyn ObservabilityStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
+/// Open the eval result / baseline store for a given URL. Phase 1
+/// implements the JSON-file backend; SQL backends intentionally remain
+/// unsupported until their schema is added.
+pub async fn connect_evals(url: &str) -> Result<Arc<dyn EvalStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileEvalStore::open(path)?) as Arc<dyn EvalStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
 }
 
 /// Idempotently ensure a tenant with slug `default` exists.

@@ -143,7 +143,7 @@ mod tests {
                 message: Message::assistant_text("ok"),
                 finish_reason: FinishReason::Stop,
                 response_id: None,
-                    usage: None,
+                usage: None,
             })
         }
     }

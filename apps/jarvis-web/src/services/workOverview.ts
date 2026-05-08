@@ -109,6 +109,78 @@ export interface WorkQuality {
 
 export type WindowDays = 7 | 30 | 90;
 
+export interface ObservabilityWindow {
+  label: string;
+  since: string | null;
+  until: string | null;
+}
+
+export interface HarnessObservabilityDashboard {
+  window: ObservabilityWindow;
+  generated_at: string;
+  total_runs: number;
+  successful_runs: number;
+  failed_runs: number;
+  run_success_rate: number | null;
+  p95_latency_ms: number | null;
+  by_kind: Record<string, number>;
+  by_name: Record<string, number>;
+}
+
+export interface ObservedRunSummary {
+  name: string;
+  runs: number;
+  success: number;
+  errors: number;
+  unknown: number;
+  success_rate: number | null;
+  median_duration_ms: number | null;
+  p95_duration_ms: number | null;
+  avg_duration_ms: number | null;
+  avg_output_bytes: number | null;
+  avg_frames: number | null;
+  avg_tool_calls: number | null;
+}
+
+export interface EvalCaseResult {
+  id: string;
+  suite_run_id: string;
+  case_id: string;
+  suite: string;
+  scenario: string;
+  outcome: string;
+  trace_id: string | null;
+  scores: Record<string, unknown>;
+  attributes: Record<string, unknown>;
+  artifact_ids: string[];
+}
+
+export interface HarnessDirectionComponent {
+  key: string;
+  label: string;
+  score: number;
+  value: number | null;
+  detail: string;
+}
+
+export interface HarnessDirectionRecommendation {
+  key: string;
+  priority: number;
+  tone: string;
+  title: string;
+  detail: string;
+  metric: string | null;
+}
+
+export interface HarnessDirectionSnapshot {
+  generated_at: string;
+  score: number;
+  primary_focus: string;
+  components: HarnessDirectionComponent[];
+  recommendations: HarnessDirectionRecommendation[];
+  sample: Record<string, unknown>;
+}
+
 /// Fetch the dashboard overview. Returns `null` on 503 so the UI can
 /// render "feature unavailable" without conflating with real errors.
 export async function fetchWorkOverview(
@@ -127,4 +199,52 @@ export async function fetchWorkQuality(
   if (r.status === 503) return null;
   if (!r.ok) throw new Error(`work quality ${r.status}`);
   return (await r.json()) as WorkQuality;
+}
+
+export async function fetchObservabilityDashboard(
+  windowDays: WindowDays,
+): Promise<HarnessObservabilityDashboard | null> {
+  const r = await fetch(apiUrl(`/v1/observability/dashboard?window=${windowDays}d`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`observability dashboard ${r.status}`);
+  return (await r.json()) as HarnessObservabilityDashboard;
+}
+
+export async function fetchToolSummary(
+  limit = 8,
+): Promise<ObservedRunSummary[] | null> {
+  const r = await fetch(apiUrl(`/v1/observability/tools?limit=${limit}`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`tool summary ${r.status}`);
+  const body = (await r.json()) as { tools: ObservedRunSummary[] };
+  return body.tools;
+}
+
+export async function fetchSubagentSummary(
+  limit = 8,
+): Promise<ObservedRunSummary[] | null> {
+  const r = await fetch(apiUrl(`/v1/observability/subagents?limit=${limit}`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`subagent summary ${r.status}`);
+  const body = (await r.json()) as { subagents: ObservedRunSummary[] };
+  return body.subagents;
+}
+
+export async function fetchEvalCases(
+  limit = 100,
+): Promise<EvalCaseResult[] | null> {
+  const r = await fetch(apiUrl(`/v1/evals/cases?limit=${limit}`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`eval cases ${r.status}`);
+  const body = (await r.json()) as { cases: EvalCaseResult[] };
+  return body.cases;
+}
+
+export async function fetchHarnessDirection(
+  limit = 2000,
+): Promise<HarnessDirectionSnapshot | null> {
+  const r = await fetch(apiUrl(`/v1/observability/direction?limit=${limit}`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`harness direction ${r.status}`);
+  return (await r.json()) as HarnessDirectionSnapshot;
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     extract::{
@@ -20,8 +21,9 @@ use futures::{SinkExt, StreamExt};
 use harness_core::{
     canonicalize_workspace, ActivityEvent, AgentEvent, AgentProfileEvent, ApprovalDecision,
     Approver, ChannelApprover, CommentEvent, Conversation, ConversationMetadata, ConversationStore,
-    DocEvent, HitlResponse, HitlStatus, LabelEvent, Message, PendingHitl, RequirementEvent,
-    RequirementRunEvent, RunOutcome, TodoEvent,
+    DocEvent, HitlResponse, HitlStatus, LabelEvent, Message, ObservabilityStore, ObservedOutcome,
+    ObservedRun, ObservedRunKind, PendingHitl, RequirementEvent, RequirementRunEvent, RunOutcome,
+    SubAgentEvent, TodoEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -65,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::workspace_terminal::router())
         .merge(crate::workspace_find::router())
         .merge(crate::mcp_routes::router())
+        .merge(crate::observability_routes::router())
         .merge(crate::skill_routes::router())
         .merge(crate::plugin_routes::router())
         .merge(crate::workspaces_routes::router())
@@ -476,10 +479,291 @@ struct ChatCompletionsResponse {
     history: Vec<Message>,
 }
 
+#[derive(Debug, Clone)]
+struct AgentRunRecord {
+    id: String,
+    transport: &'static str,
+    started_at: String,
+    elapsed_ms: u64,
+    outcome: ObservedOutcome,
+    iterations: Option<usize>,
+    message_count: usize,
+    conversation_id: Option<String>,
+    project_id: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Debug)]
+struct ActiveToolRun {
+    id: String,
+    name: String,
+    started_at: String,
+    started: Instant,
+    args_bytes: usize,
+}
+
+#[derive(Debug)]
+struct ActiveSubAgentRun {
+    id: String,
+    name: String,
+    started_at: String,
+    started: Instant,
+    model: Option<String>,
+    frames: usize,
+    tool_calls: usize,
+}
+
+#[derive(Debug, Default)]
+struct RunEventAccumulator {
+    tools: HashMap<String, ActiveToolRun>,
+    subagents: HashMap<String, ActiveSubAgentRun>,
+}
+
+impl RunEventAccumulator {
+    fn observe(&mut self, event: &AgentEvent) -> Vec<ObservedRun> {
+        let mut out = Vec::new();
+        match event {
+            AgentEvent::ToolStart {
+                id,
+                name,
+                arguments,
+            } => {
+                self.tools.insert(
+                    id.clone(),
+                    ActiveToolRun {
+                        id: format!("tool-{id}"),
+                        name: name.clone(),
+                        started_at: chrono::Utc::now().to_rfc3339(),
+                        started: Instant::now(),
+                        args_bytes: serde_json::to_vec(arguments).map(|v| v.len()).unwrap_or(0),
+                    },
+                );
+            }
+            AgentEvent::ToolEnd { id, name, content } => {
+                let active = self.tools.remove(id).unwrap_or_else(|| ActiveToolRun {
+                    id: format!("tool-{id}"),
+                    name: name.clone(),
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                    started: Instant::now(),
+                    args_bytes: 0,
+                });
+                out.push(tool_observed_run(active, content));
+            }
+            AgentEvent::SubAgentEvent { frame } => {
+                let entry = self
+                    .subagents
+                    .entry(frame.subagent_id.clone())
+                    .or_insert_with(|| ActiveSubAgentRun {
+                        id: format!("subagent-{}", frame.subagent_id),
+                        name: frame.subagent_name.clone(),
+                        started_at: chrono::Utc::now().to_rfc3339(),
+                        started: Instant::now(),
+                        model: None,
+                        frames: 0,
+                        tool_calls: 0,
+                    });
+                entry.frames += 1;
+                match &frame.event {
+                    SubAgentEvent::Started { model, .. } => {
+                        entry.model = model.clone();
+                    }
+                    SubAgentEvent::ToolStart { .. } => {
+                        entry.tool_calls += 1;
+                    }
+                    SubAgentEvent::Done { .. } => {
+                        if let Some(active) = self.subagents.remove(&frame.subagent_id) {
+                            out.push(subagent_observed_run(active, ObservedOutcome::Success));
+                        }
+                    }
+                    SubAgentEvent::Error { .. } => {
+                        if let Some(active) = self.subagents.remove(&frame.subagent_id) {
+                            out.push(subagent_observed_run(active, ObservedOutcome::Error));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    fn finish_unclosed(&mut self) -> Vec<ObservedRun> {
+        let mut out = Vec::new();
+        out.extend(
+            self.tools
+                .drain()
+                .map(|(_, active)| unfinished_tool_observed_run(active)),
+        );
+        out.extend(
+            self.subagents
+                .drain()
+                .map(|(_, active)| subagent_observed_run(active, ObservedOutcome::Unknown)),
+        );
+        out
+    }
+}
+
+fn tool_observed_run(active: ActiveToolRun, content: &str) -> ObservedRun {
+    let errored = content.starts_with("tool error:")
+        || content.starts_with("tool denied:")
+        || content.starts_with("subagent error:");
+    ObservedRun {
+        id: active.id,
+        trace_id: None,
+        span_id: None,
+        parent_run_id: None,
+        kind: ObservedRunKind::Tool,
+        name: active.name,
+        started_at: active.started_at,
+        ended_at: Some(chrono::Utc::now().to_rfc3339()),
+        duration_ms: Some(active.started.elapsed().as_millis() as u64),
+        outcome: if errored {
+            ObservedOutcome::Error
+        } else {
+            ObservedOutcome::Success
+        },
+        conversation_id: None,
+        project_id: None,
+        workspace_hash: None,
+        attributes: json!({
+            "args_bytes": active.args_bytes,
+            "output_bytes": content.len(),
+        }),
+        metrics: json!({
+            "duration_ms": active.started.elapsed().as_millis() as u64,
+            "output_bytes": content.len(),
+        }),
+        artifact_ids: Vec::new(),
+    }
+}
+
+fn unfinished_tool_observed_run(active: ActiveToolRun) -> ObservedRun {
+    ObservedRun {
+        id: active.id,
+        trace_id: None,
+        span_id: None,
+        parent_run_id: None,
+        kind: ObservedRunKind::Tool,
+        name: active.name,
+        started_at: active.started_at,
+        ended_at: Some(chrono::Utc::now().to_rfc3339()),
+        duration_ms: Some(active.started.elapsed().as_millis() as u64),
+        outcome: ObservedOutcome::Unknown,
+        conversation_id: None,
+        project_id: None,
+        workspace_hash: None,
+        attributes: json!({
+            "args_bytes": active.args_bytes,
+            "unclosed": true,
+        }),
+        metrics: json!({
+            "duration_ms": active.started.elapsed().as_millis() as u64,
+        }),
+        artifact_ids: Vec::new(),
+    }
+}
+
+fn subagent_observed_run(active: ActiveSubAgentRun, outcome: ObservedOutcome) -> ObservedRun {
+    ObservedRun {
+        id: active.id,
+        trace_id: None,
+        span_id: None,
+        parent_run_id: None,
+        kind: ObservedRunKind::Subagent,
+        name: active.name,
+        started_at: active.started_at,
+        ended_at: Some(chrono::Utc::now().to_rfc3339()),
+        duration_ms: Some(active.started.elapsed().as_millis() as u64),
+        outcome,
+        conversation_id: None,
+        project_id: None,
+        workspace_hash: None,
+        attributes: json!({
+            "model": active.model,
+            "frames": active.frames,
+            "tool_calls": active.tool_calls,
+        }),
+        metrics: json!({
+            "duration_ms": active.started.elapsed().as_millis() as u64,
+            "frames": active.frames,
+            "tool_calls": active.tool_calls,
+        }),
+        artifact_ids: Vec::new(),
+    }
+}
+
+async fn record_observed_runs(store: Option<Arc<dyn ObservabilityStore>>, runs: Vec<ObservedRun>) {
+    let Some(store) = store else {
+        return;
+    };
+    for run in runs {
+        if let Err(e) = store.append_run(&run).await {
+            warn!(error = %e, run_id = %run.id, "observability append_run failed");
+        }
+    }
+}
+
+async fn record_agent_run(store: Option<Arc<dyn ObservabilityStore>>, record: AgentRunRecord) {
+    let Some(store) = store else {
+        return;
+    };
+    let run = ObservedRun {
+        id: record.id,
+        trace_id: None,
+        span_id: None,
+        parent_run_id: None,
+        kind: ObservedRunKind::Agent,
+        name: "jarvis.agent.run".into(),
+        started_at: record.started_at,
+        ended_at: Some(chrono::Utc::now().to_rfc3339()),
+        duration_ms: Some(record.elapsed_ms),
+        outcome: record.outcome,
+        conversation_id: record.conversation_id,
+        project_id: record.project_id,
+        workspace_hash: None,
+        attributes: json!({
+            "transport": record.transport,
+            "provider": record.provider,
+            "model": record.model,
+            "message_count": record.message_count,
+        }),
+        metrics: json!({
+            "duration_ms": record.elapsed_ms,
+            "iterations": record.iterations,
+        }),
+        artifact_ids: Vec::new(),
+    };
+    if let Err(e) = store.append_run(&run).await {
+        warn!(error = %e, run_id = %run.id, "observability append_run failed");
+    }
+}
+
+fn run_iterations(outcome: &RunOutcome) -> usize {
+    match outcome {
+        RunOutcome::Stopped { iterations } | RunOutcome::LengthLimited { iterations } => {
+            *iterations
+        }
+    }
+}
+
+fn observed_outcome(outcome: &RunOutcome) -> ObservedOutcome {
+    match outcome {
+        RunOutcome::Stopped { .. } => ObservedOutcome::Success,
+        RunOutcome::LengthLimited { .. } => ObservedOutcome::MaxIterations,
+    }
+}
+
 async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionsRequest>,
 ) -> Response {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let started = Instant::now();
+    let provider = req.provider.clone();
+    let model = req.model.clone();
     let mut conv = Conversation {
         messages: expand_goal_in_messages(req.messages),
         ..Default::default()
@@ -491,10 +775,24 @@ async fn chat_completions(
 
     match agent.run(&mut conv).await {
         Ok(outcome) => {
-            let iterations = match outcome {
-                RunOutcome::Stopped { iterations } => iterations,
-                RunOutcome::LengthLimited { iterations } => iterations,
-            };
+            let iterations = run_iterations(&outcome);
+            record_agent_run(
+                state.observability.clone(),
+                AgentRunRecord {
+                    id: run_id,
+                    transport: "http",
+                    started_at,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    outcome: observed_outcome(&outcome),
+                    iterations: Some(iterations),
+                    message_count: conv.messages.len(),
+                    conversation_id: None,
+                    project_id: None,
+                    provider,
+                    model,
+                },
+            )
+            .await;
             let final_msg = conv
                 .messages
                 .iter()
@@ -514,6 +812,23 @@ async fn chat_completions(
         }
         Err(e) => {
             error!(error = %e, "agent run failed");
+            record_agent_run(
+                state.observability.clone(),
+                AgentRunRecord {
+                    id: run_id,
+                    transport: "http",
+                    started_at,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    outcome: ObservedOutcome::Error,
+                    iterations: None,
+                    message_count: conv.messages.len(),
+                    conversation_id: None,
+                    project_id: None,
+                    provider,
+                    model,
+                },
+            )
+            .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": e.to_string() })),
@@ -529,6 +844,11 @@ async fn chat_completions_stream(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionsRequest>,
 ) -> Response {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let started = Instant::now();
+    let provider = req.provider.clone();
+    let model = req.model.clone();
     let conv = Conversation {
         messages: expand_goal_in_messages(req.messages),
         ..Default::default()
@@ -537,11 +857,54 @@ async fn chat_completions_stream(
         Ok(a) => a,
         Err(e) => return route_error(e),
     };
-    let stream = agent.run_stream(conv).map(|event| {
-        let payload = serde_json::to_string(&event)
-            .unwrap_or_else(|e| format!(r#"{{"type":"error","message":"serialize: {e}"}}"#));
-        Ok::<_, Infallible>(Event::default().data(payload))
-    });
+    let observability = state.observability.clone();
+    let stream = async_stream::stream! {
+        let mut inner = agent.run_stream(conv);
+        let mut event_acc = RunEventAccumulator::default();
+        let mut final_outcome = ObservedOutcome::Unknown;
+        let mut iterations = None;
+        let mut message_count = 0usize;
+        while let Some(event) = inner.next().await {
+            let observed = event_acc.observe(&event);
+            record_observed_runs(observability.clone(), observed).await;
+            match &event {
+                AgentEvent::Done { outcome, conversation } => {
+                    final_outcome = observed_outcome(outcome);
+                    iterations = Some(run_iterations(outcome));
+                    message_count = conversation.messages.len();
+                }
+                AgentEvent::Error { .. } => {
+                    final_outcome = ObservedOutcome::Error;
+                }
+                _ => {}
+            }
+            let terminal = matches!(event, AgentEvent::Done { .. } | AgentEvent::Error { .. });
+            let payload = serde_json::to_string(&event)
+                .unwrap_or_else(|e| format!(r#"{{"type":"error","message":"serialize: {e}"}}"#));
+            yield Ok::<_, Infallible>(Event::default().data(payload));
+            if terminal {
+                break;
+            }
+        }
+        record_observed_runs(observability.clone(), event_acc.finish_unclosed()).await;
+        record_agent_run(
+            observability,
+            AgentRunRecord {
+                id: run_id,
+                transport: "sse",
+                started_at,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+                outcome: final_outcome,
+                iterations,
+                message_count,
+                conversation_id: None,
+                project_id: None,
+                provider,
+                model,
+            },
+        )
+        .await;
+    };
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
@@ -801,6 +1164,12 @@ struct DetachedTurn {
     conversation: Conversation,
     event_tx: mpsc::Sender<AgentEvent>,
     chat_runs: Arc<crate::chat_runs::ChatRunRegistry>,
+    observability: Option<Arc<dyn ObservabilityStore>>,
+    run_id: String,
+    started_at: String,
+    started: Instant,
+    provider: Option<String>,
+    model: Option<String>,
     persisted_id: Option<String>,
     persisted_project_id: Option<String>,
     store: Option<Arc<dyn ConversationStore>>,
@@ -814,6 +1183,12 @@ fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
             conversation,
             event_tx,
             chat_runs,
+            observability,
+            run_id,
+            started_at,
+            started,
+            provider,
+            model,
             persisted_id,
             persisted_project_id,
             store,
@@ -821,13 +1196,20 @@ fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
         } = turn;
         harness_core::todo::with_turn_budget(async move {
             let mut stream = agent.run_stream(conversation);
+            let mut event_acc = RunEventAccumulator::default();
+            let mut final_outcome = ObservedOutcome::Unknown;
+            let mut iterations = None;
+            let mut message_count = 0usize;
             while let Some(ev) = stream.next().await {
                 let mut ev_to_send = ev;
+                let observed = event_acc.observe(&ev_to_send);
+                record_observed_runs(observability.clone(), observed).await;
                 let is_terminal = matches!(
                     ev_to_send,
                     AgentEvent::Done { .. } | AgentEvent::Error { .. }
                 );
                 if let AgentEvent::Done { conversation, .. } = &mut ev_to_send {
+                    message_count = conversation.messages.len();
                     if let Some(prepared) = injection.as_ref() {
                         *conversation = strip_turn_injections(conversation.clone(), prepared);
                     }
@@ -840,12 +1222,44 @@ fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
                         }
                     }
                 }
+                match &ev_to_send {
+                    AgentEvent::Done {
+                        outcome,
+                        conversation,
+                    } => {
+                        final_outcome = observed_outcome(outcome);
+                        iterations = Some(run_iterations(outcome));
+                        message_count = conversation.messages.len();
+                    }
+                    AgentEvent::Error { .. } => {
+                        final_outcome = ObservedOutcome::Error;
+                    }
+                    _ => {}
+                }
                 chat_runs.event(persisted_id.as_deref(), &ev_to_send);
                 let _ = event_tx.send(ev_to_send).await;
                 if is_terminal {
                     break;
                 }
             }
+            record_observed_runs(observability.clone(), event_acc.finish_unclosed()).await;
+            record_agent_run(
+                observability,
+                AgentRunRecord {
+                    id: run_id,
+                    transport: "ws",
+                    started_at,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    outcome: final_outcome,
+                    iterations,
+                    message_count,
+                    conversation_id: persisted_id,
+                    project_id: persisted_project_id,
+                    provider,
+                    model,
+                },
+            )
+            .await;
         })
         .await;
     })
@@ -1554,6 +1968,8 @@ async fn handle_client_frame(
                     return true;
                 }
             };
+            let record_provider = provider_pick.map(str::to_string);
+            let record_model = model_pick.map(str::to_string);
             // Persist the explicit selection as the new sticky.
             if provider.is_some() {
                 *sticky_provider = provider;
@@ -1615,6 +2031,12 @@ async fn handle_client_frame(
                 conversation: snapshot,
                 event_tx,
                 chat_runs: state.chat_runs.clone(),
+                observability: state.observability.clone(),
+                run_id: Uuid::new_v4().to_string(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                started: Instant::now(),
+                provider: record_provider,
+                model: record_model,
                 persisted_id: persisted_id.clone(),
                 persisted_project_id: persisted_project_id.clone(),
                 store: state.store.clone(),
@@ -1997,6 +2419,8 @@ async fn handle_client_frame(
                     return true;
                 }
             };
+            let record_provider = provider_pick.map(str::to_string);
+            let record_model = model_pick.map(str::to_string);
             if provider.is_some() {
                 *sticky_provider = provider;
             }
@@ -2068,6 +2492,12 @@ async fn handle_client_frame(
                 conversation: snapshot,
                 event_tx,
                 chat_runs: state.chat_runs.clone(),
+                observability: state.observability.clone(),
+                run_id: Uuid::new_v4().to_string(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                started: Instant::now(),
+                provider: record_provider,
+                model: record_model,
                 persisted_id: persisted_id.clone(),
                 persisted_project_id: persisted_project_id.clone(),
                 store: state.store.clone(),
@@ -2118,6 +2548,114 @@ async fn handle_client_frame(
                     .to_string(),
                 ))
                 .await;
+            // Plan accepted — push a synthetic "proceed" user
+            // message and spawn the next turn under the new mode so
+            // the agent picks up immediately instead of stalling
+            // after exit_plan ended its previous turn. Mirrors
+            // RefinePlan's spawn pattern; the only structural
+            // difference is we don't apply plan_mode_tool_filter,
+            // since AcceptPlan's whole point is leaving plan mode
+            // and the new turn must see write/exec tools.
+            if event_rx.is_some() {
+                send_error(ws_tx, "turn already in progress").await;
+                return true;
+            }
+            let proceed_message = "Plan approved. Please proceed with the implementation.";
+            let provider_pick = sticky_provider.as_deref();
+            let model_pick = sticky_model.as_deref();
+            let approver = socket_approver.clone();
+            let hitl = hitl_tx.clone();
+            let active_mode = *mode_handle.read().await;
+            let skills_catalog = state.skills.as_ref().cloned();
+            let skills_snapshot =
+                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, proceed_message);
+            let workspace_for_turn = socket_workspace.clone();
+            let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
+                cfg.approver = Some(approver);
+                cfg.hitl_tx = Some(hitl);
+                if matches!(active_mode, harness_core::PermissionMode::Plan) {
+                    cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) = compose_with_skills(
+                    cfg.system_prompt.as_deref(),
+                    skills_catalog.as_ref(),
+                    &skills_snapshot,
+                ) {
+                    cfg.system_prompt = Some(prompt);
+                }
+                if workspace_for_turn.is_some() {
+                    cfg.session_workspace = workspace_for_turn;
+                }
+            }) {
+                Ok(a) => a,
+                Err(e) => {
+                    send_error(ws_tx, &e.to_string()).await;
+                    return true;
+                }
+            };
+            conv.push(Message::user(proceed_message.to_string()));
+            let prepared = match materialise(
+                state.projects.as_ref(),
+                state.project_memory.as_ref(),
+                conv.clone(),
+                persisted_project_id.as_deref(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    send_error(ws_tx, &format!("project binder: {e}")).await;
+                    conv.messages.pop();
+                    return true;
+                }
+            };
+            let workspace_key = active_workspace_key(state, socket_workspace.as_deref());
+            let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
+                state.todos.as_ref(),
+                prepared.conversation.clone(),
+                workspace_key.as_deref(),
+                state.todos_in_prompt,
+            )
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    send_error(ws_tx, &format!("todo binder: {e}")).await;
+                    conv.messages.pop();
+                    return true;
+                }
+            };
+            let injection = TurnInjection {
+                project: prepared,
+                todos: todos_prepared,
+                soul_injected_at: None,
+            };
+            *last_injection = Some(injection.clone());
+            let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
+            *event_rx = Some(new_rx);
+            if let Some(id) = persisted_id.as_deref() {
+                state.chat_runs.start(id);
+            }
+            let handle = spawn_detached_turn(DetachedTurn {
+                agent,
+                conversation: snapshot,
+                event_tx,
+                chat_runs: state.chat_runs.clone(),
+                observability: state.observability.clone(),
+                run_id: Uuid::new_v4().to_string(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                started: Instant::now(),
+                provider: provider_pick.map(str::to_string),
+                model: model_pick.map(str::to_string),
+                persisted_id: persisted_id.clone(),
+                persisted_project_id: persisted_project_id.clone(),
+                store: state.store.clone(),
+                injection: Some(injection),
+            });
+            state
+                .chat_runs
+                .attach_abort_handle(persisted_id.as_deref(), handle.abort_handle());
+            *current_task = Some(handle);
         }
         WsClientMessage::RefinePlan { feedback } => {
             // Equivalent to a User frame — feed the feedback back to
@@ -2210,6 +2748,12 @@ async fn handle_client_frame(
                 conversation: snapshot,
                 event_tx,
                 chat_runs: state.chat_runs.clone(),
+                observability: state.observability.clone(),
+                run_id: Uuid::new_v4().to_string(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                started: Instant::now(),
+                provider: provider_pick.map(str::to_string),
+                model: model_pick.map(str::to_string),
                 persisted_id: persisted_id.clone(),
                 persisted_project_id: persisted_project_id.clone(),
                 store: state.store.clone(),

@@ -111,6 +111,47 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
             (None, None, None, None, None, None, None, None, None, None)
         }
     };
+
+    let observability_url = std::env::var("JARVIS_OBSERVABILITY_STORE_URL")
+        .ok()
+        .or_else(default_json_observability_url);
+    let observability_store = match observability_url.as_deref() {
+        Some(url) => match harness_store::connect_observability(url).await {
+            Ok(store) => {
+                info!(url = %url, "local observability store connected");
+                Some(store)
+            }
+            Err(e) => {
+                warn!(url = %url, error = %e, "observability store unavailable; dashboard summaries disabled");
+                None
+            }
+        },
+        None => {
+            warn!("observability store URL not resolved; dashboard summaries disabled");
+            None
+        }
+    };
+
+    let eval_store_url = std::env::var("JARVIS_EVAL_STORE_URL")
+        .ok()
+        .or_else(default_json_eval_url);
+    let eval_store = match eval_store_url.as_deref() {
+        Some(url) => match harness_store::connect_evals(url).await {
+            Ok(store) => {
+                info!(url = %url, "local eval store connected");
+                Some(store)
+            }
+            Err(e) => {
+                warn!(url = %url, error = %e, "eval store unavailable; eval history disabled");
+                None
+            }
+        },
+        None => {
+            warn!("eval store URL not resolved; eval history disabled");
+            None
+        }
+    };
+
     // `JARVIS_DISABLE_TODOS=1` opts out of the persistent TODO board
     // even when a DB is configured. Useful for shared deployments
     // that want todos managed elsewhere.
@@ -504,6 +545,12 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
     if let Some(ls) = label_store {
         state = state.with_label_store(ls);
     }
+    if let Some(os) = observability_store {
+        state = state.with_observability_store(os);
+    }
+    if let Some(es) = eval_store {
+        state = state.with_eval_store(es);
+    }
     // Project-scoped long-term memory. The auto loop captures
     // `gotcha` rows from failed runs and prepends recent rows into
     // the next run's system prompt. We unconditionally wire an
@@ -642,15 +689,27 @@ pub async fn run(cfg: Option<Config>, args: ServeArgs, config_path: Option<PathB
             auto_cfg.workflow_prompt = Some(s.to_string());
         }
     }
+    // v1.0 SubAgent — flip to opt-in reviewer-subagent dispatch when
+    // the env var is set to anything non-empty / non-`0` / non-`false`.
+    if let Ok(s) = std::env::var("JARVIS_REVIEWER_AUTO_ACCEPT") {
+        let s = s.trim().to_ascii_lowercase();
+        if !s.is_empty() && s != "0" && s != "false" && s != "no" && s != "off" {
+            auto_cfg.reviewer_auto_accept = true;
+        }
+    }
     // Build the runtime with the resolved concurrency cap so the
     // semaphore pool size matches what `tick` will enforce. The
     // spawn helper falls back to default capacity when the runtime
     // is built fresh inside it, but our binary always pre-creates
     // it so the auto-mode REST routes (`POST /v1/auto-mode`) see a
     // runtime they can toggle.
-    let auto_runtime =
-        harness_server::AutoModeRuntime::with_capacity(auto_cfg.mode, auto_cfg.max_concurrent_units);
+    let auto_runtime = harness_server::AutoModeRuntime::with_capacity(
+        auto_cfg.mode,
+        auto_cfg.max_concurrent_units,
+    );
     state = state.with_auto_mode_runtime(auto_runtime);
+    let auto_cfg_arc = std::sync::Arc::new(auto_cfg.clone());
+    state = state.with_auto_mode_config(auto_cfg_arc);
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
     if let (Some(pm), Some(projects), Some(requirements)) = (
         project_memory_runtime,
@@ -1366,6 +1425,16 @@ fn dirs_user_data() -> Result<PathBuf> {
 fn default_json_persistence_url() -> Option<String> {
     let dir = dirs_user_data().ok()?.join("conversations");
     // Three slashes makes it a proper file URI (`json:///abs/path`).
+    Some(format!("json://{}", dir.display()))
+}
+
+fn default_json_observability_url() -> Option<String> {
+    let dir = dirs_user_data().ok()?.join("observability");
+    Some(format!("json://{}", dir.display()))
+}
+
+fn default_json_eval_url() -> Option<String> {
+    let dir = dirs_user_data().ok()?.join("evals");
     Some(format!("json://{}", dir.display()))
 }
 

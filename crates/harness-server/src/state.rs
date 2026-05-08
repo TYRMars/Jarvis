@@ -3,8 +3,9 @@ use std::sync::{Arc, RwLock};
 
 use harness_core::{
     ActivityStore, Agent, AgentConfig, AgentProfileStore, CommentStore, ConversationStore,
-    DocStore, LabelStore, LlmProvider, PermissionMode, PermissionStore, ProjectMemoryStore,
-    ProjectStore, RequirementRunStore, RequirementStore, TodoStore, ToolRegistry,
+    DocStore, EvalStore, LabelStore, LlmProvider, ObservabilityStore, PermissionMode,
+    PermissionStore, ProjectMemoryStore, ProjectStore, RequirementRunStore, RequirementStore,
+    TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
@@ -203,6 +204,14 @@ pub struct AppState {
     /// tags. `None` ⇒ `/v1/projects/:id/labels*` returns 503; the
     /// kanban falls back to label-less rendering.
     pub labels: Option<Arc<dyn LabelStore>>,
+    /// Optional local observability summary store. This is Jarvis's
+    /// product-facing facts store for dashboard summaries; full
+    /// traces still flow through OTLP when configured.
+    pub observability: Option<Arc<dyn ObservabilityStore>>,
+    /// Optional eval result / baseline store. Backed by local JSON
+    /// by default in the binary, with SQL backends planned behind
+    /// the same trait.
+    pub evals: Option<Arc<dyn EvalStore>>,
     /// Optional project-scoped long-term memory store. When `Some(_)`,
     /// the auto loop captures a [`harness_core::ProjectMemory`] row
     /// for every Failed run and prepends the most recent project
@@ -247,6 +256,12 @@ pub struct AppState {
     /// read/write it. Initial value is set by the binary from
     /// `AutoModeConfig.mode` (i.e. `JARVIS_WORK_MODE`).
     pub auto_mode_runtime: Option<crate::auto_mode::AutoModeRuntime>,
+    /// Resolved `AutoModeConfig` snapshot the binary used at boot
+    /// (env vars + `WORKFLOW.md` already merged). Read-only and
+    /// surfaced via `GET /v1/auto-mode` so the dashboard can show
+    /// the operator the cadence + caps the loop is running with.
+    /// `None` when the binary didn't wire auto mode (tests, mcp-serve).
+    pub auto_mode_config: Option<Arc<crate::auto_mode::AutoModeConfig>>,
     /// In-process ledger of active/recent chat turns. Web clients use
     /// this to recover server-side run status after a sidebar refresh
     /// or a second browser window opens.
@@ -282,12 +297,15 @@ impl AppState {
             docs: None,
             comments: None,
             labels: None,
+            observability: None,
+            evals: None,
             project_memories: None,
             todos_in_prompt: true,
             worktree_mode: WorktreeMode::Off,
             worktree_root: None,
             worktree_allow_dirty: false,
             auto_mode_runtime: None,
+            auto_mode_config: None,
             chat_runs: crate::chat_runs::ChatRunRegistry::new(),
         }
     }
@@ -325,12 +343,15 @@ impl AppState {
             docs: None,
             comments: None,
             labels: None,
+            observability: None,
+            evals: None,
             project_memories: None,
             todos_in_prompt: true,
             worktree_mode: WorktreeMode::Off,
             worktree_root: None,
             worktree_allow_dirty: false,
             auto_mode_runtime: None,
+            auto_mode_config: None,
             chat_runs: crate::chat_runs::ChatRunRegistry::new(),
         }
     }
@@ -507,6 +528,21 @@ impl AppState {
         self
     }
 
+    /// Wire in the local observability summary store. Without one,
+    /// `/v1/observability*` returns 503, but OTLP export can still
+    /// be enabled independently.
+    pub fn with_observability_store(mut self, store: Arc<dyn ObservabilityStore>) -> Self {
+        self.observability = Some(store);
+        self
+    }
+
+    /// Wire in the eval result / baseline store. Without one,
+    /// `/v1/evals*` returns 503.
+    pub fn with_eval_store(mut self, store: Arc<dyn EvalStore>) -> Self {
+        self.evals = Some(store);
+        self
+    }
+
     /// Toggle the per-turn TODO injection into the system prompt.
     /// The binary flips this to `false` when
     /// `JARVIS_NO_TODOS_IN_PROMPT` is set.
@@ -536,6 +572,15 @@ impl AppState {
     /// `auto_mode::spawn` and the REST handlers; tests can ignore it.
     pub fn with_auto_mode_runtime(mut self, runtime: crate::auto_mode::AutoModeRuntime) -> Self {
         self.auto_mode_runtime = Some(runtime);
+        self
+    }
+
+    /// Stash the resolved `AutoModeConfig` snapshot for read-only
+    /// surfacing through `GET /v1/auto-mode`. The binary calls this
+    /// after merging env vars + `WORKFLOW.md` so the dashboard sees
+    /// the same numbers `spawn` is enforcing.
+    pub fn with_auto_mode_config(mut self, config: Arc<crate::auto_mode::AutoModeConfig>) -> Self {
+        self.auto_mode_config = Some(config);
         self
     }
 

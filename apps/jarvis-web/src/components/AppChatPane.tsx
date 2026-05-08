@@ -11,6 +11,7 @@ import { AskTextCard } from "./Chat/AskTextCard";
 import { ApprovalCard } from "./Approvals/ApprovalCard";
 import { BypassBanner } from "./Approvals/BypassBanner";
 import { ModeBadge } from "./Approvals/ModeBadge";
+import { PlanModeBanner } from "./Approvals/PlanModeBanner";
 import { PlanProposedCard } from "./Approvals/PlanProposedCard";
 import { ModelMenu } from "./ModelMenu/ModelMenu";
 import { UsageBadge } from "./UsageBadge";
@@ -52,6 +53,7 @@ export function AppChatPane() {
 
       <Banner />
       <BypassBanner />
+      <PlanModeBanner />
 
       <MessageList />
 
