@@ -14,12 +14,6 @@ interface KpiCardProps {
   tone?: "neutral" | "danger" | "ok";
   icon: ReactNode;
   loading?: boolean;
-  /// Anchor id to scroll to when the card is clicked (e.g. the
-  /// operational panel's #section). When set, the card becomes a
-  /// `<button>` with an aria-label telling assistive tech where it
-  /// jumps. Omit for non-interactive cards (e.g. pass-rate has no
-  /// dedicated section to scroll to).
-  scrollTo?: string;
 }
 
 function KpiCard({
@@ -29,19 +23,17 @@ function KpiCard({
   tone = "neutral",
   icon,
   loading = false,
-  scrollTo,
 }: KpiCardProps) {
   const className = [
     "work-kpi-card",
     `work-kpi-card-${tone}`,
     loading ? "is-loading" : "",
-    scrollTo ? "is-clickable" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
-  const body = (
-    <>
+  return (
+    <div className={className}>
       <div className="work-kpi-card-head">
         <span className="work-kpi-icon" aria-hidden="true">
           {icon}
@@ -54,25 +46,8 @@ function KpiCard({
         <div className="work-kpi-value tabular-nums">{value}</div>
       )}
       {hint && !loading && <div className="work-kpi-hint">{hint}</div>}
-    </>
+    </div>
   );
-
-  if (scrollTo) {
-    return (
-      <button
-        type="button"
-        className={className}
-        onClick={() => {
-          const el = document.getElementById(scrollTo);
-          el?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }}
-        aria-label={`${label} — ${value}`}
-      >
-        {body}
-      </button>
-    );
-  }
-  return <div className={className}>{body}</div>;
 }
 
 // Shared icon constants — small (14px) so they sit alongside the
@@ -133,7 +108,6 @@ export function KpiStrip({ overview, loading }: Props) {
         tone={runningNow && runningNow > 0 ? "ok" : "neutral"}
         icon={<RunningIcon />}
         loading={loading && runningNow === null}
-        scrollTo="work-overview-operational"
       />
       <KpiCard
         label={t("kpiFailedInWindow")}
@@ -141,7 +115,6 @@ export function KpiStrip({ overview, loading }: Props) {
         tone={failed && failed > 0 ? "danger" : "neutral"}
         icon={<FailedIcon />}
         loading={loading && failed === null}
-        scrollTo="work-overview-operational"
       />
       <KpiCard
         label={t("kpiCompletedInWindow")}
@@ -149,7 +122,6 @@ export function KpiStrip({ overview, loading }: Props) {
         tone={completed && completed > 0 ? "ok" : "neutral"}
         icon={<CompletedIcon />}
         loading={loading && completed === null}
-        scrollTo="work-overview-throughput"
       />
       <KpiCard
         label={t("kpiVerificationPassRate")}

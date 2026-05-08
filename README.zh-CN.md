@@ -191,6 +191,7 @@ Jarvis 自带命名空间化工具集：
 - `shell.exec`
 - `git.status`、`git.diff`、`git.log`、`git.show`
 - `workspace.context`
+- `doc.{list,search,get,upsert,create,update,delete,draft.{get,save}}`：长文档 CRUD；`search` + `upsert` 面向自然语言查找和创建/更新
 - 计划、审批和用户输入辅助工具
 
 修改类工具默认需要显式启用，并会进入审批体系。binary composition root 决定注册哪些工具；`harness-core` 只知道 `ToolRegistry`。

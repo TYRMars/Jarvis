@@ -14,9 +14,11 @@ import {
   checkMcpHealth,
   configFromCommandLine,
   listMcpServers,
+  reloadMcpServer,
   removeMcpServer,
   type McpHealth,
   type McpServerInfo,
+  type McpServerStatus,
 } from "../../../services/mcp";
 
 function tx(key: string, fallback: string): string {
@@ -29,7 +31,13 @@ type LoadState =
   | { kind: "ready"; servers: McpServerInfo[] }
   | { kind: "error"; message: string };
 
-export function McpSection({ embedded }: { embedded?: boolean } = {}) {
+export function McpSection({
+  embedded,
+  refreshToken = 0,
+}: {
+  embedded?: boolean;
+  refreshToken?: number;
+} = {}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [adding, setAdding] = useState(false);
   const [healthByPrefix, setHealthByPrefix] = useState<Record<string, McpHealth | "checking">>({});
@@ -47,7 +55,7 @@ export function McpSection({ embedded }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [refreshToken]);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,6 +100,34 @@ export function McpSection({ embedded }: { embedded?: boolean } = {}) {
     }
   };
 
+  const handleReload = async (prefix: string) => {
+    setErrorByPrefix((s) => ({ ...s, [prefix]: "" }));
+    setHealthByPrefix((s) => ({ ...s, [prefix]: "checking" }));
+    try {
+      const result = await reloadMcpServer(prefix);
+      setHealthByPrefix((s) => ({
+        ...s,
+        [prefix]: {
+          ok: true,
+          latency_ms: result.latency_ms,
+          tools: result.tools.length,
+        },
+      }));
+      refresh();
+    } catch (e: unknown) {
+      setErrorByPrefix((s) => ({
+        ...s,
+        [prefix]: t("mcpReloadFailed", String(e)),
+      }));
+      setHealthByPrefix((s) => {
+        const next = { ...s };
+        delete next[prefix];
+        return next;
+      });
+      refresh();
+    }
+  };
+
   return (
     <Section
       id="mcp"
@@ -101,7 +137,14 @@ export function McpSection({ embedded }: { embedded?: boolean } = {}) {
       descFallback="Add or remove external MCP servers at runtime. Tools register as <prefix>.<remote-name>."
       embedded={embedded}
     >
-      {renderList(state, handleRemove, handleHealth, healthByPrefix, errorByPrefix)}
+      {renderList(
+        state,
+        handleRemove,
+        handleHealth,
+        handleReload,
+        healthByPrefix,
+        errorByPrefix,
+      )}
 
       <div className="settings-row settings-row-full">
         <div className="settings-row-label">
@@ -109,7 +152,7 @@ export function McpSection({ embedded }: { embedded?: boolean } = {}) {
           <div className="settings-row-hint">{tx("mcpCommandLineHelp", "e.g. uvx mcp-server-filesystem /tmp")}</div>
         </div>
         <div className="settings-row-control">
-          <form className="settings-form" onSubmit={handleAdd}>
+          <form className="settings-form" onSubmit={(e) => { void handleAdd(e); }}>
             <div className="settings-form-row">
               <label className="settings-form-label" htmlFor="mcp-add-prefix">
                 {tx("mcpPrefixLabel", "Prefix")}
@@ -159,8 +202,9 @@ export function McpSection({ embedded }: { embedded?: boolean } = {}) {
 
 function renderList(
   state: LoadState,
-  onRemove: (prefix: string) => void,
-  onHealth: (prefix: string) => void,
+  onRemove: (prefix: string) => void | Promise<void>,
+  onHealth: (prefix: string) => void | Promise<void>,
+  onReload: (prefix: string) => void | Promise<void>,
   healthByPrefix: Record<string, McpHealth | "checking">,
   errorByPrefix: Record<string, string>,
 ) {
@@ -193,20 +237,27 @@ function renderList(
               <div className="settings-mcp-row">
                 <div>
                   <span className="mono">{s.prefix}</span>
+                  <span
+                    className={`settings-tag ${statusTagClass(s.status)}`}
+                    title={`status: ${s.status}`}
+                  >
+                    {s.status}
+                  </span>
                   <span className="muted">
                     {" "}
                     · {s.config.transport.type}
-                    {" "}
-                    · {tx(`mcpStatus${capitalize(s.status)}`, s.status)}
                     {" "}
                     · {t("mcpToolCount", s.tools.length)}
                   </span>
                 </div>
                 <div className="settings-mcp-actions">
-                  <button type="button" className="settings-btn" onClick={() => onHealth(s.prefix)}>
+                  <button type="button" className="settings-btn" onClick={() => { void onHealth(s.prefix); }}>
                     {tx("mcpHealthBtn", "Health")}
                   </button>
-                  <button type="button" className="settings-btn settings-btn-danger" onClick={() => onRemove(s.prefix)}>
+                  <button type="button" className="settings-btn" onClick={() => { void onReload(s.prefix); }}>
+                    {tx("mcpReloadBtn", "Reload")}
+                  </button>
+                  <button type="button" className="settings-btn settings-btn-danger" onClick={() => { void onRemove(s.prefix); }}>
                     {tx("mcpRemoveBtn", "Remove")}
                   </button>
                 </div>
@@ -249,7 +300,13 @@ function renderHealth(state: McpHealth | "checking" | undefined) {
   );
 }
 
-function capitalize(s: string): string {
-  if (!s) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1);
+function statusTagClass(status: McpServerStatus): string {
+  switch (status) {
+    case "running":
+      return "settings-tag-muted";
+    case "stopped":
+      return "settings-tag-warn";
+    case "unhealthy":
+      return "settings-tag-danger";
+  }
 }

@@ -147,12 +147,46 @@ export interface EvalCaseResult {
   suite_run_id: string;
   case_id: string;
   suite: string;
+  suite_kind: string;
   scenario: string;
+  trial_index: number;
+  trial_count: number | null;
   outcome: string;
   trace_id: string | null;
+  transcript_artifact_id: string | null;
+  failure_class: string | null;
+  grader_results: Array<{
+    id: string;
+    kind: string;
+    verdict: string;
+    score: number | null;
+    explanation: string | null;
+    attributes: Record<string, unknown>;
+    artifact_ids: string[];
+  }>;
   scores: Record<string, unknown>;
   attributes: Record<string, unknown>;
   artifact_ids: string[];
+}
+
+export interface EvalTrialReliability {
+  task_groups: number;
+  pass_at_k: number | null;
+  pass_all: number | null;
+}
+
+export interface EvalSummarySnapshot {
+  generated_at: string;
+  total_cases: number;
+  passed_cases: number;
+  pass_rate: number | null;
+  capability_pass_rate: number | null;
+  regression_pass_rate: number | null;
+  trial_reliability: EvalTrialReliability;
+  by_suite_kind: Record<string, number>;
+  by_grader_kind: Record<string, number>;
+  by_failure_class: Record<string, number>;
+  transcript_cases: number;
 }
 
 export interface HarnessDirectionComponent {
@@ -179,6 +213,43 @@ export interface HarnessDirectionSnapshot {
   components: HarnessDirectionComponent[];
   recommendations: HarnessDirectionRecommendation[];
   sample: Record<string, unknown>;
+}
+
+export interface HarnessCapabilityDriver {
+  key: string;
+  label: string;
+  value: number | null;
+  weight: number;
+  score: number;
+  detail: string;
+}
+
+export interface HarnessCapabilityEvidence {
+  kind: string;
+  id: string;
+  title: string;
+  detail: string;
+  metric: string | null;
+  tone: string;
+}
+
+export interface HarnessCapabilityDimension {
+  key: string;
+  label: string;
+  score: number;
+  confidence: number;
+  summary: string;
+  drivers: HarnessCapabilityDriver[];
+  evidence: HarnessCapabilityEvidence[];
+}
+
+export interface HarnessCapabilityScoreSnapshot {
+  generated_at: string;
+  overall_score: number;
+  confidence: number;
+  sample_count: number;
+  dimensions: HarnessCapabilityDimension[];
+  rules: Record<string, unknown>;
 }
 
 /// Fetch the dashboard overview. Returns `null` on 503 so the UI can
@@ -240,6 +311,15 @@ export async function fetchEvalCases(
   return body.cases;
 }
 
+export async function fetchEvalSummary(
+  limit = 2000,
+): Promise<EvalSummarySnapshot | null> {
+  const r = await fetch(apiUrl(`/v1/evals/summary?limit=${limit}`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`eval summary ${r.status}`);
+  return (await r.json()) as EvalSummarySnapshot;
+}
+
 export async function fetchHarnessDirection(
   limit = 2000,
 ): Promise<HarnessDirectionSnapshot | null> {
@@ -247,4 +327,28 @@ export async function fetchHarnessDirection(
   if (r.status === 503) return null;
   if (!r.ok) throw new Error(`harness direction ${r.status}`);
   return (await r.json()) as HarnessDirectionSnapshot;
+}
+
+export async function fetchHarnessCapabilityScore(
+  limit = 2000,
+): Promise<HarnessCapabilityScoreSnapshot | null> {
+  const r = await fetch(apiUrl(`/v1/observability/capability-score?limit=${limit}`));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`harness capability score ${r.status}`);
+  return (await r.json()) as HarnessCapabilityScoreSnapshot;
+}
+
+export interface TelemetryExporterStatus {
+  enabled: boolean;
+  endpoint: string | null;
+  protocol: string | null;
+  service_name: string;
+  service_env: string;
+  sample_ratio: number;
+}
+
+export async function fetchTelemetryExporter(): Promise<TelemetryExporterStatus | null> {
+  const r = await fetch(apiUrl('/v1/observability/exporter'));
+  if (!r.ok) return null;
+  return (await r.json()) as TelemetryExporterStatus;
 }

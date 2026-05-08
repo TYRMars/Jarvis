@@ -164,7 +164,7 @@ const HINTS: Array<[RegExp, string]> = [
   // shape (`agent timed out after Nms`) and nothing else, so the
   // anchor is safe; an upstream message that merely *contains* the
   // phrase falls through to the catch-all below.
-  [/^agent timed out after \d+ms$/i, "Auto-mode hit its `JARVIS_WORK_RUN_TIMEOUT_MS` budget (default 300000ms). Open the run conversation to check whether the model is looping; raise the value if the work genuinely needs more time."],
+  [/^agent timed out after \d+ms$/i, "Auto-mode hit its `JARVIS_WORK_RUN_TIMEOUT_MS` budget (default 600000ms). Open the run conversation to check whether the model is looping; raise the value if the work genuinely needs more time."],
   [/timeout|timed out/i, "Looks like an upstream provider timeout. Check the provider's status page or switch `JARVIS_PROVIDER` — `JARVIS_WORK_RUN_TIMEOUT_MS` won't help here."],
   [/rate.?limit|429/i, "Throttle by lowering `JARVIS_WORK_MAX_UNITS_PER_TICK`, or wait for the provider window to reset."],
   [/max.?retries/i, "Inspect the failing requirement; `requirement.update` to clear retry budget when fixed."],

@@ -132,7 +132,6 @@ export function ExceptionsPanel({ overview }: Props) {
   ) => {
     if (convoId) {
       void resumeConversation(convoId);
-      void navigate("/");
       return;
     }
     // Fallback: jump to the requirement's parent project (we don't

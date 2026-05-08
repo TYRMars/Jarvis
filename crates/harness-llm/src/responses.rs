@@ -67,7 +67,7 @@ use harness_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use crate::codex_auth::CodexAuth;
 use crate::tokens::TiktokenEstimator;
@@ -408,6 +408,17 @@ impl ResponsesProvider {
 
 #[async_trait]
 impl LlmProvider for ResponsesProvider {
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "openai",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = false,
+            jarvis.llm.api = "responses",
+        ),
+    )]
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse> {
         // The Codex backend (and the public Responses API on most
         // models we use here) reject `stream: false` outright with
@@ -450,6 +461,17 @@ impl LlmProvider for ResponsesProvider {
         })
     }
 
+    #[instrument(
+        skip_all,
+        name = "gen_ai.chat",
+        fields(
+            gen_ai.provider.name = "openai",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = %req.model,
+            jarvis.llm.stream = true,
+            jarvis.llm.api = "responses",
+        ),
+    )]
     async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream> {
         let Outbound {
             request: body,
@@ -700,13 +722,20 @@ impl ResponsesRequest {
             (None, cfg.store)
         };
 
+        // Honour the caller's parallel_tool_calls preference. When the
+        // agent loop hasn't expressed an opinion (`None`) we keep the
+        // legacy behaviour — `false` — because the Responses surface
+        // historically over-emitted parallel calls without a flag and
+        // we never had the agent dispatch logic to handle them.
+        let parallel_tool_calls = r.parallel_tool_calls.unwrap_or(false);
+
         let request = Self {
             model,
             instructions,
             input,
             tools,
             tool_choice: "auto",
-            parallel_tool_calls: false,
+            parallel_tool_calls,
             store,
             stream,
             service_tier: cfg.service_tier.clone(),
@@ -1192,7 +1221,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,
+            chain_origin: None,            parallel_tool_calls: None,
         }
     }
 
@@ -1342,7 +1371,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             &default_codex_cfg(),
             false,
@@ -1396,7 +1425,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,
+                chain_origin: None,                parallel_tool_calls: None,
             },
             &default_codex_cfg(),
             false,
@@ -1580,6 +1609,7 @@ mod tests {
             max_tokens: None,
             previous_response_id: Some(prev_id.into()),
             chain_origin: Some(origin),
+            parallel_tool_calls: None,
         }
     }
 

@@ -34,6 +34,8 @@ import {
   type AppearanceLayoutTab,
 } from "./sections/AppearanceLayoutSection";
 import { ModelsSection } from "./sections/ModelsSection";
+import { RoutingSection } from "./sections/RoutingSection";
+import { ToolsSection } from "./sections/ToolsSection";
 import { AgentsSection } from "./sections/AgentsSection";
 import {
   ExtensionsSection,
@@ -98,6 +100,16 @@ const NAV_GROUPS: NavGroup[] = [
         id: "models",
         labelKey: "settingsNavModels",
         fallback: "Models",
+      },
+      {
+        id: "routing",
+        labelKey: "settingsNavRouting",
+        fallback: "Routing",
+      },
+      {
+        id: "tools",
+        labelKey: "settingsNavTools",
+        fallback: "Tools",
       },
       {
         id: "subagents",
@@ -512,6 +524,10 @@ function renderSection(parsed: ParsedHash, setTab: (tab: string) => void) {
       return <SoulSection />;
     case "models":
       return <ModelsSection />;
+    case "routing":
+      return <RoutingSection />;
+    case "tools":
+      return <ToolsSection />;
     case "subagents":
       return <AgentsSection />;
     case "extensions":

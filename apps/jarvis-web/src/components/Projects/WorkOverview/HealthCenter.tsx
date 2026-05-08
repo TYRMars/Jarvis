@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAppStore } from "../../../store/appStore";
 import { t } from "../../../utils/i18n";
 import { resumeConversation } from "../../../services/conversations";
 import {
@@ -14,7 +15,13 @@ import {
   type AutoModeStatus,
 } from "../../../services/autoMode";
 import { aggregateIssues, type Issue } from "../../../services/issueAggregator";
-import type { WorkOverview, WorkQuality } from "../../../services/workOverview";
+import {
+  fetchHarnessDirection,
+  type HarnessDirectionSnapshot,
+  type WorkOverview,
+  type WorkQuality,
+} from "../../../services/workOverview";
+import { KpiStrip } from "./KpiStrip";
 
 interface Props {
   overview: WorkOverview | null;
@@ -31,6 +38,7 @@ type Tone = "ok" | "warn" | "danger" | "neutral";
 interface QualitySignal {
   currentRate: number | null;
   delta: number;
+  samples: number;
   topCommand: string | null;
   topCommandFails: number;
 }
@@ -46,19 +54,20 @@ interface HealthSignal {
   };
 }
 
+interface OptimizationMetric {
+  label: string;
+  value: string;
+  detail: string;
+  tone: Tone;
+  hint: string[];
+}
+
 function formatPercent(v: number | null): string {
   return v === null ? "—" : `${Math.round(v * 100)}%`;
 }
 
-function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return iso;
-  const diff = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (diff < 60) return t("relSecondsAgo", diff);
-  if (diff < 3600) return t("relMinutesAgo", Math.floor(diff / 60));
-  if (diff < 86400) return t("relHoursAgo", Math.floor(diff / 3600));
-  return t("relDaysAgo", Math.floor(diff / 86400));
+function clampScore(n: number): number {
+  return Math.max(0, Math.min(100, Math.round(n)));
 }
 
 function qualitySignal(quality: WorkQuality | null): QualitySignal {
@@ -79,9 +88,40 @@ function qualitySignal(quality: WorkQuality | null): QualitySignal {
   return {
     currentRate: latest,
     delta: first !== null && latest !== null ? latest - first : 0,
+    samples: buckets.reduce((sum, b) => sum + b.total, 0),
     topCommand: top?.command_normalized ?? null,
     topCommandFails: top?.fail_count ?? 0,
   };
+}
+
+function FormulaHint({ label, lines }: { label: string; lines: string[] }) {
+  return (
+    <span className="harness-formula-hint">
+      <button
+        type="button"
+        aria-label={label}
+        title={label}
+        className="harness-formula-icon"
+      >
+        i
+      </button>
+      <span className="harness-formula-tooltip" role="tooltip">
+        {lines.map((line) => (
+          <span key={line}>{line}</span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+function LabelWithHint({ label, lines }: { label: string; lines?: string[] }) {
+  if (!lines || lines.length === 0) return <span>{label}</span>;
+  return (
+    <span className="harness-metric-label-with-hint">
+      {label}
+      <FormulaHint label={t("harnessMetricFormulaLabel")} lines={lines} />
+    </span>
+  );
 }
 
 function healthTone(
@@ -163,9 +203,11 @@ export function HealthCenter({
   const [orphans, setOrphans] = useState<OrphanWorktree[]>([]);
   const [stuck, setStuck] = useState<StuckRun[]>([]);
   const [autoMode, setAutoMode] = useState<AutoModeStatus | null>(null);
+  const [direction, setDirection] = useState<HarnessDirectionSnapshot | null>(null);
   const [autoPending, setAutoPending] = useState(false);
   const [autoError, setAutoError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const projects = useAppStore((s) => s.projects);
 
   const refreshDiagnostics = useCallback(async () => {
     try {
@@ -197,6 +239,20 @@ export function HealthCenter({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetchHarnessDirection()
+      .then((snapshot) => {
+        if (!cancelled) setDirection(snapshot);
+      })
+      .catch(() => {
+        if (!cancelled) setDirection(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const issues = useMemo(
     () =>
       aggregateIssues({
@@ -210,10 +266,113 @@ export function HealthCenter({
   const unavailable = overviewUnavailable || qualityUnavailable;
   const tone = healthTone(overview, qualityStats, issues, unavailable);
   const issue = topIssue(issues);
+  const activeProjects = projects.filter((p) => !p.archived);
+  const autoEnabled = activeProjects.filter(
+    (p) => p.automation?.auto_mode_enabled ?? true,
+  ).length;
+  const automationCoverage =
+    activeProjects.length > 0 ? autoEnabled / activeProjects.length : null;
+  const failuresCount = overview?.run_status_counts.failed ?? 0;
+  const completedCount = overview?.run_status_counts.completed ?? 0;
+  const runningCount = overview?.running_now.length ?? 0;
+  const blockedCount = overview?.blocked_requirements?.length ?? 0;
+  const missingStores = overview?.missing_stores.length ?? 0;
+  const throughput =
+    overview?.throughput_by_day.reduce((sum, d) => sum + d.runs_started, 0) ?? 0;
+  const optimizationScore = useMemo(() => {
+    let score = 100;
+    score -= Math.min(35, failuresCount * 8);
+    score -= Math.min(18, blockedCount * 6);
+    if (qualityStats.currentRate !== null) {
+      score -= Math.max(0, 0.9 - qualityStats.currentRate) * 38;
+    }
+    if (qualityStats.delta < 0) {
+      score -= Math.min(15, Math.abs(qualityStats.delta) * 60);
+    }
+    if (automationCoverage !== null) {
+      score -= Math.max(0, 0.85 - automationCoverage) * 18;
+    }
+    score -= Math.min(12, missingStores * 6);
+    if (overviewUnavailable || qualityUnavailable) score -= 18;
+    return clampScore(score);
+  }, [
+    automationCoverage,
+    blockedCount,
+    failuresCount,
+    missingStores,
+    overviewUnavailable,
+    qualityStats.currentRate,
+    qualityStats.delta,
+    qualityUnavailable,
+  ]);
+  const optimizationMetrics: OptimizationMetric[] = [
+    {
+      label: t("harnessMetricScore"),
+      value: String(optimizationScore),
+      detail: t("harnessMetricScoreDetail"),
+      tone: optimizationScore >= 80 ? "ok" : optimizationScore >= 60 ? "warn" : "danger",
+      hint: [t("harnessMetricScoreHintFormula"), t("harnessMetricScoreHintPenalty")],
+    },
+    {
+      label: t("harnessMetricReliabilityDebt"),
+      value: String(failuresCount + blockedCount),
+      detail: t("harnessMetricReliabilityDebtDetail", failuresCount, blockedCount),
+      tone: failuresCount > 0 ? "danger" : blockedCount > 0 ? "warn" : "ok",
+      hint: [t("harnessMetricReliabilityDebtHint")],
+    },
+    {
+      label: t("harnessMetricVerification"),
+      value: formatPercent(qualityStats.currentRate),
+      detail: t(
+        "harnessMetricVerificationDetail",
+        qualityStats.samples,
+        `${qualityStats.delta > 0 ? "+" : ""}${Math.round(qualityStats.delta * 100)}%`,
+      ),
+      tone:
+        qualityStats.currentRate === null
+          ? "neutral"
+          : qualityStats.currentRate >= 0.85
+            ? "ok"
+            : qualityStats.currentRate >= 0.65
+              ? "warn"
+              : "danger",
+      hint: [t("harnessMetricVerificationHint")],
+    },
+    {
+      label: t("harnessMetricAutomationCoverage"),
+      value: formatPercent(automationCoverage),
+      detail: t("harnessMetricAutomationCoverageDetail", autoEnabled, activeProjects.length),
+      tone:
+        automationCoverage === null
+          ? "neutral"
+          : automationCoverage >= 0.85
+            ? "ok"
+            : automationCoverage >= 0.55
+              ? "warn"
+              : "danger",
+      hint: [t("harnessMetricAutomationCoverageHint")],
+    },
+    {
+      label: t("harnessMetricObservability"),
+      value: missingStores === 0 ? t("harnessMetricReady") : String(missingStores),
+      detail:
+        missingStores === 0
+          ? t("harnessMetricObservabilityReady")
+          : t("harnessMetricObservabilityMissing", missingStores),
+      tone: missingStores === 0 ? "ok" : "warn",
+      hint: [t("harnessMetricObservabilityHint")],
+    },
+    {
+      label: t("harnessMetricThroughput"),
+      value: String(throughput),
+      detail: t("harnessMetricThroughputDetail", completedCount, runningCount),
+      tone: throughput > 0 ? "ok" : "neutral",
+      hint: [t("harnessMetricThroughputHint")],
+    },
+  ];
 
   const openConversation = (id: string) => {
     void resumeConversation(id);
-    void navigate("/");
   };
 
   const toggleAutoMode = async () => {
@@ -338,8 +497,16 @@ export function HealthCenter({
           <AutoModeControl
             status={autoMode}
             pending={autoPending}
-            onToggle={toggleAutoMode}
+            onToggle={() => void toggleAutoMode()}
           />
+          <button
+            type="button"
+            className="health-center-refresh"
+            onClick={() => void navigate("/projects/auto-mode")}
+            title={t("healthCenterAutoModeDashboard")}
+          >
+            {t("healthCenterAutoModeDashboard")}
+          </button>
           <button
             type="button"
             className="health-center-refresh"
@@ -355,11 +522,60 @@ export function HealthCenter({
         </div>
       </header>
 
-      <div className="health-center-metrics" aria-label={t("healthCenterMetrics")}>
-        <Metric label={t("workSectionFailures")} value={overview ? String(failures.length) : "—"} tone={failures.length > 0 ? "danger" : "ok"} />
-        <Metric label={t("panelQuality")} value={formatPercent(qualityStats.currentRate)} tone={qualityStats.currentRate !== null && qualityStats.currentRate < 0.8 ? "warn" : "ok"} />
-        <Metric label={t("exceptionsTitle")} value={String(issues.length)} tone={issues.length > 0 ? "danger" : "ok"} />
-        <Metric label={t("workSectionRunning")} value={overview ? String(running.length) : "—"} tone={running.length > 0 ? "ok" : "neutral"} />
+      <KpiStrip overview={overview} loading={loading && !overview} />
+
+      <div className="health-optimization">
+        <div className="health-center-section-label">
+          <span className="harness-metric-label-with-hint">
+            {t("harnessEvolutionTitle")}
+            <FormulaHint
+              label={t("harnessMetricFormulaLabel")}
+              lines={[
+                t("harnessEvolutionHintMeaning"),
+                t("harnessEvolutionHintFormula"),
+                t("harnessEvolutionHintInterpretation"),
+              ]}
+            />
+          </span>
+        </div>
+        <div className="harness-evolution-grid">
+          {optimizationMetrics.map((metric) => (
+            <div key={metric.label} className={"harness-evolution-metric tone-" + metric.tone}>
+              <LabelWithHint label={metric.label} lines={metric.hint} />
+              <strong className="tabular-nums">{metric.value}</strong>
+              <p>{metric.detail}</p>
+            </div>
+          ))}
+        </div>
+        {direction && (
+          <div className="health-direction">
+            <div className="health-center-section-label">
+              <span className="harness-metric-label-with-hint">
+                {t("harnessDirectionComponentsTitle")}
+                <FormulaHint
+                  label={t("harnessMetricFormulaLabel")}
+                  lines={[
+                    t("harnessObsMetricDirectionHintFormula"),
+                    t("harnessDirectionComponentsHint"),
+                  ]}
+                />
+              </span>
+            </div>
+            <div className="harness-direction-components">
+              {direction.components.map((component) => (
+                <div className="harness-direction-component" key={component.key}>
+                  <div className="harness-direction-component-head">
+                    <span>{t(`harnessObsComponent_${component.key}`)}</span>
+                    <strong className="tabular-nums">{component.score}</strong>
+                  </div>
+                  <div className="harness-direction-bar" aria-hidden="true">
+                    <span style={{ width: `${component.score}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="health-center-body">
@@ -381,30 +597,6 @@ export function HealthCenter({
               </li>
             ))}
           </ul>
-        </div>
-
-        <div className="health-center-context">
-          <div className="health-center-section-label">{t("healthCenterContext")}</div>
-          <dl>
-            <div>
-              <dt>{t("healthCenterLastUpdated")}</dt>
-              <dd>{overview?.as_of ? formatRelative(overview.as_of) : t("statusNeverUpdated")}</dd>
-            </div>
-            <div>
-              <dt>{t("healthCenterQualityDelta")}</dt>
-              <dd className="tabular-nums">
-                {qualityStats.currentRate === null
-                  ? "—"
-                  : `${qualityStats.delta > 0 ? "+" : ""}${Math.round(qualityStats.delta * 100)}%`}
-              </dd>
-            </div>
-            <div>
-              <dt>{t("exceptionsFilterHigh")}</dt>
-              <dd className="tabular-nums">
-                {issues.filter((i) => i.severity === "critical" || i.severity === "high").length}
-              </dd>
-            </div>
-          </dl>
         </div>
       </div>
     </section>
@@ -458,22 +650,5 @@ function AutoModeControl({
         {enabled ? t("statusAutoOn") : t("statusAutoOff")}
       </span>
     </button>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: Tone;
-}) {
-  return (
-    <div className={"health-metric tone-" + tone}>
-      <span>{label}</span>
-      <strong className="tabular-nums">{value}</strong>
-    </div>
   );
 }

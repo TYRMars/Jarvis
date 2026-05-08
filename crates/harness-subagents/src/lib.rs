@@ -173,6 +173,7 @@ impl SubAgentRegistry {
     }
 }
 
+pub mod batch;
 pub mod claude_code;
 pub mod codex;
 pub mod doc_reader;
@@ -181,6 +182,7 @@ pub mod internal;
 pub mod reviewer;
 pub mod tool_adapter;
 
+pub use batch::{JoinStrategy, SubAgentBatchTool, DEFAULT_MAX_CONCURRENCY};
 pub use internal::{InternalSubAgent, InternalSubAgentConfig};
 pub use tool_adapter::SubAgentTool;
 

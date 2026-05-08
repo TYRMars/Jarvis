@@ -14,8 +14,10 @@ import {
   createProvider,
   deleteProvider,
   getProvider,
+  probeProvider,
   setDefaultProvider,
   updateProvider,
+  type ProbeResult,
   type ProviderDef,
   type ProviderSnapshot,
 } from "../../../services/providerAdmin";
@@ -69,6 +71,14 @@ const KIND_OPTIONS: ReadonlyArray<KindOption> = [
     hintFallback: "GOOGLE_API_KEY or GEMINI_API_KEY.",
   },
   {
+    value: "openrouter",
+    labelKey: "settingsProvidersKindOpenrouterLabel",
+    labelFallback: "OpenRouter",
+    hintKey: "settingsProvidersKindOpenrouterHint",
+    hintFallback:
+      "Multi-model router. Requests travel through a third party — see privacy hint.",
+  },
+  {
     value: "kimi",
     labelKey: "settingsProvidersKindKimiLabel",
     labelFallback: "Kimi (Moonshot)",
@@ -83,11 +93,54 @@ const KIND_OPTIONS: ReadonlyArray<KindOption> = [
     hintFallback: "Kimi's coding endpoint with empty reasoning_content compat.",
   },
   {
+    value: "nvidia-nim",
+    labelKey: "settingsProvidersKindNimLabel",
+    labelFallback: "NVIDIA NIM",
+    hintKey: "settingsProvidersKindNimHint",
+    hintFallback:
+      "Enterprise / self-hosted NIM endpoint. Verify base URL against your tenant before relying on the default.",
+  },
+  {
+    value: "nous",
+    labelKey: "settingsProvidersKindNousLabel",
+    labelFallback: "Nous Portal",
+    hintKey: "settingsProvidersKindNousHint",
+    hintFallback: "Hermes & Nous-research models. Verify base URL before use.",
+  },
+  {
+    value: "minimax",
+    labelKey: "settingsProvidersKindMinimaxLabel",
+    labelFallback: "MiniMax",
+    hintKey: "settingsProvidersKindMinimaxHint",
+    hintFallback: "Chinese OpenAI-compatible endpoint. Verify base URL before use.",
+  },
+  {
+    value: "mimo",
+    labelKey: "settingsProvidersKindMimoLabel",
+    labelFallback: "Xiaomi MiMo",
+    hintKey: "settingsProvidersKindMimoHint",
+    hintFallback: "Xiaomi's MiMo endpoint. Verify base URL before use.",
+  },
+  {
+    value: "huggingface",
+    labelKey: "settingsProvidersKindHfLabel",
+    labelFallback: "Hugging Face Inference",
+    hintKey: "settingsProvidersKindHfHint",
+    hintFallback: "Serverless or dedicated endpoint via api-inference.huggingface.co.",
+  },
+  {
     value: "ollama",
     labelKey: "settingsProvidersKindOllamaLabel",
     labelFallback: "Ollama (local)",
     hintKey: "settingsProvidersKindOllamaHint",
     hintFallback: "No api key needed for the local server (default localhost:11434).",
+  },
+  {
+    value: "lmstudio",
+    labelKey: "settingsProvidersKindLmstudioLabel",
+    labelFallback: "LM Studio (local)",
+    hintKey: "settingsProvidersKindLmstudioHint",
+    hintFallback: "Local desktop app exposing an OpenAI-compatible endpoint on :1234.",
   },
   {
     value: "codex",
@@ -106,12 +159,31 @@ const KIND_DEFAULTS: Record<string, { default_model?: string; base_url?: string 
   "openai-responses": { default_model: "gpt-5-mini" },
   anthropic: { default_model: "claude-3-5-sonnet-latest" },
   google: { default_model: "gemini-1.5-flash" },
+  openrouter: {
+    default_model: "anthropic/claude-sonnet-4.5",
+    base_url: "https://openrouter.ai/api/v1",
+  },
   kimi: { default_model: "kimi-k2-thinking", base_url: "https://api.moonshot.cn/v1" },
   "kimi-code": {
     default_model: "kimi-k2-thinking",
     base_url: "https://api.moonshot.cn/v1",
   },
+  "nvidia-nim": {
+    default_model: "meta/llama-3.3-70b-instruct",
+    base_url: "https://integrate.api.nvidia.com/v1",
+  },
+  nous: {
+    default_model: "hermes-4",
+    base_url: "https://inference-api.nousresearch.com/v1",
+  },
+  minimax: { default_model: "abab6.5", base_url: "https://api.minimax.chat/v1" },
+  mimo: { default_model: "mimo-7b-rl", base_url: "https://mimo.xiaomi.com/v1" },
+  huggingface: {
+    default_model: "meta-llama/Llama-3.3-70B-Instruct",
+    base_url: "https://api-inference.huggingface.co/v1",
+  },
   ollama: { default_model: "llama3", base_url: "http://localhost:11434/v1" },
+  lmstudio: { default_model: "openai/gpt-oss-20b", base_url: "http://localhost:1234/v1" },
   codex: { default_model: "gpt-5-mini" },
 };
 
@@ -205,6 +277,10 @@ export function ProvidersSection({ embedded }: { embedded?: boolean } = {}) {
                     setCreating(false);
                     setError(null);
                   }}
+                  onProbe={async () => {
+                    setError(null);
+                    return await probeProvider(p.name);
+                  }}
                   onMakeDefault={async () => {
                     setBusy(p.name);
                     setError(null);
@@ -254,19 +330,53 @@ export function ProvidersSection({ embedded }: { embedded?: boolean } = {}) {
 
 // ---------- read-mode row -------------------------------------------
 
+function badgesForModel(info: ProviderInfo, model: string): string[] {
+  const cap = (info.capabilities ?? []).find((c) => c.model === model);
+  if (!cap) return [];
+  const out: string[] = [];
+  if (cap.supportsToolCalls === true) out.push("tools");
+  if (cap.supportsReasoning === true) out.push("reasoning");
+  if (cap.supportsImages === true) out.push("vision");
+  if ((cap.contextWindow ?? 0) >= 64000) out.push("64k+");
+  if (cap.privacyHint === "local") out.push("local");
+  if (cap.privacyHint === "third-party-router") out.push("router");
+  return out;
+}
+
 function ProviderRow({
   info,
   busy,
   onEdit,
+  onProbe,
   onMakeDefault,
   onDelete,
 }: {
   info: ProviderInfo;
   busy: boolean;
   onEdit: () => void;
+  onProbe: () => Promise<ProbeResult>;
   onMakeDefault: () => void;
   onDelete: () => void;
 }) {
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const [probeError, setProbeError] = useState<string | null>(null);
+
+  const handleProbe = async () => {
+    setProbing(true);
+    setProbeError(null);
+    try {
+      const r = await onProbe();
+      setProbeResult(r);
+    } catch (e) {
+      setProbeError(e instanceof Error ? e.message : String(e));
+      setProbeResult(null);
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const defaultBadges = badgesForModel(info, info.default_model);
   return (
     <>
       <div className="settings-provider-head">
@@ -276,30 +386,57 @@ function ProviderRow({
             {tx("settingsProvidersDefault", "default")}
           </span>
         ) : null}
+        {info.kind && info.kind !== info.name ? (
+          <span className="settings-tag" title="Profile kind">
+            {info.kind}
+          </span>
+        ) : null}
       </div>
       <div className="settings-provider-default-model">
         <span className="settings-row-hint">
           {tx("settingsProvidersDefaultModel", "default model")}:{" "}
         </span>
         <span className="mono">{info.default_model}</span>
+        {defaultBadges.map((b) => (
+          <span key={b} className="settings-tag" title={`capability: ${b}`}>
+            {b}
+          </span>
+        ))}
       </div>
       {info.models.length > 1 ? (
         <ul className="settings-provider-models">
           {info.models
             .filter((m) => m !== info.default_model)
-            .map((m) => (
-              <li key={m} className="mono">
-                {m}
-              </li>
-            ))}
+            .map((m) => {
+              const bs = badgesForModel(info, m);
+              return (
+                <li key={m} className="mono">
+                  {m}
+                  {bs.map((b) => (
+                    <span
+                      key={b}
+                      className="settings-tag"
+                      title={`capability: ${b}`}
+                    >
+                      {b}
+                    </span>
+                  ))}
+                </li>
+              );
+            })}
         </ul>
       ) : null}
       <div className="provider-row-actions">
-        <button type="button" onClick={onEdit} disabled={busy}>
+        <button type="button" onClick={onEdit} disabled={busy || probing}>
           {tx("settingsProvidersEdit", "Edit")}
         </button>
+        <button type="button" onClick={handleProbe} disabled={busy || probing}>
+          {probing
+            ? tx("settingsProvidersProbing", "Probing…")
+            : tx("settingsProvidersProbe", "Probe")}
+        </button>
         {!info.is_default ? (
-          <button type="button" onClick={onMakeDefault} disabled={busy}>
+          <button type="button" onClick={onMakeDefault} disabled={busy || probing}>
             {tx("settingsProvidersMakeDefault", "Make default")}
           </button>
         ) : null}
@@ -307,11 +444,27 @@ function ProviderRow({
           type="button"
           className="agent-profile-delete"
           onClick={onDelete}
-          disabled={busy}
+          disabled={busy || probing}
         >
           {tx("settingsProvidersDelete", "Delete")}
         </button>
       </div>
+      {probeResult ? (
+        <div className="settings-row-hint" role="status">
+          {probeResult.auth_ok ? "✓ auth ok" : "✗ auth failed"}
+          {" · "}
+          {probeResult.default_model_ok
+            ? "model ok"
+            : `model: ${probeResult.error ?? "error"}`}
+          {" · "}
+          {probeResult.latency_ms} ms
+        </div>
+      ) : null}
+      {probeError ? (
+        <div className="settings-inline-error" role="alert">
+          {probeError}
+        </div>
+      ) : null}
     </>
   );
 }

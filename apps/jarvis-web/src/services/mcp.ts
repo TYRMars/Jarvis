@@ -76,6 +76,20 @@ export async function checkMcpHealth(prefix: string): Promise<McpHealth> {
   return request("POST", `/v1/mcp/servers/${encodeURIComponent(prefix)}/health`);
 }
 
+export interface McpReloadResult {
+  prefix: string;
+  tools: string[];
+  latency_ms: number;
+}
+
+/// Restart the connection using the slot's currently-stored config.
+/// Used when a server has gone Unhealthy or fell to Stopped at boot.
+/// On failure the slot is preserved as Stopped so the operator can
+/// retry — the wire signature surfaces the underlying error message.
+export async function reloadMcpServer(prefix: string): Promise<McpReloadResult> {
+  return request("POST", `/v1/mcp/servers/${encodeURIComponent(prefix)}/reload`);
+}
+
 /** Build a stdio config from a single command line like `uvx mcp-server-x --foo`. */
 export function configFromCommandLine(prefix: string, cmdline: string): McpClientConfig {
   const parts = cmdline.trim().split(/\s+/);

@@ -80,11 +80,24 @@ pub struct TaskProgress {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskProgressEvent {
-    Delta { content: String },
-    ToolStart { tool_call_id: String, name: String },
-    ToolEnd { tool_call_id: String, output: String },
-    PlanUpdate { items: Vec<harness_core::PlanItem> },
-    ApprovalRequest { tool_call_id: String, name: String },
+    Delta {
+        content: String,
+    },
+    ToolStart {
+        tool_call_id: String,
+        name: String,
+    },
+    ToolEnd {
+        tool_call_id: String,
+        output: String,
+    },
+    PlanUpdate {
+        items: Vec<harness_core::PlanItem>,
+    },
+    ApprovalRequest {
+        tool_call_id: String,
+        name: String,
+    },
 }
 
 /// Edge → Cloud: task finished successfully.

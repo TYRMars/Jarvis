@@ -210,3 +210,84 @@ impl SubAgent for InternalSubAgent {
 fn extract_artifacts(_name: &str, _input: &SubAgentInput) -> Vec<Artifact> {
     Vec::new()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_core::{ChatRequest, ChatResponse, FinishReason};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Records every `model` string the runner hands to its provider.
+    /// Returns a trivial `ok.` Stop response so the inner agent loop
+    /// terminates after one iteration with no tool calls.
+    struct ModelRecordingProvider {
+        seen_models: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for ModelRecordingProvider {
+        async fn complete(&self, req: ChatRequest) -> harness_core::Result<ChatResponse> {
+            self.seen_models.lock().unwrap().push(req.model);
+            Ok(ChatResponse {
+                message: Message::assistant_text("ok."),
+                finish_reason: FinishReason::Stop,
+                response_id: None,
+                usage: None,
+            })
+        }
+    }
+
+    /// Pins the wire contract: whatever `model` the per-kind factory
+    /// supplies in `InternalSubAgentConfig` is exactly what the inner
+    /// agent puts on `ChatRequest.model` for the LLM provider.
+    ///
+    /// Regression guard for the runaway-loop incident
+    /// (2026-05-08): `subagent.review` was constructed with `model =
+    /// None` because no `JARVIS_SUBAGENT_REVIEWER_MODEL` was set and
+    /// no `route_policy` had a Review slot. The fallback in this file
+    /// pasted the literal `"default"` onto the wire, which Codex
+    /// rejected with HTTP 400 every dispatch — and because the work
+    /// agent's run was Completed, the picker happily re-picked the
+    /// row every tick. The structural fix lives in the composition
+    /// root (`apps/jarvis/src/subagents.rs::register_builtins` now
+    /// passes the primary model as a universal fallback); this test
+    /// catches a regression at this layer if the wiring ever drifts.
+    #[tokio::test]
+    async fn configured_model_reaches_provider() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let provider = Arc::new(ModelRecordingProvider {
+            seen_models: seen.clone(),
+        });
+        let subagent = InternalSubAgent::new(InternalSubAgentConfig {
+            name: "test-subagent".into(),
+            description: "model wiring test".into(),
+            system_prompt: "you are a test stub".into(),
+            model: Some("inherited-haiku-test".into()),
+            max_iterations: 1,
+            provider,
+            tools: Arc::new(ToolRegistry::new()),
+            requires_approval: false,
+        });
+
+        let _ = subagent
+            .invoke(SubAgentInput {
+                task: "say hi".into(),
+                workspace_root: PathBuf::from("/tmp"),
+                context: None,
+                caller_chain: Vec::new(),
+            })
+            .await
+            .expect("subagent must complete");
+
+        let recorded = seen.lock().unwrap().clone();
+        assert!(
+            !recorded.is_empty(),
+            "provider was not called; runner exited before LLM dispatch"
+        );
+        assert!(
+            recorded.iter().all(|m| m == "inherited-haiku-test"),
+            "every ChatRequest must use the configured model; got {recorded:?}"
+        );
+    }
+}

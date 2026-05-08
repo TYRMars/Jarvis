@@ -66,6 +66,10 @@ impl ChatRunRegistry {
     }
 
     pub fn start(&self, conversation_id: &str) {
+        let _ = self.try_start(conversation_id);
+    }
+
+    pub fn try_start(&self, conversation_id: &str) -> bool {
         let now = now_ms();
         let record = ChatRunRecord {
             conversation_id: conversation_id.to_string(),
@@ -77,6 +81,12 @@ impl ChatRunRegistry {
             last_error: None,
         };
         if let Ok(mut guard) = self.inner.write() {
+            if guard
+                .get(conversation_id)
+                .is_some_and(|state| state.record.status.is_active())
+            {
+                return false;
+            }
             guard.insert(
                 conversation_id.to_string(),
                 ChatRunState {
@@ -85,7 +95,22 @@ impl ChatRunRegistry {
                     next_seq: 1,
                 },
             );
+            true
+        } else {
+            false
         }
+    }
+
+    pub fn is_active(&self, conversation_id: &str) -> bool {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .get(conversation_id)
+                    .map(|state| state.record.status.is_active())
+            })
+            .unwrap_or(false)
     }
 
     pub fn attach_abort_handle(
@@ -370,5 +395,23 @@ mod tests {
         assert_eq!(rows[0].latest_seq, 1);
         assert_eq!(rows[0].last_error.as_deref(), Some("boom"));
         assert!(registry.list(true).is_empty());
+    }
+
+    #[test]
+    fn try_start_rejects_active_run_and_allows_after_terminal() {
+        let registry = ChatRunRegistry::default();
+        assert!(registry.try_start("c1"));
+        assert!(!registry.try_start("c1"));
+        assert!(registry.is_active("c1"));
+
+        registry.event(
+            Some("c1"),
+            &AgentEvent::Error {
+                message: "boom".into(),
+            },
+        );
+
+        assert!(!registry.is_active("c1"));
+        assert!(registry.try_start("c1"));
     }
 }

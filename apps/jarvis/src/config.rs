@@ -82,6 +82,15 @@ pub struct Config {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub mcp_servers: BTreeMap<String, McpServerEntry>,
+    /// Phase 4 — model route policy. Lets the operator pick
+    /// per-task-slot (provider, model) targets so summarisation /
+    /// review / coding go to the right model without hard-coding
+    /// `JARVIS_*_MODEL` env vars per slot. Wire shape lines up
+    /// with [`harness_server::ModelRoutePolicy`]. Unset slots fall
+    /// through to `routing.default`, then to the binary's
+    /// `default_provider`.
+    #[serde(skip_serializing_if = "is_default")]
+    pub routing: RoutingSection,
 }
 
 /// One MCP server entry as parsed from config. The map key is the
@@ -166,6 +175,14 @@ pub struct AgentSection {
     /// `JARVIS_PROJECT_CONTEXT_BYTES`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_context_max_bytes: Option<usize>,
+    /// Opt the agent loop into parallel tool-call dispatch. When
+    /// `true`, multiple `tool_calls` returned by the model in a
+    /// single assistant turn run concurrently and the request flag
+    /// `parallel_tool_calls=true` is set so capable models actually
+    /// emit them. Defaults to `false` for backwards compatibility.
+    /// Env override: `JARVIS_PARALLEL_TOOL_CALLS=1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 /// Per-provider config. All fields optional; provider-specific
@@ -312,6 +329,34 @@ pub struct PersistenceSection {
     /// `postgres://...` / `mysql://...`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+/// `[routing]` block — operator-supplied per-slot model targets.
+/// Each field is `"<provider>/<model>"` (e.g. `"openai/gpt-4o-mini"`)
+/// to keep the wire shape minimal. The empty default is fine — the
+/// binary just falls through to its `default_provider`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoutingSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summarization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_reader: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_private: Option<String>,
+    /// Ordered fallback chain consumed by the future
+    /// `LlmProvider::complete` retry wrapper. Each entry is a
+    /// `"<provider>/<model>"` slash form.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]

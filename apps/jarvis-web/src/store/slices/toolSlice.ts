@@ -58,20 +58,23 @@ export const createToolSlice: StateCreator<FullState, [], [], ToolSlice> = (set)
           msgs[lastIdx] = { ...cur, toolCallIds: [...cur.toolCallIds, id] };
         }
       }
-      const tools = {
-        ...s.toolBlocks,
-        [id]: {
-          id,
-          name,
-          args,
-          status: "running" as const,
-          output: null,
-          progress: "",
-          decisionSource: null,
-          startedAt: Date.now(),
-          finishedAt: null,
-        },
-      };
+      const existing = s.toolBlocks[id];
+      const tools = existing
+        ? s.toolBlocks
+        : {
+            ...s.toolBlocks,
+            [id]: {
+              id,
+              name,
+              args,
+              status: "running" as const,
+              output: null,
+              progress: "",
+              decisionSource: null,
+              startedAt: Date.now(),
+              finishedAt: null,
+            },
+          };
       return { messages: msgs, toolBlocks: tools, emptyHintIdShort: null };
     });
   },

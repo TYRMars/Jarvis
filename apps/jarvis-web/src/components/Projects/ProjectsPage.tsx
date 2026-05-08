@@ -298,7 +298,6 @@ export function ProjectsPage() {
           onChanged={refreshRequirements}
           onOpenConversation={(id) => {
             void resumeConversation(id);
-            void navigate("/");
           }}
         />
       ) : !available ? (

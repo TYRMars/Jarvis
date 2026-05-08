@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use harness_core::LlmProvider;
+use harness_llm::ModelCapability;
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -26,6 +27,15 @@ pub struct ProviderEntry {
     /// Always contains `default_model` — `insert` dedupes the
     /// caller's list, so passing one without it is fine.
     pub models: Vec<String>,
+    /// Canonical profile kind (e.g. `"openai"`, `"moonshot"`).
+    /// Empty for entries inserted via `insert` / `insert_with_models`
+    /// that didn't carry profile metadata; populated when the
+    /// binary uses [`ProviderRegistry::insert_with_capabilities`].
+    pub kind: String,
+    /// Static capability snapshots for `models`. May be empty even
+    /// when `kind` is set — capability data is best-effort and
+    /// populated from [`harness_llm::ProfileRegistry`] catalogs.
+    pub capabilities: Vec<ModelCapability>,
 }
 
 impl std::fmt::Debug for ProviderEntry {
@@ -33,6 +43,8 @@ impl std::fmt::Debug for ProviderEntry {
         f.debug_struct("ProviderEntry")
             .field("default_model", &self.default_model)
             .field("models", &self.models)
+            .field("kind", &self.kind)
+            .field("capability_count", &self.capabilities.len())
             .finish_non_exhaustive()
     }
 }
@@ -43,12 +55,19 @@ pub struct ProviderRegistry {
     prefix_rules: Vec<(String, String)>,
 }
 
+/// Wire shape for `GET /v1/providers`. `kind` and `capabilities`
+/// are absent (`None` / empty) for legacy entries inserted before
+/// profile metadata was wired in.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderInfo {
     pub name: String,
     pub default_model: String,
     pub models: Vec<String>,
     pub is_default: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<ModelCapability>,
 }
 
 #[derive(Debug, Error)]
@@ -97,10 +116,35 @@ impl ProviderRegistry {
         default_model: impl Into<String>,
         models: Vec<String>,
     ) {
+        self.insert_with_capabilities(
+            name,
+            provider,
+            default_model,
+            models,
+            String::new(),
+            Vec::new(),
+        );
+    }
+
+    /// Profile-aware variant. `kind` names the canonical
+    /// [`harness_llm::ProviderProfile`] this entry was built from,
+    /// and `capabilities` is a static snapshot for the advertised
+    /// models. Either field may be empty — callers that don't
+    /// know skip them, and `/v1/providers` / `/v1/model-catalog`
+    /// fall through to "unknown" rendering rather than blocking
+    /// the request.
+    pub fn insert_with_capabilities(
+        &mut self,
+        name: impl Into<String>,
+        provider: Arc<dyn LlmProvider>,
+        default_model: impl Into<String>,
+        models: Vec<String>,
+        kind: impl Into<String>,
+        capabilities: Vec<ModelCapability>,
+    ) {
         let default_model: String = default_model.into();
         let mut deduped: Vec<String> = Vec::with_capacity(models.len() + 1);
         let mut seen = std::collections::HashSet::new();
-        // Default first so it's the visual default in pickers.
         seen.insert(default_model.clone());
         deduped.push(default_model.clone());
         for m in models {
@@ -114,6 +158,8 @@ impl ProviderRegistry {
                 provider,
                 default_model,
                 models: deduped,
+                kind: kind.into(),
+                capabilities,
             },
         );
     }
@@ -128,6 +174,13 @@ impl ProviderRegistry {
     /// Whether a provider with this name is registered.
     pub fn contains(&self, name: &str) -> bool {
         self.by_name.contains_key(name)
+    }
+
+    /// Direct entry lookup. Used by the probe endpoint to invoke
+    /// the underlying provider without going through the routing
+    /// logic in [`pick`](Self::pick).
+    pub fn entry(&self, name: &str) -> Option<&ProviderEntry> {
+        self.by_name.get(name)
     }
 
     /// Swap the registry-wide default provider name. Used by the
@@ -167,6 +220,8 @@ impl ProviderRegistry {
                 default_model: entry.default_model.clone(),
                 models: entry.models.clone(),
                 is_default: name == &self.default_name,
+                kind: entry.kind.clone(),
+                capabilities: entry.capabilities.clone(),
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -353,6 +408,45 @@ mod tests {
         let r = ProviderRegistry::new("openai");
         let err = r.pick(None, None).unwrap_err();
         assert!(matches!(err, RouteError::Empty));
+    }
+
+    #[test]
+    fn insert_with_capabilities_threads_kind_and_caps_through_list() {
+        use harness_llm::{ModelCapability, PrivacyHint};
+        let mut r = ProviderRegistry::new("openrouter");
+        let cap = ModelCapability {
+            provider: "openrouter".to_string(),
+            model: "anthropic/claude-sonnet-4.5".to_string(),
+            supports_tool_calls: Some(true),
+            privacy_hint: PrivacyHint::ThirdPartyRouter,
+            ..Default::default()
+        };
+        r.insert_with_capabilities(
+            "openrouter",
+            Arc::new(NoopLlm("or")),
+            "anthropic/claude-sonnet-4.5",
+            vec!["openai/gpt-5.4".to_string()],
+            "openrouter",
+            vec![cap.clone()],
+        );
+        let info = &r.list()[0];
+        assert_eq!(info.kind, "openrouter");
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].model, "anthropic/claude-sonnet-4.5");
+    }
+
+    #[test]
+    fn legacy_insert_with_models_leaves_kind_and_caps_empty() {
+        let mut r = ProviderRegistry::new("openai");
+        r.insert_with_models(
+            "openai",
+            Arc::new(NoopLlm("o")),
+            "gpt-4o-mini",
+            vec!["gpt-4o".to_string()],
+        );
+        let info = &r.list()[0];
+        assert!(info.kind.is_empty());
+        assert!(info.capabilities.is_empty());
     }
 
     #[test]

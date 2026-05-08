@@ -50,15 +50,44 @@ export interface TodoItem {
   updated_at: string;
 }
 
+/// Per-model capability snapshot. Camel-case wire shape from
+/// `harness_llm::ModelCapability`. All capability flags are
+/// nullable — the catalog reports unknown rather than guessing,
+/// and the UI falls through to "skip the badge" rather than
+/// asserting the model can't do something.
+export interface ModelCapability {
+  provider: string;
+  model: string;
+  displayName?: string;
+  family?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  supportsStreaming?: boolean | null;
+  supportsToolCalls?: boolean | null;
+  supportsParallelToolCalls?: boolean | null;
+  supportsJsonSchema?: boolean | null;
+  supportsReasoning?: boolean | null;
+  supportsPromptCache?: boolean | null;
+  supportsImages?: boolean | null;
+  supportsEmbeddings?: boolean | null;
+  costHint?: string;
+  latencyHint?: string;
+  privacyHint?: string;
+}
+
 /// Provider description served by `GET /v1/providers`. The model
 /// menu groups options under provider, surfaces the default model
 /// first, and marks one provider as `is_default` so we can
-/// pre-select on first connect.
+/// pre-select on first connect. `kind` and `capabilities` were
+/// added in the model-tool-compatibility Phase 0 work — older
+/// servers omit them and the UI degrades to no-badges rendering.
 export interface ProviderInfo {
   name: string;
   default_model: string;
   models: string[];
   is_default: boolean;
+  kind?: string;
+  capabilities?: ModelCapability[];
 }
 
 /// Effort levels surfaced in the model menu's right column. Names

@@ -1200,6 +1200,44 @@ Jarvis 不应绑定任何一个平台 SDK。必要时在 Collector 或 exporter 
 - 通过 OTLP test receiver 或 trace API 验证 trace shape。
 - 运行 eval smoke suite。
 
+## Eval Harness 迭代：trial / grader / transcript
+
+参考 Anthropic 对 agent eval 的拆解，Jarvis 的 eval 不应只存最终
+`pass/fail`。评测对象是“模型 + agent harness + tool/subagent 编排”的组合，
+因此每个 case 需要记录：
+
+- `suite_kind`：`capability` / `regression` / `smoke` / `other`。
+  - capability suite 用于衡量新能力爬坡，低通过率可接受。
+  - regression suite 用于发布门禁，目标应接近 100%。
+- `trial_index` / `trial_count`：支持非确定性 agent 的重复试验。
+  - `pass@k`：同一任务多次 trial 至少成功一次。
+  - `pass^k`：同一任务多次 trial 每次都成功，用于稳定性判断。
+- `grader_results`：按 grader 类型结构化记录判断来源。
+  - deterministic test
+  - static analysis
+  - state check
+  - tool call
+  - transcript review
+  - LLM rubric
+  - human review
+- `transcript_artifact_id`：失败时必须能回看 transcript / tool timeline /
+  subagent timeline，避免把 task 模糊、grader bug、infra flake 误判成 agent 能力问题。
+- `failure_class`：`agent_error` / `grader_bug` / `ambiguous_task` /
+  `infra_flake` / `safety_refusal` / `unknown`。
+
+第一版实现：
+
+- core 增加 `EvalSuiteKind`、`EvalGraderKind`、`EvalGraderVerdict`、
+  `EvalFailureClass`、`EvalGraderResult`。
+- JSON eval store 支持按 `suite_kind` 过滤 case result。
+- server 增加 `GET /v1/evals/summary`：
+  - capability / regression pass rate
+  - pass@k / pass^k
+  - grader kind 分布
+  - failure class 分布
+  - transcript 覆盖数
+- Work Overview 的 Harness 可观测性面板增加 Eval 成熟度指标。
+
 ## 风险与缓解
 
 | 风险 | 缓解 |
@@ -1239,3 +1277,5 @@ Jarvis 不应绑定任何一个平台 SDK。必要时在 Collector 或 exporter 
   <https://github.com/promptfoo/promptfoo>
 - DeepEval:
   <https://github.com/confident-ai/deepeval>
+- Anthropic, Demystifying evals for AI agents:
+  <https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents>

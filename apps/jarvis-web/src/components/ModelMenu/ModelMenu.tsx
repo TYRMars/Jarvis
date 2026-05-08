@@ -49,6 +49,20 @@ interface RoutingOption {
   model: string;
   label: string;
   isDefault: boolean;
+  badges: string[];
+}
+
+function badgesForCapability(p: ProviderInfo, model: string): string[] {
+  const cap = (p.capabilities ?? []).find((c) => c.model === model);
+  if (!cap) return [];
+  const out: string[] = [];
+  if (cap.supportsToolCalls === true) out.push("tools");
+  if (cap.supportsReasoning === true) out.push("reasoning");
+  if (cap.supportsImages === true) out.push("vision");
+  if ((cap.contextWindow ?? 0) >= 64000) out.push("64k+");
+  if (cap.privacyHint === "local") out.push("local");
+  if (cap.privacyHint === "third-party-router") out.push("router");
+  return out;
 }
 
 function flattenRoutingOptions(providers: ProviderInfo[]): RoutingOption[] {
@@ -65,6 +79,7 @@ function flattenRoutingOptions(providers: ProviderInfo[]): RoutingOption[] {
         model: m,
         label: `${p.name} · ${formatModelLabel(m)}`,
         isDefault: p.is_default && m === p.default_model,
+        badges: badgesForCapability(p, m),
       });
     }
   }
@@ -117,7 +132,14 @@ export function ModelMenu() {
   const opts = flattenRoutingOptions(providers);
   // Index 0 is reserved for "server default" (empty value).
   const allRows: RoutingOption[] = [
-    { value: "", provider: "", model: "", label: t("serverDefault"), isDefault: false },
+    {
+      value: "",
+      provider: "",
+      model: "",
+      label: t("serverDefault"),
+      isDefault: false,
+      badges: [],
+    },
     ...opts,
   ];
 
@@ -160,7 +182,22 @@ export function ModelMenu() {
                   }}
                 >
                   <span className="model-menu-check">{active ? "✓" : ""}</span>
-                  <span className="model-menu-label">{row.label}</span>
+                  <span className="model-menu-label">
+                    <span>{row.label}</span>
+                    {row.badges.length > 0 ? (
+                      <span className="model-menu-badges" aria-hidden="true">
+                        {row.badges.map((b) => (
+                          <span
+                            key={b}
+                            className="model-menu-badge"
+                            title={`capability: ${b}`}
+                          >
+                            {b}
+                          </span>
+                        ))}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="model-menu-key">{i ? String(i) : ""}</span>
                 </button>
               );

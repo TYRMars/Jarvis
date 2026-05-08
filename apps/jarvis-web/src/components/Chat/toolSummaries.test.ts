@@ -14,6 +14,10 @@ import {
   SUMMARISABLE_TOOLS,
   summarise,
   summariseChecks,
+  summariseDocDraftGet,
+  summariseDocGet,
+  summariseDocList,
+  summariseDocSearch,
   summariseFsList,
   summariseFsRead,
   summariseGitDiff,
@@ -299,6 +303,29 @@ describe("summarisePlan", () => {
   });
 });
 
+describe("doc summaries", () => {
+  it("summarises doc list count", () => {
+    expect(summariseDocList(JSON.stringify({ count: 2, items: [] }))).toBe("2 docs");
+  });
+
+  it("summarises doc search count and query", () => {
+    expect(summariseDocSearch(JSON.stringify({ count: 1, query: "roadmap", items: [] }))).toBe(
+      '1 doc for "roadmap"',
+    );
+  });
+
+  it("summarises doc.get title and draft presence", () => {
+    expect(
+      summariseDocGet(JSON.stringify({ project: { title: "Launch plan" }, draft: { id: "d" } })),
+    ).toBe("Launch plan · latest draft");
+  });
+
+  it("summarises empty and populated drafts", () => {
+    expect(summariseDocDraftGet("null")).toBe("empty draft");
+    expect(summariseDocDraftGet(JSON.stringify({ content: "one two three" }))).toBe("3 words");
+  });
+});
+
 describe("summarise top-level dispatch", () => {
   it("returns null for an unknown tool name", () => {
     expect(summarise("custom.mcp.tool", {}, "anything")).toBeNull();
@@ -337,8 +364,13 @@ describe("invariants", () => {
     expect(intersection).toEqual([]);
   });
 
-  it("approval-gated set covers exactly the four mutating built-ins", () => {
+  it("approval-gated set covers mutating built-ins rendered open", () => {
     expect([...APPROVAL_GATED_TOOLS].sort()).toEqual([
+      "doc.create",
+      "doc.delete",
+      "doc.draft.save",
+      "doc.update",
+      "doc.upsert",
       "fs.edit",
       "fs.patch",
       "fs.write",

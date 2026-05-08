@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useAppStore } from "../store/appStore";
-import { handleFrame } from "./frames";
+import { handleFrame, handleFrameForConversation } from "./frames";
 import { resetUsage } from "./usage";
 import { resetUsageHistory, totalsByModelForWindow } from "./usageCumulator";
 
@@ -16,7 +16,10 @@ vi.mock("./socket", () => ({
   isOpen: () => false,
   sendFrame: vi.fn(() => true),
 }));
-vi.mock("./conversations", () => ({ refreshConvoList: vi.fn() }));
+vi.mock("./conversations", () => ({
+  refreshConvoList: vi.fn(),
+  clearSessionRoute: vi.fn(),
+}));
 
 const get = () => useAppStore.getState();
 
@@ -207,6 +210,79 @@ describe("handleFrame: terminal events finalise pending approvals", () => {
     expect(get().inFlight).toBe(false);
     expect(get().approvals[0].status).toBe("denied");
     expect(get().statusKey).toBe("interrupted");
+  });
+});
+
+describe("handleFrame: conversation-not-found cleanup", () => {
+  it("error 'conversation `<id>` not found' drops the stale row and resets activeId", () => {
+    const ghostId = "bbcfbc8a-8dfa-483d-a6c3-62434fcb7d4a";
+    useAppStore.setState({
+      activeId: ghostId,
+      convoRows: [
+        { id: ghostId, message_count: 0 },
+        { id: "still-here", message_count: 1 },
+      ],
+    });
+    get().pushUserMessage("hello");
+    expect(get().messages).toHaveLength(1);
+
+    handleFrame({ type: "error", message: `conversation \`${ghostId}\` not found` });
+
+    expect(get().convoRows.map((r) => r.id)).toEqual(["still-here"]);
+    expect(get().activeId).toBeNull();
+    expect(get().messages).toHaveLength(0);
+  });
+
+  it("not-found error for a non-active id only drops the row, keeps activeId", () => {
+    const ghostId = "ghost";
+    useAppStore.setState({
+      activeId: "kept",
+      convoRows: [
+        { id: ghostId, message_count: 0 },
+        { id: "kept", message_count: 1 },
+      ],
+    });
+    handleFrame({ type: "error", message: `conversation \`${ghostId}\` not found` });
+    expect(get().convoRows.map((r) => r.id)).toEqual(["kept"]);
+    expect(get().activeId).toBe("kept");
+  });
+
+  it("error with an unrelated message does not touch convoRows", () => {
+    useAppStore.setState({
+      activeId: "a",
+      convoRows: [{ id: "a", message_count: 1 }],
+    });
+    handleFrame({ type: "error", message: "something else broke" });
+    expect(get().convoRows).toHaveLength(1);
+    expect(get().activeId).toBe("a");
+  });
+});
+
+describe("handleFrameForConversation: scoped background frames", () => {
+  it("background-conversation frames do NOT flip activeId", () => {
+    // Seed: conversation A is active and has one message.
+    useAppStore.setState({ activeId: "A" });
+    get().pushUserMessage("from A");
+    expect(get().activeId).toBe("A");
+    expect(get().messages).toHaveLength(1);
+
+    // A delta arrives for background conversation B. It should land in
+    // B's surface cache without ever flipping activeId or polluting
+    // A's live message slice.
+    handleFrameForConversation("B", { type: "delta", content: "B-text" });
+
+    expect(get().activeId).toBe("A"); // never temporarily flipped
+    expect(get().messages).toHaveLength(1); // A's surface intact
+
+    // Switch to B and verify B's surface accumulated the delta.
+    get().saveConversationSurface("A");
+    const restored = get().restoreConversationSurface("B");
+    expect(restored).toBe(true);
+    const last = get().messages.at(-1);
+    expect(last?.kind).toBe("assistant");
+    if (last?.kind === "assistant") {
+      expect(last.content).toBe("B-text");
+    }
   });
 });
 

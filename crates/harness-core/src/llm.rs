@@ -36,6 +36,20 @@ pub struct ChatRequest {
     /// `None` means "send full history" (the historical default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_origin: Option<usize>,
+    /// Opt the request into provider-side parallel tool calls. When
+    /// `Some(true)`, providers that support a wire toggle
+    /// (OpenAI Chat Completions, OpenAI Responses) flip it on so the
+    /// model can emit multiple tool_calls in a single assistant turn.
+    /// `Some(false)` forces the provider to emit at most one tool call
+    /// even on models that default to parallel. `None` preserves each
+    /// provider's existing default — historically `false` for OpenAI
+    /// Responses (we hardcoded it) and "provider's choice" everywhere
+    /// else. Anthropic and Google emit parallel tool use natively
+    /// without a request flag and ignore this field on the wire; the
+    /// agent loop still consults it locally to decide whether to
+    /// dispatch tool calls concurrently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]

@@ -10,9 +10,12 @@ import {
   installPlugin,
   listPlugins,
   uninstallPlugin,
+  type PluginInstallReport,
   type InstalledPlugin,
   type MarketplaceEntry,
 } from "../../../services/plugins";
+import { sendFrame } from "../../../services/socket";
+import { appStore } from "../../../store/appStore";
 import { t } from "../../../utils/i18n";
 
 function tx(key: string, fallback: string): string {
@@ -30,12 +33,21 @@ type MarketState =
   | { kind: "ready"; entries: MarketplaceEntry[] }
   | { kind: "error"; message: string };
 
-export function PluginsSection({ embedded }: { embedded?: boolean } = {}) {
+export function PluginsSection({
+  embedded,
+  onInstalled,
+  showMarketplace = true,
+}: {
+  embedded?: boolean;
+  onInstalled?: (report: PluginInstallReport) => void;
+  showMarketplace?: boolean;
+} = {}) {
   const [installed, setInstalled] = useState<InstalledState>({ kind: "loading" });
   const [market, setMarket] = useState<MarketState>({ kind: "loading" });
   const [pathValue, setPathValue] = useState("");
   const [installing, setInstalling] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const refreshInstalled = () => {
     setInstalled({ kind: "loading" });
@@ -59,9 +71,15 @@ export function PluginsSection({ embedded }: { embedded?: boolean } = {}) {
   const doInstall = async (path: string) => {
     setInstalling(path);
     setActionError(null);
+    setActionMessage(null);
     try {
-      await installPlugin("path", path);
+      const report = await installPlugin("path", path);
+      activateInstalledSkills(report.added_skills);
       refreshInstalled();
+      onInstalled?.(report);
+      setActionMessage(
+        t("pluginsInstallSucceeded", report.added_skills.length, report.added_mcp.length),
+      );
     } catch (e: unknown) {
       setActionError(t("pluginsInstallFailed", String(e)));
     } finally {
@@ -71,12 +89,21 @@ export function PluginsSection({ embedded }: { embedded?: boolean } = {}) {
 
   const doRemove = async (name: string) => {
     setActionError(null);
+    setActionMessage(null);
     try {
       await uninstallPlugin(name);
       refreshInstalled();
     } catch (e: unknown) {
       setActionError(t("pluginsRemoveFailed", String(e)));
     }
+  };
+
+  const installFromPath = (path: string) => {
+    void doInstall(path);
+  };
+
+  const removePlugin = (name: string) => {
+    void doRemove(name);
   };
 
   return (
@@ -88,7 +115,7 @@ export function PluginsSection({ embedded }: { embedded?: boolean } = {}) {
       descFallback="Bundles of skills + MCP servers. Install from a local path or pick from the marketplace; uninstall pulls everything the plugin shipped."
       embedded={embedded}
     >
-      {renderInstalled(installed, doRemove)}
+      {renderInstalled(installed, removePlugin)}
 
       <div className="settings-row settings-row-full">
         <div className="settings-row-label">
@@ -122,8 +149,9 @@ export function PluginsSection({ embedded }: { embedded?: boolean } = {}) {
         </div>
       </div>
 
-      {renderMarket(market, installing, doInstall)}
+      {showMarketplace ? renderMarket(market, installing, installFromPath) : null}
 
+      {actionMessage && <div className="settings-form-success">{actionMessage}</div>}
       {actionError && <div className="settings-form-error">{actionError}</div>}
 
       <div className="settings-row settings-row-actions">
@@ -133,6 +161,15 @@ export function PluginsSection({ embedded }: { embedded?: boolean } = {}) {
       </div>
     </Section>
   );
+}
+
+function activateInstalledSkills(skillNames: string[]) {
+  if (skillNames.length === 0) return;
+  const sent = skillNames.filter((name) => sendFrame({ type: "activate_skill", name }));
+  if (sent.length === 0) return;
+  const current = appStore.getState().activeSkills;
+  const next = Array.from(new Set([...current, ...sent]));
+  appStore.getState().setActiveSkills?.(next);
 }
 
 function renderInstalled(state: InstalledState, onRemove: (name: string) => void) {

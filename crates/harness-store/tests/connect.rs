@@ -120,6 +120,7 @@ async fn connect_json_eval_backend() {
     let baseline = EvalBaseline {
         id: "baseline-connect".into(),
         suite: "smoke".into(),
+        suite_kind: harness_core::EvalSuiteKind::Smoke,
         created_at: "2026-05-08T00:00:00Z".into(),
         git_ref: None,
         model: None,

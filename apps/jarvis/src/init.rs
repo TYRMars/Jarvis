@@ -800,6 +800,7 @@ pub fn build_config(a: &InitAnswers) -> Config {
         persistence,
         approval,
         mcp_servers: Default::default(),
+        routing: Default::default(),
     }
 }
 

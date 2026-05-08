@@ -44,6 +44,7 @@ import {
   STANDARD_CANDIDATES,
   type SlashCandidate,
 } from "./extensions/slashMenu";
+import { t } from "../../../utils/i18n";
 
 export interface BlockEditorProps {
   /** Initial markdown content. Read once on mount; subsequent prop
@@ -89,6 +90,10 @@ export function BlockEditor({
   // recreating the editor whenever the parent re-renders.
   const onChangeRef = useRef(onMarkdownChange);
   onChangeRef.current = onMarkdownChange;
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
 
   const candidates = useMemo<SlashCandidate[]>(
     () => [
@@ -147,6 +152,16 @@ export function BlockEditor({
         class: "block-editor-surface",
         ...(ariaLabel ? { "aria-label": ariaLabel } : {}),
       },
+      handleDOMEvents: {
+        contextmenu(view, event) {
+          if (readOnly) return false;
+          event.preventDefault();
+          view.focus();
+          const e = event as MouseEvent;
+          setContextMenu({ x: e.clientX, y: e.clientY });
+          return true;
+        },
+      },
     },
     onUpdate({ editor }) {
       const fn = onChangeRef.current;
@@ -173,5 +188,225 @@ export function BlockEditor({
     editor.setEditable(!readOnly);
   }, [editor, readOnly]);
 
-  return <EditorContent editor={editor} className="block-editor-host" />;
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".block-editor-context-menu")) return;
+      close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [contextMenu]);
+
+  return (
+    <div className="block-editor-shell">
+      <EditorContent editor={editor} className="block-editor-host" />
+      {editor && contextMenu ? (
+        <EditorContextMenu
+          editor={editor}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+interface EditorContextMenuProps {
+  editor: Editor;
+  x: number;
+  y: number;
+  onClose: () => void;
+}
+
+function EditorContextMenu({ editor, x, y, onClose }: EditorContextMenuProps) {
+  const run = (fn: (editor: Editor) => void) => {
+    fn(editor);
+    onClose();
+  };
+  const hasSelection =
+    editor.state.selection.from !== editor.state.selection.to;
+  const selectedText = () =>
+    editor.state.doc.textBetween(
+      editor.state.selection.from,
+      editor.state.selection.to,
+      "\n",
+    );
+  const setLink = () => {
+    const current = editor.getAttributes("link").href as string | undefined;
+    const next = window.prompt(
+      t("docsContextLinkPrompt"),
+      current ?? "https://",
+    );
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (!trimmed) {
+      run((ed) => ed.chain().focus().extendMarkRange("link").unsetLink().run());
+      return;
+    }
+    run((ed) =>
+      ed
+        .chain()
+        .focus()
+        .extendMarkRange("link")
+        .setLink({ href: trimmed })
+        .run(),
+    );
+  };
+  const copySelection = async () => {
+    const text = selectedText();
+    if (!text) return;
+    try {
+      await navigator.clipboard?.writeText(text);
+    } finally {
+      onClose();
+    }
+  };
+  const viewportWidth =
+    typeof window === "undefined" ? 1024 : window.innerWidth;
+  const viewportHeight =
+    typeof window === "undefined" ? 768 : window.innerHeight;
+  const left = Math.max(8, Math.min(x, viewportWidth - 232));
+  const top = Math.max(8, Math.min(y, viewportHeight - 352));
+
+  return (
+    <div
+      className="block-editor-context-menu"
+      role="menu"
+      style={{ left, top }}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <ContextMenuButton
+        active={editor.isActive("bold")}
+        label={t("docsContextBold")}
+        shortcut="⌘B"
+        onClick={() => run((ed) => ed.chain().focus().toggleBold().run())}
+      />
+      <ContextMenuButton
+        active={editor.isActive("italic")}
+        label={t("docsContextItalic")}
+        shortcut="⌘I"
+        onClick={() => run((ed) => ed.chain().focus().toggleItalic().run())}
+      />
+      <ContextMenuButton
+        active={editor.isActive("code")}
+        label={t("docsContextInlineCode")}
+        onClick={() => run((ed) => ed.chain().focus().toggleCode().run())}
+      />
+      <div className="block-editor-context-menu-separator" role="separator" />
+      <ContextMenuButton
+        active={editor.isActive("heading", { level: 1 })}
+        label={t("docsContextHeading1")}
+        onClick={() =>
+          run((ed) => ed.chain().focus().toggleHeading({ level: 1 }).run())
+        }
+      />
+      <ContextMenuButton
+        active={editor.isActive("heading", { level: 2 })}
+        label={t("docsContextHeading2")}
+        onClick={() =>
+          run((ed) => ed.chain().focus().toggleHeading({ level: 2 }).run())
+        }
+      />
+      <ContextMenuButton
+        active={editor.isActive("bulletList")}
+        label={t("docsContextBulletList")}
+        onClick={() => run((ed) => ed.chain().focus().toggleBulletList().run())}
+      />
+      <ContextMenuButton
+        active={editor.isActive("orderedList")}
+        label={t("docsContextOrderedList")}
+        onClick={() =>
+          run((ed) => ed.chain().focus().toggleOrderedList().run())
+        }
+      />
+      <ContextMenuButton
+        active={editor.isActive("taskList")}
+        label={t("docsContextTaskList")}
+        onClick={() => run((ed) => ed.chain().focus().toggleTaskList().run())}
+      />
+      <ContextMenuButton
+        active={editor.isActive("blockquote")}
+        label={t("docsContextQuote")}
+        onClick={() => run((ed) => ed.chain().focus().toggleBlockquote().run())}
+      />
+      <ContextMenuButton
+        active={editor.isActive("codeBlock")}
+        label={t("docsContextCodeBlock")}
+        onClick={() => run((ed) => ed.chain().focus().toggleCodeBlock().run())}
+      />
+      <div className="block-editor-context-menu-separator" role="separator" />
+      <ContextMenuButton
+        active={editor.isActive("link")}
+        label={t("docsContextLink")}
+        onClick={setLink}
+      />
+      <ContextMenuButton
+        disabled={!hasSelection}
+        label={t("docsContextCopy")}
+        shortcut="⌘C"
+        onClick={() => void copySelection()}
+      />
+      <ContextMenuButton
+        disabled={!hasSelection}
+        label={t("docsContextDelete")}
+        onClick={() =>
+          run((ed) => ed.chain().focus().deleteSelection().run())
+        }
+      />
+      <ContextMenuButton
+        label={t("docsContextClear")}
+        onClick={() =>
+          run((ed) => ed.chain().focus().unsetAllMarks().clearNodes().run())
+        }
+      />
+    </div>
+  );
+}
+
+interface ContextMenuButtonProps {
+  active?: boolean;
+  disabled?: boolean;
+  label: string;
+  shortcut?: string;
+  onClick: () => void;
+}
+
+function ContextMenuButton({
+  active = false,
+  disabled = false,
+  label,
+  shortcut,
+  onClick,
+}: ContextMenuButtonProps) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      className={
+        "block-editor-context-menu-item" + (active ? " is-active" : "")
+      }
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      {shortcut ? (
+        <kbd className="block-editor-context-menu-shortcut">{shortcut}</kbd>
+      ) : null}
+    </button>
+  );
 }

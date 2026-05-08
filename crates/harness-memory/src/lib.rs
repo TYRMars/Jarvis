@@ -27,4 +27,4 @@ mod summarizing;
 mod turns;
 
 pub use sliding::SlidingWindowMemory;
-pub use summarizing::{SummarizingMemory, DEFAULT_SUMMARY_PROMPT};
+pub use summarizing::{LlmRouteResolver, SummarizingMemory, DEFAULT_SUMMARY_PROMPT};

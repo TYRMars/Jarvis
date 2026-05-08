@@ -1727,6 +1727,10 @@ impl EvalStore for JsonFileEvalStore {
         let mut rows: Vec<EvalCaseResult> = read_json_records(&self.dir.join("cases")).await?;
         rows.retain(|r| {
             filter.suite.as_ref().map_or(true, |s| &r.suite == s)
+                && filter
+                    .suite_kind
+                    .as_ref()
+                    .map_or(true, |kind| &r.suite_kind == kind)
                 && filter.case_id.as_ref().map_or(true, |c| &r.case_id == c)
                 && filter.outcome.as_ref().map_or(true, |o| &r.outcome == o)
         });
@@ -2527,6 +2531,7 @@ mod tests {
         let baseline = EvalBaseline {
             id: "base-1".into(),
             suite: "coding-smoke".into(),
+            suite_kind: harness_core::EvalSuiteKind::Regression,
             created_at: "2026-05-08T00:00:00Z".into(),
             git_ref: Some("main".into()),
             model: Some("test-model".into()),
@@ -2541,9 +2546,23 @@ mod tests {
             suite_run_id: "suite-run-1".into(),
             case_id: "case-1".into(),
             suite: "coding-smoke".into(),
+            suite_kind: harness_core::EvalSuiteKind::Regression,
             scenario: "tool-use".into(),
+            trial_index: 0,
+            trial_count: Some(3),
             outcome: ObservedOutcome::Error,
             trace_id: Some("trace-1".into()),
+            transcript_artifact_id: Some("transcript-1".into()),
+            failure_class: Some(harness_core::EvalFailureClass::AgentError),
+            grader_results: vec![harness_core::EvalGraderResult {
+                id: "grader-1".into(),
+                kind: harness_core::EvalGraderKind::ToolCall,
+                verdict: harness_core::EvalGraderVerdict::Fail,
+                score: Some(0.0),
+                explanation: Some("missing expected tool call".into()),
+                attributes: serde_json::json!({}),
+                artifact_ids: Vec::new(),
+            }],
             scores: serde_json::json!({"tool_sequence": 0.0}),
             attributes: serde_json::json!({}),
             artifact_ids: vec!["artifact-1".into()],
@@ -2557,5 +2576,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, vec![result]);
+
+        let regression_rows = store
+            .list_case_results(EvalFilter {
+                suite_kind: Some(harness_core::EvalSuiteKind::Regression),
+                ..EvalFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(regression_rows.len(), 1);
     }
 }

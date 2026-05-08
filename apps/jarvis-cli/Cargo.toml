@@ -21,6 +21,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "io
 futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

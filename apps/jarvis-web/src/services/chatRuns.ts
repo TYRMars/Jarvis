@@ -58,6 +58,10 @@ export async function refreshChatRuns(): Promise<void> {
       );
       if (isActiveStatus(row.status) || trackedConversationIds.has(row.conversation_id)) {
         trackedConversationIds.add(row.conversation_id);
+        if (isConversationSocketOpen(row.conversation_id)) {
+          const prev = lastSeqByConversation.get(row.conversation_id) ?? 0;
+          lastSeqByConversation.set(row.conversation_id, Math.max(prev, row.latest_seq));
+        }
         await replayChatRunEvents(row.conversation_id);
       }
       if (!isActiveStatus(row.status)) {

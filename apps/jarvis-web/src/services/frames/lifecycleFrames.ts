@@ -9,7 +9,9 @@ import { recordUsage } from "../usage";
 import { recordUsageDaily } from "../usageCumulator";
 import { applyRouting } from "../socket";
 import { setInFlight, showError, showTransientStatus } from "../status";
-import { refreshConvoList } from "../conversations";
+import { refreshConvoList, clearSessionRoute } from "../conversations";
+
+const NOT_FOUND_RE = /^conversation `([^`]+)` not found$/;
 
 export const lifecycleFrameHandlers: Record<string, (ev: any) => void> = {
   usage: (ev) => {
@@ -49,6 +51,28 @@ export const lifecycleFrameHandlers: Record<string, (ev: any) => void> = {
     // soft errors all carry recognisable prefixes; everything
     // else is treated as terminal.
     showError(ev.message);
+    // "conversation `<id>` not found" → the sidebar row is stale
+    // (file deleted out of band, or pre-eager-persist abandoned
+    // run). Drop the row and reset activeId if it pointed there
+    // so the UI stops hammering a ghost id on every reload.
+    const m = NOT_FOUND_RE.exec(ev.message ?? "");
+    if (m) {
+      const staleId = m[1];
+      const store = appStore.getState();
+      store.setConvoRows(store.convoRows.filter((r: any) => r.id !== staleId));
+      store.clearConversationSurface(staleId);
+      if (store.activeId === staleId) {
+        store.setActiveId(null);
+        store.clearMessages();
+        store.clearApprovals();
+        store.clearHitls();
+        store.clearTasks();
+        store.setPlan([]);
+        store.setProposedPlan(null);
+        store.clearSubAgentRuns();
+        clearSessionRoute();
+      }
+    }
     if (!isSoftError(ev.message)) {
       const store = appStore.getState();
       store.setLoadingConvoId(null);

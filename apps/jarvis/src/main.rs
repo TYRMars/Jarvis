@@ -21,7 +21,6 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 mod auth_store;
 mod config;
@@ -35,6 +34,7 @@ mod serve;
 mod skill_cli;
 mod status;
 mod subagents;
+pub mod telemetry;
 
 #[cfg(test)]
 mod test_env;
@@ -213,10 +213,8 @@ pub(crate) struct ServeArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with_writer(std::io::stderr)
-        .init();
+    let _telemetry_guard = telemetry::init();
+    let telemetry_status = Some(_telemetry_guard.status.clone());
 
     let cli = Cli::parse();
 
@@ -234,7 +232,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command.unwrap_or(Cmd::Serve(ServeArgs::default())) {
-        Cmd::Serve(args) => serve::run(cfg, args, config_path).await,
+        Cmd::Serve(args) => serve::run(cfg, args, config_path, telemetry_status).await,
         Cmd::McpServe => serve::run_mcp(cfg).await,
         Cmd::Init { force } => init::run(force),
         Cmd::Login {

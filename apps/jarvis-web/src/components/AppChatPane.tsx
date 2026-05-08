@@ -5,6 +5,7 @@
 import type { ReactNode } from "react";
 import { Banner } from "./Banner";
 import { ChatHeader } from "./ChatHeader";
+import { FallbackBanner } from "./FallbackBanner";
 import { Composer } from "./Composer/Composer";
 import { MessageList } from "./Chat/MessageList";
 import { AskTextCard } from "./Chat/AskTextCard";
@@ -54,6 +55,7 @@ export function AppChatPane() {
       <Banner />
       <BypassBanner />
       <PlanModeBanner />
+      <FallbackBanner />
 
       <MessageList />
 

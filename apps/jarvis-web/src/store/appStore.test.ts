@@ -206,13 +206,39 @@ describe("messages slice", () => {
     if (last?.kind === "assistant") expect(last.content).toBe("Hello!");
   });
 
+  it("duplicate tool_start does not reset a running tool block", () => {
+    get().pushUserMessage("run tests");
+    get().finalizeAssistant({ content: "Running tests." });
+    get().pushToolStart("call_1", "shell.exec", { command: "cargo test" });
+    get().appendToolProgress("call_1", "stdout", "Compiling harness-server\n");
+    const startedAt = get().toolBlocks.call_1.startedAt;
+
+    get().pushToolStart("call_1", "shell.exec", { command: "cargo test" });
+
+    expect(get().toolBlocks.call_1.progress).toBe("Compiling harness-server\n");
+    expect(get().toolBlocks.call_1.startedAt).toBe(startedAt);
+    const assistants = get().messages.filter((m) => m.kind === "assistant");
+    expect(assistants).toHaveLength(1);
+    if (assistants[0].kind === "assistant") {
+      expect(assistants[0].toolCallIds).toEqual(["call_1"]);
+    }
+  });
+
   it("finalizeAssistant repairs cumulative stream snapshots with the final content", () => {
     get().pushUserMessage("hi");
     get().appendDelta("Hel");
     get().appendDelta("Hello!");
+
+    let last = get().messages.at(-1);
+    expect(last?.kind).toBe("assistant");
+    if (last?.kind === "assistant") {
+      expect(last.content).toBe("Hello!");
+      expect(last.finalised).toBe(false);
+    }
+
     get().finalizeAssistant({ content: "Hello!" });
 
-    const last = get().messages.at(-1);
+    last = get().messages.at(-1);
     expect(last?.kind).toBe("assistant");
     if (last?.kind === "assistant") {
       expect(last.content).toBe("Hello!");

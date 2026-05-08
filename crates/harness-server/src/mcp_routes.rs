@@ -32,6 +32,7 @@ pub fn router() -> Router<AppState> {
             get(get_one).delete(remove).put(replace),
         )
         .route("/v1/mcp/servers/:prefix/health", post(health))
+        .route("/v1/mcp/servers/:prefix/reload", post(reload))
 }
 
 #[allow(clippy::result_large_err)]
@@ -169,6 +170,34 @@ async fn health(State(state): State<AppState>, Path(prefix): Path<String>) -> Re
             )
                 .into_response()
         }
+    }
+}
+
+/// `POST /v1/mcp/servers/:prefix/reload` — restart the connection
+/// using the slot's currently-stored config. Useful when an MCP
+/// server stalls or its child process crashed and the slot fell
+/// to `Unhealthy` / `Stopped`. Idempotent: hitting an already-
+/// running server is just a quick teardown + reconnect.
+async fn reload(State(state): State<AppState>, Path(prefix): Path<String>) -> Response {
+    let mcp = match require_mcp(&state) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let started = std::time::Instant::now();
+    match mcp.reload(&prefix).await {
+        Ok(tools) => {
+            let latency_ms = started.elapsed().as_millis() as u64;
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "prefix": prefix,
+                    "tools": tools,
+                    "latency_ms": latency_ms,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => map_mcp_error(e),
     }
 }
 

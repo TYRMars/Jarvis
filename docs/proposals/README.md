@@ -38,6 +38,7 @@ Status legend in each doc's header:
 | [tauri-desktop-client.zh-CN.md](tauri-desktop-client.zh-CN.md) | Tauri 桌面端：复用 jarvis-web，Rust 管理 sidecar/server 与系统集成 | Proposed |
 | [web-multi-session-runs.zh-CN.md](web-multi-session-runs.zh-CN.md) | Web 多会话并行与异步运行：per-conversation run 状态、后台 run API、sidebar 运行态 | Proposed |
 | [self-improving-agent.zh-CN.md](self-improving-agent.zh-CN.md) | 让 Jarvis 具备自我成长闭环：记忆、技能、后台复盘、Curator 与可观测学习日志 | Proposed |
+| [model-tool-compatibility.zh-CN.md](model-tool-compatibility.zh-CN.md) | 强化 Jarvis 的模型自由切换、OpenAI-compatible provider profiles、工具目录、MCP 管理与并行 SubAgent 执行 | Proposed |
 
 ## Product Alignment Audit
 
