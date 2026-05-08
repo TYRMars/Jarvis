@@ -178,17 +178,17 @@ export function ToolsSection() {
         />
         <Select
           value={sourceFilter}
-          onChange={(v) => setSourceFilter(v as ToolSourceKind | "")}
+          onChange={(v) => setSourceFilter(v)}
           options={SOURCE_OPTIONS}
         />
         <Select
           value={packFilter}
-          onChange={(v) => setPackFilter(v as ToolPack | "")}
+          onChange={(v) => setPackFilter(v)}
           options={PACK_OPTIONS}
         />
         <Select
           value={riskFilter}
-          onChange={(v) => setRiskFilter(v as ToolRisk | "")}
+          onChange={(v) => setRiskFilter(v)}
           options={RISK_OPTIONS}
         />
       </div>

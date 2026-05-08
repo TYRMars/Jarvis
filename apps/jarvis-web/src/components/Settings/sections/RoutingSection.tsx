@@ -219,7 +219,7 @@ export function RoutingSection() {
 
           <div className="routing-slots">
             {ALL_ROUTE_SLOTS.map((slot) => {
-              const current = policy[slot] as ModelTarget | undefined;
+              const current = policy[slot];
               const value = targetToValue(current);
               const meta = SLOT_DESCRIPTIONS[slot];
               return (
