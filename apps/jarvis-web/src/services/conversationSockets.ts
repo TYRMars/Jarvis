@@ -75,6 +75,10 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
     if (opts.isNew && opts.workspacePath) first.workspace_path = opts.workspacePath;
     ws.send(JSON.stringify(first));
 
+    for (const name of appStore.getState().activeSkills) {
+      ws.send(JSON.stringify({ type: "activate_skill", name }));
+    }
+
     const user: any = { type: "user", content: opts.content };
     if (opts.routing.provider) user.provider = opts.routing.provider;
     if (opts.routing.model) user.model = opts.routing.model;

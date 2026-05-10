@@ -20,6 +20,9 @@ export function handleFrameForConversation(conversationId: string | null, ev: an
     applyConversationRunHint(conversationId, ev);
   }
   if (conversationId && appStore.getState().activeId !== conversationId) {
+    if (shouldMarkUnread(ev)) {
+      appStore.getState().markConversationUnread(conversationId);
+    }
     handleScopedFrame(conversationId, ev);
     return;
   }
@@ -33,6 +36,22 @@ export function handleFrameForConversation(conversationId: string | null, ev: an
   else console.warn("unknown frame", ev);
   if (conversationId) {
     applyConversationRunHint(conversationId, ev);
+  }
+}
+
+function shouldMarkUnread(ev: any): boolean {
+  switch (ev?.type) {
+    case "delta":
+    case "assistant_message":
+    case "tool_start":
+    case "tool_end":
+    case "approval_request":
+    case "hitl_request":
+    case "done":
+    case "error":
+      return true;
+    default:
+      return false;
   }
 }
 

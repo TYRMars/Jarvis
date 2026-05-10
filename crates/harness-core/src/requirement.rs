@@ -63,14 +63,10 @@ pub struct Requirement {
     /// requirement card.
     #[serde(default)]
     pub conversation_ids: Vec<String>,
-    /// Optional [`AgentProfile`](crate::AgentProfile) id this
-    /// requirement is assigned to. `None` = "anyone / use the
-    /// server default". `start_run` reads this when minting the
-    /// fresh conversation so the chosen profile's `system_prompt`
-    /// (and, in future phases, provider/model routing) applies.
-    /// Added in Phase 3.6 — older rows on disk without the field
-    /// deserialise as `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Legacy internal field retained so old rows can be read during
+    /// migration. New execution is always routed through Jarvis and
+    /// this field is intentionally omitted from the public wire shape.
+    #[serde(default, skip)]
     pub assignee_id: Option<String>,
     /// Phase 6 — optional pinned [`VerificationPlan`] that auto
     /// mode (and the manual "Run verification" UI when filled
@@ -114,14 +110,11 @@ pub struct Requirement {
     /// deserialise as an empty `Vec`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub label_ids: Vec<String>,
-    /// Who decides `Review → Done`. The default
-    /// [`AcceptancePolicy::Subagent`] hands the call off to a
-    /// reviewer subagent (see `docs/proposals/subagents.zh-CN.md`)
-    /// once the work agent flips to Review; setting it to
-    /// [`AcceptancePolicy::Human`] preserves the pre-subagent
-    /// behaviour and waits for a person to click "accept" in the UI.
-    /// Older JSON rows without the field deserialise as `Subagent`.
-    #[serde(default, skip_serializing_if = "AcceptancePolicy::is_default")]
+    /// Legacy internal field retained for older storage rows. Jarvis
+    /// now owns both progression and completion by evaluating the
+    /// execution checklist, so this is omitted from the public wire
+    /// shape and no longer drives auto mode.
+    #[serde(default, skip)]
     pub acceptance_policy: AcceptancePolicy,
     /// RFC-3339 / ISO-8601 timestamp of creation.
     pub created_at: String,
@@ -502,6 +495,115 @@ impl Requirement {
         self.touch();
         true
     }
+
+    /// Ensure every requirement has a Jarvis-owned execution
+    /// checklist. This checklist is the completion contract for
+    /// auto-mode and the customer-facing detail view.
+    pub fn ensure_execution_checklist(&mut self) -> bool {
+        if !self.todos.is_empty() {
+            return false;
+        }
+
+        let mut todos = Vec::new();
+        if let Some(plan) = self.verification_plan.as_ref() {
+            for command in plan
+                .commands
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let mut todo = RequirementTodo::new(
+                    format!("Run verification: {command}"),
+                    RequirementTodoKind::Ci,
+                );
+                todo.command = Some(command.to_string());
+                todo.created_by = RequirementTodoCreator::Workflow;
+                todos.push(todo);
+            }
+            if plan.require_diff {
+                let mut todo = RequirementTodo::new(
+                    "Confirm the run produced the required diff",
+                    RequirementTodoKind::Check,
+                );
+                todo.created_by = RequirementTodoCreator::Workflow;
+                todos.push(todo);
+            }
+            if plan.require_tests {
+                let mut todo = RequirementTodo::new(
+                    "Confirm relevant tests were executed",
+                    RequirementTodoKind::Check,
+                );
+                todo.created_by = RequirementTodoCreator::Workflow;
+                todos.push(todo);
+            }
+        }
+
+        if todos.is_empty() {
+            for (title, kind) in [
+                (
+                    "Confirm the requirement scope is understood",
+                    RequirementTodoKind::Check,
+                ),
+                (
+                    "Implement the customer-visible requirement",
+                    RequirementTodoKind::Work,
+                ),
+                (
+                    "Verify the requirement is complete",
+                    RequirementTodoKind::Review,
+                ),
+            ] {
+                let mut todo = RequirementTodo::new(title, kind);
+                todo.created_by = RequirementTodoCreator::Workflow;
+                todos.push(todo);
+            }
+        }
+
+        self.todos = todos;
+        self.touch();
+        true
+    }
+
+    /// Completion is based on the execution checklist, not the
+    /// presence of a chat run alone.
+    pub fn execution_checklist_passed(&self) -> bool {
+        !self.todos.is_empty()
+            && self.todos.iter().all(|todo| {
+                matches!(
+                    todo.status,
+                    RequirementTodoStatus::Passed | RequirementTodoStatus::Skipped
+                )
+            })
+    }
+
+    pub fn execution_checklist_failed_or_blocked(&self) -> bool {
+        self.todos.iter().any(|todo| {
+            matches!(
+                todo.status,
+                RequirementTodoStatus::Failed | RequirementTodoStatus::Blocked
+            )
+        })
+    }
+
+    /// True iff the checklist is exclusively the seeded boilerplate
+    /// (`ensure_execution_checklist`'s default trio) — every todo
+    /// was created by the workflow, has no associated `command`, and
+    /// is still pending. CLAUDE.md documents that a clean
+    /// auto-mode run on a Subagent-policy Requirement should
+    /// auto-flip Review → Done in this case (no real verification
+    /// plan was attached). Without this predicate the existing
+    /// `execution_checklist_passed` gate parks every successful
+    /// auto-run at Review forever, since nothing in the system
+    /// flips boilerplate todos to Passed. See `auto_mode::
+    /// completed_requirement_target_status`.
+    pub fn execution_checklist_is_default_seeded(&self) -> bool {
+        !self.todos.is_empty()
+            && self.todos.iter().all(|todo| {
+                matches!(todo.created_by, RequirementTodoCreator::Workflow)
+                    && todo.command.as_deref().map(str::trim).unwrap_or("").is_empty()
+                    && matches!(todo.status, RequirementTodoStatus::Pending)
+            })
+    }
 }
 
 /// Broadcast envelope sent on every successful [`RequirementStore`]
@@ -723,13 +825,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_human_policy_round_trips() {
+    fn explicit_human_policy_is_legacy_internal_only() {
         let mut r = Requirement::new("p1", "Hello");
         r.acceptance_policy = AcceptancePolicy::Human;
         let json = serde_json::to_value(&r).unwrap();
-        assert_eq!(json["acceptance_policy"], "human");
+        assert!(
+            json.get("acceptance_policy").is_none(),
+            "legacy acceptance policy must not leak onto public wire; got: {json}"
+        );
         let back: Requirement = serde_json::from_value(json).unwrap();
-        assert_eq!(back.acceptance_policy, AcceptancePolicy::Human);
+        assert_eq!(back.acceptance_policy, AcceptancePolicy::Subagent);
     }
 
     #[test]

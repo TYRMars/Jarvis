@@ -5,8 +5,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use harness_core::AgentEvent;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::broadcast;
 
 const MAX_EVENTS_PER_RUN: usize = 1_000;
+/// Broadcast capacity per active conversation. Sized for "WS reconnect
+/// catches up while the original turn is still streaming" — a slow
+/// subscriber that lags more than this many events gets a `Lagged`
+/// signal and is expected to refetch via the snapshot path. Picked to
+/// be larger than typical token-delta bursts during a single turn so
+/// transient backpressure doesn't kick a healthy client off.
+const BROADCAST_CAPACITY: usize = 256;
 
 /// In-process status ledger for Web chat turns.
 ///
@@ -21,11 +29,18 @@ pub struct ChatRunRegistry {
     aborts: RwLock<HashMap<String, tokio::task::AbortHandle>>,
 }
 
-#[derive(Debug, Clone)]
 struct ChatRunState {
     record: ChatRunRecord,
     events: Vec<ChatRunEventRecord>,
     next_seq: u64,
+    /// Live fan-out for re-attaching subscribers (WS reconnects, future
+    /// IM gateway adapters). The Sender stays alive across terminal
+    /// events so a late subscriber on a freshly-completed run still
+    /// receives `Lagged`/closure semantics rather than a missing
+    /// channel. New runs on the same `conversation_id` (i.e. after a
+    /// terminal event) replace the whole state, including this Sender,
+    /// so old subscribers naturally see channel closure.
+    broadcast: broadcast::Sender<ChatRunEventRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,18 +102,49 @@ impl ChatRunRegistry {
             {
                 return false;
             }
+            let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
             guard.insert(
                 conversation_id.to_string(),
                 ChatRunState {
                     record,
                     events: Vec::new(),
                     next_seq: 1,
+                    broadcast: tx,
                 },
             );
             true
         } else {
             false
         }
+    }
+
+    /// Atomically: subscribe to the live broadcast for `conversation_id`,
+    /// snapshot all buffered events with `seq > after`, return both.
+    /// Returns `None` if the conversation has no run state (never
+    /// started, or evicted — which we don't do today).
+    ///
+    /// The snapshot + subscription pair is consistent: any event
+    /// pushed after the lock is released arrives via the receiver,
+    /// any event pushed before lands in the snapshot. Callers should
+    /// replay the snapshot first, then drain the receiver.
+    pub fn subscribe(
+        &self,
+        conversation_id: &str,
+        after: u64,
+    ) -> Option<(
+        Vec<ChatRunEventRecord>,
+        broadcast::Receiver<ChatRunEventRecord>,
+    )> {
+        let guard = self.inner.read().ok()?;
+        let state = guard.get(conversation_id)?;
+        let rx = state.broadcast.subscribe();
+        let snapshot: Vec<ChatRunEventRecord> = state
+            .events
+            .iter()
+            .filter(|e| e.seq > after)
+            .cloned()
+            .collect();
+        Some((snapshot, rx))
     }
 
     pub fn is_active(&self, conversation_id: &str) -> bool {
@@ -232,22 +278,9 @@ impl ChatRunRegistry {
     ) {
         let now = now_ms();
         if let Ok(mut guard) = self.inner.write() {
-            let state = guard.entry(conversation_id.to_string()).or_insert_with(|| {
-                let record = ChatRunRecord {
-                    conversation_id: conversation_id.to_string(),
-                    status,
-                    started_at: now,
-                    updated_at: now,
-                    latest_seq: 0,
-                    current_tool: None,
-                    last_error: None,
-                };
-                ChatRunState {
-                    record,
-                    events: Vec::new(),
-                    next_seq: 1,
-                }
-            });
+            let state = guard
+                .entry(conversation_id.to_string())
+                .or_insert_with(|| make_state(conversation_id, status, now));
             state.record.status = status;
             state.record.updated_at = now;
             if let Some(tool) = current_tool {
@@ -273,23 +306,14 @@ impl ChatRunRegistry {
         let now = now_ms();
         if let Ok(mut guard) = self.inner.write() {
             let state = guard.entry(conversation_id.to_string()).or_insert_with(|| {
-                let record = ChatRunRecord {
-                    conversation_id: conversation_id.to_string(),
-                    status: status
+                make_state(
+                    conversation_id,
+                    status
                         .as_ref()
                         .map(|(s, _, _)| *s)
                         .unwrap_or(ChatRunStatus::Running),
-                    started_at: now,
-                    updated_at: now,
-                    latest_seq: 0,
-                    current_tool: None,
-                    last_error: None,
-                };
-                ChatRunState {
-                    record,
-                    events: Vec::new(),
-                    next_seq: 1,
-                }
+                    now,
+                )
             });
 
             if let Some((next_status, current_tool, last_error)) = status {
@@ -306,22 +330,48 @@ impl ChatRunRegistry {
             state.next_seq += 1;
             state.record.updated_at = now;
             state.record.latest_seq = seq;
-            state.events.push(ChatRunEventRecord {
+            let record = ChatRunEventRecord {
                 conversation_id: conversation_id.to_string(),
                 seq,
                 timestamp: now,
                 frame,
-            });
+            };
+            state.events.push(record.clone());
             if state.events.len() > MAX_EVENTS_PER_RUN {
                 let excess = state.events.len() - MAX_EVENTS_PER_RUN;
                 state.events.drain(0..excess);
             }
+            // Fan out to live subscribers. `send` errors when there
+            // are zero receivers — expected (no one is tailing) and
+            // not worth logging. Lagged subscribers see `Lagged` on
+            // their next recv() and we leave that handling to the
+            // caller (the WS handler treats it as "drop the tail and
+            // ask the client to refetch").
+            let _ = state.broadcast.send(record);
             if state.record.status.is_terminal() {
                 if let Ok(mut aborts) = self.aborts.write() {
                     aborts.remove(conversation_id);
                 }
             }
         }
+    }
+}
+
+fn make_state(conversation_id: &str, status: ChatRunStatus, now: u64) -> ChatRunState {
+    let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+    ChatRunState {
+        record: ChatRunRecord {
+            conversation_id: conversation_id.to_string(),
+            status,
+            started_at: now,
+            updated_at: now,
+            latest_seq: 0,
+            current_tool: None,
+            last_error: None,
+        },
+        events: Vec::new(),
+        next_seq: 1,
+        broadcast: tx,
     }
 }
 
@@ -413,5 +463,72 @@ mod tests {
 
         assert!(!registry.is_active("c1"));
         assert!(registry.try_start("c1"));
+    }
+
+    #[tokio::test]
+    async fn subscribe_replays_buffered_then_streams_live_without_gaps() {
+        let registry = ChatRunRegistry::default();
+        registry.start("c1");
+        registry.event(
+            Some("c1"),
+            &AgentEvent::Delta {
+                content: "past-1".into(),
+            },
+        );
+        registry.event(
+            Some("c1"),
+            &AgentEvent::Delta {
+                content: "past-2".into(),
+            },
+        );
+
+        let (snapshot, mut rx) = registry.subscribe("c1", 0).expect("active run");
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].seq, 1);
+        assert_eq!(snapshot[1].seq, 2);
+
+        registry.event(
+            Some("c1"),
+            &AgentEvent::Delta {
+                content: "live-3".into(),
+            },
+        );
+        registry.frame(
+            Some("c1"),
+            Some(ChatRunStatus::Completed),
+            serde_json::json!({ "type": "done" }),
+        );
+
+        let live = rx.recv().await.expect("live event");
+        assert_eq!(live.seq, 3);
+        assert_eq!(live.frame["content"], "live-3");
+
+        let terminal = rx.recv().await.expect("terminal event");
+        assert_eq!(terminal.seq, 4);
+        assert_eq!(terminal.frame["type"], "done");
+    }
+
+    #[test]
+    fn subscribe_after_filters_out_already_seen_seqs() {
+        let registry = ChatRunRegistry::default();
+        registry.start("c1");
+        for i in 0..3 {
+            registry.event(
+                Some("c1"),
+                &AgentEvent::Delta {
+                    content: format!("d{i}"),
+                },
+            );
+        }
+        let (snapshot, _rx) = registry.subscribe("c1", 2).expect("active run");
+        // seqs 1 and 2 filtered out; only 3 remains in the replay window.
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].seq, 3);
+    }
+
+    #[test]
+    fn subscribe_returns_none_for_unknown_conversation() {
+        let registry = ChatRunRegistry::default();
+        assert!(registry.subscribe("never-started", 0).is_none());
     }
 }

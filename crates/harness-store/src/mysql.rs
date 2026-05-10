@@ -582,7 +582,13 @@ impl ConversationStore for MysqlConversationStore {
         match row {
             Some((json, project_id)) => {
                 let conv: Conversation = serde_json::from_str(&json).map_err(StoreError::from)?;
-                Ok(Some((conv, ConversationMetadata { project_id })))
+                Ok(Some((
+                    conv,
+                    ConversationMetadata {
+                        project_id,
+                        lifecycle: Default::default(),
+                    },
+                )))
             }
             None => Ok(None),
         }
@@ -612,6 +618,7 @@ impl ConversationStore for MysqlConversationStore {
                     updated_at,
                     message_count: conv.messages.len(),
                     project_id,
+                    lifecycle: Default::default(),
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()
@@ -647,6 +654,7 @@ impl ConversationStore for MysqlConversationStore {
                     updated_at,
                     message_count: conv.messages.len(),
                     project_id: Some(project_id.to_string()),
+                    lifecycle: Default::default(),
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()

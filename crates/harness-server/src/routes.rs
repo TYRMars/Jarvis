@@ -27,7 +27,7 @@ use harness_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info, warn};
 
 use uuid::Uuid;
@@ -48,10 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/model-catalog", get(list_model_catalog))
         .route("/v1/tools", get(list_tools))
         .route("/v1/tools/:name", axum::routing::patch(patch_tool))
-        .route(
-            "/v1/routing",
-            get(get_route_policy).put(put_route_policy),
-        )
+        .route("/v1/routing", get(get_route_policy).put(put_route_policy))
         .route(
             "/v1/routing/:slot",
             axum::routing::patch(patch_route_policy_slot).delete(delete_route_policy_slot),
@@ -92,6 +89,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::subagent_runs_routes::router())
         .merge(crate::diagnostics_routes::router())
         .merge(crate::auto_mode_routes::router())
+        .merge(crate::channels_routes::router())
         .merge(crate::comments_routes::router())
         .merge(crate::labels_routes::router())
         .merge(crate::docs_routes::router())
@@ -100,15 +98,16 @@ pub fn router(state: AppState) -> Router {
         .fallback(ui::spa_fallback)
         .layer(axum::middleware::from_fn(loopback_cors))
         .layer(
-            tower_http::trace::TraceLayer::new_for_http()
-                .make_span_with(|req: &axum::http::Request<_>| {
+            tower_http::trace::TraceLayer::new_for_http().make_span_with(
+                |req: &axum::http::Request<_>| {
                     tracing::info_span!(
                         "http.request",
                         http.request.method = %req.method(),
                         url.path = %req.uri().path(),
                         jarvis.transport = "http",
                     )
-                }),
+                },
+            ),
         )
         .with_state(state)
 }
@@ -1795,6 +1794,12 @@ struct DetachedTurn {
     persisted_project_id: Option<String>,
     store: Option<Arc<dyn ConversationStore>>,
     injection: Option<TurnInjection>,
+    /// Cloned AppState carried into the detached task so the terminal
+    /// hook can reconcile any `RequirementRun` rows linked to the
+    /// conversation. Survives WS disconnect / page reload because the
+    /// task continues to drain the agent stream regardless of whether
+    /// a client is listening.
+    state: AppState,
 }
 
 fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
@@ -1807,98 +1812,124 @@ fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
         jarvis.provider = turn.provider.as_deref().unwrap_or(""),
         jarvis.model = turn.model.as_deref().unwrap_or(""),
     );
-    tokio::spawn(async move {
-        let DetachedTurn {
-            agent,
-            conversation,
-            event_tx,
-            chat_runs,
-            subagent_runs,
-            observability,
-            run_id,
-            started_at,
-            started,
-            provider,
-            model,
-            persisted_id,
-            persisted_project_id,
-            store,
-            injection,
-        } = turn;
-        harness_core::todo::with_turn_budget(async move {
-            let mut stream = agent.run_stream(conversation);
-            let mut event_acc = RunEventAccumulator::default();
-            let mut final_outcome = ObservedOutcome::Unknown;
-            let mut iterations = None;
-            let mut message_count = 0usize;
-            while let Some(ev) = stream.next().await {
-                let mut ev_to_send = ev;
-                let observed = event_acc.observe(&ev_to_send);
-                record_observed_runs(observability.clone(), observed).await;
-                let is_terminal = matches!(
-                    ev_to_send,
-                    AgentEvent::Done { .. } | AgentEvent::Error { .. }
-                );
-                if let AgentEvent::Done { conversation, .. } = &mut ev_to_send {
-                    message_count = conversation.messages.len();
-                    if let Some(prepared) = injection.as_ref() {
-                        *conversation = strip_turn_injections(conversation.clone(), prepared);
-                    }
-                    if let (Some(id), Some(store)) = (persisted_id.as_ref(), store.as_ref()) {
-                        let metadata = ConversationMetadata {
-                            project_id: persisted_project_id.clone(),
-                        };
-                        if let Err(e) = store.save_envelope(id, conversation, &metadata).await {
-                            warn!(error = %e, %id, "detached turn save failed");
+    tokio::spawn(
+        async move {
+            let DetachedTurn {
+                agent,
+                conversation,
+                event_tx,
+                chat_runs,
+                subagent_runs,
+                observability,
+                run_id,
+                started_at,
+                started,
+                provider,
+                model,
+                persisted_id,
+                persisted_project_id,
+                store,
+                injection,
+                state,
+            } = turn;
+            harness_core::todo::with_turn_budget(async move {
+                let mut stream = agent.run_stream(conversation);
+                let mut event_acc = RunEventAccumulator::default();
+                let mut final_outcome = ObservedOutcome::Unknown;
+                let mut iterations = None;
+                let mut message_count = 0usize;
+                let mut terminal_error: Option<String> = None;
+                while let Some(ev) = stream.next().await {
+                    let mut ev_to_send = ev;
+                    let observed = event_acc.observe(&ev_to_send);
+                    record_observed_runs(observability.clone(), observed).await;
+                    let is_terminal = matches!(
+                        ev_to_send,
+                        AgentEvent::Done { .. } | AgentEvent::Error { .. }
+                    );
+                    if let AgentEvent::Done { conversation, .. } = &mut ev_to_send {
+                        message_count = conversation.messages.len();
+                        if let Some(prepared) = injection.as_ref() {
+                            *conversation = strip_turn_injections(conversation.clone(), prepared);
+                        }
+                        if let (Some(id), Some(store)) = (persisted_id.as_ref(), store.as_ref()) {
+                            let metadata = ConversationMetadata {
+                                project_id: persisted_project_id.clone(),
+                                ..Default::default()
+                            };
+                            if let Err(e) = store.save_envelope(id, conversation, &metadata).await {
+                                warn!(error = %e, %id, "detached turn save failed");
+                            }
                         }
                     }
-                }
-                match &ev_to_send {
-                    AgentEvent::Done {
-                        outcome,
-                        conversation,
-                    } => {
-                        final_outcome = observed_outcome(outcome);
-                        iterations = Some(run_iterations(outcome));
-                        message_count = conversation.messages.len();
+                    match &ev_to_send {
+                        AgentEvent::Done {
+                            outcome,
+                            conversation,
+                        } => {
+                            final_outcome = observed_outcome(outcome);
+                            iterations = Some(run_iterations(outcome));
+                            message_count = conversation.messages.len();
+                        }
+                        AgentEvent::Error { message } => {
+                            final_outcome = ObservedOutcome::Error;
+                            if terminal_error.is_none() {
+                                terminal_error = Some(message.clone());
+                            }
+                        }
+                        _ => {}
                     }
-                    AgentEvent::Error { .. } => {
-                        final_outcome = ObservedOutcome::Error;
+                    chat_runs.event(persisted_id.as_deref(), &ev_to_send);
+                    if let (Some(reg), AgentEvent::SubAgentEvent { frame }) =
+                        (subagent_runs.as_ref(), &ev_to_send)
+                    {
+                        reg.record_frame(persisted_id.as_deref(), frame);
                     }
-                    _ => {}
+                    let _ = event_tx.send(ev_to_send).await;
+                    if is_terminal {
+                        break;
+                    }
                 }
-                chat_runs.event(persisted_id.as_deref(), &ev_to_send);
-                if let (Some(reg), AgentEvent::SubAgentEvent { frame }) =
-                    (subagent_runs.as_ref(), &ev_to_send)
-                {
-                    reg.record_frame(persisted_id.as_deref(), frame);
+                record_observed_runs(observability.clone(), event_acc.finish_unclosed()).await;
+                // Server-side fallback for the WS reconciliation that
+                // the frontend (conversationSockets.ts) does on
+                // terminal frames. Runs whether the client is still
+                // attached or not, so a stuck `running`
+                // RequirementRun can't survive a tab close / network
+                // drop / page reload mid-turn.
+                if let Some(conv_id) = persisted_id.as_deref() {
+                    let succeeded =
+                        !matches!(final_outcome, ObservedOutcome::Error);
+                    crate::requirements_routes::reconcile_runs_for_conversation(
+                        &state,
+                        conv_id,
+                        succeeded,
+                        terminal_error.as_deref(),
+                    )
+                    .await;
                 }
-                let _ = event_tx.send(ev_to_send).await;
-                if is_terminal {
-                    break;
-                }
-            }
-            record_observed_runs(observability.clone(), event_acc.finish_unclosed()).await;
-            record_agent_run(
-                observability,
-                AgentRunRecord {
-                    id: run_id,
-                    transport: "ws",
-                    started_at,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                    outcome: final_outcome,
-                    iterations,
-                    message_count,
-                    conversation_id: persisted_id,
-                    project_id: persisted_project_id,
-                    provider,
-                    model,
-                },
-            )
+                record_agent_run(
+                    observability,
+                    AgentRunRecord {
+                        id: run_id,
+                        transport: "ws",
+                        started_at,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        outcome: final_outcome,
+                        iterations,
+                        message_count,
+                        conversation_id: persisted_id,
+                        project_id: persisted_project_id,
+                        provider,
+                        model,
+                    },
+                )
+                .await;
+            })
             .await;
-        })
-        .await;
-    }.instrument(turn_span))
+        }
+        .instrument(turn_span),
+    )
 }
 
 async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
@@ -2069,6 +2100,14 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // Handle to the spawned agent task so `Interrupt` can abort it
     // mid-stream. Stays in lockstep with `event_rx`.
     let mut current_task: Option<tokio::task::JoinHandle<()>> = None;
+    // Live tail of an in-flight turn that this socket does NOT own.
+    // Set when `Resume` lands on a `persisted_id` whose run is already
+    // active (the original socket dropped, or another client is
+    // observing the same conversation). Cleared on terminal events,
+    // on `Reset`, or when the client switches conversations via
+    // `Resume`/`New`. Mutually exclusive with `event_rx` — a socket
+    // either owns its turn or tails someone else's, never both.
+    let mut tail_rx: Option<broadcast::Receiver<crate::chat_runs::ChatRunEventRecord>> = None;
     // Sticky provider/model for this socket. `None` means "use the
     // registry default". Updated by `Configure` / overridden per
     // turn by `User { model, provider }`.
@@ -2111,6 +2150,15 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 None => std::future::pending::<Option<AgentEvent>>().await,
             }
         };
+        // Same dormant pattern for the tail receiver. `recv()` returns
+        // `Result<T, RecvError>` (Closed | Lagged), so the arm sees
+        // both a frame and the channel-error variants in one place.
+        let tail_fut = async {
+            match tail_rx.as_mut() {
+                Some(rx) => Some(rx.recv().await),
+                None => std::future::pending::<Option<Result<_, _>>>().await,
+            }
+        };
 
         tokio::select! {
             biased;
@@ -2138,6 +2186,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     &mut pending_hitl,
                     &mut event_rx,
                     &mut current_task,
+                    &mut tail_rx,
                     &mut sticky_provider,
                     &mut sticky_model,
                     &mut active_skills,
@@ -2451,6 +2500,75 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     pending_hitl.clear();
                 }
             }
+            // ---- tailed run → server ----
+            // Active when `Resume` landed on an in-flight turn that
+            // belongs to a different (or now-disconnected) socket.
+            // Each `ChatRunEventRecord.frame` is the same JSON shape
+            // the owning socket would have produced via the agent
+            // arm above, so we can ship it down the wire as-is.
+            Some(tail_result) = tail_fut => {
+                match tail_result {
+                    Ok(record) => {
+                        let frame = record.frame;
+                        let frame_type = frame
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let payload = frame.to_string();
+                        if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
+                            return;
+                        }
+                        let is_terminal = matches!(
+                            frame_type.as_deref(),
+                            Some("done") | Some("error")
+                        );
+                        if is_terminal {
+                            // The detached agent task already saved
+                            // the conversation on Done; reload so the
+                            // local mirror is fresh for any follow-up
+                            // turn the client kicks off. On Error the
+                            // agent task did NOT save (the failure
+                            // path leaves the pre-turn state intact),
+                            // so reloading is a no-op but harmless.
+                            if let (Some(id), Some(store)) =
+                                (persisted_id.as_deref(), state.store.as_ref())
+                            {
+                                if let Ok(Some((mut loaded, _))) = store.load_envelope(id).await {
+                                    loaded.last_response_id = None;
+                                    loaded.last_response_chain_origin = None;
+                                    conv = loaded;
+                                }
+                            }
+                            tail_rx = None;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            convo = persisted_id.as_deref().unwrap_or(""),
+                            skipped,
+                            "ws tail subscriber lagged; dropping tail",
+                        );
+                        let _ = ws_tx
+                            .send(WsMessage::Text(
+                                json!({
+                                    "type": "tail_lost",
+                                    "reason": "lagged",
+                                    "skipped": skipped,
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                        tail_rx = None;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Sender side gone. Should not happen while a
+                        // run is active (the registry holds the Sender
+                        // for the lifetime of the conversation entry),
+                        // but if it ever does, drop quietly.
+                        tail_rx = None;
+                    }
+                }
+            }
         }
     }
 }
@@ -2473,6 +2591,7 @@ async fn handle_client_frame(
     pending_hitl: &mut HashMap<String, oneshot::Sender<HitlResponse>>,
     event_rx: &mut Option<mpsc::Receiver<AgentEvent>>,
     current_task: &mut Option<tokio::task::JoinHandle<()>>,
+    tail_rx: &mut Option<broadcast::Receiver<crate::chat_runs::ChatRunEventRecord>>,
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
     active_skills: &mut Vec<String>,
@@ -2691,6 +2810,7 @@ async fn handle_client_frame(
                 persisted_project_id: persisted_project_id.clone(),
                 store: state.store.clone(),
                 injection: Some(injection),
+                state: state.clone(),
             });
             state
                 .chat_runs
@@ -2734,6 +2854,10 @@ async fn handle_client_frame(
             *conv = Conversation::new();
             *persisted_id = None;
             *persisted_project_id = None;
+            // Drop any live tail when the user clears state — they're
+            // explicitly leaving the conversation, no further frames
+            // from it should reach this socket.
+            *tail_rx = None;
             let _ = ws_tx
                 .send(WsMessage::Text(json!({ "type": "reset" }).to_string()))
                 .await;
@@ -2753,6 +2877,10 @@ async fn handle_client_frame(
                 send_error(ws_tx, "turn in progress; cannot resume").await;
                 return true;
             }
+            // Drop any prior tail before swapping conversations — if
+            // the previous Resume attached to a different conv's live
+            // run, those frames must not bleed into the new context.
+            *tail_rx = None;
             if is_internal_id(&id) {
                 send_error(ws_tx, &format!("conversation `{id}` not found")).await;
                 return true;
@@ -2823,6 +2951,7 @@ async fn handle_client_frame(
                             ))
                             .await;
                     }
+                    let live_tail = state.chat_runs.is_active(&id);
                     let _ = ws_tx
                         .send(WsMessage::Text(
                             json!({
@@ -2831,10 +2960,49 @@ async fn handle_client_frame(
                                 "message_count": count,
                                 "project_id": bound_project,
                                 "workspace_path": bound_workspace,
+                                "live": live_tail,
                             })
                             .to_string(),
                         ))
                         .await;
+                    // If a turn is already running for this
+                    // conversation (the original socket dropped, or
+                    // another client is observing), attach to the
+                    // broadcast bus so the user sees streaming events
+                    // pick up where the disconnect happened.
+                    //
+                    // Atomicity: `subscribe()` takes the registry's
+                    // write-side guard, so the snapshot + the
+                    // `Receiver` it returns are consistent — any
+                    // event pushed after this call lands on the
+                    // receiver, any event pushed before is in the
+                    // snapshot. Replay first so wire order matches
+                    // what the original socket would have seen.
+                    if live_tail {
+                        if let Some((snapshot, rx)) = state.chat_runs.subscribe(&id, 0) {
+                            let _ = ws_tx
+                                .send(WsMessage::Text(
+                                    json!({
+                                        "type": "tail_replay_start",
+                                        "count": snapshot.len(),
+                                    })
+                                    .to_string(),
+                                ))
+                                .await;
+                            for record in snapshot {
+                                let payload = record.frame.to_string();
+                                if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
+                                    return false;
+                                }
+                            }
+                            let _ = ws_tx
+                                .send(WsMessage::Text(
+                                    json!({ "type": "tail_replay_done" }).to_string(),
+                                ))
+                                .await;
+                            *tail_rx = Some(rx);
+                        }
+                    }
                 }
                 Ok(None) => {
                     send_error(ws_tx, &format!("conversation `{id}` not found")).await;
@@ -2862,6 +3030,9 @@ async fn handle_client_frame(
                 send_error(ws_tx, "turn in progress; cannot start new").await;
                 return true;
             }
+            // Same logic as Resume: leaving the prior conversation,
+            // so any tail attached to it must be dropped.
+            *tail_rx = None;
             if provider.is_some() {
                 *sticky_provider = provider;
             }
@@ -2925,6 +3096,7 @@ async fn handle_client_frame(
             // `conversation '<id>' not found`.
             let metadata = ConversationMetadata {
                 project_id: resolved_project_id.clone(),
+                ..Default::default()
             };
             if let Err(e) = store.save_envelope(&new_id, conv, &metadata).await {
                 error!(error = %e, %new_id, "ws new save_envelope failed");
@@ -3177,6 +3349,7 @@ async fn handle_client_frame(
                 persisted_project_id: persisted_project_id.clone(),
                 store: state.store.clone(),
                 injection: Some(injection),
+                state: state.clone(),
             });
             state
                 .chat_runs
@@ -3340,6 +3513,7 @@ async fn handle_client_frame(
                 persisted_project_id: persisted_project_id.clone(),
                 store: state.store.clone(),
                 injection: Some(injection),
+                state: state.clone(),
             });
             state
                 .chat_runs
@@ -3461,6 +3635,7 @@ async fn handle_client_frame(
                 persisted_project_id: persisted_project_id.clone(),
                 store: state.store.clone(),
                 injection: Some(injection),
+                state: state.clone(),
             });
             state
                 .chat_runs
@@ -4292,10 +4467,7 @@ mod routing_tests {
         // The in-memory state was actually updated.
         let snap = state.route_policy.read().unwrap().clone();
         assert_eq!(snap.default.as_ref().unwrap().model, "gpt-4o");
-        assert_eq!(
-            snap.summarization.as_ref().unwrap().provider,
-            "ollama"
-        );
+        assert_eq!(snap.summarization.as_ref().unwrap().provider, "ollama");
     }
 
     #[tokio::test]

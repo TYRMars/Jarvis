@@ -25,6 +25,8 @@
 mod agent_profiles_routes;
 mod auto_mode;
 mod auto_mode_routes;
+mod channels_routes;
+mod channels_wecom;
 mod chat_runs;
 mod comments_routes;
 mod conversations;
@@ -66,6 +68,7 @@ pub use skill_routes::default_roots as default_skill_roots;
 
 pub use project_memory::{spawn_project_memory_sync, ProjectMemoryConfig};
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
+pub use requirements_routes::sweep_orphan_requirements_on_startup;
 pub use route_policy::{ModelRoutePolicy, ModelTarget, RouteSlot};
 pub use routes::router;
 pub use subagent_runs::{SubAgentRunRecord, SubAgentRunRegistry, SubAgentRunStatus};

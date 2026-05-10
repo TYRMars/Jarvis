@@ -351,7 +351,16 @@ impl ConversationStore for PostgresConversationStore {
         match row {
             Some((json, project_id)) => {
                 let conv: Conversation = serde_json::from_str(&json).map_err(StoreError::from)?;
-                Ok(Some((conv, ConversationMetadata { project_id })))
+                Ok(Some((
+                    conv,
+                    ConversationMetadata {
+                        project_id,
+                        // Lifecycle column not yet present in the SQL
+                        // schema — treat all rows as Active until a
+                        // migration adds the column.
+                        lifecycle: Default::default(),
+                    },
+                )))
             }
             None => Ok(None),
         }
@@ -381,6 +390,7 @@ impl ConversationStore for PostgresConversationStore {
                     updated_at,
                     message_count: conv.messages.len(),
                     project_id,
+                    lifecycle: Default::default(),
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()
@@ -416,6 +426,7 @@ impl ConversationStore for PostgresConversationStore {
                     updated_at,
                     message_count: conv.messages.len(),
                     project_id: Some(project_id.to_string()),
+                    lifecycle: Default::default(),
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()

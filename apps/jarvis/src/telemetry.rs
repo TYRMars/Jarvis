@@ -1,10 +1,10 @@
 //! Tracing subscriber + optional OTLP exporter init.
 //!
-//! Reads `JARVIS_OTEL_*` env vars at process start. When
-//! `JARVIS_OTEL_ENABLED` is set the subscriber gains a
-//! `tracing-opentelemetry` layer backed by OTLP (gRPC default,
-//! `http/protobuf` opt-in). When unset, behaviour is identical to the
-//! pre-OTel `tracing_subscriber::fmt()` setup.
+//! Reads `JARVIS_OTEL_*` env vars at process start. OTLP export is
+//! enabled by default and can be disabled with
+//! `JARVIS_OTEL_ENABLED=0` / `false`. When enabled, the subscriber
+//! gains a `tracing-opentelemetry` layer backed by OTLP (gRPC
+//! default, `http/protobuf` opt-in).
 //!
 //! The returned [`TelemetryGuard`] flushes the exporter on drop. Hold
 //! it for the full process lifetime — dropping it early stops trace
@@ -36,10 +36,10 @@ impl Drop for TelemetryGuard {
     }
 }
 
-fn env_flag(key: &str) -> bool {
+fn env_flag_default(key: &str, default: bool) -> bool {
     match std::env::var(key) {
         Ok(v) => !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"),
-        Err(_) => false,
+        Err(_) => default,
     }
 }
 
@@ -52,16 +52,15 @@ fn env_flag(key: &str) -> bool {
 /// guard so it can be flushed on shutdown.
 ///
 /// `default_filter` is used as the `EnvFilter` directive when
-/// `RUST_LOG` is unset (e.g. `"info"` for the server, `"warn"` for
-/// the CLI to keep stdout pipe-clean). If OTLP export is enabled, the
-/// directive is upgraded to `info` for the harness crates so spans
-/// actually fire — otherwise the exporter would have nothing to send.
+/// `RUST_LOG` is unset. If OTLP export is enabled, the directive is
+/// upgraded to `info` so spans actually fire — otherwise the exporter
+/// would have nothing to send.
 pub fn init() -> TelemetryGuard {
     init_with_default_filter("info")
 }
 
 pub fn init_with_default_filter(default_filter: &str) -> TelemetryGuard {
-    let enabled = env_flag("JARVIS_OTEL_ENABLED");
+    let enabled = env_flag_default("JARVIS_OTEL_ENABLED", true);
     // When OTel is on but `RUST_LOG` is unset, lift the baseline to
     // `info` so the instrumented spans actually reach the layer
     // pipeline. Otherwise the exporter would have nothing to send.

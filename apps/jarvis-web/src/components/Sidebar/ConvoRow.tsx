@@ -9,16 +9,21 @@ import { useAppStore } from "../../store/appStore";
 import { resolveTitle } from "../../store/persistence";
 import { t } from "../../utils/i18n";
 import { relTime } from "../../utils/time";
-import { resumeConversation, deleteConversation } from "../../services/conversations";
+import {
+  resumeConversation,
+  deleteConversation,
+  abandonConversation,
+} from "../../services/conversations";
 import { exportConversationMarkdown } from "../../services/export";
 import type { ConvoListRow } from "../../types/frames";
 
 interface Props {
   row: ConvoListRow;
   isPinned: boolean;
+  unreadCount?: number;
 }
 
-export function ConvoRow({ row, isPinned }: Props) {
+export function ConvoRow({ row, isPinned, unreadCount = 0 }: Props) {
   const activeId = useAppStore((s) => s.activeId);
   const runtime = useAppStore((s) => s.conversationRuns[row.id]);
   const project = useAppStore((s) =>
@@ -36,6 +41,11 @@ export function ConvoRow({ row, isPinned }: Props) {
   const isActiveRun =
     status === "running" || status === "waiting_approval" || status === "waiting_hitl";
   const isRequirement = row.source === "requirement" || !!row.requirement_title;
+  // Treat missing field as `active` for forward compat with older
+  // servers / cached rows.
+  const lifecycle = row.lifecycle ?? "active";
+  const isAbandoned = lifecycle === "abandoned";
+  const isArchived = lifecycle === "archived";
   const manualTitle = titleOverrides[row.id]?.trim();
   const displayTitle = manualTitle || row.requirement_title?.trim() || titleText;
   const timeLabel = relTime(row.updated_at || row.created_at);
@@ -43,23 +53,31 @@ export function ConvoRow({ row, isPinned }: Props) {
   const metaItems = [
     isRequirement ? t("convoSourceRequirement") : null,
     statusLabel,
+    unreadCount > 0 ? t("unreadCount", unreadCount) : null,
+    isAbandoned ? t("convoLifecycleAbandoned") : null,
+    isArchived ? t("convoLifecycleArchived") : null,
     project?.name ?? null,
     timeLabel,
   ].filter(Boolean);
+  const rowLabel = metaItems.length > 0
+    ? `${displayTitle} · ${metaItems.join(" · ")}`
+    : displayTitle;
 
   return (
     <li
       data-id={row.id}
       data-run-status={status}
       data-source={isRequirement ? "requirement" : "chat"}
-      className={(row.id === activeId ? "active" : "") + (isActiveRun ? " running" : "")}
-      onClick={() => {
-        if (editing) return;
-        void resumeConversation(row.id);
-      }}
+      data-lifecycle={lifecycle}
+      className={[
+        row.id === activeId ? "active" : "",
+        isActiveRun ? "running" : "",
+        isAbandoned ? "is-abandoned" : "",
+        isArchived ? "is-archived" : "",
+      ].filter(Boolean).join(" ")}
     >
       <span className="convo-dot" aria-hidden="true" />
-      <div className="convo-line">
+      <div className="convo-line" aria-hidden={!editing ? "true" : undefined}>
         {editing ? (
           <RenameInput
             initial={titleText}
@@ -69,20 +87,42 @@ export function ConvoRow({ row, isPinned }: Props) {
             }}
             onCancel={() => setEditing(false)}
           />
-        ) : (
-          <span className="convo-title" title={displayTitle}>{displayTitle}</span>
-        )}
-        {!editing && metaItems.length > 0 && (
-          <span className="convo-meta" aria-label={metaItems.join(" · ")}>
+        ) : null}
+      </div>
+      {!editing && (
+        <button
+          type="button"
+          className="convo-main"
+          aria-current={row.id === activeId ? "page" : undefined}
+          aria-label={rowLabel}
+          onClick={() => void resumeConversation(row.id)}
+        >
+          <span className="convo-title-zone">
             {isRequirement && (
-              <span className="convo-chip source">{t("convoSourceRequirementShort")}</span>
+              <span className="convo-chip source" aria-hidden="true">
+                {t("convoSourceRequirementShort")}
+              </span>
             )}
-            {statusLabel && <span className="convo-chip status">{statusLabel}</span>}
-            {project?.name && <span className="convo-meta-text">{project.name}</span>}
-            {timeLabel && <span className="convo-meta-text">{timeLabel}</span>}
+            <span className="convo-title">{displayTitle}</span>
+            {unreadCount > 0 && isActiveRun && (
+              <span className="convo-unread-dot" aria-hidden="true" />
+            )}
           </span>
-        )}
-        <div className="convo-actions">
+          <span className="convo-row-meta" aria-hidden="true">
+            {isActiveRun ? (
+              <span className="convo-spinner" />
+            ) : unreadCount > 0 ? (
+              <span className="convo-unread-badge">
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </span>
+            ) : (
+              <span className="convo-time">{timeLabel}</span>
+            )}
+            {project?.name && <span className="sr-only">{project.name}</span>}
+          </span>
+        </button>
+      )}
+      <div className="convo-actions">
           <button
             type="button"
             className={"convo-action pin" + (isPinned ? " active" : "")}
@@ -121,6 +161,23 @@ export function ConvoRow({ row, isPinned }: Props) {
               <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4Z" />
             </svg>
           </button>
+          {!isAbandoned && (
+            <button
+              type="button"
+              className="convo-action abandon"
+              title={t("abandonHint")}
+              aria-label={t("abandon")}
+              onClick={(e) => {
+                e.stopPropagation();
+                void abandonConversation(row.id);
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+              </svg>
+            </button>
+          )}
           <button
             type="button"
             className="convo-action delete"
@@ -128,7 +185,6 @@ export function ConvoRow({ row, isPinned }: Props) {
             aria-label={t("delete")}
             onClick={(e) => { e.stopPropagation(); void deleteConversation(row.id); }}
           >×</button>
-        </div>
       </div>
     </li>
   );

@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use harness_core::{
-    ActivityStore, Agent, AgentConfig, AgentProfileStore, CommentStore, ConversationStore,
-    DocStore, EvalStore, LabelStore, LlmProvider, ObservabilityStore, PermissionMode,
-    PermissionStore, ProjectMemoryStore, ProjectStore, RequirementRunStore, RequirementStore,
-    TodoStore, ToolRegistry,
+    ActivityStore, Agent, AgentConfig, AgentProfileStore, ChannelInstanceStore, CommentStore,
+    ConversationStore, DocStore, EvalStore, LabelStore, LlmProvider, ObservabilityStore,
+    PermissionMode, PermissionStore, ProjectMemoryStore, ProjectStore, RequirementRunStore,
+    RequirementStore, TodoStore, ToolRegistry,
 };
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
@@ -205,6 +205,11 @@ pub struct AppState {
     /// frames. `None` ⇒ no audit trail recorded; the GET endpoint
     /// returns 503.
     pub activities: Option<Arc<dyn ActivityStore>>,
+    /// User-configured channel instances (Settings → Channels). When
+    /// `Some(_)` the `/v1/channels*` REST surface is reachable and
+    /// the M2 outbound senders use it to look up credentials. `None`
+    /// ⇒ all `/v1/channels*` endpoints return 503.
+    pub channel_instances: Option<Arc<dyn ChannelInstanceStore>>,
     /// Optional persistent named-agent-profile store. When
     /// `Some(_)`, the Settings page's Agents tab and the kanban
     /// card assignee picker work; `start_run` looks up the
@@ -333,6 +338,7 @@ impl AppState {
             requirements: None,
             requirement_runs: None,
             activities: None,
+            channel_instances: None,
             agent_profiles: None,
             docs: None,
             comments: None,
@@ -383,6 +389,7 @@ impl AppState {
             requirements: None,
             requirement_runs: None,
             activities: None,
+            channel_instances: None,
             agent_profiles: None,
             docs: None,
             comments: None,
@@ -540,6 +547,18 @@ impl AppState {
     /// `GET /v1/requirements/:id/activities` endpoint returns 503.
     pub fn with_activity_store(mut self, store: Arc<dyn ActivityStore>) -> Self {
         self.activities = Some(store);
+        self
+    }
+
+    /// Wire in the persistent Channel-instance store (Settings →
+    /// Channels). Without one, every `/v1/channels*` endpoint
+    /// returns 503 and the corresponding Settings tab renders an
+    /// "unconfigured" placeholder.
+    pub fn with_channel_instance_store(
+        mut self,
+        store: Arc<dyn ChannelInstanceStore>,
+    ) -> Self {
+        self.channel_instances = Some(store);
         self
     }
 

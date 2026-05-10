@@ -44,13 +44,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, Comment, CommentEvent, CommentStore, Conversation, ConversationMetadata,
-    ConversationRecord, ConversationStore, DashboardSnapshot, DocDraft, DocEvent, DocProject,
-    DocStore, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteRun, Label, LabelEvent,
-    LabelStore, Message, MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome,
-    ObservedRun, ObservedSpanSummary, Project, ProjectStore, Requirement, RequirementEvent,
-    RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore, Tenant,
-    TenantStore, TimeWindow, TodoEvent, TodoItem, TodoStore,
+    BoxError, ChannelBinding, ChannelBindingStore, Comment, CommentEvent, CommentStore,
+    Conversation, ConversationLifecycle, ConversationMetadata, ConversationRecord,
+    ConversationStore, DashboardSnapshot,
+    DocDraft, DocEvent, DocProject, DocStore, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore,
+    EvalSuiteRun, Label, LabelEvent, LabelStore, Message, MetricPoint, ObservabilityFilter,
+    ObservabilityStore, ObservedOutcome, ObservedRun, ObservedSpanSummary, Project, ProjectStore,
+    Requirement, RequirementEvent, RequirementRun, RequirementRunEvent, RequirementRunStore,
+    RequirementStore, Tenant, TenantStore, TimeWindow, TodoEvent, TodoItem, TodoStore,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -91,6 +92,11 @@ struct OnDiskConversation {
     messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project_id: Option<String>,
+    /// User-driven lifecycle. Default `Active` so legacy rows decode
+    /// cleanly. Skipped on serialise when default to keep the on-disk
+    /// JSON compact for the common case.
+    #[serde(default, skip_serializing_if = "ConversationLifecycle::is_default")]
+    lifecycle: ConversationLifecycle,
 }
 
 #[async_trait]
@@ -119,6 +125,7 @@ impl ConversationStore for JsonFileConversationStore {
             updated_at: now,
             messages: conversation.messages.clone(),
             project_id: metadata.project_id.clone(),
+            lifecycle: metadata.lifecycle,
         };
         let bytes = serde_json::to_vec_pretty(&stored).map_err(StoreError::from)?;
         atomic_write(&path, &bytes).await
@@ -142,6 +149,7 @@ impl ConversationStore for JsonFileConversationStore {
         };
         let meta = ConversationMetadata {
             project_id: stored.project_id,
+            lifecycle: stored.lifecycle,
         };
         Ok(Some((conv, meta)))
     }
@@ -183,6 +191,7 @@ impl ConversationStore for JsonFileConversationStore {
                 updated_at: stored.updated_at,
                 message_count: stored.messages.len(),
                 project_id: stored.project_id,
+                lifecycle: stored.lifecycle,
             });
         }
         // Newest first by updated_at — RFC 3339 strings are
@@ -271,11 +280,39 @@ impl ProjectStore for JsonFileProjectStore {
 
     async fn delete(&self, id: &str) -> Result<bool, BoxError> {
         let path = self.path_for(id);
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(Box::new(e)),
+        let removed = match tokio::fs::remove_file(&path).await {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(Box::new(e)),
+        };
+        // Cascade: nuke the project's requirement / run / activity /
+        // comment subtrees that the sibling stores keyed under
+        // `<base>/<store>/<id>/`. Without this they linger on disk
+        // forever (kanban can't see them, but `list_all`-style
+        // reports — e.g. WorkOverview's run rollup — happily count
+        // them, and slug reuse trips uniqueness).
+        if let Some(base) = self.dir.parent() {
+            let encoded_pid = encode_id(id);
+            let req_dir = base.join("requirements").join(&encoded_pid);
+            let req_ids = collect_dir_ids(&req_dir).await;
+            let _ = remove_dir_all_if_exists(&req_dir).await;
+            for rid in &req_ids {
+                let encoded_rid = encode_id(rid);
+                let _ = remove_dir_all_if_exists(
+                    &base.join("requirement_runs").join(&encoded_rid),
+                )
+                .await;
+                let _ = remove_dir_all_if_exists(
+                    &base.join("activities").join(&encoded_rid),
+                )
+                .await;
+                let _ = remove_dir_all_if_exists(
+                    &base.join("comments").join(&encoded_rid),
+                )
+                .await;
+            }
         }
+        Ok(removed)
     }
 
     async fn archive(&self, id: &str) -> Result<bool, BoxError> {
@@ -567,17 +604,36 @@ impl RequirementStore for JsonFileRequirementStore {
         let Some((path, item)) = self.find_by_id(id).await? else {
             return Ok(false);
         };
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => {
-                let _ = self.tx.send(RequirementEvent::Deleted {
-                    project_id: item.project_id,
-                    id: item.id,
-                });
-                Ok(true)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(Box::new(e)),
+        let removed = match tokio::fs::remove_file(&path).await {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(Box::new(e)),
+        };
+        // Cascade: nuke runs / activities / comments keyed under this
+        // requirement id. Without this the rows linger on disk and
+        // `list_all` style reports keep counting them (the
+        // requirement_title / project_name joins resolve to None and
+        // the UI shows "(deleted)" rows).
+        let encoded_rid = encode_id(&item.id);
+        let _ = remove_dir_all_if_exists(
+            &self.base.join("requirement_runs").join(&encoded_rid),
+        )
+        .await;
+        let _ = remove_dir_all_if_exists(
+            &self.base.join("activities").join(&encoded_rid),
+        )
+        .await;
+        let _ = remove_dir_all_if_exists(
+            &self.base.join("comments").join(&encoded_rid),
+        )
+        .await;
+        if removed {
+            let _ = self.tx.send(RequirementEvent::Deleted {
+                project_id: item.project_id,
+                id: item.id,
+            });
         }
+        Ok(removed)
     }
 
     fn subscribe(&self) -> broadcast::Receiver<RequirementEvent> {
@@ -1811,6 +1867,212 @@ where
     counts
 }
 
+/// On-disk [`ChannelBindingStore`].
+///
+/// Single JSON file `channel_bindings.json` under the base
+/// directory holding every binding as one flat array. Bindings are
+/// tiny (≈200 bytes each) and total volume scales with chats × channels,
+/// not messages — even a heavy multi-channel deployment stays well
+/// under a megabyte. The whole file is rewritten atomically on every
+/// mutation, same pattern as [`crate::WorkspaceStore`].
+pub struct JsonFileChannelBindingStore {
+    path: PathBuf,
+    state: tokio::sync::RwLock<Vec<ChannelBinding>>,
+}
+
+impl JsonFileChannelBindingStore {
+    /// Open or create the store under `base_dir`. `base_dir` is
+    /// shared with the conversation / project files; the bindings
+    /// file sits at `<base_dir>/channel_bindings.json`. Missing /
+    /// empty / corrupt files start as an empty registry — same
+    /// degradation policy as `WorkspaceStore`.
+    pub fn open(base_dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base_dir.into();
+        ensure_dir(&base)?;
+        let path = base.join("channel_bindings.json");
+        let initial = match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice::<Vec<ChannelBinding>>(
+                &bytes,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "channel_bindings.json parse failed; starting empty"
+                    );
+                    Vec::new()
+                }
+            },
+            _ => Vec::new(),
+        };
+        Ok(Self {
+            path,
+            state: tokio::sync::RwLock::new(initial),
+        })
+    }
+
+    async fn flush(&self, snapshot: &[ChannelBinding]) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(snapshot)?;
+        atomic_write(&self.path, &bytes).await
+    }
+}
+
+#[async_trait]
+impl ChannelBindingStore for JsonFileChannelBindingStore {
+    async fn upsert(&self, binding: &ChannelBinding) -> Result<(), BoxError> {
+        let mut guard = self.state.write().await;
+        if let Some(slot) = guard.iter_mut().find(|b| {
+            b.channel == binding.channel && b.channel_chat_id == binding.channel_chat_id
+        }) {
+            *slot = binding.clone();
+        } else {
+            guard.push(binding.clone());
+        }
+        let snapshot = guard.clone();
+        drop(guard);
+        self.flush(&snapshot).await
+    }
+
+    async fn lookup(
+        &self,
+        channel: &str,
+        channel_chat_id: &str,
+    ) -> Result<Option<ChannelBinding>, BoxError> {
+        let guard = self.state.read().await;
+        Ok(guard
+            .iter()
+            .find(|b| b.channel == channel && b.channel_chat_id == channel_chat_id)
+            .cloned())
+    }
+
+    async fn list_for_channel(&self, channel: &str) -> Result<Vec<ChannelBinding>, BoxError> {
+        let guard = self.state.read().await;
+        let mut rows: Vec<ChannelBinding> =
+            guard.iter().filter(|b| b.channel == channel).cloned().collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn delete(&self, channel: &str, channel_chat_id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.state.write().await;
+        let before = guard.len();
+        guard.retain(|b| !(b.channel == channel && b.channel_chat_id == channel_chat_id));
+        let removed = before != guard.len();
+        if !removed {
+            return Ok(false);
+        }
+        let snapshot = guard.clone();
+        drop(guard);
+        self.flush(&snapshot).await?;
+        Ok(true)
+    }
+
+    async fn delete_for_conversation(&self, conversation_id: &str) -> Result<usize, BoxError> {
+        let mut guard = self.state.write().await;
+        let before = guard.len();
+        guard.retain(|b| b.conversation_id != conversation_id);
+        let removed = before - guard.len();
+        if removed == 0 {
+            return Ok(0);
+        }
+        let snapshot = guard.clone();
+        drop(guard);
+        self.flush(&snapshot).await?;
+        Ok(removed)
+    }
+}
+
+/// JSON-file [`ChannelInstanceStore`] sibling. Same single-file
+/// pattern as `JsonFileChannelBindingStore` — stored at
+/// `<base_dir>/channel_instances.json`. Volume is bounded by what
+/// the operator configures in Settings (typically <20 rows), so the
+/// whole-file rewrite on every mutation is cheap.
+pub struct JsonFileChannelInstanceStore {
+    path: PathBuf,
+    state: tokio::sync::RwLock<Vec<harness_core::ChannelInstance>>,
+}
+
+impl JsonFileChannelInstanceStore {
+    pub fn open(base_dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base_dir.into();
+        ensure_dir(&base)?;
+        let path = base.join("channel_instances.json");
+        let initial = match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice::<
+                Vec<harness_core::ChannelInstance>,
+            >(&bytes)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "channel_instances.json parse failed; starting empty"
+                    );
+                    Vec::new()
+                }
+            },
+            _ => Vec::new(),
+        };
+        Ok(Self {
+            path,
+            state: tokio::sync::RwLock::new(initial),
+        })
+    }
+
+    async fn flush(&self, snapshot: &[harness_core::ChannelInstance]) -> Result<(), BoxError> {
+        let bytes = serde_json::to_vec_pretty(snapshot)?;
+        atomic_write(&self.path, &bytes).await
+    }
+}
+
+#[async_trait]
+impl harness_core::ChannelInstanceStore for JsonFileChannelInstanceStore {
+    async fn upsert(
+        &self,
+        instance: &harness_core::ChannelInstance,
+    ) -> Result<(), BoxError> {
+        let mut guard = self.state.write().await;
+        if let Some(slot) = guard.iter_mut().find(|i| i.id == instance.id) {
+            *slot = instance.clone();
+        } else {
+            guard.push(instance.clone());
+        }
+        let snapshot = guard.clone();
+        drop(guard);
+        self.flush(&snapshot).await
+    }
+
+    async fn get(
+        &self,
+        id: &str,
+    ) -> Result<Option<harness_core::ChannelInstance>, BoxError> {
+        let guard = self.state.read().await;
+        Ok(guard.iter().find(|i| i.id == id).cloned())
+    }
+
+    async fn list(&self) -> Result<Vec<harness_core::ChannelInstance>, BoxError> {
+        let guard = self.state.read().await;
+        let mut rows: Vec<harness_core::ChannelInstance> = guard.clone();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.state.write().await;
+        let before = guard.len();
+        guard.retain(|i| i.id != id);
+        if before == guard.len() {
+            return Ok(false);
+        }
+        let snapshot = guard.clone();
+        drop(guard);
+        self.flush(&snapshot).await?;
+        Ok(true)
+    }
+}
+
 fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
     std::fs::create_dir_all(dir)
         .map_err(|e| StoreError::Other(format!("create {}: {e}", dir.display()).into()))?;
@@ -1834,6 +2096,46 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), BoxError> {
     }
     tokio::fs::rename(&tmp, path).await?;
     Ok(())
+}
+
+// ---------- cascade-delete helpers ----------
+
+/// Read every `<rid>.json` file under `dir` and return the row's `id`
+/// field. Used by `ProjectStore::delete` to know which requirement
+/// subtrees to nuke. Returns an empty vec if the directory doesn't
+/// exist or any individual file is unreadable / malformed —
+/// best-effort cleanup, never the source of truth.
+async fn collect_dir_ids(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(_) => return out,
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            continue;
+        }
+        let bytes = match tokio::fs::read(entry.path()).await {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    out
+}
+
+async fn remove_dir_all_if_exists(dir: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir_all(dir).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 // ---------- id <-> filename ----------
@@ -2254,6 +2556,95 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    #[tokio::test]
+    async fn requirement_delete_cascades_runs_activities_comments() {
+        use harness_core::{Activity, ActivityActor, ActivityKind};
+        use serde_json::json;
+        let dir = tempdir().unwrap();
+        let req_store = JsonFileRequirementStore::open(dir.path()).unwrap();
+        let run_store = JsonFileRequirementRunStore::open(dir.path()).unwrap();
+        let act_store = JsonFileActivityStore::open(dir.path()).unwrap();
+
+        let r = Requirement::new("p-1", "X");
+        req_store.upsert(&r).await.unwrap();
+        let run = RequirementRun::new(&r.id, "conv-1");
+        run_store.upsert(&run).await.unwrap();
+        let act = Activity::new(
+            &r.id,
+            ActivityKind::StatusChange,
+            ActivityActor::System,
+            json!({}),
+        );
+        act_store.append(&act).await.unwrap();
+
+        assert!(req_store.delete(&r.id).await.unwrap());
+        // The cascaded subtrees are gone — list returns empty for both.
+        assert!(run_store
+            .list_for_requirement(&r.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(act_store
+            .list_for_requirement(&r.id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn project_delete_cascades_to_requirements_and_runs() {
+        use harness_core::{Activity, ActivityActor, ActivityKind};
+        use serde_json::json;
+        let dir = tempdir().unwrap();
+        let proj_store = JsonFileProjectStore::open(dir.path()).unwrap();
+        let req_store = JsonFileRequirementStore::open(dir.path()).unwrap();
+        let run_store = JsonFileRequirementRunStore::open(dir.path()).unwrap();
+        let act_store = JsonFileActivityStore::open(dir.path()).unwrap();
+
+        let p = Project::new("zombie", "Zombie").with_slug("zombie");
+        proj_store.save(&p).await.unwrap();
+        let r1 = Requirement::new(&p.id, "r1");
+        let r2 = Requirement::new(&p.id, "r2");
+        req_store.upsert(&r1).await.unwrap();
+        req_store.upsert(&r2).await.unwrap();
+        run_store
+            .upsert(&RequirementRun::new(&r1.id, "c-r1"))
+            .await
+            .unwrap();
+        run_store
+            .upsert(&RequirementRun::new(&r2.id, "c-r2"))
+            .await
+            .unwrap();
+        act_store
+            .append(&Activity::new(
+                &r1.id,
+                ActivityKind::StatusChange,
+                ActivityActor::System,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        assert!(proj_store.delete(&p.id).await.unwrap());
+
+        assert!(req_store.list(&p.id).await.unwrap().is_empty());
+        assert!(run_store
+            .list_for_requirement(&r1.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(run_store
+            .list_for_requirement(&r2.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(act_store
+            .list_for_requirement(&r1.id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
     // ---- RequirementRunStore --------------------------------------------
 
     use harness_core::RequirementRunStatus;
@@ -2585,5 +2976,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(regression_rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn channel_binding_persists_across_reopen() {
+        let dir = tempdir().unwrap();
+        {
+            let store = JsonFileChannelBindingStore::open(dir.path()).unwrap();
+            store
+                .upsert(&ChannelBinding::new(
+                    "wecom",
+                    "g1",
+                    "conv-1",
+                    Some("u1".into()),
+                    Some("Alice".into()),
+                ))
+                .await
+                .unwrap();
+            store
+                .upsert(&ChannelBinding::new("feishu", "f1", "conv-1", None, None))
+                .await
+                .unwrap();
+        }
+        // Re-open: state must come back from disk.
+        let store = JsonFileChannelBindingStore::open(dir.path()).unwrap();
+        let got = store.lookup("wecom", "g1").await.unwrap().unwrap();
+        assert_eq!(got.conversation_id, "conv-1");
+        assert_eq!(got.display_name.as_deref(), Some("Alice"));
+
+        // delete_for_conversation cleans both bindings + flushes.
+        let n = store.delete_for_conversation("conv-1").await.unwrap();
+        assert_eq!(n, 2);
+        // And the on-disk file reflects it after re-open.
+        let store2 = JsonFileChannelBindingStore::open(dir.path()).unwrap();
+        assert!(store2.lookup("wecom", "g1").await.unwrap().is_none());
+        assert!(store2.lookup("feishu", "f1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn channel_binding_upsert_overwrites_same_key() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileChannelBindingStore::open(dir.path()).unwrap();
+        store
+            .upsert(&ChannelBinding::new("wecom", "g1", "conv-old", None, None))
+            .await
+            .unwrap();
+        store
+            .upsert(&ChannelBinding::new("wecom", "g1", "conv-new", None, None))
+            .await
+            .unwrap();
+        let got = store.lookup("wecom", "g1").await.unwrap().unwrap();
+        assert_eq!(got.conversation_id, "conv-new");
+        // Only one row exists for the channel.
+        let rows = store.list_for_channel("wecom").await.unwrap();
+        assert_eq!(rows.len(), 1);
     }
 }

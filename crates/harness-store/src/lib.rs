@@ -38,15 +38,16 @@ mod workspace;
 
 pub use error::StoreError;
 pub use json_file::{
-    JsonFileActivityStore, JsonFileAgentProfileStore, JsonFileCommentStore,
-    JsonFileConversationStore, JsonFileDocStore, JsonFileEvalStore, JsonFileLabelStore,
-    JsonFileObservabilityStore, JsonFileProjectStore, JsonFileRequirementRunStore,
-    JsonFileRequirementStore, JsonFileTenantStore, JsonFileTodoStore,
+    JsonFileActivityStore, JsonFileAgentProfileStore, JsonFileChannelBindingStore,
+    JsonFileChannelInstanceStore, JsonFileCommentStore, JsonFileConversationStore, JsonFileDocStore,
+    JsonFileEvalStore, JsonFileLabelStore, JsonFileObservabilityStore, JsonFileProjectStore,
+    JsonFileRequirementRunStore, JsonFileRequirementStore, JsonFileTenantStore, JsonFileTodoStore,
 };
 pub use memory::{
-    MemoryActivityStore, MemoryAgentProfileStore, MemoryCommentStore, MemoryConversationStore,
-    MemoryDocStore, MemoryLabelStore, MemoryProjectMemoryStore, MemoryProjectStore,
-    MemoryRequirementRunStore, MemoryRequirementStore, MemoryTenantStore, MemoryTodoStore,
+    MemoryActivityStore, MemoryAgentProfileStore, MemoryChannelBindingStore,
+    MemoryChannelInstanceStore, MemoryCommentStore, MemoryConversationStore, MemoryDocStore,
+    MemoryLabelStore, MemoryProjectMemoryStore, MemoryProjectStore, MemoryRequirementRunStore,
+    MemoryRequirementStore, MemoryTenantStore, MemoryTodoStore,
 };
 pub use permission::JsonFilePermissionStore;
 pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, WorkspaceStore};
@@ -81,9 +82,9 @@ pub use mysql::{
 use std::sync::Arc;
 
 use harness_core::{
-    ActivityStore, AgentProfileStore, CommentStore, ConversationStore, DocStore, EvalStore,
-    LabelStore, ObservabilityStore, ProjectStore, RequirementRunStore, RequirementStore,
-    TenantStore, TodoStore,
+    ActivityStore, AgentProfileStore, ChannelBindingStore, ChannelInstanceStore, CommentStore,
+    ConversationStore, DocStore, EvalStore, LabelStore, ObservabilityStore, ProjectStore,
+    RequirementRunStore, RequirementStore, TenantStore, TodoStore,
 };
 
 /// Bundle of stores returned by [`connect_all`]. The backends share
@@ -121,6 +122,20 @@ pub struct StoreBundle {
     pub labels: Arc<dyn LabelStore>,
     /// Multi-tenant isolation boundary store.
     pub tenants: Arc<dyn TenantStore>,
+    /// Persistent map from external chats (Feishu / DingTalk / WeCom
+    /// group or DM ids) to Jarvis conversation ids. Channel adapter
+    /// plugins consult this on every inbound message.
+    /// JSON-file is the canonical backend; SQL deployments fall
+    /// back to in-memory until a SQL impl lands. See
+    /// `docs/proposals/channel-plugins.md`.
+    pub channel_bindings: Arc<dyn ChannelBindingStore>,
+    /// User-configured channel instances (Settings → Channels rows).
+    /// One row per WeCom robot / WeChat MP / Feishu bot the operator
+    /// hooked up. Distinct from `channel_bindings`: these are the
+    /// "what's plugged in" rows, bindings are the per-chat lookups.
+    /// JSON-file is canonical; SQL deployments fall back to in-memory
+    /// until a SQL impl lands.
+    pub channel_instances: Arc<dyn ChannelInstanceStore>,
 }
 
 /// Open both stores for a given database URL. The scheme selects the
@@ -151,6 +166,10 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let comments = Arc::new(JsonFileCommentStore::open(&path)?) as Arc<dyn CommentStore>;
             let labels = Arc::new(JsonFileLabelStore::open(&path)?) as Arc<dyn LabelStore>;
             let tenants = Arc::new(JsonFileTenantStore::open(&path)?) as Arc<dyn TenantStore>;
+            let channel_bindings =
+                Arc::new(JsonFileChannelBindingStore::open(&path)?) as Arc<dyn ChannelBindingStore>;
+            let channel_instances = Arc::new(JsonFileChannelInstanceStore::open(&path)?)
+                as Arc<dyn ChannelInstanceStore>;
             Ok(StoreBundle {
                 conversations,
                 projects,
@@ -163,6 +182,8 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 comments,
                 labels,
                 tenants,
+                channel_bindings,
+                channel_instances,
             })
         }
         #[cfg(feature = "sqlite")]
@@ -180,6 +201,14 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let comments = SqliteCommentStore::from_pool(conv.pool());
             let labels = SqliteLabelStore::from_pool(conv.pool());
             let tenants = SqliteTenantStore::from_pool(conv.pool());
+            // No SQL channel-binding impl yet — falls back to in-memory.
+            // Bindings won't survive restarts under sqlite/postgres/mysql
+            // until the SQL backends are written. Documented in
+            // `docs/proposals/channel-plugins.md`.
+            let channel_bindings =
+                Arc::new(MemoryChannelBindingStore::new()) as Arc<dyn ChannelBindingStore>;
+            let channel_instances =
+                Arc::new(MemoryChannelInstanceStore::new()) as Arc<dyn ChannelInstanceStore>;
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -192,6 +221,8 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 comments: Arc::new(comments),
                 labels: Arc::new(labels),
                 tenants: Arc::new(tenants),
+                channel_bindings,
+                channel_instances,
             })
         }
         #[cfg(feature = "postgres")]
@@ -207,6 +238,13 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let comments = PostgresCommentStore::from_pool(conv.pool());
             let labels = PostgresLabelStore::from_pool(conv.pool());
             let tenants = ephemeral_tenants("postgres");
+            let channel_bindings =
+                Arc::new(MemoryChannelBindingStore::new()) as Arc<dyn ChannelBindingStore>;
+            // SQL ChannelInstanceStore not yet implemented — use
+            // in-memory. Settings → Channels rows won't persist
+            // across SQL-deployment restarts until that lands.
+            let channel_instances =
+                Arc::new(MemoryChannelInstanceStore::new()) as Arc<dyn ChannelInstanceStore>;
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -219,6 +257,8 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 comments: Arc::new(comments),
                 labels: Arc::new(labels),
                 tenants,
+                channel_bindings,
+                channel_instances,
             })
         }
         #[cfg(feature = "mysql")]
@@ -234,6 +274,13 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             let comments = MysqlCommentStore::from_pool(conv.pool());
             let labels = MysqlLabelStore::from_pool(conv.pool());
             let tenants = ephemeral_tenants("mysql");
+            let channel_bindings =
+                Arc::new(MemoryChannelBindingStore::new()) as Arc<dyn ChannelBindingStore>;
+            // SQL ChannelInstanceStore not yet implemented — use
+            // in-memory. Settings → Channels rows won't persist
+            // across SQL-deployment restarts until that lands.
+            let channel_instances =
+                Arc::new(MemoryChannelInstanceStore::new()) as Arc<dyn ChannelInstanceStore>;
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -246,6 +293,8 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 comments: Arc::new(comments),
                 labels: Arc::new(labels),
                 tenants,
+                channel_bindings,
+                channel_instances,
             })
         }
         other => Err(StoreError::UnsupportedScheme(other.to_string())),

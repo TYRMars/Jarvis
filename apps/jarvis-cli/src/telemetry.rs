@@ -7,8 +7,9 @@
 //!
 //! The CLI defaults its `EnvFilter` baseline to `warn` (vs the
 //! server's `info`) so streamed assistant text on stdout stays
-//! pipe-clean. The baseline is bumped to `info` automatically when
-//! OTel is enabled — otherwise the exporter would have nothing to
+//! pipe-clean. OTLP export is enabled by default and can be disabled
+//! with `JARVIS_OTEL_ENABLED=0` / `false`; when enabled, the baseline
+//! is bumped to `info` automatically so the exporter has spans to
 //! send.
 
 use opentelemetry::trace::TracerProvider as _;
@@ -32,15 +33,15 @@ impl Drop for TelemetryGuard {
     }
 }
 
-fn env_flag(key: &str) -> bool {
+fn env_flag_default(key: &str, default: bool) -> bool {
     match std::env::var(key) {
         Ok(v) => !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"),
-        Err(_) => false,
+        Err(_) => default,
     }
 }
 
 pub fn init() -> TelemetryGuard {
-    let enabled = env_flag("JARVIS_OTEL_ENABLED");
+    let enabled = env_flag_default("JARVIS_OTEL_ENABLED", true);
     let baseline = if std::env::var("RUST_LOG").is_err() && enabled {
         "info"
     } else {

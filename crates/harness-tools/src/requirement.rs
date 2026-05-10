@@ -62,9 +62,10 @@
 //! REST callers (humans hitting `POST /v1/projects/:id/requirements`)
 //! still default to [`TriageState::Approved`] for back-compat.
 //!
-//! The one human-only gate is the `Review → Done` transition,
-//! enforced structurally: `requirement.complete` simply cannot
-//! write `Done`.
+//! Completion is now driven by Jarvis against the requirement's
+//! execution checklist. `requirement.complete` still writes Review
+//! for a claimed "ready" state; auto mode only moves to Done after
+//! the durable checklist is satisfied.
 //!
 //! Tools are registered conditionally — both
 //! `BuiltinsConfig::requirement_store` AND `activity_store` must
@@ -783,9 +784,10 @@ impl Tool for RequirementCreateTool {
          Optional `verification_plan.commands` (e.g. \
          [\"cargo test\"]) pin the verification gate that runs after \
          each agent run finishes. Optional `depends_on` lists other \
-         requirement ids that must reach `done` first. Optional \
-         `todos` stores structured work/check/ci/deploy/review/manual \
-         checklist items with command and evidence fields."
+         requirement ids that must reach `done` first. `todos` is the \
+         Jarvis-owned execution checklist used as the completion \
+         contract; provide it when generating requirements, otherwise \
+         Jarvis initializes a conservative default from the plan."
     }
 
     fn parameters(&self) -> Value {
@@ -812,7 +814,7 @@ impl Tool for RequirementCreateTool {
                 },
                 "todos": {
                     "type": "array",
-                    "description": "Structured execution/checklist items for this requirement. Use for CI/CD commands, deploy checks, manual QA, or review gates that should be inspectable later.",
+                    "description": "Jarvis-owned execution checklist for this requirement. Use for work steps, CI/CD commands, deploy checks, QA, or review gates that should be inspectable later and used to decide completion.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -827,7 +829,6 @@ impl Tool for RequirementCreateTool {
                         "required": ["title"]
                     }
                 },
-                "assignee_id": { "type": "string", "description": "Optional AgentProfile id to pin." },
                 "triage_state": {
                     "type": "string",
                     "enum": ["approved", "proposed_by_agent", "proposed_by_scan"],
@@ -857,8 +858,6 @@ impl Tool for RequirementCreateTool {
             depends_on: Option<Vec<String>>,
             #[serde(default)]
             todos: Option<Vec<RequirementTodoInput>>,
-            #[serde(default)]
-            assignee_id: Option<String>,
             #[serde(default)]
             triage_state: Option<String>,
         }
@@ -897,14 +896,7 @@ impl Tool for RequirementCreateTool {
                 req.todos.push(todo_from_input(todo)?);
             }
         }
-        if let Some(a) = parsed
-            .assignee_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            req.assignee_id = Some(a.to_string());
-        }
+        req.ensure_execution_checklist();
         req.triage_state = triage_state;
 
         self.store.upsert(&req).await?;
@@ -951,9 +943,10 @@ impl Tool for RequirementUpdateTool {
     fn description(&self) -> &str {
         "Update mutable metadata on an existing requirement. Pass any \
          subset of {title, description, verification_plan, depends_on, \
-         todos, assignee_id, triage_state} — omitted fields keep their current \
-         value. To clear `description`, pass an empty string. To clear \
-         `assignee_id` pass an empty string. Status transitions go \
+         todos, triage_state} — omitted fields keep their current \
+         value. To clear `description`, pass an empty string. `todos` \
+         replaces the Jarvis-owned execution checklist used as the \
+         completion contract. Status transitions go \
          through requirement.{start,complete,block} instead, not this \
          tool."
     }
@@ -969,10 +962,9 @@ impl Tool for RequirementUpdateTool {
                 "depends_on": { "type": "array", "items": { "type": "string" } },
                 "todos": {
                     "type": "array",
-                    "description": "Replace the full structured TODO/checklist list. Each item supports title, kind, status, command, evidence, depends_on, created_by.",
+                    "description": "Replace the full Jarvis-owned execution checklist. Each item supports title, kind, status, command, evidence, depends_on, created_by.",
                     "items": { "type": "object" }
                 },
-                "assignee_id": { "type": "string", "description": "Empty string clears." },
                 "triage_state": {
                     "type": "string",
                     "enum": ["approved", "proposed_by_agent", "proposed_by_scan"]
@@ -1000,8 +992,6 @@ impl Tool for RequirementUpdateTool {
             depends_on: Option<Vec<String>>,
             #[serde(default)]
             todos: Option<Vec<RequirementTodoInput>>,
-            #[serde(default)]
-            assignee_id: Option<String>,
             #[serde(default)]
             triage_state: Option<String>,
         }
@@ -1057,24 +1047,15 @@ impl Tool for RequirementUpdateTool {
             item.todos = parsed_todos;
             changed = true;
         }
-        if let Some(a) = parsed.assignee_id {
-            let trimmed = a.trim().to_string();
-            let new_assignee = if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            };
-            if item.assignee_id != new_assignee {
-                item.assignee_id = new_assignee;
-                changed = true;
-            }
-        }
         if let Some(raw) = parsed.triage_state.as_deref() {
             let parsed_state = parse_triage_state(Some(raw), TriageState::Approved)?;
             if item.triage_state != parsed_state {
                 item.triage_state = parsed_state;
                 changed = true;
             }
+        }
+        if item.ensure_execution_checklist() {
+            changed = true;
         }
         if !changed {
             return Ok(requirement_to_json(&item).to_string());
@@ -1700,16 +1681,23 @@ mod tests {
     async fn update_no_op_when_nothing_changes() {
         let (rs, acts) = fixtures();
         let r = seed(&rs, "p", "x").await;
-        let baseline = r.updated_at.clone();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-
+        let arc: Arc<dyn RequirementStore> = rs.clone();
+        // First update on a freshly-seeded row eagerly populates the
+        // execution checklist boilerplate (`ensure_execution_checklist`
+        // returns true), so the no-op check has to run *after* that
+        // first call has settled — otherwise we'd be asserting against
+        // the very write that introduces the checklist. Capture the
+        // baseline after the boilerplate has landed.
         let update = RequirementUpdateTool::new(rs.clone(), acts);
         update.invoke(json!({ "id": r.id })).await.unwrap();
-        let arc: Arc<dyn RequirementStore> = rs;
+        let baseline = arc.get(&r.id).await.unwrap().unwrap().updated_at;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        update.invoke(json!({ "id": r.id })).await.unwrap();
         let after = arc.get(&r.id).await.unwrap().unwrap();
         assert_eq!(
             after.updated_at, baseline,
-            "no-op should not touch updated_at"
+            "no-op should not touch updated_at once the checklist is in place"
         );
     }
 

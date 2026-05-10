@@ -30,7 +30,6 @@
 // `apps/jarvis-web/src/types/frames.ts`.
 
 import type {
-  AcceptancePolicy,
   Activity,
   Requirement,
   RequirementRun,
@@ -235,18 +234,9 @@ export interface UpdateRequirementInput {
   description?: string | null;
   status?: RequirementStatus;
   conversation_ids?: string[];
-  /// Phase 3.6: pass `null` to clear, a string id to assign, or
-  /// omit the key to leave unchanged. The wire shape mirrors —
-  /// `JSON.stringify` on `{assignee_id: null}` correctly emits
-  /// the `null` literal so the server's three-state deserializer
-  /// (Missing / Clear / Set) sees "Clear".
-  assignee_id?: string | null;
   /// Phase 3.8 — replace the label-id list. Order is preserved.
   /// Omit to leave as-is; pass `[]` to clear all chips.
   label_ids?: string[];
-  /// v1.0 SubAgent — flip the acceptance policy. Server returns 400
-  /// for unknown wire values.
-  acceptance_policy?: AcceptancePolicy;
 }
 
 /// Patch a Requirement. Optimistic — applies immediately to cache,
@@ -268,11 +258,7 @@ export function updateRequirement(
     ...(patch.conversation_ids !== undefined
       ? { conversation_ids: patch.conversation_ids }
       : {}),
-    ...("assignee_id" in patch ? { assignee_id: patch.assignee_id ?? null } : {}),
     ...(patch.label_ids !== undefined ? { label_ids: patch.label_ids } : {}),
-    ...(patch.acceptance_policy !== undefined
-      ? { acceptance_policy: patch.acceptance_policy }
-      : {}),
     updated_at: new Date().toISOString(),
   };
   upsertLocal(next);

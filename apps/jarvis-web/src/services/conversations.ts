@@ -86,6 +86,7 @@ export function newConversation(
 export async function resumeConversation(id: string): Promise<void> {
   const store = appStore.getState();
   if (store.activeId === id) {
+    store.clearConversationUnread(id);
     syncSessionRoute(id);
     return;
   }
@@ -121,6 +122,7 @@ export async function resumeConversation(id: string): Promise<void> {
     // socket for the same id) lands on the active path in
     // handleFrameForConversation, not the scoped-background path.
     store.setActiveId(id);
+    store.clearConversationUnread(id);
     syncSessionRoute(id);
     if (!sendFrame(frame)) {
       store.setLoadingConvoId(null);
@@ -156,9 +158,58 @@ export async function deleteConversation(id: string): Promise<void> {
     if (store.pinned.has(id)) store.togglePin(id);
     if (store.titleOverrides[id]) store.setTitleOverride(id, null);
     if (store.convoRouting[id]) store.setConvoRoutingFor(id, null);
+    store.clearConversationUnread(id);
     void refreshConvoList();
   } catch (e: any) {
     showError(t("deleteFailed", e.message));
+  }
+}
+
+/// User-facing lifecycle states matching the backend
+/// `ConversationLifecycle` enum. `active` is the default; `archived`
+/// soft-archives (still searchable on the archive page); `abandoned`
+/// is an explicit "I gave up on this" terminal that also cancels any
+/// linked non-terminal RequirementRuns server-side.
+export type ConversationLifecycle = "active" | "archived" | "abandoned";
+
+/// PATCH the conversation's lifecycle. Returns the new state on
+/// success. Idempotent: re-sending the same state just re-saves the
+/// row.
+export async function setConversationLifecycle(
+  id: string,
+  lifecycle: ConversationLifecycle,
+): Promise<{ lifecycle: ConversationLifecycle; previous_lifecycle: ConversationLifecycle }> {
+  const r = await fetch(
+    apiUrl(`/v1/conversations/${encodeURIComponent(id)}/lifecycle`),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ lifecycle }),
+    },
+  );
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`lifecycle ${r.status}: ${text || r.statusText}`);
+  }
+  return (await r.json()) as {
+    lifecycle: ConversationLifecycle;
+    previous_lifecycle: ConversationLifecycle;
+  };
+}
+
+/// Convenience: mark a conversation as `abandoned`. Confirms with the
+/// user first because this also cancels any linked non-terminal
+/// RequirementRuns. Returns true if the user confirmed and the
+/// server accepted; false if cancelled or errored.
+export async function abandonConversation(id: string): Promise<boolean> {
+  if (!confirm(t("abandonConfirm", id.slice(0, 8)))) return false;
+  try {
+    await setConversationLifecycle(id, "abandoned");
+    void refreshConvoList();
+    return true;
+  } catch (e: any) {
+    showError(t("abandonFailed", e?.message ?? String(e)));
+    return false;
   }
 }
 

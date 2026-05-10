@@ -8,8 +8,7 @@ Phase 1 of [otel-native-eval-harness.zh-CN.md](../proposals/otel-native-eval-har
 # 1. start collector + jaeger (localhost:4317 / localhost:16686)
 docker compose -f infra/otel/docker-compose.yml up -d
 
-# 2. run jarvis with the exporter on
-JARVIS_OTEL_ENABLED=1 \
+# 2. run jarvis (OTLP exporter is on by default)
 JARVIS_OTEL_ENDPOINT=http://127.0.0.1:4317 \
 OPENAI_API_KEY=sk-... \
 cargo run -p jarvis
@@ -48,7 +47,7 @@ SubAgent calls produce a `jarvis.subagent.run` span between the parent `gen_ai.t
 
 | Var | Default | Notes |
 | --- | --- | --- |
-| `JARVIS_OTEL_ENABLED` | unset | Any non-empty / non-`0` / non-`false` value enables the OTLP exporter. Unset = behaviour identical to pre-OTel (stderr fmt only). |
+| `JARVIS_OTEL_ENABLED` | enabled | OTLP exporter is on by default. Set `0` or `false` to disable it. |
 | `JARVIS_OTEL_ENDPOINT` | `http://127.0.0.1:4317` | OTLP collector endpoint. |
 | `JARVIS_OTEL_PROTOCOL` | `grpc` | `grpc` (default) or `http` / `http/protobuf`. |
 | `JARVIS_OTEL_SERVICE_NAME` | `jarvis` | OTel `service.name` resource attribute. |
@@ -57,7 +56,7 @@ SubAgent calls produce a `jarvis.subagent.run` span between the parent `gen_ai.t
 
 ## Failure mode
 
-If `JARVIS_OTEL_ENABLED=1` is set but the collector is unreachable, exporter batch failures land in stderr at WARN; the agent loop is unaffected. Spans buffered in the BatchSpanProcessor get dropped when the buffer fills.
+If OTLP is enabled but the collector is unreachable, exporter batch failures land in stderr at WARN; the agent loop is unaffected. Spans buffered in the BatchSpanProcessor get dropped when the buffer fills. Set `JARVIS_OTEL_ENABLED=0` to run with the stderr fmt logger only.
 
 ## Switching to Tempo / Phoenix / Langfuse
 

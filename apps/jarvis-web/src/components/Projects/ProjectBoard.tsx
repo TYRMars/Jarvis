@@ -170,20 +170,27 @@ export function ProjectBoard({
     return { boardRequirements: board, triageRequirements: triage };
   }, [filteredRequirements]);
 
-  const grouped = useMemo(() => {
+  const { grouped, orphans } = useMemo(() => {
     // Seed with the active column ids so empty lanes still render.
     // Requirements whose `status` doesn't match any current column id
-    // (e.g. a column was just removed) land in a synthetic bucket
-    // keyed by the orphan status — they're not displayed on the
-    // board, but the data isn't lost on disk and a future column
-    // edit can restore them.
+    // (e.g. a column was just removed) collect into a separate
+    // bucket and surface as a warning above the board so the data
+    // doesn't silently vanish when columns are edited.
     const map: Record<string, Requirement[]> = {};
     for (const c of cols) map[c.id] = [];
+    const orphans: Requirement[] = [];
     for (const r of boardRequirements) {
       if (map[r.status]) map[r.status].push(r);
+      else orphans.push(r);
     }
-    return map;
+    return { grouped: map, orphans };
   }, [boardRequirements, cols]);
+
+  const orphanStatuses = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of orphans) set.add(r.status);
+    return Array.from(set);
+  }, [orphans]);
 
   return (
     <section className="project-board" aria-label={`${project.name} board`}>
@@ -465,6 +472,25 @@ export function ProjectBoard({
               onChanged={onChanged}
               onOpenDetail={(id) => setSelectedId(id)}
             />
+          )}
+
+          {orphans.length > 0 && (
+            <div
+              className="project-board-orphan-banner"
+              role="alert"
+              aria-live="polite"
+            >
+              <span>
+                {t("boardOrphanedHint", orphans.length, orphanStatuses[0] ?? "")}
+              </span>
+              <button
+                type="button"
+                className="ghost-icon"
+                onClick={() => setEditingColumns(true)}
+              >
+                {t("boardEditColumns")}
+              </button>
+            </div>
           )}
 
           {/* Tailwind utility on the kanban frame: ensures the columns row
@@ -803,14 +829,6 @@ function RequirementCard({
           >
             {sessions}×
           </Link>
-        )}
-        {requirement.acceptance_policy === "human" && (
-          <span
-            className="requirement-card-acceptance-badge"
-            title={t("reqAcceptancePolicyHumanHint")}
-          >
-            {t("reqAcceptancePolicyHumanBadge")}
-          </span>
         )}
         <span className="requirement-card-spacer flex-1" />
         <span className="requirement-card-action-hint">{t("reqClickHint")}</span>

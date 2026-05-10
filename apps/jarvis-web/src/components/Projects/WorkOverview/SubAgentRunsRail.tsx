@@ -46,6 +46,7 @@ export function SubAgentRunsRail() {
   const [runs, setRuns] = useState<SubAgentRun[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let cancel = false;
@@ -57,6 +58,7 @@ export function SubAgentRunsRail() {
           setRuns(items);
           setError(null);
           setUnavailable(false);
+          setLoaded(true);
         }
       } catch (e) {
         if (cancel) return;
@@ -66,6 +68,7 @@ export function SubAgentRunsRail() {
         } else {
           setError(msg);
         }
+        setLoaded(true);
       }
     }
     void tick();
@@ -91,9 +94,11 @@ export function SubAgentRunsRail() {
     }
   }
 
-  if (unavailable) {
-    // Don't render an empty rail when the feature is off — the
-    // card slot would just be visual noise.
+  if (unavailable || !loaded || (!error && runs.length === 0)) {
+    // Don't render an empty rail when the feature is off, still
+    // loading, or simply has no recorded SubAgent invocations yet.
+    // The WorkOverview already has run/health panels; a permanent
+    // "no runs" row here just adds visual noise.
     return null;
   }
 
@@ -113,63 +118,59 @@ export function SubAgentRunsRail() {
           {error}
         </div>
       )}
-      {runs.length === 0 ? (
-        <div className="muted small">No SubAgent runs recorded yet.</div>
-      ) : (
-        <ol className="subagent-runs-rail-list">
-          {runs.map((r) => {
-            const elapsed = formatElapsed(r.duration_ms || 0);
-            return (
-              <li
-                key={r.id}
-                className="subagent-runs-rail-card"
-                data-status={r.status}
-                data-testid={`subagent-run-${r.id}`}
-              >
-                <div className="subagent-runs-rail-card-head">
-                  <span
-                    className="subagent-runs-rail-status-dot"
-                    style={{ background: statusColor(r.status) }}
-                    aria-label={r.status}
-                    title={r.status}
-                  />
-                  <strong>{r.name}</strong>
-                  {r.model && <span className="muted small"> · {r.model}</span>}
+      <ol className="subagent-runs-rail-list">
+        {runs.map((r) => {
+          const elapsed = formatElapsed(r.duration_ms || 0);
+          return (
+            <li
+              key={r.id}
+              className="subagent-runs-rail-card"
+              data-status={r.status}
+              data-testid={`subagent-run-${r.id}`}
+            >
+              <div className="subagent-runs-rail-card-head">
+                <span
+                  className="subagent-runs-rail-status-dot"
+                  style={{ background: statusColor(r.status) }}
+                  aria-label={r.status}
+                  title={r.status}
+                />
+                <strong>{r.name}</strong>
+                {r.model && <span className="muted small"> · {r.model}</span>}
+              </div>
+              {r.task && (
+                <div
+                  className="subagent-runs-rail-task"
+                  title={r.task}
+                >
+                  {r.task.length > 80
+                    ? `${r.task.slice(0, 77)}…`
+                    : r.task}
                 </div>
-                {r.task && (
-                  <div
-                    className="subagent-runs-rail-task"
-                    title={r.task}
+              )}
+              <div className="subagent-runs-rail-meta">
+                <span className="muted small">
+                  {r.tool_call_count} tool calls · {elapsed}
+                </span>
+                {r.status === "running" && (
+                  <button
+                    type="button"
+                    className="subagent-runs-rail-cancel"
+                    onClick={() => void onCancel(r.id)}
                   >
-                    {r.task.length > 80
-                      ? `${r.task.slice(0, 77)}…`
-                      : r.task}
-                  </div>
+                    Cancel
+                  </button>
                 )}
-                <div className="subagent-runs-rail-meta">
-                  <span className="muted small">
-                    {r.tool_call_count} tool calls · {elapsed}
-                  </span>
-                  {r.status === "running" && (
-                    <button
-                      type="button"
-                      className="subagent-runs-rail-cancel"
-                      onClick={() => void onCancel(r.id)}
-                    >
-                      Cancel
-                    </button>
-                  )}
+              </div>
+              {r.status === "failed" && r.error && (
+                <div className="subagent-runs-rail-error muted small">
+                  {r.error.slice(0, 120)}
                 </div>
-                {r.status === "failed" && r.error && (
-                  <div className="subagent-runs-rail-error muted small">
-                    {r.error.slice(0, 120)}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ol>
-      )}
+              )}
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }

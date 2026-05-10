@@ -1240,7 +1240,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,                parallel_tool_calls: None,
+                chain_origin: None,
+                parallel_tool_calls: None,
             },
             false,
         );
@@ -1261,7 +1262,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,                parallel_tool_calls: None,
+                chain_origin: None,
+                parallel_tool_calls: None,
             },
             false,
         );
@@ -1283,7 +1285,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,                parallel_tool_calls: None,
+                chain_origin: None,
+                parallel_tool_calls: None,
             },
             false,
         );
@@ -1308,7 +1311,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,                parallel_tool_calls: None,
+                chain_origin: None,
+                parallel_tool_calls: None,
             },
             false,
         );
@@ -1337,7 +1341,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,                parallel_tool_calls: None,
+                chain_origin: None,
+                parallel_tool_calls: None,
             },
             false,
         );
@@ -1370,7 +1375,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 previous_response_id: None,
-                chain_origin: None,                parallel_tool_calls: None,
+                chain_origin: None,
+                parallel_tool_calls: None,
             },
             false,
         );

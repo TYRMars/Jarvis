@@ -117,5 +117,8 @@ export const createApprovalSlice: StateCreator<FullState, [], [], ApprovalSlice>
   bumpPermissionRulesVersion: () =>
     set((s) => ({ permissionRulesVersion: s.permissionRulesVersion + 1 })),
   setProposedPlan: (plan) => set({ proposedPlan: plan }),
-  setActiveSkills: (names) => set({ activeSkills: names }),
+  setActiveSkills: (names) => {
+    const unique = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+    set({ activeSkills: unique });
+  },
 });

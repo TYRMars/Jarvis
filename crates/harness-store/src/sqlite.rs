@@ -535,7 +535,17 @@ impl ConversationStore for SqliteConversationStore {
         match row {
             Some((json, project_id)) => {
                 let conv: Conversation = serde_json::from_str(&json).map_err(StoreError::from)?;
-                Ok(Some((conv, ConversationMetadata { project_id })))
+                Ok(Some((
+                    conv,
+                    ConversationMetadata {
+                        project_id,
+                        // Lifecycle column not yet present in the SQL
+                        // schema — treat all rows as Active for now;
+                        // a future migration can add the column +
+                        // populate it from existing data.
+                        lifecycle: Default::default(),
+                    },
+                )))
             }
             None => Ok(None),
         }
@@ -565,6 +575,7 @@ impl ConversationStore for SqliteConversationStore {
                     updated_at,
                     message_count: conv.messages.len(),
                     project_id,
+                    lifecycle: Default::default(),
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()
@@ -600,6 +611,7 @@ impl ConversationStore for SqliteConversationStore {
                     updated_at,
                     message_count: conv.messages.len(),
                     project_id: Some(project_id.to_string()),
+                    lifecycle: Default::default(),
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()

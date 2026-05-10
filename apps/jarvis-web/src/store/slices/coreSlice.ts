@@ -19,6 +19,10 @@ import type {
 import {
   initialConvoAutoFilter,
   initialConvoGroupBy,
+  initialConvoLayoutMode,
+  initialConvoSectionOrder,
+  initialConvoSortBy,
+  initialConvoVisibility,
   initialEffort,
   initialLang,
   initialPlanCardOpen,
@@ -158,6 +162,10 @@ export interface CoreSlice {
   /// per project, with free-chat rows in their own section.
   /// Persisted to localStorage as `jarvis.convoGroupBy`.
   convoGroupBy: import("../persistence").ConvoGroupBy;
+  convoLayoutMode: import("../persistence").ConvoLayoutMode;
+  convoSortBy: import("../persistence").ConvoSortBy;
+  convoVisibility: import("../persistence").ConvoVisibility;
+  convoSectionOrder: import("../persistence").ConvoSectionOrder;
 
   /// Recents-section auto/manual filter. "all" hides nothing;
   /// "auto" → only requirement-driven runs; "manual" → only chat rows.
@@ -226,6 +234,10 @@ export interface CoreSlice {
   setConvoStatus: (kind: ConvoStatusKind) => void;
   setPersistEnabled: (v: boolean) => void;
   setConvoGroupBy: (mode: import("../persistence").ConvoGroupBy) => void;
+  setConvoLayoutMode: (mode: import("../persistence").ConvoLayoutMode) => void;
+  setConvoSortBy: (mode: import("../persistence").ConvoSortBy) => void;
+  setConvoVisibility: (mode: import("../persistence").ConvoVisibility) => void;
+  setConvoSectionOrder: (mode: import("../persistence").ConvoSectionOrder) => void;
   setConvoAutoFilter: (mode: import("../persistence").ConvoAutoFilter) => void;
 
   setProjectsAvailable: (v: boolean) => void;
@@ -288,6 +300,10 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   convoStatus: "",
   persistEnabled: true,
   convoGroupBy: initialConvoGroupBy(),
+  convoLayoutMode: initialConvoLayoutMode(),
+  convoSortBy: initialConvoSortBy(),
+  convoVisibility: initialConvoVisibility(),
+  convoSectionOrder: initialConvoSectionOrder(),
   convoAutoFilter: initialConvoAutoFilter(),
   projectsAvailable: true,
   projects: [],
@@ -469,7 +485,25 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   setPersistEnabled: (v) => set({ persistEnabled: v }),
   setConvoGroupBy: (mode) => {
     safeSet("jarvis.convoGroupBy", mode);
-    set({ convoGroupBy: mode });
+    const layoutMode = mode === "date" ? "time" : "project";
+    safeSet("jarvis.convoLayoutMode", layoutMode);
+    set({ convoGroupBy: mode, convoLayoutMode: layoutMode });
+  },
+  setConvoLayoutMode: (mode) => {
+    safeSet("jarvis.convoLayoutMode", mode);
+    set({ convoLayoutMode: mode, convoGroupBy: mode === "time" ? "date" : "project" });
+  },
+  setConvoSortBy: (mode) => {
+    safeSet("jarvis.convoSortBy", mode);
+    set({ convoSortBy: mode });
+  },
+  setConvoVisibility: (mode) => {
+    safeSet("jarvis.convoVisibility", mode);
+    set({ convoVisibility: mode });
+  },
+  setConvoSectionOrder: (mode) => {
+    safeSet("jarvis.convoSectionOrder", mode);
+    set({ convoSectionOrder: mode });
   },
   setConvoAutoFilter: (mode) => {
     safeSet("jarvis.convoAutoFilter", mode);

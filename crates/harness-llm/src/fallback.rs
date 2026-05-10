@@ -124,6 +124,8 @@ pub fn is_transient_error(err: &Error) -> bool {
         || msg.contains("network")
         || msg.contains("dns")
         || msg.contains("reset by peer")
+        || msg.contains("transport:")
+        || msg.contains("error sending request")
 }
 
 #[async_trait]
@@ -419,6 +421,12 @@ mod tests {
         )));
         assert!(is_transient_error(&Error::Provider(
             "rate_limit_exceeded".into()
+        )));
+        assert!(is_transient_error(&Error::Provider(
+            "transport: error sending request for url".into()
+        )));
+        assert!(is_transient_error(&Error::Provider(
+            "error sending request for url (https://api.example.com/v1/chat/completions)".into()
         )));
 
         assert!(!is_transient_error(&Error::Provider("HTTP 401".into())));

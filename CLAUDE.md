@@ -158,7 +158,7 @@ only 2 ever run in parallel. WORKFLOW.md alias:
 `agent.max_concurrent_agents` (was misnamed in v1.0 to mean
 per-tick; v1.1 routes it to the real concurrency cap)),
 `JARVIS_WORK_MAX_RETRIES` (default `1`),
-`JARVIS_WORK_RUN_TIMEOUT_MS` (default `300000` — 5 min wall-clock
+`JARVIS_WORK_RUN_TIMEOUT_MS` (default `600000` — 10 min wall-clock
 budget per agent loop pickup),
 `JARVIS_REVIEWER_AUTO_ACCEPT` (any non-empty / non-`0` / non-`false`
 value opts in to reviewer-subagent dispatch on Review → Done under

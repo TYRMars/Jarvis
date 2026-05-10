@@ -1088,7 +1088,8 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,            parallel_tool_calls: None,
+            chain_origin: None,
+            parallel_tool_calls: None,
         }
     }
 
@@ -1164,7 +1165,8 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,            parallel_tool_calls: None,
+            chain_origin: None,
+            parallel_tool_calls: None,
         };
         let outbound = OpenAiRequest::from_request(req, false, false, None);
         let body = serde_json::to_value(&outbound.request).unwrap();
@@ -1203,7 +1205,8 @@ mod tests {
             temperature: None,
             max_tokens: None,
             previous_response_id: None,
-            chain_origin: None,            parallel_tool_calls: None,
+            chain_origin: None,
+            parallel_tool_calls: None,
         };
         let outbound = OpenAiRequest::from_request(req, false, true, None);
         let body = serde_json::to_value(&outbound.request).unwrap();

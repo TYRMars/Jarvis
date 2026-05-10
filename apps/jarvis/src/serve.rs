@@ -91,6 +91,7 @@ pub async fn run(
         doc_store,
         comment_store,
         label_store,
+        channel_instance_store,
     ) = match persistence_url.as_deref() {
         Some(url) => {
             let bundle = harness_store::connect_all(url)
@@ -98,7 +99,7 @@ pub async fn run(
                 .with_context(|| format!("opening persistence url `{url}`"))?;
             info!(
                 url = %url,
-                "conversation + project + todo + requirement + run + activity + agent_profile + doc + comment + label store connected"
+                "conversation + project + todo + requirement + run + activity + agent_profile + doc + comment + label + channel-instance store connected"
             );
             (
                 Some(bundle.conversations),
@@ -111,14 +112,15 @@ pub async fn run(
                 Some(bundle.docs),
                 Some(bundle.comments),
                 Some(bundle.labels),
+                Some(bundle.channel_instances),
             )
         }
         None => {
             info!(
                 "no persistence URL resolved (HOME unset?); running in-memory \
-                 (conversations / TODOs / requirements / runs / activities / profiles / docs / comments / labels will not survive restart)"
+                 (conversations / TODOs / requirements / runs / activities / profiles / docs / comments / labels / channels will not survive restart)"
             );
-            (None, None, None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None, None, None)
         }
     };
 
@@ -420,7 +422,7 @@ pub async fn run(
     let mut agent_cfg = AgentConfig::new(model.clone())
         .with_system_prompt(system_prompt)
         .with_tools(template_tools)
-        .with_max_iterations(30);
+        .with_max_iterations(80);
     // Build a route resolver for `RouteSlot::Summarization` so the
     // summariser memory can target a cheaper / dedicated model. The
     // closure captures cloned Arcs of every built provider keyed by
@@ -666,6 +668,9 @@ pub async fn run(
     if let Some(ls) = label_store {
         state = state.with_label_store(ls);
     }
+    if let Some(cis) = channel_instance_store {
+        state = state.with_channel_instance_store(cis);
+    }
     if let Some(os) = observability_store {
         state = state.with_observability_store(os);
     }
@@ -834,6 +839,19 @@ pub async fn run(
     state = state.with_auto_mode_runtime(auto_runtime);
     let auto_cfg_arc = std::sync::Arc::new(auto_cfg.clone());
     state = state.with_auto_mode_config(auto_cfg_arc);
+    // One-shot sweep for orphan RequirementRuns left by older
+    // binaries that didn't have the WS-terminal reconciliation hook.
+    // Runs before `spawn_auto_mode` so the first auto-mode tick sees
+    // the corrected store state. Cheap (bounded by # requirements);
+    // returns 0 instantly when stores aren't configured.
+    let reconciled =
+        harness_server::sweep_orphan_requirements_on_startup(&state).await;
+    if reconciled > 0 {
+        info!(
+            count = reconciled,
+            "startup sweep reconciled orphan requirement runs"
+        );
+    }
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
     if let (Some(pm), Some(projects), Some(requirements)) = (
         project_memory_runtime,
