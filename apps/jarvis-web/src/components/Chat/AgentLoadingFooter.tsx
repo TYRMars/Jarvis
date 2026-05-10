@@ -1,32 +1,13 @@
 // Jarvis loading footer.
 //
 // Pinned to the bottom of `<MessageList>` whenever the agent loop
-// is running. Visual keeps the compact timer from the previous
-// footer, but swaps the generic sparkle for a tiny Lottie mascot
-// based on the Jarvis app icon:
-//
-//   [Jarvis thinking] 3m 1s · ↓ 2.4k tokens
-//
-// where:
-//   - the mascot wiggles, blinks, and fires little thought sparks
-//     while the turn is in flight
-//   - "3m 1s" is the elapsed wall-clock since the user pressed
-//     Send (sourced from `appStore.turnStartedAt`)
-//   - "↓ 2.4k tokens" is the cumulative LLM-generated token count
-//     for the current turn (`completion + reasoning` from
-//     `appStore.usage`); the down arrow signals "received from
-//     the model"
-//
-// The footer covers every silent moment the XMarkdown `▋` cursor
-// doesn't: pre-first-delta thinking, in-flight tool execution,
-// and the gap between iterations of a multi-step turn. We don't
-// re-mention "Thinking" / "Running shell.exec" inline — the bubble
-// timeline above already tells that story; this footer is purely
-// the "still working, here's the cost" reassurance line.
+// is running. The visual is deliberately quiet: three breathing
+// dots, elapsed wall-clock, and optional generated-token count.
+// It covers silent moments before the first delta, during tool
+// execution, and between iterations of a multi-step turn.
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../../store/appStore";
-import { JarvisThinkingLottie } from "./JarvisThinkingLottie";
 
 export function AgentLoadingFooter() {
   const inFlight = useAppStore((s) => s.inFlight);
@@ -59,7 +40,11 @@ export function AgentLoadingFooter() {
 
   return (
     <div className="agent-loading" role="status" aria-live="polite" aria-label="Jarvis is thinking">
-      <JarvisThinkingLottie />
+      <span className="agent-loading-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
       <span className="agent-loading-text">
         <span className="agent-loading-elapsed">{elapsedLabel}</span>
         {tokensIn > 0 ? (

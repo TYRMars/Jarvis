@@ -9,6 +9,8 @@ pub mod activity;
 pub mod agent;
 pub mod agent_profile;
 pub mod approval;
+pub mod channel_binding;
+pub mod channel_instance;
 pub mod comment;
 pub mod conversation;
 pub mod doc;
@@ -41,6 +43,10 @@ pub use agent_profile::{AgentProfile, AgentProfileEvent};
 pub use approval::{
     AlwaysApprove, AlwaysDeny, ApprovalDecision, ApprovalRequest, Approver, ChannelApprover,
     PendingApproval,
+};
+pub use channel_binding::ChannelBinding;
+pub use channel_instance::{
+    resolve_env_templates, ChannelInstance, ChannelInstanceStatus,
 };
 pub use comment::{Comment, CommentEvent};
 pub use conversation::Conversation;
@@ -93,9 +99,9 @@ pub use requirement_run::{
     RequirementRunStatus, VerificationPlan, VerificationResult, VerificationStatus,
 };
 pub use store::{
-    ActivityStore, AgentProfileStore, CommentStore, ConversationMetadata, ConversationRecord,
-    ConversationStore, DocStore, LabelStore, ProjectMemoryStore, ProjectStore, RequirementRunStore,
-    RequirementStore, TodoStore,
+    ActivityStore, AgentProfileStore, ChannelBindingStore, ChannelInstanceStore, CommentStore,
+    ConversationLifecycle, ConversationMetadata, ConversationRecord, ConversationStore, DocStore,
+    LabelStore, ProjectMemoryStore, ProjectStore, RequirementRunStore, RequirementStore, TodoStore,
 };
 pub use subagent::{
     active_sender as subagent_active_sender, emit as emit_subagent, is_active as subagent_active,

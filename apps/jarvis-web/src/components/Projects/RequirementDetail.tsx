@@ -8,7 +8,6 @@ import type {
   RequirementRunStatus,
   RequirementStatus,
   RequirementTodo,
-  RequirementTodoKind,
   RequirementTodoStatus,
   VerificationStatus,
 } from "../../types/frames";
@@ -22,18 +21,15 @@ import {
   listRunsForRequirement,
   loadActivitiesForRequirement,
   loadRunsForRequirement,
-  createRequirementTodo,
-  deleteRequirementTodo,
   rejectRequirement,
   startRequirementRun,
   subscribeRequirementActivities,
   subscribeRequirementRuns,
-  updateRequirementTodo,
   updateRequirement,
   verifyRunByCommands,
 } from "../../services/requirements";
 import { pickedRouting } from "../../services/socket";
-import { Select } from "../ui";
+import { Modal, Select } from "../ui";
 import type { BoardColumn } from "./columns";
 import { MarkdownLite } from "./MarkdownLite";
 import { ActivityList } from "./activityRow";
@@ -92,6 +88,7 @@ export function RequirementDetail({
   // React's hooks-order check when the detail panel opens.
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   useEffect(() => {
     if (!requirement) return;
     void loadRunsForRequirement(requirement.id);
@@ -217,7 +214,13 @@ export function RequirementDetail({
     if (startDisabled && !latestConversationId) return;
     setStartError(null);
     setStarting(true);
-    const content = prompt ?? t("detailStartPromptPrefill", requirement.title);
+    const content = prompt ?? formatRequirementStartPrompt(requirement, todos);
+    const verificationCommands = [
+      ...(requirement.verification_plan?.commands ?? []),
+      ...todos
+        .map((todo) => todo.command?.trim() ?? "")
+        .filter((command) => command.length > 0),
+    ];
     try {
       if (inFlightRun) return;
       if (startDisabled) return;
@@ -230,7 +233,7 @@ export function RequirementDetail({
         isNew: false,
         soulPrompt: currentJarvisSoulPrompt(),
         requirementRunId: run.id,
-        verificationCommands: requirement.verification_plan?.commands ?? [],
+        verificationCommands,
       });
       if (ok) seedBackgroundConversationSurface(conversation_id, content);
     } catch (e) {
@@ -276,28 +279,53 @@ export function RequirementDetail({
               ariaLabel={t("reqStatusAria", statusLabel)}
             />
           </div>
-          <button
-            type="button"
-            className="ghost-icon requirement-detail-close"
-            onClick={onClose}
-            aria-label={t("detailClose")}
-            title={t("detailCloseTitle")}
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
+          <div className="requirement-detail-head-actions">
+            <button
+              type="button"
+              className="ghost-icon requirement-detail-activity-toggle"
+              onClick={() => setActivityOpen(true)}
+              aria-label={t("activityOpenAria")}
+              title={t("activityOpenTitle")}
             >
-              <path d="M6 6l12 12" />
-              <path d="M6 18l12-12" />
-            </svg>
-          </button>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 1 0 3-6.7" />
+                <path d="M3 4v5h5" />
+                <path d="M12 7v5l3 2" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="ghost-icon requirement-detail-close"
+              onClick={onClose}
+              aria-label={t("detailClose")}
+              title={t("detailCloseTitle")}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M6 6l12 12" />
+                <path d="M6 18l12-12" />
+              </svg>
+            </button>
+          </div>
         </header>
 
         <div className="requirement-detail-content">
@@ -309,8 +337,6 @@ export function RequirementDetail({
           </h2>
 
           <RequirementLabelsRow requirement={requirement} />
-
-          <AcceptancePolicyRow requirement={requirement} />
 
           <RequirementNextStep
             latestRun={latestRun}
@@ -366,67 +392,54 @@ export function RequirementDetail({
 
           <RequirementTodosSection
             requirement={requirement}
-            onChanged={onChanged}
             onHandleTodo={(todo) =>
               void handleAgentWork(formatTodoInjection(requirement, todo))
             }
           />
           <SessionRecordsSection runs={runs} requirement={requirement} />
-          <RequirementComments requirementId={requirement.id} />
-          <ActivitySection activities={activities} />
         </div>
 
-        {(sessions > 0 || startError || isProposed) && (
-          <footer className="requirement-detail-footer">
-            {sessions > 0 && (
-              <span className="requirement-detail-sessions">
-                {t("reqSessions", sessions)}
-              </span>
-            )}
-            {startError && (
-              <span
-                className="requirement-detail-start-error"
-                role="alert"
-                title={startError}
-              >
-                {t("detailStartFailed")}
-              </span>
-            )}
-            <span className="flex-1" />
-            {isProposed && (
-              <button
-                type="button"
-                className="triage-btn triage-btn-reject"
-                onClick={() => void handleReject()}
-                title={t("triageReject")}
-              >
-                {t("triageReject")}
-              </button>
-            )}
-          </footer>
-        )}
+        <footer className="requirement-detail-footer">
+          {(sessions > 0 || startError || isProposed) && (
+            <div className="requirement-detail-footer-meta">
+              {sessions > 0 && (
+                <span className="requirement-detail-sessions">
+                  {t("reqSessions", sessions)}
+                </span>
+              )}
+              {startError && (
+                <span
+                  className="requirement-detail-start-error"
+                  role="alert"
+                  title={startError}
+                >
+                  {t("detailStartFailed")}
+                </span>
+              )}
+              <span className="flex-1" />
+              {isProposed && (
+                <button
+                  type="button"
+                  className="triage-btn triage-btn-reject"
+                  onClick={() => void handleReject()}
+                  title={t("triageReject")}
+                >
+                  {t("triageReject")}
+                </button>
+              )}
+            </div>
+          )}
+          <RequirementComments requirementId={requirement.id} />
+        </footer>
+        <ActivityModal
+          open={activityOpen}
+          activities={activities}
+          onClose={() => setActivityOpen(false)}
+        />
       </aside>
     </>
   );
 }
-
-const TODO_KINDS: RequirementTodoKind[] = [
-  "work",
-  "check",
-  "ci",
-  "deploy",
-  "review",
-  "manual",
-];
-
-const TODO_STATUSES: RequirementTodoStatus[] = [
-  "pending",
-  "running",
-  "passed",
-  "failed",
-  "skipped",
-  "blocked",
-];
 
 function RequirementNextStep({
   latestRun,
@@ -545,54 +558,17 @@ function RequirementNextStep({
 
 function RequirementTodosSection({
   requirement,
-  onChanged,
   onHandleTodo,
 }: {
   requirement: Requirement;
-  onChanged: () => void;
   onHandleTodo: (todo: RequirementTodo) => void;
 }) {
   const todos = requirement.todos ?? [];
-  const [title, setTitle] = useState("");
-  const [kind, setKind] = useState<RequirementTodoKind>("ci");
-  const [command, setCommand] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [sectionOpen, setSectionOpen] = useState(() => todos.length > 0);
-  const kindOptions = todoKindOptions();
+  const [sectionOpen, setSectionOpen] = useState(true);
 
   useEffect(() => {
-    if (todos.length > 0) setSectionOpen(true);
+    setSectionOpen(true);
   }, [todos.length]);
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    void createTodo();
-  };
-
-  const createTodo = async () => {
-    const nextTitle = title.trim();
-    if (!nextTitle || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await createRequirementTodo(requirement.id, {
-        title: nextTitle,
-        kind,
-        command: command.trim() || null,
-        created_by: "human",
-      });
-      setTitle("");
-      setCommand("");
-      setAdding(false);
-      onChanged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <details
@@ -605,77 +581,10 @@ function RequirementTodosSection({
           <h3 className="requirement-detail-runs-heading">
             {t("reqTodoHeading")}
           </h3>
-          <p>
-            {todos.length === 0
-              ? t("reqTodoOptionalHint")
-              : t("reqTodoHeadingHint")}
-          </p>
+          <p>{t("reqTodoHeadingHint")}</p>
         </div>
         <span className="requirement-detail-todos-count">{todos.length}</span>
       </summary>
-      {!adding && (
-        <button
-          type="button"
-          className="requirement-detail-todo-add requirement-detail-todo-add-toggle"
-          onClick={() => {
-            setSectionOpen(true);
-            setAdding(true);
-          }}
-        >
-          {t("reqTodoAddStep")}
-        </button>
-      )}
-      {adding && (
-        <form className="requirement-detail-todo-form" onSubmit={submit}>
-          <input
-            className="requirement-detail-todo-input"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder={t("reqTodoAddPlaceholder")}
-            aria-label={t("reqTodoTitleAria")}
-            autoFocus
-          />
-          <Select<RequirementTodoKind>
-            className="requirement-detail-todo-select"
-            value={kind}
-            onChange={setKind}
-            options={kindOptions}
-            ariaLabel={t("reqTodoKindAria")}
-          />
-          <input
-            className="requirement-detail-todo-command-input"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            placeholder={t("reqTodoCommandPlaceholder")}
-            aria-label={t("reqTodoCommandAria")}
-          />
-          <button
-            type="submit"
-            className="requirement-detail-todo-add"
-            disabled={busy || title.trim().length === 0}
-          >
-            {busy ? t("reqTodoAdding") : t("reqTodoAdd")}
-          </button>
-          <button
-            type="button"
-            className="requirement-detail-todo-edit"
-            onClick={() => {
-              setAdding(false);
-              setTitle("");
-              setCommand("");
-              setError(null);
-            }}
-            disabled={busy}
-          >
-            {t("reqTodoCancelEdit")}
-          </button>
-        </form>
-      )}
-      {error && (
-        <p className="requirement-detail-todo-error" role="alert">
-          {error}
-        </p>
-      )}
       {todos.length === 0 ? (
         <p className="requirement-detail-empty">{t("reqTodoEmpty")}</p>
       ) : (
@@ -683,9 +592,7 @@ function RequirementTodosSection({
           {todos.map((todo) => (
             <RequirementTodoRow
               key={todo.id}
-              requirementId={requirement.id}
               todo={todo}
-              onChanged={onChanged}
               onHandleTodo={onHandleTodo}
             />
           ))}
@@ -696,75 +603,13 @@ function RequirementTodosSection({
 }
 
 function RequirementTodoRow({
-  requirementId,
   todo,
-  onChanged,
   onHandleTodo,
 }: {
-  requirementId: string;
   todo: RequirementTodo;
-  onChanged: () => void;
   onHandleTodo: (todo: RequirementTodo) => void;
 }) {
-  const [title, setTitle] = useState(todo.title);
-  const [kind, setKind] = useState<RequirementTodoKind>(todo.kind);
-  const [status, setStatus] = useState<RequirementTodoStatus>(todo.status);
-  const [command, setCommand] = useState(todo.command ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [injected, setInjected] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const kindOptions = todoKindOptions();
-  const statusOptions = todoStatusOptions();
-
-  useEffect(() => {
-    setTitle(todo.title);
-    setKind(todo.kind);
-    setStatus(todo.status);
-    setCommand(todo.command ?? "");
-  }, [todo.id, todo.title, todo.kind, todo.status, todo.command]);
-
-  const changed =
-    title.trim() !== todo.title ||
-    kind !== todo.kind ||
-    status !== todo.status ||
-    command.trim() !== (todo.command ?? "");
-
-  const save = async () => {
-    const nextTitle = title.trim();
-    if (!nextTitle || !changed || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await updateRequirementTodo(requirementId, todo.id, {
-        title: nextTitle,
-        kind,
-        status,
-        command: command.trim() || null,
-      });
-      onChanged();
-      setEditing(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async () => {
-    if (busy) return;
-    const ok = window.confirm(t("reqTodoDeleteConfirm", todo.title));
-    if (!ok) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await deleteRequirementTodo(requirementId, todo.id);
-      onChanged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  };
 
   const inject = () => {
     onHandleTodo(todo);
@@ -791,44 +636,6 @@ function RequirementTodoRow({
           {todo.evidence.note}
         </span>
       )}
-      {editing && (
-        <div className="requirement-detail-todo-editor">
-          <div className="requirement-detail-todo-edit-grid">
-            <input
-              className="requirement-detail-todo-title-input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              aria-label={t("reqTodoTitleAria")}
-            />
-            <Select<RequirementTodoKind>
-              className="requirement-detail-todo-select"
-              value={kind}
-              onChange={setKind}
-              options={kindOptions}
-              ariaLabel={t("reqTodoKindAria")}
-            />
-            <Select<RequirementTodoStatus>
-              className="requirement-detail-todo-select"
-              value={status}
-              onChange={setStatus}
-              options={statusOptions}
-              ariaLabel={t("reqTodoStatusAria")}
-            />
-          </div>
-          <input
-            className="requirement-detail-todo-command-input"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            placeholder={t("reqTodoCommandPlaceholder")}
-            aria-label={t("reqTodoCommandAria")}
-          />
-        </div>
-      )}
-      {error && (
-        <p className="requirement-detail-todo-error" role="alert">
-          {error}
-        </p>
-      )}
       <div className="requirement-detail-todo-actions">
         <button
           type="button"
@@ -841,48 +648,6 @@ function RequirementTodoRow({
         >
           {injected ? t("reqTodoInjected") : t("reqTodoInject")}
         </button>
-        {!editing && (
-          <button
-            type="button"
-            className="requirement-detail-todo-edit"
-            onClick={() => setEditing(true)}
-          >
-            {t("reqTodoEdit")}
-          </button>
-        )}
-        {editing && (
-          <button
-            type="button"
-            className="requirement-detail-todo-edit"
-            onClick={() => {
-              setTitle(todo.title);
-              setKind(todo.kind);
-              setStatus(todo.status);
-              setCommand(todo.command ?? "");
-              setEditing(false);
-              setError(null);
-            }}
-            disabled={busy}
-          >
-            {t("reqTodoCancelEdit")}
-          </button>
-        )}
-        <button
-          type="button"
-          className="requirement-detail-todo-save"
-          onClick={() => void save()}
-          disabled={!editing || busy || !changed || title.trim().length === 0}
-        >
-          {busy ? t("reqTodoSaving") : t("reqTodoSave")}
-        </button>
-        <button
-          type="button"
-          className="requirement-detail-todo-delete"
-          onClick={() => void remove()}
-          disabled={busy}
-        >
-          {t("reqTodoDelete")}
-        </button>
       </div>
     </li>
   );
@@ -894,22 +659,6 @@ function todoStatusGlyph(status: RequirementTodoStatus): string {
   if (status === "running") return "…";
   if (status === "skipped") return "−";
   return "○";
-}
-
-function todoKindOptions() {
-  return TODO_KINDS.map((value) => ({
-    value,
-    label: t(`reqTodoKind_${value}`),
-    searchText: t(`reqTodoKind_${value}`),
-  }));
-}
-
-function todoStatusOptions() {
-  return TODO_STATUSES.map((value) => ({
-    value,
-    label: t(`reqTodoStatus_${value}`),
-    searchText: t(`reqTodoStatus_${value}`),
-  }));
 }
 
 function formatTodoInjection(req: Requirement, todo: RequirementTodo): string {
@@ -929,6 +678,30 @@ function formatTodoInjection(req: Requirement, todo: RequirementTodo): string {
     lines.push(t("reqTodoInjectPromptEvidence", todo.evidence.note));
   }
   lines.push("", t("reqTodoInjectPromptAsk"));
+  return lines.join("\n");
+}
+
+function formatRequirementStartPrompt(
+  req: Requirement,
+  todos: RequirementTodo[],
+): string {
+  const lines = [
+    t("detailStartPromptPrefill", req.title),
+  ];
+  if (todos.length > 0) {
+    lines.push("", t("reqTodoExecutionPromptHeader"));
+    for (const [idx, todo] of todos.entries()) {
+      const parts = [
+        `${idx + 1}. ${todo.title}`,
+        `[${t(`reqTodoKind_${todo.kind}`)} / ${t(`reqTodoStatus_${todo.status}`)}]`,
+      ];
+      if (todo.command?.trim()) {
+        parts.push(t("reqTodoInjectPromptCommand", todo.command.trim()));
+      }
+      lines.push(parts.join(" "));
+    }
+    lines.push(t("reqTodoExecutionPromptAsk"));
+  }
   return lines.join("\n");
 }
 
@@ -1264,7 +1037,10 @@ function VerifyRunForm({
   };
 
   return (
-    <form className="requirement-detail-run-verify" onSubmit={submit}>
+    <form
+      className="requirement-detail-run-verify"
+      onSubmit={(e) => void submit(e)}
+    >
       <div className="requirement-detail-run-verify-head">
         <label className="requirement-detail-run-verify-label">
           {t("verifyRunLabel")}
@@ -1330,22 +1106,33 @@ function formatTime(iso: string): string {
 // "event: <kind>" so a future server can add rows without breaking
 // the UI.
 
-function ActivitySection({ activities }: { activities: Activity[] }) {
+function ActivityModal({
+  open,
+  activities,
+  onClose,
+}: {
+  open: boolean;
+  activities: Activity[];
+  onClose: () => void;
+}) {
   return (
-    <details className="requirement-detail-activities">
-      <summary className="requirement-detail-record-summary">
-        <div className="requirement-detail-record-title">
-          <span className="requirement-detail-runs-heading">
-            {t("activityHeading")}
-          </span>
-          <p>{t("activityHint")}</p>
-        </div>
-        <span className="requirement-detail-record-meta">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t("activityHeading")}
+      size="md"
+      dialogClassName="requirement-activity-modal"
+    >
+      <div className="requirement-activity-modal-body">
+        <p className="requirement-activity-modal-hint">
+          {t("activityHint")}
+        </p>
+        <span className="requirement-detail-record-meta requirement-activity-modal-count">
           {t("activitySummary", activities.length)}
         </span>
-      </summary>
+      </div>
       <ActivityList activities={activities} />
-    </details>
+    </Modal>
   );
 }
 
@@ -1385,56 +1172,6 @@ function RequirementLabelsRow({ requirement }: { requirement: Requirement }) {
           updateRequirement(requirement.id, { label_ids: nextIds });
         }}
       />
-    </div>
-  );
-}
-
-// =============================================================
-// Acceptance-policy row — v1.0 SubAgent.
-// =============================================================
-//
-// Lets the user flip Review→Done auto-acceptance between the
-// reviewer subagent (default) and human-only. Server treats absence
-// of the field as the default (`subagent`), so we coerce undefined
-// to "subagent" for display + write the selection through a
-// PATCH /v1/requirements/:id with `acceptance_policy`. Activity log
-// records the flip.
-
-function AcceptancePolicyRow({ requirement }: { requirement: Requirement }) {
-  const current = requirement.acceptance_policy ?? "subagent";
-  const onChange = (next: string) => {
-    if (next !== "subagent" && next !== "human") return;
-    if (next === current) return;
-    updateRequirement(requirement.id, { acceptance_policy: next });
-  };
-  return (
-    <div className="requirement-detail-acceptance-row">
-      <span className="requirement-detail-acceptance-label">
-        {t("reqAcceptancePolicyLabel")}
-      </span>
-      <Select
-        className="requirement-detail-acceptance-select"
-        value={current}
-        onChange={onChange}
-        options={[
-          {
-            value: "subagent",
-            label: t("reqAcceptancePolicySubagent"),
-            searchText: "subagent reviewer auto",
-          },
-          {
-            value: "human",
-            label: t("reqAcceptancePolicyHuman"),
-            searchText: "human manual",
-          },
-        ]}
-        ariaLabel={t("reqAcceptancePolicyLabel")}
-      />
-      <span className="requirement-detail-acceptance-hint">
-        {current === "subagent"
-          ? t("reqAcceptancePolicySubagentHint")
-          : t("reqAcceptancePolicyHumanHint")}
-      </span>
     </div>
   );
 }

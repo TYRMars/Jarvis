@@ -548,7 +548,6 @@ function BlockedRequirements({
       // for auto-mode pickup. ProposedBy* rows are pre-triage.
       if (req.triage_state && req.triage_state !== "approved") continue;
       const reasons: string[] = [];
-      if (!req.assignee_id) reasons.push(t("autoModeBlockedReasonAssignee"));
       const deps = req.depends_on ?? [];
       const unmet = deps.filter((depId) => {
         const dep = requirementsById.get(depId);

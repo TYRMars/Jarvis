@@ -12,11 +12,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use harness_core::{
     Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, Comment, CommentEvent, CommentStore, Conversation, ConversationMetadata,
-    ConversationRecord, ConversationStore, DocDraft, DocEvent, DocProject, DocStore, Label,
-    LabelEvent, LabelStore, Project, ProjectMemory, ProjectMemoryStore, ProjectStore, Requirement,
-    RequirementEvent, RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStore,
-    Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
+    BoxError, ChannelBinding, ChannelBindingStore, Comment, CommentEvent, CommentStore,
+    Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft, DocEvent,
+    DocProject, DocStore, Label, LabelEvent, LabelStore, Project, ProjectMemory, ProjectMemoryStore,
+    ProjectStore, Requirement, RequirementEvent, RequirementRun, RequirementRunEvent,
+    RequirementRunStore, RequirementStore, Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
 };
 use tokio::sync::{broadcast, RwLock};
 
@@ -88,6 +88,7 @@ impl ConversationStore for MemoryConversationStore {
                 updated_at: e.updated_at.clone(),
                 message_count: e.conversation.messages.len(),
                 project_id: e.metadata.project_id.clone(),
+                lifecycle: e.metadata.lifecycle,
             })
             .collect();
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -1045,6 +1046,117 @@ impl TenantStore for MemoryTenantStore {
     }
 }
 
+/// In-process [`ChannelBindingStore`]. Bindings keyed by
+/// `(channel, channel_chat_id)` — concatenated with a `\0` separator
+/// because both halves are caller-supplied strings and `\0` is the
+/// only byte we can guarantee won't appear in either.
+#[derive(Default, Clone)]
+pub struct MemoryChannelBindingStore {
+    inner: Arc<RwLock<HashMap<String, ChannelBinding>>>,
+}
+
+impl MemoryChannelBindingStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+fn channel_binding_key(channel: &str, chat_id: &str) -> String {
+    format!("{channel}\0{chat_id}")
+}
+
+#[async_trait]
+impl ChannelBindingStore for MemoryChannelBindingStore {
+    async fn upsert(&self, binding: &ChannelBinding) -> Result<(), BoxError> {
+        let mut guard = self.inner.write().await;
+        guard.insert(
+            channel_binding_key(&binding.channel, &binding.channel_chat_id),
+            binding.clone(),
+        );
+        Ok(())
+    }
+
+    async fn lookup(
+        &self,
+        channel: &str,
+        channel_chat_id: &str,
+    ) -> Result<Option<ChannelBinding>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(&channel_binding_key(channel, channel_chat_id)).cloned())
+    }
+
+    async fn list_for_channel(&self, channel: &str) -> Result<Vec<ChannelBinding>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<ChannelBinding> = guard
+            .values()
+            .filter(|b| b.channel == channel)
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn delete(&self, channel: &str, channel_chat_id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.inner.write().await;
+        Ok(guard
+            .remove(&channel_binding_key(channel, channel_chat_id))
+            .is_some())
+    }
+
+    async fn delete_for_conversation(&self, conversation_id: &str) -> Result<usize, BoxError> {
+        let mut guard = self.inner.write().await;
+        let before = guard.len();
+        guard.retain(|_, b| b.conversation_id != conversation_id);
+        Ok(before - guard.len())
+    }
+}
+
+/// In-process [`ChannelInstanceStore`]. Settings-page rows; keyed by
+/// the instance's stable UUID.
+#[derive(Default, Clone)]
+pub struct MemoryChannelInstanceStore {
+    inner: Arc<RwLock<HashMap<String, harness_core::ChannelInstance>>>,
+}
+
+impl MemoryChannelInstanceStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl harness_core::ChannelInstanceStore for MemoryChannelInstanceStore {
+    async fn upsert(
+        &self,
+        instance: &harness_core::ChannelInstance,
+    ) -> Result<(), BoxError> {
+        let mut guard = self.inner.write().await;
+        guard.insert(instance.id.clone(), instance.clone());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        id: &str,
+    ) -> Result<Option<harness_core::ChannelInstance>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn list(&self) -> Result<Vec<harness_core::ChannelInstance>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<harness_core::ChannelInstance> =
+            guard.values().cloned().collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.inner.write().await;
+        Ok(guard.remove(id).is_some())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1837,5 +1949,74 @@ mod tests {
             }
             other => panic!("expected ProjectDeleted, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn channel_binding_roundtrip() {
+        let store = MemoryChannelBindingStore::new();
+        let b = ChannelBinding::new("wecom", "wm-group-1", "conv-1", Some("u1".into()), None);
+        store.upsert(&b).await.unwrap();
+
+        let got = store.lookup("wecom", "wm-group-1").await.unwrap().unwrap();
+        assert_eq!(got.conversation_id, "conv-1");
+        assert_eq!(got.channel_user_id.as_deref(), Some("u1"));
+
+        // Different chat id under same channel does not collide.
+        assert!(store
+            .lookup("wecom", "wm-group-2")
+            .await
+            .unwrap()
+            .is_none());
+        // Different channel + same chat id does not collide either.
+        assert!(store
+            .lookup("feishu", "wm-group-1")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn channel_binding_list_orders_newest_first_per_channel() {
+        let store = MemoryChannelBindingStore::new();
+        let mut b1 =
+            ChannelBinding::new("wecom", "chat-a", "conv-a", None, Some("Alice".into()));
+        // Older — set updated_at to an explicit older RFC-3339 string.
+        b1.updated_at = "2026-01-01T00:00:00Z".into();
+        store.upsert(&b1).await.unwrap();
+        let mut b2 = ChannelBinding::new("wecom", "chat-b", "conv-b", None, None);
+        b2.updated_at = "2026-05-09T00:00:00Z".into();
+        store.upsert(&b2).await.unwrap();
+        // Different channel — must not appear in `list_for_channel("wecom")`.
+        let other = ChannelBinding::new("feishu", "chat-x", "conv-x", None, None);
+        store.upsert(&other).await.unwrap();
+
+        let rows = store.list_for_channel("wecom").await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].channel_chat_id, "chat-b");
+        assert_eq!(rows[1].channel_chat_id, "chat-a");
+    }
+
+    #[tokio::test]
+    async fn channel_binding_delete_for_conversation_removes_all_pointers() {
+        let store = MemoryChannelBindingStore::new();
+        store
+            .upsert(&ChannelBinding::new("wecom", "g1", "shared", None, None))
+            .await
+            .unwrap();
+        store
+            .upsert(&ChannelBinding::new("feishu", "f1", "shared", None, None))
+            .await
+            .unwrap();
+        store
+            .upsert(&ChannelBinding::new("wecom", "g2", "kept", None, None))
+            .await
+            .unwrap();
+
+        let removed = store.delete_for_conversation("shared").await.unwrap();
+        assert_eq!(removed, 2);
+        assert!(store.lookup("wecom", "g1").await.unwrap().is_none());
+        assert!(store.lookup("feishu", "f1").await.unwrap().is_none());
+        // The unrelated binding survives.
+        assert!(store.lookup("wecom", "g2").await.unwrap().is_some());
     }
 }

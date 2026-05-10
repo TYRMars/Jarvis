@@ -36,6 +36,14 @@ pub(crate) fn router() -> Router<AppState> {
             get(get_capability_score),
         )
         .route("/v1/observability/exporter", get(get_exporter_status))
+        // v1.2 — REST mirror of `harness.health`. The tool itself
+        // sits behind the chat endpoint and only fires when the LLM
+        // is reachable, which means an outage that wedges the agent
+        // also blinds the diagnostic. This handler builds the same
+        // `HarnessHealthTool` from the same observability / evals /
+        // requirement-runs stores and invokes it directly — no LLM
+        // round-trip required. Same JSON shape as the tool output.
+        .route("/v1/observability/health", get(get_harness_health))
         .route("/v1/evals/summary", get(get_eval_summary))
         .route("/v1/evals/cases", get(list_eval_cases))
 }
@@ -116,6 +124,68 @@ struct RunsQuery {
     outcome: Option<ObservedOutcome>,
     project_id: Option<String>,
     limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HealthQuery {
+    /// Mirror of the `harness.health` tool's `limit` arg. Defaults
+    /// to the tool's own default when omitted.
+    limit: Option<u32>,
+    /// Mirror of the tool's `include_evidence` arg. Strings are
+    /// accepted because curl-via-query-string is the typical caller.
+    include_evidence: Option<bool>,
+}
+
+/// REST mirror of `harness.health`. Builds the same tool from the
+/// same store handles on the AppState and invokes it directly — no
+/// LLM, no agent loop. Returns the tool's JSON shape verbatim, so
+/// dashboards / scripts can switch from the chat path to this one
+/// without re-shaping their parser. 503 when none of the three
+/// sources are configured (the tool would return all-`configured:
+/// false` rows in that case, but a hard 503 is more honest).
+async fn get_harness_health(
+    State(state): State<AppState>,
+    Query(q): Query<HealthQuery>,
+) -> Response {
+    if state.observability.is_none() && state.evals.is_none() && state.requirement_runs.is_none() {
+        return unavailable(
+            "no observability / evals / requirement-runs store configured; \
+             nothing to summarise",
+        );
+    }
+    let tool = harness_tools::HarnessHealthTool::new(
+        state.observability.clone(),
+        state.evals.clone(),
+        state.requirement_runs.clone(),
+    );
+    let mut args = serde_json::Map::new();
+    if let Some(limit) = q.limit {
+        args.insert("limit".into(), json!(limit));
+    }
+    if let Some(include_evidence) = q.include_evidence {
+        args.insert("include_evidence".into(), json!(include_evidence));
+    }
+    let payload = match harness_core::Tool::invoke(&tool, json!(args)).await {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    // The tool returns a JSON-encoded String. Re-parse it so axum
+    // sets the right `application/json` Content-Type and the body
+    // is a proper JSON value (not a JSON-encoded string).
+    match serde_json::from_str::<serde_json::Value>(&payload) {
+        Ok(value) => Json(value).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("re-parse harness.health output: {e}")})),
+        )
+            .into_response(),
+    }
 }
 
 async fn list_runs(State(state): State<AppState>, Query(q): Query<RunsQuery>) -> Response {

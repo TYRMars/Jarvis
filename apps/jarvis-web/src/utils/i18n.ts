@@ -14,6 +14,7 @@ export type Lang = "en" | "zh";
 /// take whatever args their callers pass through `t(key, ...args)`;
 /// we don't type-check arity per key — adding a new message just
 /// requires keeping the en/zh signatures consistent.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MessageValue = string | ((...args: any[]) => string);
 
 export const messages: Record<Lang, Record<string, MessageValue>> = {
@@ -30,8 +31,16 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     conversations: "Conversations",
     customize: "Capability Marketplace",
     delete: "delete",
+    remove: "Remove",
     deleteConfirm: (id) => `Delete conversation ${id}?`,
     deleteFailed: (msg) => `delete failed: ${msg}`,
+    abandon: "abandon",
+    abandonHint: "Mark this conversation as abandoned (cancels any linked runs)",
+    abandonConfirm: (id) =>
+      `Mark conversation ${id} as abandoned? This will also cancel any non-terminal RequirementRuns linked to it.`,
+    abandonFailed: (msg) => `abandon failed: ${msg}`,
+    convoLifecycleAbandoned: "abandoned",
+    convoLifecycleArchived: "archived",
     denied: (reason) => `Denied${reason ? " - " + reason : ""}`,
     deny: "Deny",
     disconnected: "disconnected",
@@ -194,6 +203,26 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     groupByProject: "Project",
     groupByLabel: "Group by",
     groupNoProject: "Free chat",
+    projectSectionTitle: "Projects",
+    conversationsGroupFree: "Chats",
+    groupExpand: "Show more",
+    groupCollapse: "Show less",
+    groupEmpty: "No conversations",
+    unreadOne: "Unread",
+    unreadCount: (n) => `${n} unread`,
+    organize: "Organize",
+    layoutByProject: "By project",
+    layoutRecentProjects: "Recent projects",
+    layoutByTime: "Chronological",
+    moveUp: "Move up",
+    moveDown: "Move down",
+    sortCriteria: "Sort by",
+    sortCreated: "Created time",
+    sortUpdated: "Updated time",
+    display: "Display",
+    displayAllConversations: "All conversations",
+    displayRelated: "Related",
+    newProject: "New project",
     convoSourceRequirement: "Requirement run",
     convoSourceRequirementShort: "Auto",
     convoAutoFilterLabel: "Filter",
@@ -273,6 +302,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsNavAppearanceLayout: "Appearance & Layout",
     settingsNavPersona: "Persona",
     settingsNavModels: "Models",
+    settingsNavRouting: "Routing",
     settingsNavSubagents: "Subagents",
     settingsNavExtensions: "Extensions",
     settingsNavSystem: "System",
@@ -545,6 +575,32 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsServerNoneConfigured: "(none configured)",
     settingsServerLoadFailed: (msg) => `failed to load server info: ${msg}`,
     settingsServerNotConfigured: "(not configured)",
+    // Routing
+    settingsRoutingTitle: "Routing",
+    settingsRoutingDesc: "Per-slot model targets + a fallback chain. SubAgent slots take effect after a server restart; summarisation applies live.",
+    settingsRoutingSlotDefault: "Default",
+    settingsRoutingSlotDefaultDesc: "Fallback target every other slot inherits when unset.",
+    settingsRoutingSlotCoding: "Coding",
+    settingsRoutingSlotCodingDesc: "Routes the codex SubAgent. Restart required for changes.",
+    settingsRoutingSlotReview: "Review",
+    settingsRoutingSlotReviewDesc: "Routes the reviewer SubAgent. Restart required for changes.",
+    settingsRoutingSlotSummarization: "Summarization",
+    settingsRoutingSlotSummarizationDesc: "Routes the summarising memory. Live - applies on the next compaction.",
+    settingsRoutingSlotDocReader: "Doc reader",
+    settingsRoutingSlotDocReaderDesc: "Routes the doc-reader SubAgent. Restart required for changes.",
+    settingsRoutingSlotVision: "Vision",
+    settingsRoutingSlotVisionDesc: "Reserved for future per-request resolvers. Stored only.",
+    settingsRoutingSlotLocalPrivate: "Local / private",
+    settingsRoutingSlotLocalPrivateDesc: "Reserved for privacy-sensitive workloads. Stored only.",
+    settingsRoutingSlotAria: (slot) => `Route ${slot}`,
+    settingsRoutingInheritUnset: "- inherit / unset -",
+    settingsRoutingFallbackHeading: "Fallback chain",
+    settingsRoutingFallbackDescPrefix: "Ordered list consulted by",
+    settingsRoutingFallbackDescSuffix: "on 429 / 5xx / timeout. Auth errors short-circuit. Self-reference (the primary's own provider) is dropped at runtime.",
+    settingsRoutingMoveUp: "Move up",
+    settingsRoutingMoveDown: "Move down",
+    settingsRoutingAddFallback: "+ Add fallback...",
+    settingsRoutingAddFallbackAria: "Add fallback",
     // Preferences (new)
     settingsPrefsTitle: "Preferences",
     settingsPrefsDesc: "Per-browser defaults. All values are saved to localStorage; clearing removes them.",
@@ -739,6 +795,35 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     // and the always-allow scope dropdown; the long descriptions are
     // surfaced in the Permissions section + the mode picker tooltip.
     settingsNavPermissions: "Permissions",
+    settingsNavChannels: "Channels",
+    channelsSectionDesc:
+      "Hook Jarvis up to messaging platforms (WeCom, WeChat MP, Feishu …). Outbound-only kinds deliver alerts; inbound kinds map external chats to conversations.",
+    channelsAdd: "Add channel",
+    channelsLoading: "Loading channels…",
+    channelsUnconfigured:
+      "Channel store unavailable — set JARVIS_DB_URL or use the default JSON-file persistence.",
+    channelsLoadFailed: "Load failed: ",
+    channelsEmpty:
+      "No channels yet. Click \"Add channel\" to wire up your first WeCom group robot.",
+    channelsNoKinds: "No channel kinds available.",
+    channelsTest: "Test",
+    channelsEdit: "Edit",
+    channelsPause: "Pause",
+    channelsResume: "Resume",
+    channelsDelete: "Delete",
+    channelsDeleteConfirm: "Delete this channel?",
+    channelsCreated: "Channel created.",
+    channelsSaved: "Saved.",
+    channelsDeleted: "Deleted.",
+    channelsTestOk: "Test message sent.",
+    channelsTestFailed: "Test failed: ",
+    channelsStatusEnabled: "Enabled",
+    channelsStatusDisabled: "Paused",
+    channelsStatusUnconfigured: "Needs config",
+    channelsFieldDisplayName: "Display name",
+    channelsSummaryWeComUrl: "Webhook: ",
+    channelsSave: "Save",
+    channelsCreateNow: "Create",
     permModeAsk: "Ask",
     permModeAcceptEdits: "Accept edits",
     permModePlan: "Plan",
@@ -976,7 +1061,7 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     projectGridTotal: (n: number) =>
       `${n} requirement${n === 1 ? "" : "s"}`,
     // Work-mode dashboard
-    workOverviewTitle: "Work overview",
+    workOverviewTitle: "Project overview",
     workOverviewSubtitle:
       "Real-time view of agent runs, throughput, and quality across all projects.",
     workOverviewProjectsLink: "Project list",
@@ -999,8 +1084,10 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
       missingStores: string,
       failures: string,
       blockedRows: string,
+      heartbeat: string,
+      inFlight: string,
     ) =>
-      `Please diagnose and fix the run issues surfaced in Jarvis Work overview.
+      `Please diagnose and fix the run issues surfaced in Jarvis Project overview.
 
 Scope:
 - Window: last ${days} days
@@ -1009,6 +1096,8 @@ Scope:
 - Running now: ${running}
 - Verification pass rate: ${passRate}
 - Missing stores/signals: ${missingStores}
+- Agent loop heartbeat: ${heartbeat}
+- In-flight / concurrency cap: ${inFlight}
 
 Recent failed runs:
 ${failures}
@@ -1040,6 +1129,77 @@ Expected workflow:
     kpiCompletedInWindow: "Completed runs",
     kpiVerificationPassRate: "Verification pass rate",
     kpiVerificationPassRateNoData: "No verified runs yet",
+    runtimeStripTitle: "Agent runtime",
+    runtimeStripSubtitle: "Live state of the harness scheduler.",
+    runtimeStripUnconfigured:
+      "Agent runtime not initialised — set JARVIS_WORK_MODE=auto to enable the scheduler.",
+    runtimeStripPaused: "Paused",
+    runtimeStatHeartbeat: "Heartbeat",
+    runtimeStatHeartbeatNever: "no tick yet",
+    runtimeStatHeartbeatPausedDetail: "Loop polling, scheduler paused.",
+    runtimeStatHeartbeatStaleDetail: (mult: string) =>
+      `${mult}× tick interval — loop may be stalled.`,
+    runtimeStatHeartbeatFreshDetail: (cadence: string) =>
+      `Tick cadence ${cadence}.`,
+    runtimeStatInFlight: "In-flight",
+    runtimeStatInFlightDetail: (used: number, cap: number) =>
+      `${used} of ${cap} concurrent permits in use.`,
+    runtimeStatInFlightSaturatedDetail: (cap: number) =>
+      `All ${cap} permits used — pickups will queue.`,
+    runtimeStatTickCadence: "Tick cadence",
+    runtimeStatTickCadenceDetail: "How often the loop checks for work.",
+    runtimeStatBurst: "Burst / tick",
+    runtimeStatBurstDetail: (n: number) =>
+      `Up to ${n} requirement${n === 1 ? "" : "s"} per tick.`,
+    runtimeStatRetries: "Retry budget",
+    runtimeStatRetriesDetail: (n: number) =>
+      `Re-pick a failing requirement up to ${n} time${n === 1 ? "" : "s"}.`,
+    runtimeStatRunTimeout: "Run timeout",
+    runtimeStatRunTimeoutDetail: "Wall-clock budget per agent loop pickup.",
+    runtimeEverySeconds: (n: number) => `every ${n}s`,
+    runtimeRelJustNow: "just now",
+    runtimeRelSeconds: (n: number) => `${n}s ago`,
+    runtimeRelMinutes: (n: number) => `${n}m ago`,
+    runtimeRelHours: (n: number) => `${n}h ago`,
+    runtimeHeartbeatNever: "no tick yet",
+    // Formula-tooltip explanations for the runtime strip. Each tile
+    // renders these as a hover tooltip behind the small `i` icon.
+    runtimeHintHeartbeatMeaning:
+      "Time since the auto-mode loop last completed a tick.",
+    runtimeHintHeartbeatFormula:
+      "Formula: now − last_tick_at (recorded at the top of every tick, paused or not).",
+    runtimeHintHeartbeatInterpretation:
+      "Interpretation: green if < 1.5× tick interval; amber 1.5–3×; red beyond 3× — the loop may be stalled.",
+    runtimeHintInFlightMeaning:
+      "Number of agent runs holding a concurrency permit right now.",
+    runtimeHintInFlightFormula:
+      "Formula: max_concurrent_units − available_permits, snapshot from the runtime semaphore.",
+    runtimeHintInFlightInterpretation:
+      "Interpretation: at the cap, new pickups queue in FIFO order rather than racing for rate-limit tokens.",
+    runtimeHintTickCadenceMeaning:
+      "How often the auto-mode loop wakes up to look for eligible requirements.",
+    runtimeHintTickCadenceFormula:
+      "Source: JARVIS_WORK_TICK_SECONDS (env) or AutoModeConfig default.",
+    runtimeHintTickCadenceInterpretation:
+      "Interpretation: lower = faster pickup, higher = lighter store load.",
+    runtimeHintBurstMeaning:
+      "Maximum requirements one tick may pick up before the next tick.",
+    runtimeHintBurstFormula:
+      "Source: JARVIS_WORK_MAX_UNITS_PER_TICK (env) or AutoModeConfig default.",
+    runtimeHintBurstInterpretation:
+      "Interpretation: independent from the concurrency cap — burst controls per-tick fan-out, not parallel execution.",
+    runtimeHintRetriesMeaning:
+      "Maximum re-pickups per requirement after a Failed run.",
+    runtimeHintRetriesFormula:
+      "Source: JARVIS_WORK_MAX_RETRIES (env) or AutoModeConfig default.",
+    runtimeHintRetriesInterpretation:
+      "Interpretation: once exhausted, the requirement stops being eligible until manually reset.",
+    runtimeHintRunTimeoutMeaning:
+      "Wall-clock budget for one agent-loop pickup before the run is forcibly cancelled.",
+    runtimeHintRunTimeoutFormula:
+      "Source: JARVIS_WORK_RUN_TIMEOUT_MS (env) or AutoModeConfig default.",
+    runtimeHintRunTimeoutInterpretation:
+      "Interpretation: the reaper marks a stuck run Cancelled past 2× this value.",
     panelOperational: "Operational",
     panelThroughput: "Throughput",
     panelQuality: "Quality",
@@ -1195,7 +1355,7 @@ Expected workflow:
     detailNextKicker: "Next step",
     detailNextFailed: "Latest verification failed",
     detailNextPassed: "Latest verification passed",
-    detailNextRunning: "Session is in progress",
+    detailNextRunning: "Execution is in progress",
     detailNextIdle: "Ready to run",
     detailNextFailedDetail: (n: number) =>
       `${n} validation item${n === 1 ? "" : "s"} need attention. Start from the failed item or rerun verification after fixing it.`,
@@ -1205,22 +1365,22 @@ Expected workflow:
       "Jarvis is already working on this requirement. Open the latest session to follow along.",
     detailNextIdleDetail: (n: number) =>
       n > 0
-        ? `${n} validation item${n === 1 ? "" : "s"} ready. Start a session when you want Jarvis to execute this requirement.`
-        : "No validation items yet. Add one below or start from the requirement description.",
+        ? `${n} checklist item${n === 1 ? "" : "s"} ready. Jarvis must satisfy them before this requirement can be done.`
+        : "Jarvis has not initialized the execution checklist yet.",
     detailNextFixFailed: "Have Jarvis handle failed item",
     detailNextRerun: "Rerun verification",
     detailProgressHeading: "Progress",
     detailProgressIdleTitle: "Ready for Jarvis",
     detailProgressIdleNoChecks:
-      "Jarvis can start from the requirement text. Validation items are optional.",
+      "Jarvis must initialize an execution checklist before this requirement can be completed.",
     detailProgressIdleWithChecks: (n: number) =>
-      `${n} validation item${n === 1 ? "" : "s"} will be checked while Jarvis works.`,
+      `${n} checklist item${n === 1 ? "" : "s"} will be executed and used for completion.`,
     detailProgressRunningTitle: "Jarvis is working",
     detailProgressRunningDetail:
       "A Jarvis session is running in the background. Stay here for status, or open the session for the full transcript.",
     detailProgressFailedTitle: "Needs follow-up",
     detailProgressFailedDetail: (n: number) =>
-      `${n} validation item${n === 1 ? "" : "s"} failed or is blocked.`,
+      `${n} checklist item${n === 1 ? "" : "s"} failed or is blocked.`,
     detailProgressPassedTitle: "Passed",
     detailProgressPassedDetail:
       "The latest verification passed. Open the session if you need the result details.",
@@ -1230,8 +1390,8 @@ Expected workflow:
     detailProgressRerun: "Run again",
     detailTopicHeading: "Requirement",
     roadmapSourceLabel: "Source document",
-    runsHeading: "Session history",
-    runsHeadingHint: "Each Jarvis attempt is a conversation you can reopen for the full transcript.",
+    runsHeading: "Execution records",
+    runsHeadingHint: "Each Jarvis attempt records a run you can reopen for the full transcript.",
     runsEmpty: "No sessions yet.",
     runsSummary: (n: number, latest: string) =>
       latest ? `${n} session${n === 1 ? "" : "s"} · latest ${latest}` : `${n} session${n === 1 ? "" : "s"}`,
@@ -1266,7 +1426,9 @@ Expected workflow:
     runLogDataStdout: "stdout",
     runLogDataStderr: "stderr",
     activityHeading: "Change log",
-    activityHint: "Status changes, verification events, and comments. Execution details live in session history.",
+    activityHint: "Status changes, verification events, and comments. Execution details live in execution records.",
+    activityOpenAria: "Open change log",
+    activityOpenTitle: "Open change log",
     activityEmpty: "No activity yet.",
     activitySummary: (n: number) => n === 0 ? "No activity" : `${n} event${n === 1 ? "" : "s"}`,
     activityActorHuman: "you",
@@ -1310,15 +1472,6 @@ Expected workflow:
     commentsEdited: " (edited)",
     commentsDeleteConfirm:
       "Delete this comment? Replies underneath will be removed too.",
-    // Acceptance policy (v1.0 SubAgent) ---------------------------
-    reqAcceptancePolicyLabel: "Acceptance",
-    reqAcceptancePolicySubagent: "Reviewer subagent",
-    reqAcceptancePolicyHuman: "Human review only",
-    reqAcceptancePolicySubagentHint:
-      "When the work agent flips this row to Review, the reviewer subagent runs the verification plan and decides pass/fail.",
-    reqAcceptancePolicyHumanHint:
-      "Row stops at Review until a person clicks 'complete'. Use for changes the verification plan can't model.",
-    reqAcceptancePolicyHumanBadge: "human review",
     // Labels (Phase 3.8) ------------------------------------------
     labelsEmptyHint: "No labels yet",
     labelsEditButton: "Edit labels",
@@ -1398,13 +1551,13 @@ Expected workflow:
     verifyRunHintNoPlan:
       "No verification_plan pinned on this requirement. Auto mode will skip verification — type the commands you want to run manually below.",
     verifyRunResetToPlan: "Reset to plan",
-    reqTodoHeading: "Validation checklist",
+    reqTodoHeading: "Execution checklist (TODO)",
     reqTodoHeadingHint:
-      "Acceptance items Jarvis should run or reason through before this requirement is considered done.",
+      "Jarvis initializes and maintains this completion checklist. Every execution must satisfy it before the requirement can be done.",
     reqTodoOptionalHint:
-      "Optional acceptance checks. Keep this closed unless the requirement needs explicit validation.",
-    reqTodoEmpty: "No validation items yet.",
-    reqTodoAddStep: "Add validation item",
+      "Jarvis-owned completion basis for this requirement.",
+    reqTodoEmpty: "Jarvis has not initialized the execution checklist yet.",
+    reqTodoAddStep: "Add TODO",
     reqTodoAdd: "Add",
     reqTodoAdding: "Adding",
     reqTodoSave: "Save",
@@ -1414,14 +1567,14 @@ Expected workflow:
     reqTodoCancelEdit: "Cancel edit",
     reqTodoInject: "Have Jarvis handle",
     reqTodoInjected: "Added to chat",
-    reqTodoInjectTitle: "Append this validation item to the current chat input",
-    reqTodoAddPlaceholder: "Add validation item",
+    reqTodoInjectTitle: "Ask Jarvis to continue from this checklist item",
+    reqTodoAddPlaceholder: "Add TODO, or type / to choose a skill",
     reqTodoCommandPlaceholder: "command to run, optional",
-    reqTodoTitleAria: "Validation item title",
+    reqTodoTitleAria: "Checklist item title",
     reqTodoKindAria: "Item type",
     reqTodoStatusAria: "Item status",
     reqTodoCommandAria: "Item command",
-    reqTodoDeleteConfirm: (title: string) => `Delete validation item “${title}”?`,
+    reqTodoDeleteConfirm: (title: string) => `Delete checklist item “${title}”?`,
     reqTodoKind_work: "Work",
     reqTodoKind_check: "Check",
     reqTodoKind_ci: "CI",
@@ -1434,14 +1587,18 @@ Expected workflow:
     reqTodoStatus_failed: "Failed",
     reqTodoStatus_skipped: "Skipped",
     reqTodoStatus_blocked: "Blocked",
-    reqTodoInjectPromptHeader: "Please use this Requirement validation item as context.",
+    reqTodoInjectPromptHeader: "Please use this Requirement checklist item as context.",
     reqTodoInjectPromptRequirement: (title: string) => `Requirement: ${title}`,
     reqTodoInjectPromptRequirementId: (id: string) => `Requirement ID: ${id}`,
-    reqTodoInjectPromptTodo: (title: string) => `Validation item: ${title}`,
+    reqTodoInjectPromptTodo: (title: string) => `Checklist item: ${title}`,
     reqTodoInjectPromptCommand: (command: string) => `Command: ${command}`,
     reqTodoInjectPromptEvidence: (note: string) => `Latest evidence: ${note}`,
     reqTodoInjectPromptAsk:
-      "Help me continue from this validation item. If it has a command, run or reason about it and update the requirement with evidence.",
+      "Help me continue from this checklist item. If it has a command, run or reason about it and update the requirement with evidence.",
+    reqTodoExecutionPromptHeader: "Execution checklist (TODO) for this run:",
+    reqTodoExecutionPromptAsk:
+      "Follow this checklist during the run, update item status/evidence through Jarvis tools, and do not mark the requirement done until the checklist is satisfied.",
+    reqTodoSkillTitle: (name: string) => `Use /${name} skill`,
 
     // Sidebar Projects rail
     sidebarAllConvos: "All conversations",
@@ -1704,7 +1861,6 @@ Expected workflow:
       "No runs yet — assign and approve a Requirement to kick the loop.",
     autoModeEmptyBlocked:
       "Nothing blocked — every approved requirement is either running, queued, or already done.",
-    autoModeBlockedReasonAssignee: "missing assignee",
     autoModeBlockedReasonDeps: (n: number) =>
       `${n} unmet dep${n > 1 ? "s" : ""}`,
     autoModeBlockedReasonRetries: (failed: number, max: number) =>
@@ -2182,8 +2338,16 @@ Expected workflow:
     conversations: "会话",
     customize: "能力市场",
     delete: "删除",
+    remove: "移除",
     deleteConfirm: (id) => `删除会话 ${id}？`,
     deleteFailed: (msg) => `删除失败：${msg}`,
+    abandon: "废弃",
+    abandonHint: "将此会话标记为已废弃（同时取消该会话上未完成的 Run）",
+    abandonConfirm: (id) =>
+      `将会话 ${id} 标记为已废弃？同时会把挂在它上面、还没收尾的 RequirementRun 全部取消。`,
+    abandonFailed: (msg) => `废弃失败：${msg}`,
+    convoLifecycleAbandoned: "已废弃",
+    convoLifecycleArchived: "已归档",
     denied: (reason) => `已拒绝${reason ? " - " + reason : ""}`,
     deny: "拒绝",
     disconnected: "已断开",
@@ -2346,6 +2510,26 @@ Expected workflow:
     groupByProject: "按项目",
     groupByLabel: "分组方式",
     groupNoProject: "对话",
+    projectSectionTitle: "项目",
+    conversationsGroupFree: "会话",
+    groupExpand: "展开显示",
+    groupCollapse: "收起显示",
+    groupEmpty: "暂无对话",
+    unreadOne: "未读",
+    unreadCount: (n) => `${n} 条未读`,
+    organize: "整理",
+    layoutByProject: "按项目",
+    layoutRecentProjects: "近期项目",
+    layoutByTime: "按时间顺序",
+    moveUp: "上移",
+    moveDown: "下移",
+    sortCriteria: "排序条件",
+    sortCreated: "创建时间",
+    sortUpdated: "更新时间",
+    display: "显示",
+    displayAllConversations: "所有对话",
+    displayRelated: "相关",
+    newProject: "新建项目",
     convoSourceRequirement: "需求任务",
     convoSourceRequirementShort: "自动",
     convoAutoFilterLabel: "筛选",
@@ -2425,6 +2609,7 @@ Expected workflow:
     settingsNavAppearanceLayout: "外观与界面",
     settingsNavPersona: "Jarvis 人格",
     settingsNavModels: "模型",
+    settingsNavRouting: "路由",
     settingsNavSubagents: "子智能体",
     settingsNavExtensions: "扩展",
     settingsNavSystem: "系统",
@@ -2697,6 +2882,32 @@ Expected workflow:
     settingsServerNoneConfigured: "（未配置）",
     settingsServerLoadFailed: (msg) => `加载服务端信息失败：${msg}`,
     settingsServerNotConfigured: "（未配置）",
+    // Routing
+    settingsRoutingTitle: "路由",
+    settingsRoutingDesc: "为不同槽位指定模型目标，并配置备用链。SubAgent 槽位需重启服务后生效；总结槽位实时生效。",
+    settingsRoutingSlotDefault: "默认",
+    settingsRoutingSlotDefaultDesc: "其他未设置槽位会继承的备用目标。",
+    settingsRoutingSlotCoding: "编码",
+    settingsRoutingSlotCodingDesc: "路由到 codex SubAgent。修改后需要重启服务。",
+    settingsRoutingSlotReview: "评审",
+    settingsRoutingSlotReviewDesc: "路由到 reviewer SubAgent。修改后需要重启服务。",
+    settingsRoutingSlotSummarization: "总结",
+    settingsRoutingSlotSummarizationDesc: "路由到总结记忆。实时生效，将用于下一次压缩。",
+    settingsRoutingSlotDocReader: "文档读取",
+    settingsRoutingSlotDocReaderDesc: "路由到 doc-reader SubAgent。修改后需要重启服务。",
+    settingsRoutingSlotVision: "视觉",
+    settingsRoutingSlotVisionDesc: "预留给未来的按请求解析器。当前仅保存配置。",
+    settingsRoutingSlotLocalPrivate: "本地 / 私密",
+    settingsRoutingSlotLocalPrivateDesc: "预留给隐私敏感任务。当前仅保存配置。",
+    settingsRoutingSlotAria: (slot) => `路由 ${slot}`,
+    settingsRoutingInheritUnset: "- 继承 / 未设置 -",
+    settingsRoutingFallbackHeading: "备用链",
+    settingsRoutingFallbackDescPrefix: "有序列表，由",
+    settingsRoutingFallbackDescSuffix: "在 429 / 5xx / 超时后查询。鉴权错误会短路。自引用（主目标自己的 provider）会在运行时丢弃。",
+    settingsRoutingMoveUp: "上移",
+    settingsRoutingMoveDown: "下移",
+    settingsRoutingAddFallback: "+ 添加备用目标...",
+    settingsRoutingAddFallbackAria: "添加备用目标",
     // Preferences
     settingsPrefsTitle: "偏好",
     settingsPrefsDesc: "本浏览器的默认值。全部存在 localStorage，可一键清空。",
@@ -2871,6 +3082,34 @@ Expected workflow:
     shellExecTimeout: "超时",
     // Permission modes
     settingsNavPermissions: "权限",
+    settingsNavChannels: "渠道",
+    channelsSectionDesc:
+      "把 Jarvis 接入消息平台（企业微信、微信公众号、飞书等）。出站类型用于告警通知；入站类型把外部会话映射到 Jarvis conversation。",
+    channelsAdd: "添加渠道",
+    channelsLoading: "正在加载渠道…",
+    channelsUnconfigured:
+      "渠道存储不可用 —— 设置 JARVIS_DB_URL 或使用默认 JSON 文件持久化。",
+    channelsLoadFailed: "加载失败：",
+    channelsEmpty: "尚无渠道。点击「添加渠道」配置你的第一个 WeCom 群机器人。",
+    channelsNoKinds: "暂无可用渠道类型。",
+    channelsTest: "测试",
+    channelsEdit: "编辑",
+    channelsPause: "暂停",
+    channelsResume: "启用",
+    channelsDelete: "删除",
+    channelsDeleteConfirm: "确认删除此渠道？",
+    channelsCreated: "渠道已创建。",
+    channelsSaved: "已保存。",
+    channelsDeleted: "已删除。",
+    channelsTestOk: "测试消息已送达。",
+    channelsTestFailed: "测试失败：",
+    channelsStatusEnabled: "已启用",
+    channelsStatusDisabled: "已暂停",
+    channelsStatusUnconfigured: "待配置",
+    channelsFieldDisplayName: "显示名",
+    channelsSummaryWeComUrl: "Webhook：",
+    channelsSave: "保存",
+    channelsCreateNow: "创建",
     permModeAsk: "每次询问",
     permModeAcceptEdits: "自动接受编辑",
     permModePlan: "计划模式",
@@ -3086,7 +3325,7 @@ Expected workflow:
     projectGridProjectCount: (n: number) => `${n} 个项目`,
     projectGridTotal: (n: number) => `共 ${n} 条需求`,
     // Work-mode 数据看板
-    workOverviewTitle: "工作总览 (Work overview)",
+    workOverviewTitle: "项目总览 (Project overview)",
     workOverviewSubtitle: "实时呈现各项目的智能体执行、产出与质量信号。",
     workOverviewProjectsLink: "项目列表",
     workOverviewDiagnoseButton: "一键诊断 (Diagnose)",
@@ -3108,8 +3347,10 @@ Expected workflow:
       missingStores: string,
       failures: string,
       blockedRows: string,
+      heartbeat: string,
+      inFlight: string,
     ) =>
-      `请诊断并修复 Jarvis 工作总览暴露的运行问题。
+      `请诊断并修复 Jarvis 项目总览暴露的运行问题。
 
 范围：
 - 时间窗口：近 ${days} 天
@@ -3118,6 +3359,8 @@ Expected workflow:
 - 当前运行中：${running}
 - 验证通过率：${passRate}
 - 缺失存储/信号：${missingStores}
+- 调度器心跳：${heartbeat}
+- 在跑 / 并发上限：${inFlight}
 
 最近失败运行：
 ${failures}
@@ -3149,6 +3392,69 @@ ${blockedRows}
     kpiCompletedInWindow: "已完成运行 (Completed runs)",
     kpiVerificationPassRate: "验证通过率 (Verification pass rate)",
     kpiVerificationPassRateNoData: "尚无验证数据",
+    runtimeStripTitle: "调度器运行状态 (Agent runtime)",
+    runtimeStripSubtitle: "Harness 调度器的实时运行情况。",
+    runtimeStripUnconfigured:
+      "调度器未启用 —— 设置 JARVIS_WORK_MODE=auto 以启用。",
+    runtimeStripPaused: "已暂停",
+    runtimeStatHeartbeat: "心跳 (Heartbeat)",
+    runtimeStatHeartbeatNever: "尚未触发",
+    runtimeStatHeartbeatPausedDetail: "循环仍在轮询，调度已暂停。",
+    runtimeStatHeartbeatStaleDetail: (mult: string) =>
+      `已超过节拍周期 ${mult} 倍，调度可能停摆。`,
+    runtimeStatHeartbeatFreshDetail: (cadence: string) =>
+      `调度节拍 ${cadence}。`,
+    runtimeStatInFlight: "在跑 (In-flight)",
+    runtimeStatInFlightDetail: (used: number, cap: number) =>
+      `${used} / ${cap} 并发额度已占用。`,
+    runtimeStatInFlightSaturatedDetail: (cap: number) =>
+      `${cap} 个并发槽全部占用，新任务将排队。`,
+    runtimeStatTickCadence: "节拍 (Tick cadence)",
+    runtimeStatTickCadenceDetail: "调度循环检查待办的间隔。",
+    runtimeStatBurst: "每拍上限 (Burst / tick)",
+    runtimeStatBurstDetail: (n: number) => `每个节拍最多挑选 ${n} 个需求。`,
+    runtimeStatRetries: "重试上限 (Retry budget)",
+    runtimeStatRetriesDetail: (n: number) =>
+      `失败需求最多被重新挑选 ${n} 次。`,
+    runtimeStatRunTimeout: "运行超时 (Run timeout)",
+    runtimeStatRunTimeoutDetail: "单次 agent 循环挑起后的墙钟预算。",
+    runtimeEverySeconds: (n: number) => `每 ${n} 秒`,
+    runtimeRelJustNow: "刚刚",
+    runtimeRelSeconds: (n: number) => `${n} 秒前`,
+    runtimeRelMinutes: (n: number) => `${n} 分钟前`,
+    runtimeRelHours: (n: number) => `${n} 小时前`,
+    runtimeHeartbeatNever: "尚未触发",
+    runtimeHintHeartbeatMeaning: "调度器循环最近一次完成 tick 的距离。",
+    runtimeHintHeartbeatFormula:
+      "公式：now − last_tick_at（每个 tick 起始处写入，无论开关状态）。",
+    runtimeHintHeartbeatInterpretation:
+      "解读：< 1.5 倍节拍周期为绿；1.5–3 倍为黄；超 3 倍为红——调度器可能停摆。",
+    runtimeHintInFlightMeaning: "当前持有并发额度的 agent 运行数量。",
+    runtimeHintInFlightFormula:
+      "公式：max_concurrent_units − available_permits，运行时信号量快照。",
+    runtimeHintInFlightInterpretation:
+      "解读：达到上限后新挑选会按 FIFO 排队，避免争抢限流额度。",
+    runtimeHintTickCadenceMeaning: "调度循环检查可挑选需求的频率。",
+    runtimeHintTickCadenceFormula:
+      "来源：JARVIS_WORK_TICK_SECONDS（环境变量）或 AutoModeConfig 默认值。",
+    runtimeHintTickCadenceInterpretation:
+      "解读：值越小挑选越快，值越大对存储更轻。",
+    runtimeHintBurstMeaning: "单次 tick 最多挑选的需求数量。",
+    runtimeHintBurstFormula:
+      "来源：JARVIS_WORK_MAX_UNITS_PER_TICK（环境变量）或 AutoModeConfig 默认值。",
+    runtimeHintBurstInterpretation:
+      "解读：与并发上限独立——这条控制单 tick 的扇出，不控制并行执行。",
+    runtimeHintRetriesMeaning: "失败后单个需求的最多重新挑选次数。",
+    runtimeHintRetriesFormula:
+      "来源：JARVIS_WORK_MAX_RETRIES（环境变量）或 AutoModeConfig 默认值。",
+    runtimeHintRetriesInterpretation:
+      "解读：用尽后该需求不再可被挑选，需要人工干预。",
+    runtimeHintRunTimeoutMeaning:
+      "单次 agent 循环挑起后允许的墙钟时长，超时强制取消。",
+    runtimeHintRunTimeoutFormula:
+      "来源：JARVIS_WORK_RUN_TIMEOUT_MS（环境变量）或 AutoModeConfig 默认值。",
+    runtimeHintRunTimeoutInterpretation:
+      "解读：清理器在超过 2 倍此值时把卡住的运行标记为 Cancelled。",
     panelOperational: "运营健康 (Operational health)",
     panelThroughput: "吞吐与产出 (Throughput)",
     panelQuality: "质量信号 (Quality signal)",
@@ -3290,27 +3596,27 @@ ${blockedRows}
     detailNextKicker: "下一步",
     detailNextFailed: "最近验证失败",
     detailNextPassed: "最近验证通过",
-    detailNextRunning: "会话正在进行中",
+    detailNextRunning: "执行正在进行中",
     detailNextIdle: "可以开始执行",
     detailNextFailedDetail: (n: number) =>
-      `${n} 个验收项需要处理。可以先让 Jarvis 处理失败项，修复后再重新运行验证。`,
+      `${n} 个执行项需要处理。可以先让 Jarvis 处理失败项，修复后再重新运行验证。`,
     detailNextPassedDetail: "最近一次会话已通过验证。只有需要复核或再跑一遍时才继续操作。",
     detailNextRunningDetail: "Jarvis 正在处理这个需求。打开最近会话可以查看执行过程。",
     detailNextIdleDetail: (n: number) =>
       n > 0
-        ? `已有 ${n} 个验收项。准备好后可以开启一次会话，让 Jarvis 执行这个需求。`
-        : "还没有验收项。可以先添加一个，或直接从需求描述开启会话。",
+        ? `已有 ${n} 个执行项。Jarvis 必须满足它们后才能完成需求。`
+        : "Jarvis 尚未初始化执行清单。",
     detailNextFixFailed: "让 Jarvis 处理失败项",
     detailNextRerun: "重新运行验证",
     detailProgressHeading: "推进",
     detailProgressIdleTitle: "可以交给 Jarvis",
-    detailProgressIdleNoChecks: "Jarvis 可以直接从需求内容开始。验收项是可选项。",
+    detailProgressIdleNoChecks: "Jarvis 需要先初始化执行清单，需求完成判断会以它为准。",
     detailProgressIdleWithChecks: (n: number) =>
-      `已有 ${n} 条验收项，Jarvis 推进时会一起关注。`,
+      `已有 ${n} 条执行项，Jarvis 推进和完成判断都会依据它们。`,
     detailProgressRunningTitle: "Jarvis 正在处理",
     detailProgressRunningDetail: "Jarvis 会话正在后台运行。可以留在这里看状态，也可以打开会话查看完整过程。",
     detailProgressFailedTitle: "需要继续处理",
-    detailProgressFailedDetail: (n: number) => `${n} 条验收项失败或阻塞。`,
+    detailProgressFailedDetail: (n: number) => `${n} 条执行项失败或阻塞。`,
     detailProgressPassedTitle: "已通过",
     detailProgressPassedDetail: "最近一次验证已通过。需要查看结果时打开会话即可。",
     detailProgressStart: "让 Jarvis 处理",
@@ -3319,9 +3625,9 @@ ${blockedRows}
     detailProgressRerun: "再运行一次",
     detailTopicHeading: "需求内容",
     roadmapSourceLabel: "来源文档",
-    runsHeading: "会话记录",
-    runsHeadingHint: "每次 Jarvis 处理都会生成一个会话，可打开查看完整过程。",
-    runsEmpty: "暂无会话记录。",
+    runsHeading: "执行记录",
+    runsHeadingHint: "每次 Jarvis 处理都会生成一次执行，可打开查看完整过程。",
+    runsEmpty: "暂无执行记录。",
     runsSummary: (n: number, latest: string) =>
       latest ? `${n} 次会话 · 最近${latest}` : `${n} 次会话`,
     runStatusPending: "排队中",
@@ -3355,7 +3661,9 @@ ${blockedRows}
     runLogDataStdout: "标准输出",
     runLogDataStderr: "错误输出",
     activityHeading: "变更记录",
-    activityHint: "状态变更、验证事件和评论。执行过程请看上方会话记录。",
+    activityHint: "状态变更、验证事件和评论。执行过程请看上方执行记录。",
+    activityOpenAria: "打开变更记录",
+    activityOpenTitle: "打开变更记录",
     activityEmpty: "暂无活动。",
     activitySummary: (n: number) => n === 0 ? "暂无活动" : `${n} 条活动`,
     activityActorHuman: "你",
@@ -3398,15 +3706,6 @@ ${blockedRows}
     commentsSave: "保存",
     commentsEdited: "（已编辑）",
     commentsDeleteConfirm: "确定删除这条评论？下面的回复也会一并清掉。",
-    // Acceptance policy (v1.0 SubAgent) ---------------------------
-    reqAcceptancePolicyLabel: "验收策略",
-    reqAcceptancePolicySubagent: "由 Reviewer 子代理验收",
-    reqAcceptancePolicyHuman: "仅人工验收",
-    reqAcceptancePolicySubagentHint:
-      "Agent 把该需求切到 Review 后，Reviewer 子代理会按 verification plan 跑验证并判定通过/失败。",
-    reqAcceptancePolicyHumanHint:
-      "需求停在 Review，等人手动点击「完成」。适合 verification plan 描述不了的改动。",
-    reqAcceptancePolicyHumanBadge: "人工验收",
     // Labels (Phase 3.8) ------------------------------------------
     labelsEmptyHint: "暂无标签",
     labelsEditButton: "编辑标签",
@@ -3483,11 +3782,11 @@ ${blockedRows}
       `已从需求的 verification_plan 自动填入 ${n} 条命令。可临时编辑，仅影响本次运行。`,
     verifyRunHintNoPlan: "本需求未绑定 verification_plan —— 自动模式会跳过验证；请在此手动填写要执行的命令。",
     verifyRunResetToPlan: "恢复为默认",
-    reqTodoHeading: "验证清单",
-    reqTodoHeadingHint: "需求完成前需要满足的验收项。失败项会优先提示下一步操作。",
-    reqTodoOptionalHint: "可选的验收检查。需求需要明确验收项时再展开添加。",
-    reqTodoEmpty: "暂无验收项。",
-    reqTodoAddStep: "添加验收项",
+    reqTodoHeading: "执行清单（TODO）",
+    reqTodoHeadingHint: "由 Jarvis 在需求生成时初始化并维护。需求完成判断以这份执行清单为依据，每次执行都必须满足。",
+    reqTodoOptionalHint: "这份清单是 Jarvis 判断需求是否完成的依据。",
+    reqTodoEmpty: "Jarvis 尚未初始化执行清单。",
+    reqTodoAddStep: "添加 TODO",
     reqTodoAdd: "添加",
     reqTodoAdding: "添加中",
     reqTodoSave: "保存",
@@ -3497,14 +3796,14 @@ ${blockedRows}
     reqTodoCancelEdit: "取消编辑",
     reqTodoInject: "让 Jarvis 处理",
     reqTodoInjected: "已加入对话",
-    reqTodoInjectTitle: "把这个验收项追加到当前对话输入框",
-    reqTodoAddPlaceholder: "添加验收项",
+    reqTodoInjectTitle: "让 Jarvis 基于这条执行项继续处理",
+    reqTodoAddPlaceholder: "添加 TODO，或输入 / 选择技能",
     reqTodoCommandPlaceholder: "运行命令，可选",
-    reqTodoTitleAria: "验收项标题",
-    reqTodoKindAria: "验收项类型",
-    reqTodoStatusAria: "验收项状态",
-    reqTodoCommandAria: "验收项命令",
-    reqTodoDeleteConfirm: (title: string) => `删除验收项「${title}」？`,
+    reqTodoTitleAria: "执行项标题",
+    reqTodoKindAria: "执行项类型",
+    reqTodoStatusAria: "执行项状态",
+    reqTodoCommandAria: "执行项命令",
+    reqTodoDeleteConfirm: (title: string) => `删除执行项「${title}」？`,
     reqTodoKind_work: "工作",
     reqTodoKind_check: "检查",
     reqTodoKind_ci: "CI",
@@ -3517,14 +3816,18 @@ ${blockedRows}
     reqTodoStatus_failed: "失败",
     reqTodoStatus_skipped: "跳过",
     reqTodoStatus_blocked: "阻塞",
-    reqTodoInjectPromptHeader: "请把这条 Requirement 验收项作为上下文。",
+    reqTodoInjectPromptHeader: "请把这条 Requirement 执行项作为上下文。",
     reqTodoInjectPromptRequirement: (title: string) => `需求：${title}`,
     reqTodoInjectPromptRequirementId: (id: string) => `需求 ID：${id}`,
-    reqTodoInjectPromptTodo: (title: string) => `验收项：${title}`,
+    reqTodoInjectPromptTodo: (title: string) => `执行项：${title}`,
     reqTodoInjectPromptCommand: (command: string) => `命令：${command}`,
     reqTodoInjectPromptEvidence: (note: string) => `最近证据：${note}`,
     reqTodoInjectPromptAsk:
-      "请基于这条验收项继续推进。如果它带有命令，请运行或分析该命令，并把结果作为 evidence 更新回需求。",
+      "请基于这条执行项继续推进。如果它带有命令，请运行或分析该命令，并把结果作为 evidence 更新回需求。",
+    reqTodoExecutionPromptHeader: "本次执行必须遵循的执行清单（TODO）：",
+    reqTodoExecutionPromptAsk:
+      "请在执行过程中逐项处理这份清单，通过 Jarvis 工具更新状态和 evidence；执行清单未满足前不要把需求标记为完成。",
+    reqTodoSkillTitle: (name: string) => `使用 /${name} 技能`,
 
     // 侧栏 Projects 列
     sidebarAllConvos: "全部会话",
@@ -3777,7 +4080,6 @@ ${blockedRows}
     autoModeEmptyRuns: "尚无运行记录 — 分配并审批一个 Requirement 以触发调度。",
     autoModeEmptyBlocked:
       "无阻塞 — 所有已审批的 Requirement 都在运行、排队或已完成。",
-    autoModeBlockedReasonAssignee: "缺少负责人",
     autoModeBlockedReasonDeps: (n: number) => `${n} 个未达成依赖`,
     autoModeBlockedReasonRetries: (failed: number, max: number) =>
       `重试已用尽（${failed}/${max}）`,
@@ -4233,8 +4535,10 @@ ${blockedRows}
 /// surfaces a readable string rather than `undefined`. Function-
 /// shaped values are invoked with the trailing args, so callers can
 /// pass through interpolation arguments transparently.
-export function t(key: string, ...args: any[]): string {
+export function t(key: string, ...args: unknown[]): string {
   const lang = appStore.getState().lang;
   const value = (messages[lang] && messages[lang][key]) || messages.en[key] || key;
-  return typeof value === "function" ? value(...args) : value;
+  return typeof value === "function"
+    ? (value as (...args: unknown[]) => string)(...args)
+    : value;
 }

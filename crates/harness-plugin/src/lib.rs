@@ -27,5 +27,6 @@ pub mod manifest;
 
 pub use manager::{InstalledPlugin, PluginInstallReport, PluginManager, PluginManagerError};
 pub use manifest::{
-    parse_plugin_manifest, validate_plugin_name, PluginManifest, PluginManifestError,
+    parse_plugin_manifest, validate_plugin_name, ChannelAdapterSpec, ChannelTransport,
+    PluginManifest, PluginManifestError,
 };

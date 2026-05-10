@@ -50,6 +50,7 @@ import {
   type SystemTab,
 } from "./sections/SystemSection";
 import { PermissionsSection } from "./sections/PermissionsSection";
+import { ChannelsSection } from "./sections/ChannelsSection";
 import { ProjectsSettingsSection } from "./sections/ProjectsSettingsSection";
 import { LabelsSettingsSection } from "./sections/LabelsSettingsSection";
 import { SoulSection } from "./sections/SoulSection";
@@ -127,6 +128,11 @@ const NAV_GROUPS: NavGroup[] = [
         id: "permissions",
         labelKey: "settingsNavPermissions",
         fallback: "Permissions",
+      },
+      {
+        id: "channels",
+        labelKey: "settingsNavChannels",
+        fallback: "Channels",
       },
     ],
   },
@@ -539,6 +545,8 @@ function renderSection(parsed: ParsedHash, setTab: (tab: string) => void) {
       );
     case "permissions":
       return <PermissionsSection />;
+    case "channels":
+      return <ChannelsSection />;
     case "projects":
       return <ProjectsSettingsSection />;
     case "labels":

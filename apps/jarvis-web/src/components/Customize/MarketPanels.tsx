@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import { addMcpServer } from "../../services/mcp";
 import {
   installSkillFromMarket,
@@ -22,29 +22,55 @@ type MarketState<T> =
   | { kind: "ready"; entries: T[] }
   | { kind: "error"; message: string };
 
+const SKILL_PAGE_SIZE = 30;
+const SKILL_MAX_LIMIT = 100;
+const MCP_PAGE_SIZE = 20;
+const MCP_MAX_LIMIT = 50;
+
 export function SkillMarketPanel({ onInstalled }: { onInstalled?: () => void }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState<MarketState<MarketSkillEntry>>({ kind: "loading" });
+  const [limit, setLimit] = useState(SKILL_PAGE_SIZE);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = (q = query) => {
-    setState({ kind: "loading" });
-    searchSkillMarket(q)
+  const refresh = (q = query, nextLimit = limit, mode: "replace" | "append" = "replace") => {
+    if (mode === "replace") {
+      setState({ kind: "loading" });
+    } else {
+      setLoadingMore(true);
+    }
+    searchSkillMarket(q, nextLimit)
       .then((entries) => setState({ kind: "ready", entries }))
-      .catch((e: unknown) => setState({ kind: "error", message: String(e) }));
+      .catch((e: unknown) => setState({ kind: "error", message: String(e) }))
+      .finally(() => setLoadingMore(false));
   };
 
   useEffect(() => {
-    refresh("");
+    refresh("", SKILL_PAGE_SIZE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    refresh(query);
+    setLimit(SKILL_PAGE_SIZE);
+    refresh(query, SKILL_PAGE_SIZE);
   };
+
+  const hasMore = state.kind === "ready"
+    && state.entries.length >= limit
+    && limit < SKILL_MAX_LIMIT;
+
+  const loadMore = () => {
+    if (!hasMore || loadingMore) return;
+    const nextLimit = Math.min(limit + SKILL_PAGE_SIZE, SKILL_MAX_LIMIT);
+    setLimit(nextLimit);
+    refresh(query, nextLimit, "append");
+  };
+
+  const loadMoreRef = useAutoLoadMore(hasMore && !loadingMore, loadMore);
 
   const install = async (entry: MarketSkillEntry) => {
     const key = `${entry.source}/${entry.skillId}`;
@@ -74,6 +100,12 @@ export function SkillMarketPanel({ onInstalled }: { onInstalled?: () => void }) 
         placeholder={tx("marketSkillSearchPlaceholder", "Search pnpm, docs, git…")}
       />
       {renderSkillMarket(state, installing, (entry) => { void install(entry); })}
+      <MarketLoadMore
+        refEl={loadMoreRef}
+        hasMore={hasMore}
+        loading={loadingMore}
+        onLoadMore={loadMore}
+      />
       {message && <div className="settings-form-success">{message}</div>}
       {error && <div className="settings-form-error">{error}</div>}
     </div>
@@ -83,26 +115,47 @@ export function SkillMarketPanel({ onInstalled }: { onInstalled?: () => void }) 
 export function McpMarketPanel({ onInstalled }: { onInstalled?: () => void }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState<MarketState<MarketMcpEntry>>({ kind: "loading" });
+  const [limit, setLimit] = useState(MCP_PAGE_SIZE);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = (q = query) => {
-    setState({ kind: "loading" });
-    searchMcpMarket(q)
+  const refresh = (q = query, nextLimit = limit, mode: "replace" | "append" = "replace") => {
+    if (mode === "replace") {
+      setState({ kind: "loading" });
+    } else {
+      setLoadingMore(true);
+    }
+    searchMcpMarket(q, nextLimit)
       .then((entries) => setState({ kind: "ready", entries }))
-      .catch((e: unknown) => setState({ kind: "error", message: String(e) }));
+      .catch((e: unknown) => setState({ kind: "error", message: String(e) }))
+      .finally(() => setLoadingMore(false));
   };
 
   useEffect(() => {
-    refresh("");
+    refresh("", MCP_PAGE_SIZE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    refresh(query);
+    setLimit(MCP_PAGE_SIZE);
+    refresh(query, MCP_PAGE_SIZE);
   };
+
+  const hasMore = state.kind === "ready"
+    && state.entries.length >= limit
+    && limit < MCP_MAX_LIMIT;
+
+  const loadMore = () => {
+    if (!hasMore || loadingMore) return;
+    const nextLimit = Math.min(limit + MCP_PAGE_SIZE, MCP_MAX_LIMIT);
+    setLimit(nextLimit);
+    refresh(query, nextLimit, "append");
+  };
+
+  const loadMoreRef = useAutoLoadMore(hasMore && !loadingMore, loadMore);
 
   const install = async (entry: MarketMcpEntry) => {
     const cfg = mcpConfigFromMarketEntry(entry);
@@ -132,8 +185,65 @@ export function McpMarketPanel({ onInstalled }: { onInstalled?: () => void }) {
         placeholder={tx("marketMcpSearchPlaceholder", "Search filesystem, git, browser…")}
       />
       {renderMcpMarket(state, installing, (entry) => { void install(entry); })}
+      <MarketLoadMore
+        refEl={loadMoreRef}
+        hasMore={hasMore}
+        loading={loadingMore}
+        onLoadMore={loadMore}
+      />
       {message && <div className="settings-form-success">{message}</div>}
       {error && <div className="settings-form-error">{error}</div>}
+    </div>
+  );
+}
+
+function useAutoLoadMore(enabled: boolean, onLoadMore: () => void) {
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const onLoadMoreRef = useRef(onLoadMore);
+
+  useEffect(() => {
+    onLoadMoreRef.current = onLoadMore;
+  }, [onLoadMore]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (typeof IntersectionObserver === "undefined") return;
+    const node = sentinelRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        onLoadMoreRef.current();
+      }
+    }, { rootMargin: "240px 0px" });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [enabled]);
+
+  return sentinelRef;
+}
+
+function MarketLoadMore({
+  refEl,
+  hasMore,
+  loading,
+  onLoadMore,
+}: {
+  refEl: RefObject<HTMLDivElement | null>;
+  hasMore: boolean;
+  loading: boolean;
+  onLoadMore: () => void;
+}) {
+  if (!hasMore) return null;
+  return (
+    <div ref={refEl} className="market-load-more">
+      <button
+        type="button"
+        className="settings-btn"
+        onClick={onLoadMore}
+        disabled={loading}
+      >
+        {loading ? tx("marketLoadingMore", "Loading…") : tx("marketLoadMore", "Load more")}
+      </button>
     </div>
   );
 }

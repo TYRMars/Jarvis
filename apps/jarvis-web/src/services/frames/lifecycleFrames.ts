@@ -61,6 +61,7 @@ export const lifecycleFrameHandlers: Record<string, (ev: any) => void> = {
       const store = appStore.getState();
       store.setConvoRows(store.convoRows.filter((r: any) => r.id !== staleId));
       store.clearConversationSurface(staleId);
+      store.clearConversationUnread(staleId);
       if (store.activeId === staleId) {
         store.setActiveId(null);
         store.clearMessages();

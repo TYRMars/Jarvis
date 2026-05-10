@@ -1,5 +1,5 @@
 //! Phase 6 — background scheduler that picks Ready
-//! [`Requirement`](harness_core::Requirement)s with an assignee,
+//! [`Requirement`](harness_core::Requirement)s,
 //! mints a fresh-session [`RequirementRun`](harness_core::RequirementRun),
 //! drives the agent loop, persists the result, and (when the
 //! requirement carries a [`VerificationPlan`](harness_core::VerificationPlan))
@@ -28,18 +28,18 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use harness_core::{
-    ActivityActor, ActivityKind, AgentProfile, CommandResult, Conversation, ConversationMetadata,
-    Message, Project, ProjectMemory, ProjectMemoryKind, Requirement, RequirementRun,
-    RequirementRunEvent, RequirementRunLogLevel, RequirementRunStatus, RequirementStatus,
-    RequirementTodo, RequirementTodoCreator, RequirementTodoEvidence, RequirementTodoKind,
-    RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult, VerificationStatus,
+    ActivityActor, ActivityKind, CommandResult, Conversation, ConversationMetadata, Message,
+    Project, ProjectMemory, ProjectMemoryKind, Requirement, RequirementRun, RequirementRunEvent,
+    RequirementRunLogLevel, RequirementRunStatus, RequirementStatus, RequirementTodoEvidence,
+    RequirementTodoKind, RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult,
+    VerificationStatus,
 };
 use harness_requirement::{build_default_manifest, render_manifest_summary};
 use serde::Deserialize;
@@ -154,7 +154,15 @@ impl Default for AutoModeConfig {
             // stay predictable. Override via JARVIS_WORK_MAX_CONCURRENT
             // or WORKFLOW.md `agent.max_concurrent_agents`.
             max_concurrent_units: 2,
-            max_retries: 1,
+            // 3 instead of 1: a single transient LLM-transport blip
+            // (404, DNS, rate-limit timeout) used to permanently park
+            // a Requirement at the v1 default, since `consecutive_failed >=
+            // max_retries` hard-skips on the next tick. With 3 we can
+            // ride out the typical 1–2 minute outage *and* the v1.1
+            // exponential-backoff still keeps a stuck Requirement
+            // from burning real money in a tight loop. Override via
+            // `JARVIS_WORK_MAX_RETRIES` or WORKFLOW.md.
+            max_retries: 3,
             run_timeout_ms: 10 * 60 * 1000,
             allow_unassigned: true,
             default_assignee: None,
@@ -386,6 +394,11 @@ pub struct AutoModeRuntime {
     /// dashboard can show "loop alive, just paused" vs. "loop never
     /// started". `None` until the first tick fires.
     last_tick_at: Arc<Mutex<Option<String>>>,
+    /// Hot-reloadable override for `AutoModeConfig::max_retries`.
+    /// Sentinel `0` means "no override; use the static config value".
+    /// Operators flip this via `POST /v1/auto-mode {max_retries}`
+    /// when a transient outage parks a backlog under the static cap.
+    max_retries_override: Arc<AtomicUsize>,
 }
 
 #[derive(Debug)]
@@ -430,6 +443,7 @@ impl AutoModeRuntime {
             active_requirements: Arc::new(Mutex::new(HashSet::new())),
             concurrency_gate: Arc::new(Semaphore::new(permits)),
             last_tick_at: Arc::new(Mutex::new(None)),
+            max_retries_override: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -439,6 +453,28 @@ impl AutoModeRuntime {
 
     pub fn set_enabled(&self, value: bool) {
         self.enabled.store(value, Ordering::SeqCst);
+    }
+
+    /// Read the current override. `None` means "use the static
+    /// config value"; `Some(n)` is the runtime-set ceiling.
+    pub fn max_retries_override(&self) -> Option<usize> {
+        match self.max_retries_override.load(Ordering::SeqCst) {
+            0 => None,
+            n => Some(n),
+        }
+    }
+
+    /// Set the runtime override for `max_retries`. `None` clears it
+    /// (picker falls back to `AutoModeConfig::max_retries`).
+    pub fn set_max_retries_override(&self, value: Option<usize>) {
+        self.max_retries_override
+            .store(value.unwrap_or(0), Ordering::SeqCst);
+    }
+
+    /// Picker-facing accessor: prefers the runtime override, falls
+    /// back to the static config.
+    pub fn effective_max_retries(&self, config: &AutoModeConfig) -> usize {
+        self.max_retries_override().unwrap_or(config.max_retries)
     }
 
     pub(crate) fn try_claim_requirement(
@@ -573,8 +609,6 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
     let Some(runs) = state.requirement_runs.as_ref() else {
         return Ok(0);
     };
-    let profiles = state.agent_profiles.as_ref();
-
     let project_rows = projects
         .list(false, 200)
         .await
@@ -620,22 +654,6 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                     requirement_id = %req.id,
                     status = req.status.as_wire(),
                     reason = "ineligible_status",
-                    "auto mode skipping requirement"
-                );
-                continue;
-            }
-            // v1.0 SubAgent — `Human` acceptance policy at Review
-            // means "stop here, await a human click". Re-running
-            // auto-mode against it would burn LLM budget without
-            // ever advancing status (the policy gate in
-            // `completed_requirement_target_status` keeps the row
-            // at Review forever). Skip cleanly.
-            if matches!(req.status, RequirementStatus::Review)
-                && matches!(req.acceptance_policy, harness_core::AcceptancePolicy::Human)
-            {
-                debug!(
-                    requirement_id = %req.id,
-                    reason = "human_acceptance_policy_at_review",
                     "auto mode skipping requirement"
                 );
                 continue;
@@ -692,46 +710,29 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                 );
                 continue;
             }
-            // v1.0 SubAgent — when reviewer_auto_accept is on, a
-            // Review+Subagent row that already has a Completed run
-            // has been through the reviewer dispatch path inside
-            // `advance_completed_requirement`. If the reviewer
-            // succeeded, its `requirement.review_verdict` call would
-            // have flipped status to Done already (so we wouldn't
-            // observe Review here). If it failed (or its terminal
-            // call was missed), the WARN comment at line ~1657 says
-            // the row "stays at Review for human follow-up" — and the
-            // intent is explicitly that the picker does NOT re-mint a
-            // fresh agent run on the next tick.
-            //
-            // Without this guard, a single dispatch failure
-            // (transient reviewer LLM error, model misconfiguration,
-            // etc.) snowballs every tick into a brand-new agent run
-            // that re-runs the LLM, re-runs verification, re-tries
-            // dispatch, and fails the same way — a runaway LLM cost
-            // loop. `consecutive_failed_since_last_success` doesn't
-            // catch it because the agent run itself terminates as
-            // Completed; only the dispatch fails, and dispatch isn't
-            // tracked in the run-status retry budget.
-            //
-            // Recovery is operator-driven: move the row off Review
-            // (back to Backlog / InProgress for a re-run, or directly
-            // to Done if the work was actually fine), or fix the
-            // reviewer config and let the next manually-moved Review
-            // row exercise the dispatch path.
-            if config.reviewer_auto_accept
-                && matches!(req.status, RequirementStatus::Review)
-                && matches!(
-                    req.acceptance_policy,
-                    harness_core::AcceptancePolicy::Subagent
-                )
+            // v1.2 — under default acceptance (`reviewer_auto_accept
+            // = false`) a Review row whose latest run completed
+            // cleanly has no autonomous path to Done: nothing in
+            // the system flips its boilerplate execution-checklist
+            // todos, no reviewer subagent dispatches, and re-running
+            // the agent loop produces the same outcome. Re-pickup
+            // just burns LLM cycles (and, when the provider has
+            // partial outages, accelerates the retry budget burn-
+            // down). Skip until something else advances the row:
+            // an operator click, the reviewer flag flipping on, or
+            // a requirement touch that bumps `updated_at`. The
+            // existing reviewer-flag path is unchanged — when
+            // `reviewer_auto_accept=true`, re-pickup is expected
+            // because that's what dispatches the reviewer subagent.
+            if req.status == RequirementStatus::Review
+                && !config.reviewer_auto_accept
                 && history
                     .iter()
                     .any(|r| matches!(r.status, RequirementRunStatus::Completed))
             {
                 debug!(
                     requirement_id = %req.id,
-                    reason = "reviewer_dispatched_awaiting_intervention",
+                    reason = "review_completed_awaiting_acceptance",
                     "auto mode skipping requirement"
                 );
                 continue;
@@ -743,12 +744,22 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
             // Completed run. Cancelled rows (timeout reaper, manual
             // abort) are skipped: they're neither success nor
             // failure for retry budgeting.
+            //
+            // v1.2 — `effective_max_retries` consults the runtime
+            // override first so an operator can hot-bump the cap
+            // (POST `/v1/auto-mode {max_retries}`) without a
+            // restart. Default sentinel (`0`) falls back to the
+            // static config.
             let consecutive_failed = consecutive_failed_since_last_success(&history);
-            if consecutive_failed >= config.max_retries {
+            let max_retries = match state.auto_mode_runtime.as_ref() {
+                Some(rt) => rt.effective_max_retries(config),
+                None => config.max_retries,
+            };
+            if consecutive_failed >= max_retries {
                 debug!(
                     requirement_id = %req.id,
                     consecutive_failed,
-                    max_retries = config.max_retries,
+                    max_retries,
                     reason = "retries_exceeded",
                     "auto mode skipping requirement"
                 );
@@ -776,35 +787,6 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                     continue;
                 }
             }
-            let profile = match resolve_auto_profile(
-                profiles,
-                req.assignee_id.as_deref(),
-                config.default_assignee.as_deref(),
-                config.allow_unassigned,
-            )
-            .await?
-            {
-                Some(p) => Some(p),
-                None if req.assignee_id.is_some() => {
-                    debug!(
-                        requirement_id = %req.id,
-                        assignee_id = ?req.assignee_id,
-                        reason = "assignee_unresolved",
-                        "auto mode skipping requirement"
-                    );
-                    continue;
-                }
-                None if config.allow_unassigned => None,
-                None => {
-                    debug!(
-                        requirement_id = %req.id,
-                        reason = "no_assignee_and_unassigned_disallowed",
-                        "auto mode skipping requirement"
-                    );
-                    continue;
-                }
-            };
-
             let claim = match state.auto_mode_runtime.as_ref() {
                 Some(runtime) => match runtime.try_claim_requirement(&req.id) {
                     Some(claim) => Some(claim),
@@ -831,7 +813,7 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
             // many requirements pound the LLM in parallel.
             let state_clone = state.clone();
             let req_clone = req.clone();
-            let workspace = resolve_project_workspace(&project, profile.as_ref(), state);
+            let workspace = resolve_project_workspace(&project, state);
             let timeout_ms = config.run_timeout_ms;
             let workflow_prompt = config.workflow_prompt.clone();
             let gate = state
@@ -863,7 +845,6 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                 if let Err(e) = drive_one_with_prompt(
                     &state_clone,
                     &req_clone,
-                    profile.as_ref(),
                     Some(workspace),
                     timeout_ms,
                     workflow_prompt,
@@ -880,51 +861,6 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
         }
     }
     Ok(picked)
-}
-
-async fn resolve_auto_profile(
-    profiles: Option<&Arc<dyn harness_core::AgentProfileStore>>,
-    explicit_assignee: Option<&str>,
-    default_assignee: Option<&str>,
-    allow_unassigned: bool,
-) -> Result<Option<AgentProfile>, String> {
-    let Some(store) = profiles else {
-        return Ok(None);
-    };
-
-    if let Some(id) = explicit_assignee.filter(|s| !s.trim().is_empty()) {
-        return store
-            .get(id)
-            .await
-            .map_err(|e| format!("get agent profile({id}): {e}"));
-    }
-
-    let Some(selector) = default_assignee.filter(|s| !s.trim().is_empty()) else {
-        return Ok(None);
-    };
-
-    if let Some(profile) = store
-        .get(selector)
-        .await
-        .map_err(|e| format!("get default agent profile({selector}): {e}"))?
-    {
-        return Ok(Some(profile));
-    }
-
-    let profiles = store
-        .list()
-        .await
-        .map_err(|e| format!("list agent profiles: {e}"))?;
-    let by_name = profiles
-        .into_iter()
-        .find(|p| p.name == selector || p.name.eq_ignore_ascii_case(selector));
-    if by_name.is_none() && !allow_unassigned {
-        warn!(
-            default_assignee = selector,
-            "auto mode default assignee did not match an AgentProfile"
-        );
-    }
-    Ok(by_name)
 }
 
 /// Safety multiplier applied to `run_timeout_ms` before reaping a
@@ -1187,30 +1123,9 @@ pub(crate) fn spawn_background_run(state: AppState, requirement: Requirement) {
                 return;
             }
         }
-        let profile = match (
-            requirement.assignee_id.as_deref(),
-            state.agent_profiles.as_ref(),
-        ) {
-            (Some(aid), Some(store)) => match store.get(aid).await {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!(
-                        requirement_id = %requirement.id,
-                        error = %e,
-                        "spawn_background_run: agent profile lookup failed — running without it"
-                    );
-                    None
-                }
-            },
-            _ => None,
-        };
         let workspace = match state.projects.as_ref() {
             Some(projects) => match projects.load(&requirement.project_id).await {
-                Ok(Some(project)) => Some(resolve_project_workspace(
-                    &project,
-                    profile.as_ref(),
-                    &state,
-                )),
+                Ok(Some(project)) => Some(resolve_project_workspace(&project, &state)),
                 Ok(None) => {
                     warn!(
                         requirement_id = %requirement.id,
@@ -1230,15 +1145,7 @@ pub(crate) fn spawn_background_run(state: AppState, requirement: Requirement) {
             },
             None => None,
         };
-        if let Err(e) = drive_one(
-            &state,
-            &requirement,
-            profile.as_ref(),
-            workspace,
-            DEFAULT_RUN_TIMEOUT_MS,
-        )
-        .await
-        {
+        if let Err(e) = drive_one(&state, &requirement, workspace, DEFAULT_RUN_TIMEOUT_MS).await {
             warn!(
                 requirement_id = %requirement.id,
                 error = %e,
@@ -1252,12 +1159,10 @@ pub(crate) fn spawn_background_run(state: AppState, requirement: Requirement) {
 /// agent, drive `agent.run` under a timeout, persist outcome,
 /// auto-verify if the requirement carries a plan.
 ///
-/// `profile` is optional. When present, its `provider` / `model` /
-/// `system_prompt` are used to route the LLM call and prefix the
-/// manifest summary. When `None`, the run uses the binary's default
-/// provider+model (`state.build_agent(None, None)`) — this is the
-/// path taken by the ad-hoc background run triggered from a status
-/// flip on a requirement without an assignee.
+/// Runs always use Jarvis' default provider/model route. Requirement
+/// assignment and acceptance strategy are no longer part of the
+/// unattended execution path; Jarvis drives and verifies against the
+/// requirement's execution checklist.
 ///
 /// Errors here are logged but never surfaced — the run row
 /// records the failure, which is the durable record an operator
@@ -1265,25 +1170,15 @@ pub(crate) fn spawn_background_run(state: AppState, requirement: Requirement) {
 pub(crate) async fn drive_one(
     state: &AppState,
     requirement: &Requirement,
-    profile: Option<&AgentProfile>,
     workspace_override: Option<PathBuf>,
     timeout_ms: u64,
 ) -> Result<(), String> {
-    drive_one_with_prompt(
-        state,
-        requirement,
-        profile,
-        workspace_override,
-        timeout_ms,
-        None,
-    )
-    .await
+    drive_one_with_prompt(state, requirement, workspace_override, timeout_ms, None).await
 }
 
 async fn drive_one_with_prompt(
     state: &AppState,
     requirement: &Requirement,
-    profile: Option<&AgentProfile>,
     workspace_override: Option<PathBuf>,
     timeout_ms: u64,
     workflow_prompt: Option<String>,
@@ -1308,7 +1203,7 @@ async fn drive_one_with_prompt(
     let manifest = build_default_manifest(&workspace, requirement).await;
     let summary = render_manifest_summary(&manifest);
     let memory_preamble = render_project_memory_preamble(state, &requirement.project_id).await;
-    let composed_summary = compose_system_prompt(&memory_preamble, profile, &summary);
+    let composed_summary = compose_system_prompt(&memory_preamble, &summary);
 
     // 2. Mint conversation: system (manifest) + user (seed prompt).
     let conversation_id = uuid::Uuid::new_v4().to_string();
@@ -1320,6 +1215,7 @@ async fn drive_one_with_prompt(
     )));
     let metadata = ConversationMetadata {
         project_id: Some(requirement.project_id.clone()),
+        ..Default::default()
     };
     convo_store
         .save_envelope(&conversation_id, &conv, &metadata)
@@ -1339,7 +1235,7 @@ async fn drive_one_with_prompt(
         requirement.status = RequirementStatus::InProgress;
         requirement.touch();
     }
-    let synthesized_verification_todos = ensure_verification_plan_todos(&mut requirement);
+    let synthesized_execution_todos = requirement.ensure_execution_checklist();
     requirement.link_conversation(conversation_id.clone());
     req_store
         .upsert(&requirement)
@@ -1356,7 +1252,6 @@ async fn drive_one_with_prompt(
             "workspace": workspace.display().to_string(),
             "conversation_id": conversation_id.clone(),
             "project_id": requirement.project_id.clone(),
-            "profile_id": profile.as_ref().map(|p| p.id.clone()),
         })),
     );
     if state.worktree_mode == WorktreeMode::PerRun {
@@ -1398,7 +1293,6 @@ async fn drive_one_with_prompt(
             "run_id": run.id,
             "conversation_id": conversation_id,
             "auto": true,
-            "profile_id": profile.map(|p| p.id.clone()),
         }),
     )
     .await;
@@ -1438,7 +1332,7 @@ async fn drive_one_with_prompt(
             Some(json!({
                 "commands": plan.commands.len(),
                 "workspace": workspace_for_verify.display().to_string(),
-                "todos_created_from_plan": synthesized_verification_todos,
+                "execution_checklist_initialized": synthesized_execution_todos,
             })),
         );
         execute_verification_for_run(
@@ -1469,44 +1363,42 @@ async fn drive_one_with_prompt(
         return Ok(());
     }
 
-    // 6. Build agent + drive loop under a timeout. With a
-    // profile we honour its provider+model+prompt; without one we
-    // fall back to the binary's default route (same path the chat
-    // UI uses), so a status-flip trigger still has a working LLM
-    // even on requirements that were never assigned.
+    // 6. Build Jarvis + drive loop under a timeout.
     run.push_log(
         RequirementRunLogLevel::Info,
         "Agent loop started",
         Some(json!({
             "timeout_ms": timeout_ms,
-            "profile_id": profile.as_ref().map(|p| p.id.clone()),
         })),
     );
     if let Err(e) = run_store.upsert(&run).await {
         warn!(error = %e, "upsert run before agent loop failed");
     }
-    let agent_result = match profile {
-        Some(p) => state.build_agent_with(Some(&p.provider), Some(&p.model), |cfg| {
-            if let Some(prompt) = p.system_prompt.as_deref() {
-                if !prompt.trim().is_empty() {
-                    // Already prepended into conv's system message;
-                    // we leave the agent template's own
-                    // system_prompt alone so it doesn't compound.
-                    let _ = prompt;
-                }
-            }
-            cfg.model = p.model.clone();
-        }),
-        None => state.build_agent(None, None),
-    };
+    // Pin the per-run workspace onto the agent's session scope so
+    // every `fs.*`, `code.grep`, `git.*`, `workspace.context`, and
+    // `shell.exec` invocation resolves against the Requirement's
+    // workspace instead of the harness binary's startup `fs_root`.
+    // The plumbing in `harness_core::workspace::with_session_workspace`
+    // and `active_workspace_or` has been there since v0; the
+    // auto-mode runner just wasn't telling the agent which path to
+    // pin. Without this, tools running under an auto-mode pickup
+    // either land back at the harness root (read paths) or fail
+    // with "path must be relative to the tool root" (write paths),
+    // forcing the agent to fall through to `shell.exec` against
+    // absolute paths that bypass the sandbox.
+    let workspace_for_agent = run
+        .worktree_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.clone());
+    let agent_result = state.build_agent_with(None, None, |cfg| {
+        cfg.session_workspace = Some(workspace_for_agent.clone());
+    });
     // Stamp the model id used for this run *before* the agent runs.
     // We persist whatever route was selected so cost attribution
     // works even if the run later fails (the row carries the model
     // it tried, not just successful ones).
-    run.model = match profile {
-        Some(p) => Some(p.model.clone()),
-        None => Some(state.agent_template.model.clone()),
-    };
+    run.model = Some(state.agent_template.model.clone());
     let outcome = match agent_result {
         Ok(agent) => {
             // Run inside an async block so the borrowed `&mut
@@ -1583,6 +1475,14 @@ async fn drive_one_with_prompt(
         warn!(error = %e, "upsert finished run failed");
     }
 
+    // The agent can update the execution checklist through
+    // requirement.* tools while the run is in flight. Reload before
+    // verification/completion so auto_mode judges the durable
+    // Jarvis-maintained checklist, not the pre-run clone.
+    if let Ok(Some(latest)) = req_store.get(&requirement.id).await {
+        requirement = latest;
+    }
+
     // 8. Auto-verify when the requirement carries a plan.
     if let Some(plan) = requirement.verification_plan.as_ref() {
         let workspace_for_verify = run
@@ -1630,37 +1530,9 @@ async fn advance_completed_requirement(
         return;
     };
 
-    // v1.0 SubAgent — when the policy is `Subagent` and the operator
-    // opted into reviewer auto-acceptance via `JARVIS_REVIEWER_AUTO_ACCEPT`,
-    // hold the row at Review and dispatch the reviewer subagent. The
-    // reviewer's terminal call to `requirement.review_verdict` is what
-    // advances the row to Done (on pass) or InProgress (on fail) with
-    // commentary attached.
-    //
-    // The flag is read from `state.auto_mode_config` so this code path
-    // can be exercised by tests that don't go through `spawn` —
-    // tests construct an `AutoModeConfig` and stash it on AppState.
-    let reviewer_auto_accept = state
-        .auto_mode_config
-        .as_ref()
-        .map(|c| c.reviewer_auto_accept)
-        .unwrap_or(false);
-    let dispatch_reviewer = reviewer_auto_accept
-        && matches!(target_status, RequirementStatus::Done)
-        && matches!(
-            requirement.acceptance_policy,
-            harness_core::AcceptancePolicy::Subagent
-        );
-
-    let effective_target = if dispatch_reviewer {
-        RequirementStatus::Review
-    } else {
-        target_status
-    };
-
     let prior_status = requirement.status;
-    if requirement.status != effective_target {
-        requirement.status = effective_target;
+    if requirement.status != target_status {
+        requirement.status = target_status;
         requirement.touch();
         if let Err(e) = req_store.upsert(requirement).await {
             warn!(error = %e, "upsert requirement after completed run failed");
@@ -1681,140 +1553,6 @@ async fn advance_completed_requirement(
         )
         .await;
     }
-
-    if dispatch_reviewer {
-        // Audit row before the dispatch — even if the reviewer fails
-        // to start (tool missing, env half-wired), the timeline still
-        // shows that auto-mode tried to hand off.
-        record_activity(
-            state,
-            &requirement.id,
-            ActivityKind::Comment,
-            ActivityActor::System,
-            json!({
-                "kind": "reviewer_dispatched",
-                "run_id": run.id,
-            }),
-        )
-        .await;
-        match dispatch_acceptance_review(state, requirement, run).await {
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    requirement_id = %requirement.id,
-                    run_id = %run.id,
-                    "reviewer dispatch failed; row stays at Review for human follow-up"
-                );
-                record_activity(
-                    state,
-                    &requirement.id,
-                    ActivityKind::Comment,
-                    ActivityActor::System,
-                    json!({
-                        "kind": "reviewer_dispatch_failed",
-                        "run_id": run.id,
-                        "error": e,
-                    }),
-                )
-                .await;
-            }
-            Ok(()) => {
-                // The reviewer ran end-to-end. Its terminal call to
-                // `requirement.review_verdict` mutated the row
-                // through `req_store` directly, so our `requirement`
-                // here still reflects pre-dispatch state. Re-read to
-                // see what verdict the reviewer landed on.
-                //
-                // On `verdict=fail` the row bounced from Review back
-                // to InProgress so the next work-agent pickup can
-                // adapt to the commentary. But the run that caused
-                // this dispatch terminated as `Completed` — so
-                // `consecutive_failed_since_last_success` doesn't
-                // count it, and the picker happily re-mints a fresh
-                // agent run every tick. Same runaway-loop shape as
-                // the dispatch-failure one, just hidden behind the
-                // InProgress status. Marking the run `Failed` here
-                // lets the existing retry budget catch it.
-                //
-                // On `verdict=pass` the row went to Done; we leave
-                // the run as Completed (success).
-                if let Ok(Some(after)) = req_store.get(&requirement.id).await {
-                    if matches!(after.status, RequirementStatus::InProgress) {
-                        if let Some(run_store) = state.requirement_runs.as_ref() {
-                            let mut updated = run.clone();
-                            updated.status = RequirementRunStatus::Failed;
-                            if updated.error.is_none() {
-                                updated.error = Some("review verdict: fail".to_string());
-                            }
-                            if updated.finished_at.is_none() {
-                                updated.finished_at = Some(chrono::Utc::now().to_rfc3339());
-                            }
-                            if let Err(e) = run_store.upsert(&updated).await {
-                                warn!(
-                                    error = %e,
-                                    run_id = %run.id,
-                                    requirement_id = %requirement.id,
-                                    "could not mark run Failed after review_failed verdict",
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Invoke the reviewer subagent (`subagent.review`) for a requirement
-/// whose work agent just finished. The subagent's terminal call to
-/// `requirement.review_verdict` is what flips the row to Done (pass)
-/// or InProgress (fail); this function is just the dispatch — it
-/// awaits the subagent's invoke so any tool errors surface inline,
-/// but doesn't consult the result message itself.
-///
-/// Returns `Err` only when the dispatch could not start (tool not in
-/// the registry, args rejected, etc.). A reviewer that *runs* and
-/// reports `fail` is `Ok(())` here — its verdict already updated the
-/// row through `requirement.review_verdict`.
-async fn dispatch_acceptance_review(
-    state: &AppState,
-    requirement: &Requirement,
-    run: &RequirementRun,
-) -> Result<(), String> {
-    let tool = {
-        let registry = state
-            .tools
-            .read()
-            .map_err(|e| format!("tools registry poisoned: {e}"))?;
-        registry
-            .resolve("subagent.review")
-            .ok_or_else(|| "subagent.review tool not registered".to_string())?
-    };
-
-    let plan_summary = requirement
-        .verification_plan
-        .as_ref()
-        .map(|plan| serde_json::to_value(plan).unwrap_or(json!(null)))
-        .unwrap_or(json!(null));
-
-    let task = format!(
-        "Review the work for requirement `{}` (id `{}`). Run its `verification_plan` against the workspace and decide pass / fail. End with a single call to `requirement.review_verdict` carrying `id`, `verdict`, `commentary`, and optional `evidence`.",
-        requirement.title, requirement.id,
-    );
-
-    let args = json!({
-        "task": task,
-        "context": {
-            "requirement_id": requirement.id,
-            "requirement_title": requirement.title,
-            "run_id": run.id,
-            "verification_plan": plan_summary,
-            "work_summary": run.summary,
-        }
-    });
-
-    tool.invoke(args).await.map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 fn completed_requirement_target_status(
@@ -1830,29 +1568,17 @@ fn completed_requirement_target_status(
         Some(VerificationStatus::NeedsReview)
     );
 
-    match (requirement.status, needs_review) {
-        (RequirementStatus::InProgress, true) => Some(RequirementStatus::Review),
-        (RequirementStatus::InProgress, _) => {
-            // v1.0 SubAgent — `Human` acceptance keeps the row at
-            // Review until a person clicks "complete" in the UI.
-            // `Subagent` (default) preserves the pre-v1.0 auto-flip
-            // semantics so existing deployments stay unchanged.
-            // (Reviewer-subagent dispatch — actually running the
-            // reviewer to decide pass/fail under the Subagent policy
-            // — lands in a follow-up PR; until then the field is a
-            // pure auto-flip gate.)
-            match requirement.acceptance_policy {
-                harness_core::AcceptancePolicy::Human => Some(RequirementStatus::Review),
-                harness_core::AcceptancePolicy::Subagent => Some(RequirementStatus::Done),
-            }
-        }
-        (RequirementStatus::Review, _) => {
-            // The row is already at Review. A new Completed run only
-            // advances to Done under the Subagent (auto-accept)
-            // policy. Human-policy rows wait for a manual UI action.
-            match requirement.acceptance_policy {
-                harness_core::AcceptancePolicy::Human => None,
-                harness_core::AcceptancePolicy::Subagent => Some(RequirementStatus::Done),
+    if requirement.execution_checklist_failed_or_blocked() {
+        return Some(RequirementStatus::InProgress);
+    }
+
+    match requirement.status {
+        RequirementStatus::InProgress if needs_review => Some(RequirementStatus::Review),
+        RequirementStatus::InProgress | RequirementStatus::Review => {
+            if requirement.execution_checklist_passed() {
+                Some(RequirementStatus::Done)
+            } else {
+                Some(RequirementStatus::Review)
             }
         }
         _ => None,
@@ -1890,40 +1616,6 @@ fn is_verification_only_requirement(req: &Requirement) -> bool {
                 | RequirementTodoKind::Review
         ) && plan_commands.contains(&command)
     })
-}
-
-fn ensure_verification_plan_todos(req: &mut Requirement) -> bool {
-    if !req.todos.is_empty() {
-        return false;
-    }
-    let Some(plan) = req.verification_plan.as_ref() else {
-        return false;
-    };
-    let commands: Vec<String> = plan
-        .commands
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .collect();
-    if commands.is_empty() {
-        return false;
-    }
-
-    req.todos = commands
-        .into_iter()
-        .map(|command| {
-            let mut todo = RequirementTodo::new(
-                format!("Run verification: {command}"),
-                RequirementTodoKind::Check,
-            );
-            todo.command = Some(command);
-            todo.created_by = RequirementTodoCreator::Workflow;
-            todo
-        })
-        .collect();
-    req.touch();
-    true
 }
 
 async fn execute_verification_for_run(
@@ -2098,21 +1790,11 @@ fn excerpt(s: &str, cap: usize) -> Option<String> {
     Some(out)
 }
 
-fn resolve_project_workspace(
-    project: &Project,
-    profile: Option<&AgentProfile>,
-    state: &AppState,
-) -> PathBuf {
+fn resolve_project_workspace(project: &Project, state: &AppState) -> PathBuf {
     project
         .workspaces
         .first()
         .map(|w| PathBuf::from(&w.path))
-        .or_else(|| {
-            profile
-                .and_then(|p| p.default_workspace.as_deref())
-                .filter(|s| !s.trim().is_empty())
-                .map(PathBuf::from)
-        })
         .or_else(|| state.workspace_root.clone())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
@@ -2161,7 +1843,6 @@ fn seed_prompt(req: &Requirement, workflow_prompt: Option<&str>) -> String {
 
 fn render_seed_template(template: &str, req: &Requirement) -> String {
     let description = req.description.as_deref().unwrap_or("");
-    let assignee = req.assignee_id.as_deref().unwrap_or("");
     let replacements = [
         ("{{ requirement.id }}", req.id.as_str()),
         ("{{ requirement.project_id }}", req.project_id.as_str()),
@@ -2169,7 +1850,6 @@ fn render_seed_template(template: &str, req: &Requirement) -> String {
         ("{{ requirement.description }}", description),
         ("{{ requirement.status }}", req.status.as_wire()),
         ("{{ requirement.triage_state }}", req.triage_state.as_wire()),
-        ("{{ requirement.assignee_id }}", assignee),
         // Symphony-compatible aliases. Jarvis requirements are the
         // local issue model for this scheduler, so these let teams
         // reuse most of a Symphony prompt body unchanged.
@@ -2216,13 +1896,9 @@ async fn record_activity(
 /// Compose the synthetic system prompt for an auto run. Order
 /// matters: project memory comes first so a "from now on, watch out
 /// for X" lesson is the strongest signal the model sees, then the
-/// assignee's profile instructions, then the workspace manifest.
-/// Empty inputs are skipped, never papered over with empty headers.
-fn compose_system_prompt(
-    memory_preamble: &str,
-    profile: Option<&AgentProfile>,
-    manifest_summary: &str,
-) -> String {
+/// workspace manifest. Empty inputs are skipped, never papered over
+/// with empty headers.
+fn compose_system_prompt(memory_preamble: &str, manifest_summary: &str) -> String {
     let mut out = String::new();
     if !memory_preamble.is_empty() {
         out.push_str(memory_preamble);
@@ -2230,14 +1906,6 @@ fn compose_system_prompt(
             out.push('\n');
         }
         out.push('\n');
-    }
-    if let Some(prompt) = profile.and_then(|p| p.system_prompt.as_deref()) {
-        let trimmed = prompt.trim();
-        if !trimmed.is_empty() {
-            out.push_str("=== assignee instructions ===\n");
-            out.push_str(trimmed);
-            out.push_str("\n\n");
-        }
     }
     out.push_str(manifest_summary);
     out
@@ -2384,8 +2052,8 @@ mod tests {
     use super::*;
     use harness_core::{
         AgentConfig, AgentProfile, ChatRequest, ChatResponse, Error, FinishReason, LlmProvider,
-        Message, Project, ProjectWorkspace, Requirement, RequirementStatus, RequirementTodoCreator,
-        VerificationPlan,
+        Message, Project, ProjectWorkspace, Requirement, RequirementStatus, RequirementTodo,
+        RequirementTodoCreator, VerificationPlan,
     };
     use harness_store::{
         MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore,
@@ -2578,7 +2246,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
     }
 
     #[tokio::test]
-    async fn tick_skips_requirement_without_assignee() {
+    async fn tick_picks_requirement_without_assignee() {
         let state = wire_stores(base_state_with_canned_llm("done."));
         let (proj, _) = seed_project_and_profile(&state).await;
         let mut req = Requirement::new(&proj.id, "no assignee");
@@ -2592,15 +2260,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
             .unwrap();
 
         let n = tick(&state, &cfg()).await.unwrap();
-        assert_eq!(n, 0);
-        let runs = state
-            .requirement_runs
-            .as_ref()
-            .unwrap()
-            .list_for_requirement(&req.id)
-            .await
-            .unwrap();
-        assert!(runs.is_empty());
+        assert_eq!(n, 1);
     }
 
     #[tokio::test]
@@ -2679,9 +2339,11 @@ Do {{ requirement.title }} in {{ issue.state }}.
                     .await
                     .unwrap()
                     .unwrap();
-                assert_eq!(saved.status, RequirementStatus::Done);
-                let n = tick(&state, &cfg()).await.unwrap();
-                assert_eq!(n, 0, "completed work should not be picked again");
+                assert_eq!(saved.status, RequirementStatus::Review);
+                assert!(
+                    !saved.todos.is_empty(),
+                    "auto mode must initialize the execution checklist"
+                );
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2756,9 +2418,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
                     .await
                     .unwrap()
                     .unwrap();
-                assert_eq!(saved.status, RequirementStatus::Done);
-                let n = tick(&state, &cfg()).await.unwrap();
-                assert_eq!(n, 0, "done requirement should not be picked again");
+                assert_eq!(saved.status, RequirementStatus::Review);
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2766,12 +2426,9 @@ Do {{ requirement.title }} in {{ issue.state }}.
         panic!("review drive_one never finished within 1s");
     }
 
-    /// Reproduces the runaway loop discovered 2026-05-08: under
-    /// `JARVIS_REVIEWER_AUTO_ACCEPT=1`, when reviewer dispatch fails
-    /// (e.g. wrong model name on a backend), the row stays at Review
-    /// with a Completed run on file. The picker used to re-pick that
-    /// row every tick and mint a fresh agent run, snowballing LLM
-    /// cost. The new guard sits right after the in-flight check.
+    /// Jarvis owns acceptance now: Review rows remain eligible even
+    /// when older completed runs exist. The execution checklist, not
+    /// reviewer_auto_accept, decides whether the row can move to Done.
     #[tokio::test]
     async fn tick_does_not_re_pick_review_subagent_after_completed_run_under_reviewer_flag() {
         use harness_core::AcceptancePolicy;
@@ -2810,25 +2467,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
         c.reviewer_auto_accept = true;
 
         let n = tick(&state, &c).await.unwrap();
-        assert_eq!(
-            n, 0,
-            "Review+Subagent row with a Completed run must not be re-picked under reviewer_auto_accept",
-        );
-
-        // Sanity: no NEW run was minted (still exactly 1 — the one we planted).
-        let runs = state
-            .requirement_runs
-            .as_ref()
-            .unwrap()
-            .list_for_requirement(&req.id)
-            .await
-            .unwrap();
-        assert_eq!(
-            runs.len(),
-            1,
-            "picker must not have minted a fresh agent run; got {} runs",
-            runs.len()
-        );
+        assert_eq!(n, 1);
     }
 
     /// Counterpart to the runaway-loop test: a Review row with NO
@@ -2866,12 +2505,119 @@ Do {{ requirement.title }} in {{ issue.state }}.
         );
     }
 
-    /// v1.0 SubAgent — `AcceptancePolicy::Human` keeps the row at
-    /// Review and prevents the picker from re-running it. The
-    /// `Subagent` (default) policy preserves the auto-flip-to-Done
-    /// behaviour the sibling test above asserts; this test pins the
-    /// human-review-only branch so future scheduler tweaks can't
-    /// silently drop it.
+    /// v1.2 — runaway-loop guard. Under default acceptance
+    /// (`reviewer_auto_accept = false`), a Review row whose latest
+    /// run completed cleanly has no autonomous path forward: nothing
+    /// flips its boilerplate execution-checklist todos, no reviewer
+    /// subagent dispatches. The picker must stop re-running it on
+    /// every tick — that just burns LLM cycles and accelerates the
+    /// retry-budget burn-down when the provider has partial outages.
+    #[tokio::test]
+    async fn tick_skips_review_with_completed_history_when_reviewer_flag_off() {
+        use harness_core::AcceptancePolicy;
+
+        let state = wire_stores(base_state_with_canned_llm("MUST NOT BE CALLED."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+
+        let mut req = Requirement::new(&proj.id, "review awaiting acceptance");
+        req.status = RequirementStatus::Review;
+        req.acceptance_policy = AcceptancePolicy::Subagent;
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let mut completed = RequirementRun::new(&req.id, "conv-1");
+        completed.status = RequirementRunStatus::Completed;
+        completed.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .upsert(&completed)
+            .await
+            .unwrap();
+
+        // Default: reviewer_auto_accept stays false.
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(
+            n, 0,
+            "Review + Completed history under default acceptance must be skipped",
+        );
+    }
+
+    /// v1.2 — runtime override for `max_retries`. The picker's
+    /// retry gate must read the runtime override (set via
+    /// `POST /v1/auto-mode {max_retries}`) when present, falling
+    /// back to the static `AutoModeConfig::max_retries` only when
+    /// the override is unset.
+    #[tokio::test]
+    async fn tick_picker_honours_runtime_max_retries_override() {
+        let state = wire_stores(base_state_with_canned_llm("retry-budget probe."));
+        let runtime = AutoModeRuntime::with_capacity(AutoMode::Auto, 4);
+        let state = state.with_auto_mode_runtime(runtime.clone());
+        let (proj, prof) = seed_project_and_profile(&state).await;
+
+        let mut req = Requirement::new(&proj.id, "wedged on transport faults");
+        req.status = RequirementStatus::InProgress;
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        // Plant 2 consecutive failed runs, no successes.
+        for i in 0..2 {
+            let mut failed = RequirementRun::new(&req.id, format!("conv-{i}"));
+            failed.status = RequirementRunStatus::Failed;
+            failed.error = Some("agent error: simulated".into());
+            // Old timestamp so the v1.1 backoff doesn't gate us.
+            failed.finished_at = Some("2026-01-01T00:00:00+00:00".into());
+            state
+                .requirement_runs
+                .as_ref()
+                .unwrap()
+                .upsert(&failed)
+                .await
+                .unwrap();
+        }
+
+        // Static config caps at 1 → picker would skip.
+        let mut c = cfg();
+        c.max_retries = 1;
+        assert_eq!(
+            tick(&state, &c).await.unwrap(),
+            0,
+            "static max_retries=1 with 2 failed runs must skip",
+        );
+
+        // Runtime override of 5 → picker proceeds.
+        runtime.set_max_retries_override(Some(5));
+        assert_eq!(
+            tick(&state, &c).await.unwrap(),
+            1,
+            "runtime override should beat the static cap on the next tick",
+        );
+
+        // Clearing the override restores the static cap.
+        runtime.set_max_retries_override(None);
+        assert!(runtime.max_retries_override().is_none());
+        assert_eq!(
+            runtime.effective_max_retries(&c),
+            1,
+            "cleared override falls back to static cap",
+        );
+    }
+
+    /// Legacy `AcceptancePolicy::Human` no longer blocks Jarvis.
+    /// Jarvis owns both progression and completion.
     #[tokio::test]
     async fn tick_skips_human_acceptance_policy_at_review() {
         use harness_core::AcceptancePolicy;
@@ -2890,24 +2636,8 @@ Do {{ requirement.title }} in {{ issue.state }}.
             .await
             .unwrap();
 
-        // Picker should refuse this row outright — re-running an
-        // auto loop against a human-review-gated card would burn
-        // LLM budget without ever advancing status.
         let n = tick(&state, &cfg()).await.unwrap();
-        assert_eq!(n, 0, "Human policy row at Review must be skipped");
-
-        // Sanity check: status hasn't changed (no reaper / picker
-        // side-effect has touched the row).
-        let saved = state
-            .requirements
-            .as_ref()
-            .unwrap()
-            .get(&req.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(saved.status, RequirementStatus::Review);
-        assert_eq!(saved.acceptance_policy, AcceptancePolicy::Human);
+        assert_eq!(n, 1, "Human policy row at Review is still Jarvis-owned");
     }
 
     /// v1.0 SubAgent — when a run completes against an
@@ -2960,12 +2690,6 @@ Do {{ requirement.title }} in {{ issue.state }}.
                     RequirementStatus::Review,
                     "Human policy must hold the row at Review",
                 );
-                // Next tick should now skip it (picker guard).
-                let n2 = tick(&state, &cfg()).await.unwrap();
-                assert_eq!(
-                    n2, 0,
-                    "row at Review under Human policy should not be re-picked"
-                );
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2974,11 +2698,10 @@ Do {{ requirement.title }} in {{ issue.state }}.
     }
 
     /// Direct unit test on the pure target-status function — no
-    /// async, no stores, just the policy gate. Covers every status
-    /// × policy × needs_review combination that matters.
+    /// async, no stores, just the execution-checklist completion gate.
     #[test]
-    fn completed_target_status_respects_acceptance_policy() {
-        use harness_core::{AcceptancePolicy, VerificationResult, VerificationStatus};
+    fn completed_target_status_respects_execution_checklist() {
+        use harness_core::{VerificationResult, VerificationStatus};
 
         fn run(
             status: RequirementRunStatus,
@@ -2997,53 +2720,77 @@ Do {{ requirement.title }} in {{ issue.state }}.
             r
         }
 
-        fn req(status: RequirementStatus, policy: AcceptancePolicy) -> Requirement {
+        fn req(status: RequirementStatus, todo_statuses: &[RequirementTodoStatus]) -> Requirement {
             let mut r = Requirement::new("proj", "title");
             r.status = status;
-            r.acceptance_policy = policy;
+            r.todos = todo_statuses
+                .iter()
+                .enumerate()
+                .map(|(idx, status)| {
+                    let mut todo = RequirementTodo::new(
+                        format!("step {}", idx + 1),
+                        RequirementTodoKind::Check,
+                    );
+                    todo.status = *status;
+                    todo
+                })
+                .collect();
             r
         }
 
-        // InProgress + Completed run + Subagent → Done (current default)
-        let r = req(RequirementStatus::InProgress, AcceptancePolicy::Subagent);
+        let r = req(
+            RequirementStatus::InProgress,
+            &[RequirementTodoStatus::Passed],
+        );
         assert_eq!(
             completed_requirement_target_status(&r, &run(RequirementRunStatus::Completed, None)),
             Some(RequirementStatus::Done),
         );
-        // InProgress + Completed run + Human → Review (gate kicks in)
-        let r = req(RequirementStatus::InProgress, AcceptancePolicy::Human);
+
+        let r = req(
+            RequirementStatus::InProgress,
+            &[RequirementTodoStatus::Pending],
+        );
         assert_eq!(
             completed_requirement_target_status(&r, &run(RequirementRunStatus::Completed, None)),
             Some(RequirementStatus::Review),
         );
-        // InProgress + needs_review verification → Review regardless of policy
-        for policy in [AcceptancePolicy::Subagent, AcceptancePolicy::Human] {
-            let r = req(RequirementStatus::InProgress, policy);
-            assert_eq!(
-                completed_requirement_target_status(
-                    &r,
-                    &run(
-                        RequirementRunStatus::Completed,
-                        Some(VerificationStatus::NeedsReview)
-                    ),
+
+        let r = req(
+            RequirementStatus::InProgress,
+            &[RequirementTodoStatus::Failed],
+        );
+        assert_eq!(
+            completed_requirement_target_status(&r, &run(RequirementRunStatus::Completed, None)),
+            Some(RequirementStatus::InProgress),
+        );
+
+        let r = req(
+            RequirementStatus::InProgress,
+            &[RequirementTodoStatus::Passed],
+        );
+        assert_eq!(
+            completed_requirement_target_status(
+                &r,
+                &run(
+                    RequirementRunStatus::Completed,
+                    Some(VerificationStatus::NeedsReview)
                 ),
-                Some(RequirementStatus::Review),
-            );
-        }
-        // Review + Completed run + Subagent → Done
-        let r = req(RequirementStatus::Review, AcceptancePolicy::Subagent);
+            ),
+            Some(RequirementStatus::Review),
+        );
+
+        let r = req(RequirementStatus::Review, &[RequirementTodoStatus::Passed]);
         assert_eq!(
             completed_requirement_target_status(&r, &run(RequirementRunStatus::Completed, None)),
             Some(RequirementStatus::Done),
         );
-        // Review + Completed run + Human → None (stay at Review)
-        let r = req(RequirementStatus::Review, AcceptancePolicy::Human);
-        assert_eq!(
-            completed_requirement_target_status(&r, &run(RequirementRunStatus::Completed, None)),
-            None,
-        );
+
         // Non-terminal runs never advance status.
-        let r = req(RequirementStatus::InProgress, AcceptancePolicy::Subagent);
+        let r = req(
+            RequirementStatus::InProgress,
+            &[RequirementTodoStatus::Passed],
+        );
         for non_terminal in [RequirementRunStatus::Pending, RequirementRunStatus::Running] {
             assert_eq!(
                 completed_requirement_target_status(&r, &run(non_terminal, None)),
@@ -3697,9 +3444,10 @@ Do {{ requirement.title }} in {{ issue.state }}.
         let (proj, prof) = seed_project_and_profile(&state).await;
 
         let mut dep = Requirement::new(&proj.id, "dep first");
-        // Park the dep in Review without an assignee so it doesn't
+        // Park the dep outside approved auto execution so it doesn't
         // get picked itself while still blocking the child.
         dep.status = RequirementStatus::Review;
+        dep.triage_state = TriageState::ProposedByAgent;
         state
             .requirements
             .as_ref()
@@ -4169,359 +3917,5 @@ Do {{ requirement.title }} in {{ issue.state }}.
         runs.upsert(&backdated).await.unwrap();
         let n = tick(&state, &c).await.unwrap();
         assert_eq!(n, 1, "elapsed backoff window must let the row through");
-    }
-
-    // ---------------- Reviewer auto-accept dispatch ------------------
-
-    /// Test-only `subagent.review` mock. Records every invocation so
-    /// the test can assert dispatch happened, and accepts a verdict
-    /// arg (`pass` / `fail`) that the test can check against to
-    /// model what the real reviewer would have done.
-    struct MockReviewerTool {
-        invocations: Arc<Mutex<Vec<serde_json::Value>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl harness_core::Tool for MockReviewerTool {
-        fn name(&self) -> &str {
-            "subagent.review"
-        }
-        fn description(&self) -> &str {
-            "mock reviewer (test-only)"
-        }
-        fn parameters(&self) -> serde_json::Value {
-            json!({"type":"object","properties":{"task":{"type":"string"}}})
-        }
-        async fn invoke(&self, args: serde_json::Value) -> Result<String, harness_core::BoxError> {
-            self.invocations.lock().unwrap().push(args);
-            Ok("ok".to_string())
-        }
-    }
-
-    fn install_mock_reviewer(state: &AppState) -> Arc<Mutex<Vec<serde_json::Value>>> {
-        let invocations: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let mut tools = state.tools.write().unwrap();
-        tools.register_arc(Arc::new(MockReviewerTool {
-            invocations: invocations.clone(),
-        }));
-        invocations
-    }
-
-    fn auto_cfg_with_reviewer_flag() -> Arc<AutoModeConfig> {
-        Arc::new(AutoModeConfig {
-            reviewer_auto_accept: true,
-            ..AutoModeConfig::default()
-        })
-    }
-
-    #[tokio::test]
-    async fn advance_dispatches_reviewer_when_flag_enabled_and_policy_subagent() {
-        use harness_core::AcceptancePolicy;
-
-        let state = wire_stores(base_state_with_canned_llm("done"))
-            .with_auto_mode_config(auto_cfg_with_reviewer_flag());
-        let invocations = install_mock_reviewer(&state);
-
-        // Seed an InProgress row with the default Subagent policy
-        // so the auto-flip would normally land at Done.
-        let (proj, _prof) = seed_project_and_profile(&state).await;
-        let mut req = Requirement::new(&proj.id, "subagent dispatch");
-        req.status = RequirementStatus::InProgress;
-        // (acceptance_policy defaults to Subagent)
-        assert_eq!(req.acceptance_policy, AcceptancePolicy::Subagent);
-        let req_store = state.requirements.clone().unwrap();
-        req_store.upsert(&req).await.unwrap();
-
-        let mut run = RequirementRun::new(&req.id, "conv");
-        run.status = RequirementRunStatus::Completed;
-        run.summary = Some("work agent finished".to_string());
-
-        advance_completed_requirement(&state, &req_store, &mut req, &run).await;
-
-        // Row holds at Review (not Done) — reviewer's verdict tool
-        // would advance it from there.
-        let saved = req_store.get(&req.id).await.unwrap().unwrap();
-        assert_eq!(saved.status, RequirementStatus::Review);
-
-        // Reviewer was invoked exactly once with the requirement +
-        // run id in the context payload.
-        let calls = invocations.lock().unwrap();
-        assert_eq!(calls.len(), 1, "reviewer must be invoked once");
-        let ctx = calls[0]
-            .get("context")
-            .expect("dispatch must pass `context`");
-        assert_eq!(
-            ctx.get("requirement_id").and_then(|v| v.as_str()),
-            Some(req.id.as_str())
-        );
-        assert_eq!(
-            ctx.get("run_id").and_then(|v| v.as_str()),
-            Some(run.id.as_str())
-        );
-        assert_eq!(
-            ctx.get("requirement_title").and_then(|v| v.as_str()),
-            Some(req.title.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn advance_skips_dispatch_when_flag_disabled() {
-        use harness_core::AcceptancePolicy;
-
-        // No `with_auto_mode_config` ⇒ reviewer_auto_accept defaults
-        // to false ⇒ existing behaviour: row flips to Done directly.
-        let state = wire_stores(base_state_with_canned_llm("done"));
-        let invocations = install_mock_reviewer(&state);
-
-        let (proj, _prof) = seed_project_and_profile(&state).await;
-        let mut req = Requirement::new(&proj.id, "default behavior");
-        req.status = RequirementStatus::InProgress;
-        assert_eq!(req.acceptance_policy, AcceptancePolicy::Subagent);
-        let req_store = state.requirements.clone().unwrap();
-        req_store.upsert(&req).await.unwrap();
-
-        let mut run = RequirementRun::new(&req.id, "conv");
-        run.status = RequirementRunStatus::Completed;
-
-        advance_completed_requirement(&state, &req_store, &mut req, &run).await;
-
-        let saved = req_store.get(&req.id).await.unwrap().unwrap();
-        assert_eq!(
-            saved.status,
-            RequirementStatus::Done,
-            "Without the flag the row must auto-flip to Done (preserves pre-v1.0 behaviour)",
-        );
-        assert!(
-            invocations.lock().unwrap().is_empty(),
-            "reviewer must not be dispatched when the flag is off",
-        );
-    }
-
-    #[tokio::test]
-    async fn advance_skips_dispatch_for_human_policy_even_with_flag_enabled() {
-        use harness_core::AcceptancePolicy;
-
-        let state = wire_stores(base_state_with_canned_llm("done"))
-            .with_auto_mode_config(auto_cfg_with_reviewer_flag());
-        let invocations = install_mock_reviewer(&state);
-
-        let (proj, _prof) = seed_project_and_profile(&state).await;
-        let mut req = Requirement::new(&proj.id, "human policy");
-        req.status = RequirementStatus::InProgress;
-        req.acceptance_policy = AcceptancePolicy::Human;
-        let req_store = state.requirements.clone().unwrap();
-        req_store.upsert(&req).await.unwrap();
-
-        let mut run = RequirementRun::new(&req.id, "conv");
-        run.status = RequirementRunStatus::Completed;
-
-        advance_completed_requirement(&state, &req_store, &mut req, &run).await;
-
-        let saved = req_store.get(&req.id).await.unwrap().unwrap();
-        assert_eq!(
-            saved.status,
-            RequirementStatus::Review,
-            "Human policy must hold the row at Review",
-        );
-        assert!(
-            invocations.lock().unwrap().is_empty(),
-            "reviewer must not run for Human-policy rows — only a person can advance them",
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatch_acceptance_review_errors_when_tool_missing() {
-        // No mock reviewer installed.
-        let state = wire_stores(base_state_with_canned_llm("done"))
-            .with_auto_mode_config(auto_cfg_with_reviewer_flag());
-        let req = Requirement::new("p", "missing reviewer");
-        let run = RequirementRun::new(&req.id, "conv");
-        let err = dispatch_acceptance_review(&state, &req, &run)
-            .await
-            .expect_err("must return Err when subagent.review isn't registered");
-        assert!(err.contains("subagent.review"), "error message: {err}");
-    }
-
-    /// Mock `subagent.review` that, when invoked, simulates a
-    /// `requirement.review_verdict { verdict: "fail" }` call by
-    /// flipping the requirement Review → InProgress directly through
-    /// the store (which is what the real verdict tool does).
-    struct MockFailingReviewerTool {
-        req_id: String,
-        req_store: Arc<dyn harness_core::RequirementStore>,
-    }
-
-    #[async_trait::async_trait]
-    impl harness_core::Tool for MockFailingReviewerTool {
-        fn name(&self) -> &str {
-            "subagent.review"
-        }
-        fn description(&self) -> &str {
-            "mock reviewer that returns verdict=fail (test-only)"
-        }
-        fn parameters(&self) -> serde_json::Value {
-            json!({"type":"object"})
-        }
-        async fn invoke(&self, _args: serde_json::Value) -> Result<String, harness_core::BoxError> {
-            let mut item = self.req_store.get(&self.req_id).await?.ok_or_else(
-                || -> harness_core::BoxError { "test setup: requirement not present".into() },
-            )?;
-            item.status = RequirementStatus::InProgress;
-            item.touch();
-            self.req_store.upsert(&item).await?;
-            Ok("verdict: fail".into())
-        }
-    }
-
-    /// When the reviewer subagent returns a `fail` verdict, the
-    /// `requirement.review_verdict` tool flips the requirement
-    /// Review → InProgress. The run that triggered the dispatch
-    /// terminated as `Completed` (the work agent loop exited
-    /// normally) so without the fix below `consecutive_failed_since_last_success`
-    /// stays at 0 and the picker happily re-mints a fresh agent run
-    /// every tick. Same runaway-loop shape as the
-    /// dispatch-failure case, just hidden behind InProgress.
-    ///
-    /// The fix in `advance_completed_requirement` re-reads the row
-    /// after the dispatch returns Ok and, on observing a Review →
-    /// InProgress transition, marks the run `Failed` so the existing
-    /// retry budget catches it. Reproduced live 2026-05-08 against a
-    /// Codex backend: 4 dispatches in 1 minute before manual kill.
-    #[tokio::test]
-    async fn advance_marks_run_failed_after_review_verdict_fail() {
-        use harness_core::AcceptancePolicy;
-
-        let state = wire_stores(base_state_with_canned_llm("work done"))
-            .with_auto_mode_config(auto_cfg_with_reviewer_flag());
-        let (proj, _prof) = seed_project_and_profile(&state).await;
-        let mut req = Requirement::new(&proj.id, "review-fail run");
-        req.status = RequirementStatus::InProgress;
-        assert_eq!(req.acceptance_policy, AcceptancePolicy::Subagent);
-        let req_store = state.requirements.clone().unwrap();
-        req_store.upsert(&req).await.unwrap();
-
-        // Mock reviewer that simulates verdict=fail (Review →
-        // InProgress) inside its invoke.
-        {
-            let mut tools = state.tools.write().unwrap();
-            tools.register_arc(Arc::new(MockFailingReviewerTool {
-                req_id: req.id.clone(),
-                req_store: req_store.clone(),
-            }));
-        }
-
-        let mut run = RequirementRun::new(&req.id, "conv");
-        run.status = RequirementRunStatus::Completed;
-        run.summary = Some("agent loop succeeded; reviewer about to fail it".into());
-        let run_store = state.requirement_runs.clone().unwrap();
-        run_store.upsert(&run).await.unwrap();
-
-        advance_completed_requirement(&state, &req_store, &mut req, &run).await;
-
-        let saved_run = run_store
-            .list_for_requirement(&req.id)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|r| r.id == run.id)
-            .expect("run must remain in store");
-        assert_eq!(
-            saved_run.status,
-            RequirementRunStatus::Failed,
-            "run must be marked Failed after review verdict=fail; without this the picker re-mints a fresh agent run every tick at zero retry-budget cost",
-        );
-        assert!(
-            saved_run
-                .error
-                .as_deref()
-                .unwrap_or("")
-                .contains("review verdict: fail"),
-            "Failed run should carry a review-verdict error message; got {:?}",
-            saved_run.error,
-        );
-
-        // Sanity: the requirement itself was indeed flipped to
-        // InProgress by the (mock) verdict tool — proves the test is
-        // exercising the right branch.
-        let saved_req = req_store.get(&req.id).await.unwrap().unwrap();
-        assert_eq!(saved_req.status, RequirementStatus::InProgress);
-    }
-
-    /// Mirror of the failing case for the happy-path verdict=pass:
-    /// when the reviewer flips the row Review → Done, the
-    /// completed run must remain `Completed` (it succeeded — the
-    /// reviewer signed off). This pins the asymmetry of the new
-    /// post-dispatch reconciliation and prevents a future tweak from
-    /// over-reaching and demoting passing runs to Failed.
-    struct MockPassingReviewerTool {
-        req_id: String,
-        req_store: Arc<dyn harness_core::RequirementStore>,
-    }
-
-    #[async_trait::async_trait]
-    impl harness_core::Tool for MockPassingReviewerTool {
-        fn name(&self) -> &str {
-            "subagent.review"
-        }
-        fn description(&self) -> &str {
-            "mock reviewer that returns verdict=pass (test-only)"
-        }
-        fn parameters(&self) -> serde_json::Value {
-            json!({"type":"object"})
-        }
-        async fn invoke(&self, _args: serde_json::Value) -> Result<String, harness_core::BoxError> {
-            let mut item = self.req_store.get(&self.req_id).await?.ok_or_else(
-                || -> harness_core::BoxError { "test setup: requirement not present".into() },
-            )?;
-            item.status = RequirementStatus::Done;
-            item.touch();
-            self.req_store.upsert(&item).await?;
-            Ok("verdict: pass".into())
-        }
-    }
-
-    #[tokio::test]
-    async fn advance_keeps_run_completed_after_review_verdict_pass() {
-        use harness_core::AcceptancePolicy;
-
-        let state = wire_stores(base_state_with_canned_llm("work done"))
-            .with_auto_mode_config(auto_cfg_with_reviewer_flag());
-        let (proj, _prof) = seed_project_and_profile(&state).await;
-        let mut req = Requirement::new(&proj.id, "review-pass run");
-        req.status = RequirementStatus::InProgress;
-        assert_eq!(req.acceptance_policy, AcceptancePolicy::Subagent);
-        let req_store = state.requirements.clone().unwrap();
-        req_store.upsert(&req).await.unwrap();
-
-        {
-            let mut tools = state.tools.write().unwrap();
-            tools.register_arc(Arc::new(MockPassingReviewerTool {
-                req_id: req.id.clone(),
-                req_store: req_store.clone(),
-            }));
-        }
-
-        let mut run = RequirementRun::new(&req.id, "conv");
-        run.status = RequirementRunStatus::Completed;
-        let run_store = state.requirement_runs.clone().unwrap();
-        run_store.upsert(&run).await.unwrap();
-
-        advance_completed_requirement(&state, &req_store, &mut req, &run).await;
-
-        let saved_run = run_store
-            .list_for_requirement(&req.id)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|r| r.id == run.id)
-            .expect("run still in store");
-        assert_eq!(
-            saved_run.status,
-            RequirementRunStatus::Completed,
-            "verdict=pass must NOT demote the run; the reviewer signed off",
-        );
-
-        let saved_req = req_store.get(&req.id).await.unwrap().unwrap();
-        assert_eq!(saved_req.status, RequirementStatus::Done);
     }
 }

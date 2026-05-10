@@ -383,9 +383,6 @@ fn render_kanban(project: &Project, requirements: &[Requirement]) -> String {
             if req.triage_state.needs_triage() {
                 out.push_str(&format!("  - Triage: {}\n", req.triage_state.as_wire()));
             }
-            if let Some(assignee) = req.assignee_id.as_deref() {
-                out.push_str(&format!("  - Assignee: `{assignee}`\n"));
-            }
             if !req.depends_on.is_empty() {
                 out.push_str(&format!("  - Depends on: {}\n", req.depends_on.join(", ")));
             }

@@ -64,10 +64,18 @@ function hydrate(): void {
     if (parsed?.version !== 1 || !Array.isArray(parsed.buckets)) return;
     buckets = parsed.buckets
       .filter((b) => typeof b?.date === "string")
+      // Drop legacy buckets that predate the `model` field. They
+      // can't be priced (no model → no row in the price table) and
+      // can't be attributed to anything actionable, so surfacing
+      // them under "(legacy unknown)" with a red "未在价表中" banner
+      // is just noise. Total daily counts in the panel stay
+      // accurate for everything recorded after the model field
+      // shipped; the lost legacy tokens are unrecoverable anyway.
+      .filter((b) => typeof b?.model === "string" && b.model.trim().length > 0)
       // Defensive: coerce missing numerics to 0 so sums never NaN.
       .map((b) => ({
         date: b.date,
-        model: typeof b.model === "string" && b.model.trim() ? b.model : "(legacy unknown)",
+        model: b.model,
         prompt: b.prompt ?? 0,
         completion: b.completion ?? 0,
         cached: b.cached ?? 0,

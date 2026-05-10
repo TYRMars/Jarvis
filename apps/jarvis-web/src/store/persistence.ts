@@ -286,13 +286,45 @@ export function initialSidebarOpen(): boolean {
 /// Sidebar conversation list grouping mode. "date" buckets rows by
 /// recency (Today / Yesterday / Mar 12 / Older); "project" buckets
 /// by the conversation's bound project, with free-chat rows landing
-/// in their own section. Defaults to "date" — that's the only mode
-/// the list shipped with originally.
+/// in their own section. Defaults to "project" so the sidebar reads
+/// like Codex's project-first conversation rail.
 export type ConvoGroupBy = "date" | "project";
 
 export function initialConvoGroupBy(): ConvoGroupBy {
   const saved = safeGet("jarvis.convoGroupBy");
-  return saved === "project" ? "project" : "date";
+  if (saved === "date" || saved === "project") return saved;
+  return "project";
+}
+
+/// Sidebar conversation rail layout. This supersedes `ConvoGroupBy`
+/// but keeps the old key readable for migration.
+export type ConvoLayoutMode = "project" | "recentProjects" | "time";
+export type ConvoSortBy = "created" | "updated";
+export type ConvoVisibility = "all" | "related";
+export type ConvoSectionOrder = "projectsFirst" | "conversationsFirst";
+
+export function initialConvoLayoutMode(): ConvoLayoutMode {
+  const saved = safeGet("jarvis.convoLayoutMode");
+  if (saved === "project" || saved === "recentProjects" || saved === "time") return saved;
+  const legacy = safeGet("jarvis.convoGroupBy");
+  if (legacy === "date") return "time";
+  if (legacy === "project") return "project";
+  return "project";
+}
+
+export function initialConvoSortBy(): ConvoSortBy {
+  const saved = safeGet("jarvis.convoSortBy");
+  return saved === "created" ? "created" : "updated";
+}
+
+export function initialConvoVisibility(): ConvoVisibility {
+  const saved = safeGet("jarvis.convoVisibility");
+  return saved === "related" ? "related" : "all";
+}
+
+export function initialConvoSectionOrder(): ConvoSectionOrder {
+  const saved = safeGet("jarvis.convoSectionOrder");
+  return saved === "conversationsFirst" ? "conversationsFirst" : "projectsFirst";
 }
 
 /// Recents-section auto/manual filter. "all" shows everything,

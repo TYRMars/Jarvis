@@ -2097,6 +2097,7 @@ dependencies = [
  "harness-requirement",
  "harness-skill",
  "harness-store",
+ "harness-tools",
  "include_dir",
  "portable-pty",
  "reqwest 0.12.28",

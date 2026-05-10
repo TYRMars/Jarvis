@@ -69,36 +69,62 @@ function valueToTarget(v: string): ModelTarget | null {
   return { provider, model: rest.join("|") };
 }
 
-const SLOT_DESCRIPTIONS: Record<RouteSlot, { title: string; desc: string }> = {
+interface SlotDescription {
+  titleKey: string;
+  descKey: string;
+  titleFallback: string;
+  descFallback: string;
+}
+
+const SLOT_DESCRIPTIONS: Record<RouteSlot, SlotDescription> = {
   default: {
-    title: "Default",
-    desc: "Fallback target every other slot inherits when unset.",
+    titleKey: "settingsRoutingSlotDefault",
+    descKey: "settingsRoutingSlotDefaultDesc",
+    titleFallback: "Default",
+    descFallback: "Fallback target every other slot inherits when unset.",
   },
   coding: {
-    title: "Coding",
-    desc: "Routes the codex SubAgent. Restart required for changes.",
+    titleKey: "settingsRoutingSlotCoding",
+    descKey: "settingsRoutingSlotCodingDesc",
+    titleFallback: "Coding",
+    descFallback: "Routes the codex SubAgent. Restart required for changes.",
   },
   review: {
-    title: "Review",
-    desc: "Routes the reviewer SubAgent. Restart required for changes.",
+    titleKey: "settingsRoutingSlotReview",
+    descKey: "settingsRoutingSlotReviewDesc",
+    titleFallback: "Review",
+    descFallback: "Routes the reviewer SubAgent. Restart required for changes.",
   },
   summarization: {
-    title: "Summarization",
-    desc: "Routes the summarising memory. Live — applies on the next compaction.",
+    titleKey: "settingsRoutingSlotSummarization",
+    descKey: "settingsRoutingSlotSummarizationDesc",
+    titleFallback: "Summarization",
+    descFallback: "Routes the summarising memory. Live - applies on the next compaction.",
   },
   doc_reader: {
-    title: "Doc reader",
-    desc: "Routes the doc-reader SubAgent. Restart required for changes.",
+    titleKey: "settingsRoutingSlotDocReader",
+    descKey: "settingsRoutingSlotDocReaderDesc",
+    titleFallback: "Doc reader",
+    descFallback: "Routes the doc-reader SubAgent. Restart required for changes.",
   },
   vision: {
-    title: "Vision",
-    desc: "Reserved for future per-request resolvers. Stored only.",
+    titleKey: "settingsRoutingSlotVision",
+    descKey: "settingsRoutingSlotVisionDesc",
+    titleFallback: "Vision",
+    descFallback: "Reserved for future per-request resolvers. Stored only.",
   },
   local_private: {
-    title: "Local / private",
-    desc: "Reserved for privacy-sensitive workloads. Stored only.",
+    titleKey: "settingsRoutingSlotLocalPrivate",
+    descKey: "settingsRoutingSlotLocalPrivateDesc",
+    titleFallback: "Local / private",
+    descFallback: "Reserved for privacy-sensitive workloads. Stored only.",
   },
 };
+
+function tx(key: string, fallback: string): string {
+  const v = t(key);
+  return v === key ? fallback : v;
+}
 
 export function RoutingSection() {
   const providers = useAppStore((s) => s.providers);
@@ -225,16 +251,18 @@ export function RoutingSection() {
               return (
                 <div key={slot} className="routing-row">
                   <div className="routing-row-label">
-                    <strong>{meta.title}</strong>
-                    <span className="muted small"> {meta.desc}</span>
+                    <strong>{tx(meta.titleKey, meta.titleFallback)}</strong>
+                    <span className="muted small"> {tx(meta.descKey, meta.descFallback)}</span>
                   </div>
                   <select
                     value={value}
                     disabled={busySlot === slot}
-                    onChange={(e) => onSetSlot(slot, e.target.value)}
-                    aria-label={`route ${slot}`}
+                    onChange={(e) => {
+                      void onSetSlot(slot, e.target.value);
+                    }}
+                    aria-label={t("settingsRoutingSlotAria", tx(meta.titleKey, meta.titleFallback))}
                   >
-                    <option value="">— inherit / unset —</option>
+                    <option value="">{t("settingsRoutingInheritUnset")}</option>
                     {options.map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
@@ -246,11 +274,10 @@ export function RoutingSection() {
             })}
           </div>
 
-          <h3 style={{ marginTop: 24 }}>Fallback chain</h3>
+          <h3 style={{ marginTop: 24 }}>{t("settingsRoutingFallbackHeading")}</h3>
           <p className="muted small">
-            Ordered list consulted by <code>FallbackProvider</code> on 429 /
-            5xx / timeout. Auth errors short-circuit. Self-reference (the
-            primary's own provider) is dropped at runtime.
+            {t("settingsRoutingFallbackDescPrefix")} <code>FallbackProvider</code>{" "}
+            {t("settingsRoutingFallbackDescSuffix")}
           </p>
 
           <ol className="routing-fallbacks">
@@ -261,29 +288,35 @@ export function RoutingSection() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => onMoveFallback(idx, -1)}
+                  onClick={() => {
+                    void onMoveFallback(idx, -1);
+                  }}
                   disabled={idx === 0 || busySlot === "fallbacks"}
-                  aria-label="move up"
+                  aria-label={t("settingsRoutingMoveUp")}
                 >
                   ↑
                 </button>
                 <button
                   type="button"
-                  onClick={() => onMoveFallback(idx, 1)}
+                  onClick={() => {
+                    void onMoveFallback(idx, 1);
+                  }}
                   disabled={
                     idx === (policy.fallbacks?.length ?? 0) - 1 ||
                     busySlot === "fallbacks"
                   }
-                  aria-label="move down"
+                  aria-label={t("settingsRoutingMoveDown")}
                 >
                   ↓
                 </button>
                 <button
                   type="button"
-                  onClick={() => onRemoveFallback(idx)}
+                  onClick={() => {
+                    void onRemoveFallback(idx);
+                  }}
                   disabled={busySlot === "fallbacks"}
                 >
-                  Remove
+                  {t("remove")}
                 </button>
               </li>
             ))}
@@ -298,9 +331,9 @@ export function RoutingSection() {
                   e.target.value = "";
                 }
               }}
-              aria-label="add fallback"
+              aria-label={t("settingsRoutingAddFallbackAria")}
             >
-              <option value="">+ Add fallback…</option>
+              <option value="">{t("settingsRoutingAddFallback")}</option>
               {options.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}

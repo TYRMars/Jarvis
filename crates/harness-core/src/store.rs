@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 
 use crate::activity::{Activity, ActivityEvent};
 use crate::agent_profile::{AgentProfile, AgentProfileEvent};
+use crate::channel_binding::ChannelBinding;
 use crate::comment::{Comment, CommentEvent};
 use crate::conversation::Conversation;
 use crate::doc::{DocDraft, DocEvent, DocProject};
@@ -33,6 +34,75 @@ pub struct ConversationRecord {
     /// the persistence layer so listings can filter by project without
     /// rehydrating each row.
     pub project_id: Option<String>,
+    /// Lifecycle state of the conversation. Defaults to
+    /// [`ConversationLifecycle::Active`] for legacy rows that predate
+    /// the field, so existing UI clients keep rendering them
+    /// unchanged.
+    pub lifecycle: ConversationLifecycle,
+}
+
+/// User-driven terminal-ish state for a Conversation. Distinct from
+/// the per-turn `RequirementRun.status` (Pending/Running/.../Cancelled);
+/// `lifecycle` is "what the human said about this whole session".
+///
+/// The three states form a simple progression with no automatic
+/// transitions (only the REST `set_lifecycle` route mutates the
+/// field):
+///
+/// - `Active`: default; conversation is alive and shown in the sidebar.
+/// - `Archived`: user is done with it but wants to keep it for
+///   reference. Hidden from the default sidebar; visible on the
+///   archive page.
+/// - `Abandoned`: user explicitly gave up on this session — distinct
+///   from "naturally completed" and from "agent error". Used to
+///   distinguish "my reconciler missed it" from "I didn't want this
+///   session to finish". Hidden by default; visible only when the
+///   user opts into the abandoned filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationLifecycle {
+    #[default]
+    Active,
+    Archived,
+    Abandoned,
+}
+
+impl ConversationLifecycle {
+    /// Wire-form representation used by the REST API and the
+    /// JSON-on-disk format. Stable strings so changing the Rust
+    /// enum order doesn't break persistence.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    /// Parse from a wire string. Returns `None` for unknown values
+    /// (REST handlers turn this into a 400; persistence layers may
+    /// silently fall back to `Active` for forward compat).
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            "abandoned" => Some(Self::Abandoned),
+            _ => None,
+        }
+    }
+
+    /// True for the default state — used by `serde(skip_serializing_if)`
+    /// so legacy rows + Active rows omit the field on the wire.
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    /// True when the conversation is no longer in the live working
+    /// set (Archived or Abandoned). Drives the default sidebar
+    /// hide-from-list behaviour.
+    pub fn is_inactive(&self) -> bool {
+        !matches!(self, Self::Active)
+    }
 }
 
 /// Per-conversation metadata that lives alongside (but not inside) the
@@ -48,6 +118,9 @@ pub struct ConversationMetadata {
     /// Project this conversation is bound to, if any. `None` for "free
     /// chat" sessions.
     pub project_id: Option<String>,
+    /// User-facing lifecycle state. Defaults to `Active`; legacy rows
+    /// that predate the field rehydrate as `Active` automatically.
+    pub lifecycle: ConversationLifecycle,
 }
 
 impl ConversationMetadata {
@@ -55,7 +128,15 @@ impl ConversationMetadata {
     pub fn with_project(project_id: impl Into<String>) -> Self {
         Self {
             project_id: Some(project_id.into()),
+            lifecycle: ConversationLifecycle::default(),
         }
+    }
+
+    /// Builder-style setter for the lifecycle field. Used by the
+    /// `set_lifecycle` REST handler when re-saving.
+    pub fn with_lifecycle(mut self, lifecycle: ConversationLifecycle) -> Self {
+        self.lifecycle = lifecycle;
+        self
     }
 }
 
@@ -607,5 +688,88 @@ pub trait ProjectMemoryStore: Send + Sync {
     async fn upsert(&self, memory: &crate::ProjectMemory) -> Result<(), BoxError>;
 
     /// Hard-delete by id. Returns `true` if a row was removed.
+    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
+}
+
+/// Persistent map from external messaging-platform chats to Jarvis
+/// conversations.
+///
+/// Channel adapter plugins (Feishu / DingTalk / WeCom / …) call this
+/// on every inbound message to answer "is there already a Jarvis
+/// conversation for this chat?". The pair `(channel, channel_chat_id)`
+/// is the unique key — `channel` matches the plugin manifest's
+/// `channel_adapters` map key (e.g. `"wecom"`), `channel_chat_id` is
+/// platform-defined (group id, DM userid, …).
+///
+/// All implementations preserve their on-disk shape across restarts;
+/// the JSON-file backend in `harness-store` is the default. Stores
+/// don't touch `updated_at` — callers use [`ChannelBinding::touch`]
+/// to bump it before `upsert`, mirroring the
+/// [`ProjectMemoryStore`] convention.
+///
+/// See `docs/proposals/channel-plugins.md` and
+/// [`crate::ChannelBinding`].
+#[async_trait]
+pub trait ChannelBindingStore: Send + Sync {
+    /// Insert or overwrite a binding. Idempotent on the
+    /// `(channel, channel_chat_id)` key.
+    async fn upsert(&self, binding: &ChannelBinding) -> Result<(), BoxError>;
+
+    /// Look up by `(channel, channel_chat_id)`. Returns `None` if
+    /// no binding exists — adapters use this signal to decide
+    /// "create a new conversation" vs "resume an existing one".
+    async fn lookup(
+        &self,
+        channel: &str,
+        channel_chat_id: &str,
+    ) -> Result<Option<ChannelBinding>, BoxError>;
+
+    /// All bindings owned by `channel`, ordered newest-first by
+    /// `updated_at`. Drives admin / debugging UIs and the
+    /// per-plugin "active chats" view.
+    async fn list_for_channel(&self, channel: &str) -> Result<Vec<ChannelBinding>, BoxError>;
+
+    /// Hard-delete a single binding. Returns `true` if a row was
+    /// removed. Used when a user issues `/reset` from inside a
+    /// channel chat.
+    async fn delete(&self, channel: &str, channel_chat_id: &str) -> Result<bool, BoxError>;
+
+    /// Hard-delete every binding pointing at `conversation_id`.
+    /// Called when the underlying conversation is deleted so we
+    /// don't leave dangling pointers across channels. Returns the
+    /// number of rows removed.
+    async fn delete_for_conversation(&self, conversation_id: &str) -> Result<usize, BoxError>;
+}
+
+/// Persistence operations on user-configured [`ChannelInstance`]
+/// rows. Sibling to [`ChannelBindingStore`]: `ChannelInstance` is
+/// the "I configured a WeCom robot in Settings" row;
+/// `ChannelBinding` is the per-chat "this WeCom group maps to
+/// conversation X" row written at message-arrival time. Two
+/// distinct lifecycles, two distinct stores.
+///
+/// All implementations preserve on-disk shape across restarts; the
+/// JSON-file backend in `harness-store` is the default. Stores don't
+/// touch `updated_at` — callers use [`ChannelInstance::touch`] before
+/// `upsert`.
+///
+/// `id` is a server-minted UUID (set by [`ChannelInstance::new`]);
+/// the trait does not enforce uniqueness on `display_name` so the
+/// same human label can appear twice (e.g. two WeCom groups both
+/// called "alerts" — that's the operator's call).
+#[async_trait]
+pub trait ChannelInstanceStore: Send + Sync {
+    /// Insert or overwrite a row keyed by `id`.
+    async fn upsert(&self, instance: &crate::ChannelInstance) -> Result<(), BoxError>;
+
+    /// Look up by stable id. `None` when absent.
+    async fn get(&self, id: &str) -> Result<Option<crate::ChannelInstance>, BoxError>;
+
+    /// All rows ordered newest-first by `updated_at`. The Settings
+    /// page renders this directly. The instance count is bounded by
+    /// human attention (operator-configured), so no `limit` argument.
+    async fn list(&self) -> Result<Vec<crate::ChannelInstance>, BoxError>;
+
+    /// Hard-delete by id. `true` if a row was removed.
     async fn delete(&self, id: &str) -> Result<bool, BoxError>;
 }

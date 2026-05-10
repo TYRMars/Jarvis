@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppSidebar } from "./AppSidebar";
 import { useAppStore } from "../store/appStore";
+import { handleFrameForConversation } from "../services/frames";
 
 // AppSidebar embeds AccountMenu which uses `<Link to="/settings">`,
 // and react-router-dom's Link blows up without a router ancestor.
@@ -23,11 +24,18 @@ afterEach(() => {
   useAppStore.getState().setActiveProjectFilter(null);
   useAppStore.getState().setDraftProjectId(null);
   useAppStore.getState().setDraftWorkspace(null);
+  useAppStore.getState().setConvoLayoutMode("project");
+  useAppStore.getState().setConvoSortBy("updated");
+  useAppStore.getState().setConvoVisibility("all");
+  useAppStore.getState().setConvoSectionOrder("projectsFirst");
   useAppStore.setState({
     messages: [],
+    pinned: new Set(),
     conversationRuns: {},
     conversationSurfaces: {},
+    conversationUnread: {},
   });
+  localStorage.removeItem("jarvis.convo.pinned");
 });
 
 describe("AppSidebar search", () => {
@@ -95,7 +103,7 @@ describe("AppSidebar search", () => {
     expect(useAppStore.getState().quickOpen).toBe(true);
   });
 
-  it("surfaces active background turns in the running section", () => {
+  it("surfaces active background turns in their original list position", () => {
     useAppStore.getState().setConvoRows([
       {
         id: "run-12345678",
@@ -116,11 +124,234 @@ describe("AppSidebar search", () => {
 
     renderWithRouter(<AppSidebar />);
 
-    const runningSection = document.querySelector("#running-section")!;
-    const recentsSection = document.querySelector(".recents-section")!;
-    expect(within(runningSection as HTMLElement).getByText("Background build")).toBeInTheDocument();
-    expect(within(runningSection as HTMLElement).queryByText("Idle notes")).not.toBeInTheDocument();
-    expect(within(recentsSection as HTMLElement).queryByText("Background build")).not.toBeInTheDocument();
+    expect(document.querySelector("#running-section")).toBeNull();
+    expect(screen.getByText("Background build")).toBeInTheDocument();
+    expect(
+      document.querySelector('li[data-id="run-12345678"][data-run-status="running"] .convo-spinner'),
+    ).not.toBeNull();
+  });
+
+  it("renders project and conversation sections as peers, keeps pinned rows separate, and limits groups to five", () => {
+    useAppStore.getState().setConvoLayoutMode("project");
+    useAppStore.getState().setProjects([
+      {
+        id: "proj-1",
+        slug: "jarvis",
+        name: "Jarvis",
+        instructions: "",
+        tags: [],
+        archived: false,
+        created_at: "2026-04-20T00:00:00Z",
+        updated_at: "2026-04-20T00:00:00Z",
+      },
+      {
+        id: "proj-empty",
+        slug: "empty",
+        name: "Empty project",
+        instructions: "",
+        tags: [],
+        archived: false,
+        created_at: "2026-04-19T00:00:00Z",
+        updated_at: "2026-04-19T00:00:00Z",
+      },
+    ]);
+    useAppStore.getState().setConvoRows([
+      {
+        id: "free-1",
+        title: "Free chat row",
+        message_count: 1,
+        created_at: "2026-04-26T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+      {
+        id: "pinned-project",
+        title: "Pinned project row",
+        message_count: 1,
+        project_id: "proj-1",
+        created_at: "2026-04-26T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+      ...Array.from({ length: 6 }, (_, i) => ({
+        id: `project-${i + 1}`,
+        title: `Project row ${i + 1}`,
+        message_count: 1,
+        project_id: "proj-1",
+        created_at: `2026-04-2${i}T00:00:00Z`,
+        updated_at: `2026-04-2${i}T00:00:00Z`,
+      })),
+    ]);
+    useAppStore.getState().togglePin("pinned-project");
+
+    renderWithRouter(<AppSidebar />);
+
+    const pinnedSection = document.querySelector("#pinned-section") as HTMLElement;
+    const projectSection = document.querySelector(".convo-section-projects") as HTMLElement;
+    const conversationSection = document.querySelector(".convo-section-conversations") as HTMLElement;
+    expect(within(pinnedSection).getByText("Pinned project row")).toBeInTheDocument();
+    expect(within(projectSection).queryByText("Pinned project row")).not.toBeInTheDocument();
+    expect(within(conversationSection).queryByText("Pinned project row")).not.toBeInTheDocument();
+    expect(within(projectSection).getByRole("button", { name: /Projects/ })).toBeInTheDocument();
+    expect(within(conversationSection).getByRole("button", { name: /Chats/ })).toBeInTheDocument();
+    expect(
+      Array.from(projectSection.querySelectorAll(".convo-group-label span")).some(
+        (el) => el.textContent === "Jarvis",
+      ),
+    ).toBe(true);
+    expect(within(conversationSection).getByText("Free chat row")).toBeInTheDocument();
+    expect(within(projectSection).queryByText("Free chat row")).not.toBeInTheDocument();
+    expect(within(projectSection).getByText("Project row 6")).toBeInTheDocument();
+    expect(screen.queryByText("Project row 1")).not.toBeInTheDocument();
+    expect(within(projectSection).getByText("No conversations")).toBeInTheDocument();
+
+    fireEvent.click(within(projectSection).getByRole("button", { name: /Projects/ }));
+    expect(within(projectSection).queryByText("Project row 6")).not.toBeInTheDocument();
+    expect(within(projectSection).queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.click(within(projectSection).getByRole("button", { name: /Projects/ }));
+    expect(within(projectSection).getByText("Project row 6")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+
+    expect(screen.getByText("Project row 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+  });
+
+  it("marks background conversation frames as unread locally", () => {
+    useAppStore.setState({ activeId: "active-12345678" });
+    useAppStore.getState().setConvoRows([
+      {
+        id: "active-12345678",
+        title: "Active chat",
+        message_count: 1,
+        created_at: "2026-04-26T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+      {
+        id: "background-12345678",
+        title: "Background chat",
+        message_count: 1,
+        created_at: "2026-04-26T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+    ]);
+    handleFrameForConversation("background-12345678", {
+      type: "assistant_message",
+      message: { role: "assistant", content: "done" },
+    });
+
+    renderWithRouter(<AppSidebar />);
+
+    expect(
+      screen.getByRole("button", { name: /Background chat.*1 unread/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("applies organize menu layout, sort, visibility, and section order controls", () => {
+    useAppStore.getState().setActiveProjectFilter("proj-a");
+    useAppStore.getState().setDraftWorkspace("/repo/a", null);
+    useAppStore.getState().setProjects([
+      {
+        id: "proj-a",
+        slug: "alpha",
+        name: "Alpha project",
+        instructions: "",
+        tags: [],
+        archived: false,
+        created_at: "2026-04-10T00:00:00Z",
+        updated_at: "2026-04-20T00:00:00Z",
+      },
+      {
+        id: "proj-b",
+        slug: "beta",
+        name: "Beta project",
+        instructions: "",
+        tags: [],
+        archived: false,
+        created_at: "2026-04-11T00:00:00Z",
+        updated_at: "2026-04-21T00:00:00Z",
+      },
+      {
+        id: "proj-empty",
+        slug: "empty",
+        name: "Empty project",
+        instructions: "",
+        tags: [],
+        archived: false,
+        created_at: "2026-04-12T00:00:00Z",
+        updated_at: "2026-04-12T00:00:00Z",
+      },
+    ]);
+    useAppStore.getState().setConvoRows([
+      {
+        id: "project-a-row",
+        title: "Alpha updated first",
+        message_count: 1,
+        project_id: "proj-a",
+        workspace_path: "/repo/a",
+        created_at: "2026-04-20T00:00:00Z",
+        updated_at: "2026-04-26T00:00:00Z",
+      },
+      {
+        id: "project-b-row",
+        title: "Beta created first",
+        message_count: 1,
+        project_id: "proj-b",
+        workspace_path: "/repo/b",
+        created_at: "2026-04-24T00:00:00Z",
+        updated_at: "2026-04-25T00:00:00Z",
+      },
+      {
+        id: "free-related",
+        title: "Workspace related chat",
+        message_count: 1,
+        workspace_path: "/repo/a",
+        created_at: "2026-04-23T00:00:00Z",
+        updated_at: "2026-04-23T00:00:00Z",
+      },
+      {
+        id: "free-other",
+        title: "Unrelated chat",
+        message_count: 1,
+        workspace_path: "/repo/b",
+        created_at: "2026-04-22T00:00:00Z",
+        updated_at: "2026-04-22T00:00:00Z",
+      },
+    ]);
+
+    renderWithRouter(<AppSidebar />);
+
+    let projectSection = document.querySelector(".convo-section-projects") as HTMLElement;
+    fireEvent.click(within(projectSection).getByRole("button", { name: "Organize" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Recent projects/ }));
+    projectSection = document.querySelector(".convo-section-projects") as HTMLElement;
+    expect(within(projectSection).queryByText("Empty project")).not.toBeInTheDocument();
+
+    fireEvent.click(within(projectSection).getByRole("button", { name: "Organize" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Chronological/ }));
+    projectSection = document.querySelector(".convo-section-projects") as HTMLElement;
+    expect(projectSection.querySelector(".convo-project-group")).toBeNull();
+    expect(within(projectSection).getByText("Alpha updated first")).toBeInTheDocument();
+    expect(within(projectSection).getByText("Beta created first")).toBeInTheDocument();
+
+    fireEvent.click(within(projectSection).getByRole("button", { name: "Organize" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Created time/ }));
+    projectSection = document.querySelector(".convo-section-projects") as HTMLElement;
+    expect(projectSection.textContent?.indexOf("Beta created first")).toBeLessThan(
+      projectSection.textContent?.indexOf("Alpha updated first") ?? 0,
+    );
+
+    fireEvent.click(within(projectSection).getByRole("button", { name: "Organize" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Related/ }));
+    projectSection = document.querySelector(".convo-section-projects") as HTMLElement;
+    const conversationSection = document.querySelector(".convo-section-conversations") as HTMLElement;
+    expect(within(projectSection).getByText("Alpha updated first")).toBeInTheDocument();
+    expect(within(projectSection).queryByText("Beta created first")).not.toBeInTheDocument();
+    expect(within(conversationSection).getByText("Workspace related chat")).toBeInTheDocument();
+    expect(within(conversationSection).queryByText("Unrelated chat")).not.toBeInTheDocument();
+
+    fireEvent.click(within(conversationSection).getByRole("button", { name: "Organize" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move up" }));
+    const firstSection = document.querySelector(".convo-rail-sections .convo-section") as HTMLElement;
+    expect(firstSection).toHaveClass("convo-section-conversations");
   });
 
   it("starts a draft conversation from the sidebar and preserves the current context", () => {

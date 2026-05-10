@@ -254,6 +254,14 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
     let mut recent_failures: Vec<&RequirementRun> = Vec::new();
 
     for run in &runs {
+        // Skip runs whose parent requirement no longer exists. They
+        // can be left behind when an old store deleted the
+        // requirement / project without cascading; counting them
+        // surfaces ghost rows in the UI ("(deleted)" failures the
+        // user can't click into).
+        if requirements.is_some() && !req_index.contains_key(&run.requirement_id) {
+            continue;
+        }
         let started = match parse_ts(&run.started_at) {
             Some(t) => t,
             None => continue,

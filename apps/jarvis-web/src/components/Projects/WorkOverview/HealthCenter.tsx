@@ -22,6 +22,7 @@ import {
   type WorkQuality,
 } from "../../../services/workOverview";
 import { KpiStrip } from "./KpiStrip";
+import { AgentRuntimeStrip } from "./AgentRuntimeStrip";
 
 interface Props {
   overview: WorkOverview | null;
@@ -233,9 +234,18 @@ export function HealthCenter({
     void load();
     const onFocus = () => void load();
     window.addEventListener("focus", onFocus);
+    // Re-poll the runtime status so the AgentRuntimeStrip's
+    // heartbeat tile reflects new ticks. 5s sits at the lower end of
+    // typical tick cadences (default 30s, dev override 5–10s) so the
+    // displayed last-tick stays under 1.5× the tick interval and
+    // doesn't visually drift toward the "stale" tone between polls.
+    // The endpoint hits a single in-memory atomic on the server, so
+    // the cost is trivial.
+    const pollId = window.setInterval(() => void load(), 5_000);
     return () => {
       cancelled = true;
       window.removeEventListener("focus", onFocus);
+      window.clearInterval(pollId);
     };
   }, []);
 
@@ -523,6 +533,8 @@ export function HealthCenter({
       </header>
 
       <KpiStrip overview={overview} loading={loading && !overview} />
+
+      <AgentRuntimeStrip status={autoMode} />
 
       <div className="health-optimization">
         <div className="health-center-section-label">

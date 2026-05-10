@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { Row, Section } from "./Section";
+import { Button, Modal } from "../../ui";
 import { useAppStore } from "../../../store/appStore";
 import { sendFrame } from "../../../services/socket";
 import { listSkills, type SkillSummary } from "../../../services/skills";
@@ -25,13 +26,15 @@ type LoadState =
 export function SkillsSection({
   embedded,
   refreshToken = 0,
+  query = "",
 }: {
   embedded?: boolean;
   refreshToken?: number;
+  query?: string;
 } = {}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const active = useAppStore((s) => s.activeSkills);
-  const [opened, setOpened] = useState<string | null>(null);
+  const [opened, setOpened] = useState<SkillSummary | null>(null);
 
   const refresh = () => {
     setState({ kind: "loading" });
@@ -48,6 +51,11 @@ export function SkillsSection({
     sendFrame({ type: on ? "activate_skill" : "deactivate_skill", name });
   };
 
+  const filteredState =
+    state.kind === "ready"
+      ? { ...state, skills: filterSkills(state.skills, query) }
+      : state;
+
   return (
     <Section
       id="skills"
@@ -57,13 +65,33 @@ export function SkillsSection({
       descFallback="Markdown + frontmatter packs from ~/.config/jarvis/skills and <workspace>/.jarvis/skills. Toggling a skill prepends its body to this session's system prompt."
       embedded={embedded}
     >
-      {renderList(state, active, toggle, opened, setOpened)}
-
-      <div className="settings-row settings-row-actions">
-        <button type="button" className="settings-btn" onClick={refresh}>
-          {tx("settingsRefresh", "Refresh")}
-        </button>
+      <div className="settings-manage-actions">
+        <Button onClick={refresh}>{tx("settingsRefresh", "Refresh")}</Button>
       </div>
+
+      {renderList(filteredState, active, toggle, setOpened)}
+
+      <Modal
+        open={opened !== null}
+        title={opened?.name ?? tx("settingsSkillsTitle", "Skills")}
+        onClose={() => setOpened(null)}
+        size="lg"
+        dialogClassName="settings-skill-modal"
+      >
+        {opened ? (
+          <div className="settings-skill-modal-content">
+            <div className="settings-skill-modal-head">
+              <p className="settings-plugin-modal-desc">{opened.description}</p>
+              <SkillSwitch
+                name={opened.name}
+                active={active.includes(opened.name)}
+                onToggle={toggle}
+              />
+            </div>
+            <SkillBody name={opened.name} />
+          </div>
+        ) : null}
+      </Modal>
     </Section>
   );
 }
@@ -72,8 +100,7 @@ function renderList(
   state: LoadState,
   active: string[],
   onToggle: (name: string, on: boolean) => void,
-  opened: string | null,
-  setOpened: (name: string | null) => void,
+  setOpened: (skill: SkillSummary) => void,
 ) {
   if (state.kind === "loading") {
     return <Row label={tx("settingsSkillsTitle", "Skills")}>…</Row>;
@@ -104,54 +131,69 @@ function renderList(
         <ul className="settings-skill-list">
           {state.skills.map((s) => {
             const isActive = active.includes(s.name);
-            const isOpen = opened === s.name;
             return (
               <li key={s.name} className={"settings-skill-item" + (isActive ? " active" : "")}>
                 <div className="settings-skill-row">
-                  <div className="settings-skill-summary">
-                    <button
-                      type="button"
-                      className="settings-skill-toggle"
-                      aria-pressed={isActive}
-                      onClick={() => onToggle(s.name, !isActive)}
-                    >
-                      {isActive ? tx("skillsToggleOn", "On") : tx("skillsToggleOff", "Off")}
-                    </button>
+                  <button
+                    type="button"
+                    className="settings-skill-open"
+                    onClick={() => setOpened(s)}
+                  >
                     <div>
                       <div className="settings-skill-name">
-                        <span className="mono">{s.name}</span>
-                        <span className="muted">
-                          {" "}
-                          · {tx(`skillsSource${cap(s.source)}`, s.source)}
-                          {" "}
-                          · {tx(`skillsActivation${cap(s.activation)}`, s.activation)}
-                        </span>
+                        {s.name}
                       </div>
                       <div className="settings-skill-desc">{s.description}</div>
                     </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="settings-btn"
-                    onClick={() => setOpened(isOpen ? null : s.name)}
-                  >
-                    {isOpen ? tx("skillsHide", "Hide") : tx("skillsShow", "Show")}
                   </button>
+                  <SkillSwitch name={s.name} active={isActive} onToggle={onToggle} />
                 </div>
-                {isOpen && <SkillBody name={s.name} />}
-                {s.allowed_tools.length > 0 && (
-                  <ul className="settings-skill-tools">
-                    {s.allowed_tools.map((tname) => (
-                      <li key={tname} className="mono">{tname}</li>
-                    ))}
-                  </ul>
-                )}
               </li>
             );
           })}
         </ul>
       </div>
     </div>
+  );
+}
+
+function SkillSwitch({
+  name,
+  active,
+  onToggle,
+}: {
+  name: string;
+  active: boolean;
+  onToggle: (name: string, on: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={"settings-skill-switch" + (active ? " is-on" : "")}
+      role="switch"
+      aria-checked={active}
+      aria-label={active ? tx("skillsToggleOn", "On") : tx("skillsToggleOff", "Off")}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle(name, !active);
+      }}
+    >
+      <span />
+    </button>
+  );
+}
+
+function filterSkills(skills: SkillSummary[], query: string): SkillSummary[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return skills;
+  return skills.filter((s) =>
+    [
+      s.name,
+      s.description,
+      s.source,
+      s.activation,
+      ...s.allowed_tools,
+    ].join(" ").toLowerCase().includes(q),
   );
 }
 
@@ -172,9 +214,4 @@ function SkillBody({ name }: { name: string }) {
   if (err) return <pre className="settings-skill-body error">{err}</pre>;
   if (body == null) return <pre className="settings-skill-body">…</pre>;
   return <pre className="settings-skill-body">{body}</pre>;
-}
-
-function cap(s: string): string {
-  if (!s) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1).replace(/-./g, (m) => m.charAt(1).toUpperCase());
 }

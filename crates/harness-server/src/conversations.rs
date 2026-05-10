@@ -31,8 +31,9 @@ use axum::{
 };
 use futures::{Stream, StreamExt};
 use harness_core::{
-    AgentEvent, Conversation, ConversationMetadata, ConversationStore, Message, Requirement,
-    RequirementRun, RequirementRunStatus, RunOutcome,
+    AgentEvent, Conversation, ConversationLifecycle, ConversationMetadata, ConversationStore,
+    Message, Requirement, RequirementRun, RequirementRunStatus, RequirementRunLogLevel,
+    RunOutcome,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -53,6 +54,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/conversations/:id/messages/stream",
             post(stream_message),
+        )
+        .route(
+            "/v1/conversations/:id/lifecycle",
+            post(set_lifecycle),
         )
 }
 
@@ -184,6 +189,7 @@ async fn create(State(state): State<AppState>, body: Option<Json<CreateRequest>>
     }
     let metadata = ConversationMetadata {
         project_id: resolved_project_id.clone(),
+        ..Default::default()
     };
     if let Err(e) = store.save_envelope(&id, &conv, &metadata).await {
         return internal_error(e);
@@ -209,6 +215,13 @@ struct ListQuery {
     /// to a UUID before querying.
     #[serde(default)]
     project_id: Option<String>,
+    /// Optional lifecycle filter. Accepts `active` / `archived` /
+    /// `abandoned`. Omitted ⇒ no filter (returns all states), so
+    /// existing clients keep working unchanged. The frontend sidebar
+    /// passes `lifecycle=active` to hide archived/abandoned by
+    /// default; the archive page passes `lifecycle=archived` etc.
+    #[serde(default)]
+    lifecycle: Option<String>,
 }
 fn default_limit() -> u32 {
     20
@@ -246,11 +259,36 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
         Some(pid) => store.list_by_project(pid, q.limit).await,
         None => store.list(q.limit).await,
     };
+    // Resolve lifecycle filter (if any). Unknown values 400 — silent
+    // fall-through would let typos quietly hide all rows.
+    let lifecycle_filter: Option<ConversationLifecycle> = match q.lifecycle.as_deref() {
+        None => None,
+        Some(raw) => match ConversationLifecycle::from_wire(raw) {
+            Some(l) => Some(l),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!(
+                            "unknown lifecycle '{raw}' — expected active|archived|abandoned"
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+        },
+    };
+
     match rows_result {
         Ok(rows) => {
             let visible: Vec<_> = rows
                 .into_iter()
                 .filter(|r| !is_internal_id(&r.id))
+                .filter(|r| {
+                    lifecycle_filter
+                        .map(|want| r.lifecycle == want)
+                        .unwrap_or(true)
+                })
                 .collect();
             // Cache project name lookups so the title fallback for
             // empty conversations doesn't issue one project load per row.
@@ -286,6 +324,7 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
                     "requirement_id": req.map(|req| req.id.clone()),
                     "requirement_title": req.map(|req| req.title.clone()),
                     "requirement_status": req.map(|req| req.status.as_wire()),
+                    "lifecycle": r.lifecycle.as_wire(),
                 }));
             }
             Json(out).into_response()
@@ -659,6 +698,128 @@ fn not_found() -> Response {
         Json(json!({ "error": "conversation not found" })),
     )
         .into_response()
+}
+
+// ----------------------- lifecycle -----------------------
+
+#[derive(Debug, Deserialize)]
+struct SetLifecycleRequest {
+    lifecycle: String,
+}
+
+/// `POST /v1/conversations/:id/lifecycle` body
+/// `{lifecycle: "active"|"archived"|"abandoned"}`.
+///
+/// Mutates the persisted [`ConversationMetadata.lifecycle`] field.
+/// When transitioning to `Abandoned`, also cancels any non-terminal
+/// `RequirementRun` rows linked to this conversation — the user has
+/// declared they don't want this session to finish, so the run
+/// shouldn't sit in `Running` waiting on a terminal frame that will
+/// never arrive. Distinct from auto-mode's reaper (cancels stale
+/// runs by timeout, no user input) and from the WS-terminal
+/// reconciler (flips to Completed/Failed on a real terminal frame).
+///
+/// Idempotent: re-sending the same lifecycle just re-saves the row;
+/// callers don't need to check the current state first.
+async fn set_lifecycle(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<SetLifecycleRequest>,
+) -> Response {
+    if is_internal_id(&id) {
+        return not_found();
+    }
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let Some(target) = ConversationLifecycle::from_wire(&body.lifecycle) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "unknown lifecycle '{}' — expected active|archived|abandoned",
+                    body.lifecycle
+                ),
+            })),
+        )
+            .into_response();
+    };
+    let (conv, mut metadata) = match store.load_envelope(&id).await {
+        Ok(Some(pair)) => pair,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(e),
+    };
+    let prior = metadata.lifecycle;
+    metadata.lifecycle = target;
+    if let Err(e) = store.save_envelope(&id, &conv, &metadata).await {
+        return internal_error(e);
+    }
+
+    // Side effect: when the user marks the conversation Abandoned,
+    // cancel any non-terminal RequirementRun rows attached to it so
+    // they don't sit Running/Pending forever. Mirrors what the
+    // WS-terminal reconciler does on `AgentEvent::Done/Error`, but
+    // with `Cancelled` because the user, not the agent, ended this.
+    if target == ConversationLifecycle::Abandoned && prior != target {
+        cancel_runs_on_abandon(&state, &id).await;
+    }
+
+    Json(json!({
+        "id": id,
+        "lifecycle": target.as_wire(),
+        "previous_lifecycle": prior.as_wire(),
+    }))
+    .into_response()
+}
+
+/// Best-effort cancellation of every non-terminal `RequirementRun`
+/// linked to `conversation_id`. Errors are warn-logged and swallowed
+/// — this runs as a side effect of `set_lifecycle` and we never want
+/// the lifecycle flip itself to fail on a downstream store hiccup.
+async fn cancel_runs_on_abandon(state: &AppState, conversation_id: &str) {
+    let Some(run_store) = state.requirement_runs.as_ref() else {
+        return;
+    };
+    let scan = match run_store.list_all(1000).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                error = %e,
+                conversation_id,
+                "cancel_runs_on_abandon: list_all failed"
+            );
+            return;
+        }
+    };
+    let target: Vec<RequirementRun> = scan
+        .into_iter()
+        .filter(|r| r.conversation_id == conversation_id && !r.status.is_terminal())
+        .collect();
+    if target.is_empty() {
+        return;
+    }
+    for mut run in target {
+        run.finish(RequirementRunStatus::Cancelled);
+        if run.error.is_none() {
+            run.error = Some("user marked conversation abandoned".to_string());
+        }
+        run.push_log(
+            RequirementRunLogLevel::Info,
+            "Run cancelled by conversation lifecycle change",
+            Some(json!({
+                "conversation_id": conversation_id,
+                "reason": "lifecycle:abandoned",
+            })),
+        );
+        if let Err(e) = run_store.upsert(&run).await {
+            warn!(
+                error = %e,
+                run_id = %run.id,
+                "cancel_runs_on_abandon: upsert failed"
+            );
+        }
+    }
 }
 
 // ----------------------- post message (blocking) -----------------------
@@ -1752,5 +1913,203 @@ mod tests {
                 .any(|m| m["role"] == "assistant" && m["content"] == "ok"),
             "history did not include the assistant reply: {body}"
         );
+    }
+
+    // ----------------------- lifecycle tests -----------------------
+
+    #[tokio::test]
+    async fn set_lifecycle_archives_then_unarchives() {
+        let app = full_router(make_state(true));
+        // Create
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post("/v1/conversations", json!({})))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+
+        // archive
+        let (status, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    &format!("/v1/conversations/{id}/lifecycle"),
+                    json!({"lifecycle": "archived"}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["lifecycle"], "archived");
+        assert_eq!(body["previous_lifecycle"], "active");
+
+        // un-archive (idempotent w.r.t. round-trip)
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    &format!("/v1/conversations/{id}/lifecycle"),
+                    json!({"lifecycle": "active"}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(body["lifecycle"], "active");
+        assert_eq!(body["previous_lifecycle"], "archived");
+    }
+
+    #[tokio::test]
+    async fn set_lifecycle_unknown_value_returns_400() {
+        let app = full_router(make_state(true));
+        let (_, body) = body_json(
+            app.clone()
+                .oneshot(json_post("/v1/conversations", json!({})))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = body["id"].as_str().unwrap().to_string();
+
+        let (status, body) = body_json(
+            app.oneshot(json_post(
+                &format!("/v1/conversations/{id}/lifecycle"),
+                json!({"lifecycle": "ghosted"}),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("active|archived|abandoned"));
+    }
+
+    #[tokio::test]
+    async fn set_lifecycle_404_when_conversation_missing() {
+        let app = full_router(make_state(true));
+        let (status, _) = body_json(
+            app.oneshot(json_post(
+                "/v1/conversations/never-existed/lifecycle",
+                json!({"lifecycle": "abandoned"}),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn set_lifecycle_503_without_store() {
+        let app = full_router(make_state(false));
+        let (status, _) = body_json(
+            app.oneshot(json_post(
+                "/v1/conversations/x/lifecycle",
+                json!({"lifecycle": "archived"}),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn list_filter_by_lifecycle() {
+        let app = full_router(make_state(true));
+        // Two conversations
+        let (_, a) = body_json(
+            app.clone()
+                .oneshot(json_post("/v1/conversations", json!({})))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id_a = a["id"].as_str().unwrap().to_string();
+        let (_, b) = body_json(
+            app.clone()
+                .oneshot(json_post("/v1/conversations", json!({})))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id_b = b["id"].as_str().unwrap().to_string();
+
+        // archive A
+        let _ = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/v1/conversations/{id_a}/lifecycle"),
+                json!({"lifecycle": "archived"}),
+            ))
+            .await
+            .unwrap();
+
+        // No filter → both visible
+        let (_, all) = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/conversations")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let ids: Vec<&str> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&id_a.as_str()) && ids.contains(&id_b.as_str()));
+
+        // lifecycle=active → only B
+        let (_, active_only) = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/conversations?lifecycle=active")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let ids: Vec<&str> = active_only
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(!ids.contains(&id_a.as_str()), "archived A leaked into active filter");
+        assert!(ids.contains(&id_b.as_str()), "active B missing from active filter");
+
+        // lifecycle=archived → only A
+        let (_, archived_only) = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/v1/conversations?lifecycle=archived")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let ids: Vec<&str> = archived_only
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![id_a.as_str()]);
     }
 }

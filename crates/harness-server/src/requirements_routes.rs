@@ -323,6 +323,7 @@ async fn create_requirement(
         .description
         .map(|d| d.trim().to_string())
         .filter(|d| !d.is_empty());
+    item.ensure_execution_checklist();
     match store.upsert(&item).await {
         Ok(()) => (StatusCode::CREATED, item_json(&item)).into_response(),
         Err(e) => internal_error(e),
@@ -344,19 +345,10 @@ struct UpdateBody {
     /// without a round-trip use `POST /v1/requirements/:id/conversations`.
     #[serde(default)]
     conversation_ids: Option<Vec<String>>,
-    /// Phase 3.6 — set / clear the assigned [`AgentProfile`]. The
-    /// outer `Option<...>` distinguishes "field omitted" (None) from
-    /// "field present"; the inner `Option<String>` distinguishes
-    /// "set to X" from "clear" (`null`). Wire form:
-    /// `{"assignee_id": "<uuid>"}` to set, `{"assignee_id": null}`
-    /// to clear, or simply omit the key to leave as-is.
-    #[serde(default, deserialize_with = "deserialize_optional_optional_string")]
-    assignee_id: OptionalAssignee,
     /// Phase 6 — set / clear the per-requirement verification
     /// plan template that auto mode (and a future "Verify with
-    /// pinned plan" UI button) reaches for. Same three-state
-    /// semantics as `assignee_id`: omit ⇒ leave as-is, `null` ⇒
-    /// clear, object ⇒ set.
+    /// pinned plan" UI button) reaches for. Three-state semantics:
+    /// omit ⇒ leave as-is, `null` ⇒ clear, object ⇒ set.
     #[serde(default, deserialize_with = "deserialize_optional_plan")]
     verification_plan: OptionalPlan,
     /// v1.0 — set the triage gate. Omit to leave as-is. Wire form:
@@ -375,14 +367,6 @@ struct UpdateBody {
     /// Omit to leave as-is; pass `[]` to clear.
     #[serde(default)]
     label_ids: Option<Vec<String>>,
-    /// v1.0 SubAgent — flip the acceptance policy. Wire form: one of
-    /// `subagent` / `human`. Omit to leave as-is. `subagent` (the
-    /// default once Reviewer auto-acceptance lands) hands the
-    /// Review → Done transition off to the reviewer subagent;
-    /// `human` keeps the row at Review until a person clicks
-    /// "complete".
-    #[serde(default)]
-    acceptance_policy: Option<String>,
 }
 
 /// Three-state value for `verification_plan` in PATCH —
@@ -403,32 +387,6 @@ where
     Ok(match opt {
         Some(p) => OptionalPlan::Set(p),
         None => OptionalPlan::Clear,
-    })
-}
-
-/// Three-state value for `assignee_id` in PATCH:
-/// - `Missing`  — key absent, leave row as-is.
-/// - `Clear`    — key present and `null`, clear the assignment.
-/// - `Set(id)`  — key present and a string, assign that profile.
-#[derive(Debug, Default)]
-enum OptionalAssignee {
-    #[default]
-    Missing,
-    Clear,
-    Set(String),
-}
-
-fn deserialize_optional_optional_string<'de, D>(de: D) -> Result<OptionalAssignee, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    // serde calls the `with` deserializer only when the key is
-    // present, so `Missing` is set by `#[serde(default)]` above and
-    // we just need to distinguish null vs string here.
-    let opt: Option<String> = Option::deserialize(de)?;
-    Ok(match opt {
-        Some(s) => OptionalAssignee::Set(s),
-        None => OptionalAssignee::Clear,
     })
 }
 
@@ -476,19 +434,6 @@ async fn update_requirement(
     if let Some(ids) = body.conversation_ids {
         item.conversation_ids = ids;
     }
-    let prior_assignee = item.assignee_id.clone();
-    match body.assignee_id {
-        OptionalAssignee::Missing => {}
-        OptionalAssignee::Clear => item.assignee_id = None,
-        OptionalAssignee::Set(s) => {
-            let trimmed = s.trim().to_string();
-            item.assignee_id = if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            };
-        }
-    }
     match body.verification_plan {
         OptionalPlan::Missing => {}
         OptionalPlan::Clear => item.verification_plan = None,
@@ -510,13 +455,6 @@ async fn update_requirement(
             .filter(|id| !id.trim().is_empty())
             .collect();
     }
-    let prior_acceptance = item.acceptance_policy;
-    if let Some(s) = body.acceptance_policy.as_deref() {
-        match harness_core::AcceptancePolicy::from_wire(s) {
-            Some(parsed) => item.acceptance_policy = parsed,
-            None => return bad_request(format!("unknown acceptance_policy `{s}`")),
-        }
-    }
     item.touch();
     match store.upsert(&item).await {
         Ok(()) => {
@@ -533,19 +471,6 @@ async fn update_requirement(
                 )
                 .await;
             }
-            if item.assignee_id != prior_assignee {
-                record_activity(
-                    &state,
-                    &item.id,
-                    ActivityKind::AssigneeChange,
-                    ActivityActor::Human,
-                    json!({
-                        "from": prior_assignee,
-                        "to": item.assignee_id,
-                    }),
-                )
-                .await;
-            }
             if item.triage_state != prior_triage {
                 record_activity(
                     &state,
@@ -556,20 +481,6 @@ async fn update_requirement(
                         "kind": "triage_change",
                         "from": prior_triage.as_wire(),
                         "to": item.triage_state.as_wire(),
-                    }),
-                )
-                .await;
-            }
-            if item.acceptance_policy != prior_acceptance {
-                record_activity(
-                    &state,
-                    &item.id,
-                    ActivityKind::Comment,
-                    ActivityActor::Human,
-                    json!({
-                        "kind": "acceptance_policy_change",
-                        "from": prior_acceptance.as_wire(),
-                        "to": item.acceptance_policy.as_wire(),
                     }),
                 )
                 .await;
@@ -1123,42 +1034,10 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
     let manifest = build_default_manifest(&workspace, &requirement).await;
     let summary = render_manifest_summary(&manifest);
 
-    // 2.5 (Phase 3.6). If the requirement is assigned, look up
-    // the AgentProfile and prepend its `system_prompt` to the
-    // manifest. Look-up failures (missing profile, store glitch)
-    // are non-fatal: we WARN and run with the bare manifest
-    // rather than blocking the user-visible action.
-    let assignee_prompt = match (
-        requirement.assignee_id.as_deref(),
-        state.agent_profiles.as_ref(),
-    ) {
-        (Some(aid), Some(prof_store)) => match prof_store.get(aid).await {
-            Ok(Some(p)) => p.system_prompt.clone(),
-            Ok(None) => {
-                warn!(
-                    requirement_id = %requirement.id,
-                    assignee_id = %aid,
-                    "requirement assignee profile not found; running without it",
-                );
-                None
-            }
-            Err(e) => {
-                warn!(error = %e, "agent profile lookup failed on start_run");
-                None
-            }
-        },
-        _ => None,
-    };
-    let composed_summary = match assignee_prompt.as_deref() {
-        Some(prompt) if !prompt.trim().is_empty() => {
-            format!(
-                "=== assignee instructions ===\n{}\n\n{}",
-                prompt.trim(),
-                summary
-            )
-        }
-        _ => summary.clone(),
-    };
+    // Requirement runs are always routed through Jarvis. Profile
+    // assignment and acceptance policy are legacy fields and do not
+    // alter the customer-facing execution path.
+    let composed_summary = summary.clone();
 
     // 3. Mint fresh conversation. The system message is the
     // (possibly assignee-prefixed) manifest summary; the
@@ -1169,6 +1048,7 @@ async fn start_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
     conv.push(Message::system(composed_summary));
     let metadata = ConversationMetadata {
         project_id: Some(requirement.project_id.clone()),
+        ..Default::default()
     };
     if let Err(e) = convo_store
         .save_envelope(&conversation_id, &conv, &metadata)
@@ -1781,6 +1661,260 @@ async fn apply_verification(
         .await;
     }
     run_json(&run).into_response()
+}
+
+/// Server-side reconciliation for `RequirementRun` rows tied to a
+/// conversation that just produced a terminal `AgentEvent`.
+///
+/// The frontend's [`reconcileRequirementRun`] (conversationSockets.ts)
+/// flips run status to `completed`/`failed`/`cancelled` when the WS
+/// terminal frame arrives — but that path doesn't run if the user
+/// closes the tab, navigates away, or loses network mid-turn. The
+/// detached turn task on the server keeps streaming to the persisted
+/// store regardless; this helper hooks the same terminal moment so
+/// run rows finish cleanly even when no client is listening.
+///
+/// Idempotent: runs already in a terminal state are skipped, so
+/// concurrent flips from the auto-mode loop or the frontend PATCH
+/// endpoint don't double-finish anything. The scan caps at 1000 rows
+/// (mirrors the work-overview budget) — when a single run has more
+/// in-flight history than that we silently miss the older ones, which
+/// is fine: they'd be stuck regardless.
+pub(crate) async fn reconcile_runs_for_conversation(
+    state: &AppState,
+    conversation_id: &str,
+    succeeded: bool,
+    error_text: Option<&str>,
+) {
+    let Some(run_store) = state.requirement_runs.as_ref() else {
+        return;
+    };
+    let scan = match run_store.list_all(1000).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                error = %e,
+                conversation_id,
+                "reconcile_runs_for_conversation: list_all failed"
+            );
+            return;
+        }
+    };
+    let target: Vec<RequirementRun> = scan
+        .into_iter()
+        .filter(|r| r.conversation_id == conversation_id && !r.status.is_terminal())
+        .collect();
+    if target.is_empty() {
+        return;
+    }
+    let final_status = if succeeded {
+        RequirementRunStatus::Completed
+    } else {
+        RequirementRunStatus::Failed
+    };
+    for mut run in target {
+        run.finish(final_status);
+        if !succeeded && run.error.is_none() {
+            run.error = error_text.map(|s| s.to_string());
+        }
+        run.push_log(
+            RequirementRunLogLevel::Info,
+            "Run finished by server-side reconciliation",
+            Some(json!({
+                "conversation_id": conversation_id,
+                "status": final_status.as_wire(),
+                "reason": "ws_turn_terminal",
+            })),
+        );
+        if let Err(e) = run_store.upsert(&run).await {
+            warn!(
+                error = %e,
+                run_id = %run.id,
+                "reconcile_runs_for_conversation: upsert failed"
+            );
+            continue;
+        }
+        record_activity(
+            state,
+            &run.requirement_id,
+            ActivityKind::RunFinished,
+            ActivityActor::System,
+            json!({
+                "run_id": run.id,
+                "status": final_status.as_wire(),
+                "reconciled": true,
+            }),
+        )
+        .await;
+    }
+}
+
+/// One-shot startup sweep that reconciles orphan `RequirementRun`
+/// rows left behind by older binaries that didn't have the
+/// in-process [`reconcile_runs_for_conversation`] hook in
+/// `routes.rs::spawn_detached_turn`.
+///
+/// Targets the exact failure pattern observed in the field:
+///  - `Requirement.status == InProgress`
+///  - latest run (newest `started_at`) is `Cancelled` (the auto-mode
+///    stale-run reaper at `auto_mode.rs:967-984` cancelled it past
+///    `~2× run_timeout_ms`) **or** `Running` / `Pending` (server
+///    crashed mid-turn before any reconciliation could fire)
+///  - the run's `conversation_id` resolves to a `Conversation` whose
+///    final `Message` is from the assistant (i.e. the agent loop
+///    actually terminated cleanly — there's a real reply on disk)
+///
+/// When all three line up we override the run to `Completed`, push
+/// the Requirement to `Review`, and stamp `RunFinished` /
+/// `StatusChange` activity rows so the timeline reflects the
+/// reconciliation. Idempotent: re-running on already-reconciled rows
+/// is a no-op (Review is excluded from the requirement filter).
+///
+/// Returns the number of (requirement, run) pairs reconciled — the
+/// binary logs this once at boot.
+pub async fn sweep_orphan_requirements_on_startup(state: &AppState) -> u32 {
+    let (Some(req_store), Some(run_store), Some(convo_store), Some(proj_store)) = (
+        state.requirements.as_ref(),
+        state.requirement_runs.as_ref(),
+        state.store.as_ref(),
+        state.projects.as_ref(),
+    ) else {
+        return 0;
+    };
+    let projects = match proj_store.list(false, 500).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(error = %e, "startup sweep: list projects failed");
+            return 0;
+        }
+    };
+    let mut reconciled: u32 = 0;
+    for project in &projects {
+        let reqs = match req_store.list(&project.id).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!(project_id = %project.id, error = %e, "startup sweep: list reqs failed");
+                continue;
+            }
+        };
+        for req in reqs {
+            if req.status != RequirementStatus::InProgress {
+                continue;
+            }
+            let runs = match run_store.list_for_requirement(&req.id).await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    warn!(requirement_id = %req.id, error = %e, "startup sweep: list runs failed");
+                    continue;
+                }
+            };
+            // `list_for_requirement` returns newest-first.
+            let Some(latest) = runs.first() else {
+                continue;
+            };
+            // Only candidates: Cancelled (reaper victim) and the two
+            // crashed-mid-turn states. Completed/Failed are
+            // legitimate terminals; we must not override a Failed
+            // run (the agent or verification really did fail).
+            let candidate = matches!(
+                latest.status,
+                RequirementRunStatus::Cancelled
+                    | RequirementRunStatus::Running
+                    | RequirementRunStatus::Pending
+            );
+            if !candidate {
+                continue;
+            }
+            let convo = match convo_store.load_envelope(&latest.conversation_id).await {
+                Ok(Some((c, _))) => c,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(
+                        conversation_id = %latest.conversation_id,
+                        error = %e,
+                        "startup sweep: load conversation failed"
+                    );
+                    continue;
+                }
+            };
+            // Clean termination evidence: an Assistant message is
+            // the last thing on the wire. A trailing User / Tool /
+            // System leaves the agent loop ambiguous (mid-turn,
+            // pending tool reply, etc.) — leave those alone.
+            let cleanly_terminated =
+                matches!(convo.messages.last(), Some(Message::Assistant { .. }));
+            if !cleanly_terminated {
+                continue;
+            }
+            // Step 1: flip run → Completed.
+            let prior_run_status = latest.status;
+            let mut run = latest.clone();
+            run.status = RequirementRunStatus::Completed;
+            if run.finished_at.is_none() {
+                run.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            // Erase reaper-injected error string so the dashboard
+            // doesn't keep showing it on a Completed row.
+            run.error = None;
+            run.push_log(
+                RequirementRunLogLevel::Info,
+                "Run reconciled by startup sweep",
+                Some(json!({
+                    "previous_status": prior_run_status.as_wire(),
+                    "reason": "conversation terminated cleanly with assistant reply",
+                })),
+            );
+            if let Err(e) = run_store.upsert(&run).await {
+                warn!(run_id = %run.id, error = %e, "startup sweep: upsert run failed");
+                continue;
+            }
+            // Step 2: push requirement → Review.
+            let mut req_mut = req.clone();
+            req_mut.status = RequirementStatus::Review;
+            req_mut.touch();
+            if let Err(e) = req_store.upsert(&req_mut).await {
+                warn!(
+                    requirement_id = %req.id,
+                    error = %e,
+                    "startup sweep: upsert requirement failed (run already flipped)"
+                );
+                continue;
+            }
+            // Step 3: timeline rows. RunFinished pairs with the
+            // status flip; StatusChange records the requirement
+            // promotion. Both attribute to System (no human did
+            // this) and tag `reconciled: true` so a curious
+            // operator can grep them out of the activity log.
+            record_activity(
+                state,
+                &req.id,
+                ActivityKind::RunFinished,
+                ActivityActor::System,
+                json!({
+                    "run_id": run.id,
+                    "status": "completed",
+                    "reconciled": true,
+                    "previous_run_status": prior_run_status.as_wire(),
+                }),
+            )
+            .await;
+            record_activity(
+                state,
+                &req.id,
+                ActivityKind::StatusChange,
+                ActivityActor::System,
+                json!({
+                    "from": "in_progress",
+                    "to": "review",
+                    "reason": "startup_sweep_reconciliation",
+                    "reconciled": true,
+                }),
+            )
+            .await;
+            reconciled += 1;
+        }
+    }
+    reconciled
 }
 
 #[cfg(test)]
@@ -3208,5 +3342,304 @@ mod tests {
         }
         assert!(saw_finished, "missing Finished event");
         assert!(saw_verified, "missing Verified event");
+    }
+
+    /// Regression: when a WS turn terminates, any non-terminal
+    /// `RequirementRun` linked to the conversation must flip to
+    /// Completed/Failed even if the frontend reconciliation never
+    /// runs (tab closed, network drop, page reload). Mirrors what
+    /// the detached turn task in `routes.rs::spawn_detached_turn`
+    /// hooks at the end of the agent stream.
+    #[tokio::test]
+    async fn reconcile_runs_for_conversation_finishes_orphan_run() {
+        let (state, run_store, _act_store) = state_with_activities();
+        // Seed a Pending run by directly upserting (mirrors the
+        // post-`start_run` shape — Pending status, conversation_id
+        // tying it to a WS turn that is about to terminate).
+        let mut orphan = harness_core::RequirementRun::new("req-1", "conv-X");
+        // Promote to Running so we cover the realistic post-start
+        // state (the frontend PATCHes "running" right after it gets
+        // the run id).
+        orphan.status = harness_core::RequirementRunStatus::Running;
+        run_store.upsert(&orphan).await.unwrap();
+
+        // A second run on the same requirement but a DIFFERENT
+        // conversation — must NOT be touched.
+        let unrelated = harness_core::RequirementRun::new("req-1", "conv-OTHER");
+        run_store.upsert(&unrelated).await.unwrap();
+
+        // A third run on the target conversation that's already
+        // terminal — also must NOT be touched (idempotency).
+        let mut already_done = harness_core::RequirementRun::new("req-1", "conv-X");
+        already_done.finish(harness_core::RequirementRunStatus::Completed);
+        run_store.upsert(&already_done).await.unwrap();
+
+        super::reconcile_runs_for_conversation(&state, "conv-X", true, None).await;
+
+        let after = run_store.list_for_requirement("req-1").await.unwrap();
+        let by_id: std::collections::HashMap<_, _> =
+            after.into_iter().map(|r| (r.id.clone(), r)).collect();
+
+        assert_eq!(
+            by_id.get(&orphan.id).unwrap().status,
+            harness_core::RequirementRunStatus::Completed,
+            "orphan run was reconciled"
+        );
+        assert!(
+            by_id.get(&orphan.id).unwrap().finished_at.is_some(),
+            "finished_at stamped"
+        );
+        assert_eq!(
+            by_id.get(&unrelated.id).unwrap().status,
+            harness_core::RequirementRunStatus::Pending,
+            "unrelated conversation untouched"
+        );
+        assert_eq!(
+            by_id.get(&already_done.id).unwrap().status,
+            harness_core::RequirementRunStatus::Completed,
+            "already-terminal run not double-flipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_runs_for_conversation_marks_failed_on_error() {
+        let (state, run_store, _act_store) = state_with_activities();
+        let mut orphan = harness_core::RequirementRun::new("req-2", "conv-Y");
+        orphan.status = harness_core::RequirementRunStatus::Running;
+        run_store.upsert(&orphan).await.unwrap();
+
+        super::reconcile_runs_for_conversation(
+            &state,
+            "conv-Y",
+            false,
+            Some("agent timed out after 300000ms"),
+        )
+        .await;
+
+        let after = run_store.get(&orphan.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.status,
+            harness_core::RequirementRunStatus::Failed
+        );
+        assert_eq!(
+            after.error.as_deref(),
+            Some("agent timed out after 300000ms")
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_runs_for_conversation_no_op_without_run_store() {
+        // Edge case: AppState without a run store should silently
+        // no-op rather than panic — mirrors the early return in the
+        // function body.
+        let state = base_state();
+        super::reconcile_runs_for_conversation(&state, "conv-Z", true, None).await;
+    }
+
+    /// Helper for the startup-sweep tests: builds an AppState with
+    /// all four stores wired, seeds one project, and returns the
+    /// store handles plus the project id so each test can shape its
+    /// own data.
+    async fn sweep_test_state() -> (
+        AppState,
+        Arc<dyn harness_core::ProjectStore>,
+        Arc<dyn RequirementStore>,
+        Arc<dyn RequirementRunStore>,
+        Arc<dyn harness_core::ConversationStore>,
+        String, // project id
+    ) {
+        let req_store: Arc<dyn RequirementStore> = Arc::new(MemoryRequirementStore::new());
+        let run_store: Arc<dyn RequirementRunStore> = Arc::new(MemoryRequirementRunStore::new());
+        let convo_store: Arc<dyn harness_core::ConversationStore> =
+            Arc::new(MemoryConversationStore::new());
+        let proj_store: Arc<dyn harness_core::ProjectStore> =
+            Arc::new(MemoryProjectStore::new());
+        let act_store: Arc<dyn ActivityStore> = Arc::new(MemoryActivityStore::new());
+
+        let project = harness_core::Project::new("svelte-learn", "");
+        let project_id = project.id.clone();
+        proj_store.save(&project).await.unwrap();
+
+        let state = base_state()
+            .with_requirement_store(Arc::clone(&req_store))
+            .with_run_store(Arc::clone(&run_store))
+            .with_store(Arc::clone(&convo_store))
+            .with_project_store(Arc::clone(&proj_store))
+            .with_activity_store(act_store);
+        (state, proj_store, req_store, run_store, convo_store, project_id)
+    }
+
+    async fn save_convo(
+        store: &Arc<dyn harness_core::ConversationStore>,
+        id: &str,
+        last: harness_core::Message,
+    ) {
+        let mut conv = harness_core::Conversation::new();
+        conv.messages.push(last);
+        store
+            .save_envelope(id, &conv, &harness_core::ConversationMetadata::default())
+            .await
+            .unwrap();
+    }
+
+    /// The motivating case: requirement stuck in_progress, latest run
+    /// reaper-cancelled, conversation cleanly terminated with an
+    /// assistant reply. Sweep should flip run → Completed and
+    /// requirement → Review.
+    #[tokio::test]
+    async fn sweep_reconciles_reaper_cancelled_run_with_clean_conversation() {
+        let (state, _proj, req_store, run_store, convo_store, project_id) =
+            sweep_test_state().await;
+
+        let mut req = harness_core::Requirement::new(&project_id, "stuck requirement");
+        req.status = RequirementStatus::InProgress;
+        req_store.upsert(&req).await.unwrap();
+
+        let mut run = harness_core::RequirementRun::new(&req.id, "conv-A");
+        run.status = harness_core::RequirementRunStatus::Cancelled;
+        run.finished_at = Some("2026-05-08T19:08:26+00:00".into());
+        run.error = Some("auto-mode reaper".into());
+        run_store.upsert(&run).await.unwrap();
+
+        save_convo(
+            &convo_store,
+            "conv-A",
+            harness_core::Message::assistant_text("修改已完成，验证通过。"),
+        )
+        .await;
+
+        let n = super::sweep_orphan_requirements_on_startup(&state).await;
+        assert_eq!(n, 1);
+
+        let after_run = run_store.get(&run.id).await.unwrap().unwrap();
+        assert_eq!(
+            after_run.status,
+            harness_core::RequirementRunStatus::Completed
+        );
+        assert!(after_run.error.is_none(), "reaper error string cleared");
+        let after_req = req_store.get(&req.id).await.unwrap().unwrap();
+        assert_eq!(after_req.status, RequirementStatus::Review);
+    }
+
+    /// Crashed-mid-turn variant: latest run is still Running (reaper
+    /// hasn't fired) but the conversation already has a clean
+    /// assistant reply on disk. Same outcome as the cancelled case.
+    #[tokio::test]
+    async fn sweep_reconciles_running_run_when_conversation_terminated_cleanly() {
+        let (state, _proj, req_store, run_store, convo_store, project_id) =
+            sweep_test_state().await;
+
+        let mut req = harness_core::Requirement::new(&project_id, "crashed requirement");
+        req.status = RequirementStatus::InProgress;
+        req_store.upsert(&req).await.unwrap();
+
+        let mut run = harness_core::RequirementRun::new(&req.id, "conv-B");
+        run.status = harness_core::RequirementRunStatus::Running;
+        run_store.upsert(&run).await.unwrap();
+
+        save_convo(
+            &convo_store,
+            "conv-B",
+            harness_core::Message::assistant_text("done."),
+        )
+        .await;
+
+        let n = super::sweep_orphan_requirements_on_startup(&state).await;
+        assert_eq!(n, 1);
+        let after = run_store.get(&run.id).await.unwrap().unwrap();
+        assert_eq!(after.status, harness_core::RequirementRunStatus::Completed);
+    }
+
+    /// Negative case: latest run is `Failed` — that's a legitimate
+    /// terminal status with real evidence (e.g. verification really
+    /// did fail). The sweep must NOT override it, even if the
+    /// conversation's last message is an assistant.
+    #[tokio::test]
+    async fn sweep_does_not_override_failed_run() {
+        let (state, _proj, req_store, run_store, convo_store, project_id) =
+            sweep_test_state().await;
+
+        let mut req = harness_core::Requirement::new(&project_id, "really failed");
+        req.status = RequirementStatus::InProgress;
+        req_store.upsert(&req).await.unwrap();
+
+        let mut run = harness_core::RequirementRun::new(&req.id, "conv-C");
+        run.status = harness_core::RequirementRunStatus::Failed;
+        run.error = Some("verification failed".into());
+        run_store.upsert(&run).await.unwrap();
+
+        save_convo(
+            &convo_store,
+            "conv-C",
+            harness_core::Message::assistant_text("recap"),
+        )
+        .await;
+
+        let n = super::sweep_orphan_requirements_on_startup(&state).await;
+        assert_eq!(n, 0, "Failed runs are not candidates");
+        let after = run_store.get(&run.id).await.unwrap().unwrap();
+        assert_eq!(after.status, harness_core::RequirementRunStatus::Failed);
+    }
+
+    /// Negative case: the conversation's last message is from the
+    /// user (mid-turn, no assistant reply yet). We can't claim the
+    /// agent terminated cleanly — leave the row as-is.
+    #[tokio::test]
+    async fn sweep_skips_when_conversation_last_is_user_message() {
+        let (state, _proj, req_store, run_store, convo_store, project_id) =
+            sweep_test_state().await;
+
+        let mut req = harness_core::Requirement::new(&project_id, "ambiguous");
+        req.status = RequirementStatus::InProgress;
+        req_store.upsert(&req).await.unwrap();
+
+        let mut run = harness_core::RequirementRun::new(&req.id, "conv-D");
+        run.status = harness_core::RequirementRunStatus::Cancelled;
+        run_store.upsert(&run).await.unwrap();
+
+        save_convo(
+            &convo_store,
+            "conv-D",
+            harness_core::Message::user("please continue"),
+        )
+        .await;
+
+        let n = super::sweep_orphan_requirements_on_startup(&state).await;
+        assert_eq!(n, 0, "ambiguous turn must not be reconciled");
+    }
+
+    /// Negative case: requirement is already in Review (or Done /
+    /// Backlog). The sweep filters on InProgress only, so re-running
+    /// after a successful sweep must be a true no-op.
+    #[tokio::test]
+    async fn sweep_is_idempotent() {
+        let (state, _proj, req_store, run_store, convo_store, project_id) =
+            sweep_test_state().await;
+
+        let mut req = harness_core::Requirement::new(&project_id, "already reviewed");
+        req.status = RequirementStatus::Review;
+        req_store.upsert(&req).await.unwrap();
+
+        let mut run = harness_core::RequirementRun::new(&req.id, "conv-E");
+        run.status = harness_core::RequirementRunStatus::Cancelled;
+        run_store.upsert(&run).await.unwrap();
+
+        save_convo(
+            &convo_store,
+            "conv-E",
+            harness_core::Message::assistant_text("ok"),
+        )
+        .await;
+
+        let n = super::sweep_orphan_requirements_on_startup(&state).await;
+        assert_eq!(n, 0, "Review status excluded by filter");
+    }
+
+    /// Edge case: stores not configured. Should return 0 silently.
+    #[tokio::test]
+    async fn sweep_no_op_without_stores() {
+        let state = base_state();
+        let n = super::sweep_orphan_requirements_on_startup(&state).await;
+        assert_eq!(n, 0);
     }
 }

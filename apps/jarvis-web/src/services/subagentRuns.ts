@@ -43,11 +43,11 @@ export interface SubAgentRunDetail {
 
 /// `GET /v1/subagents/runs`. Returns an empty array when the
 /// registry exists but no runs have been recorded yet. Throws on
-/// 503 (registry not configured) so callers can render a "feature
-/// off" hint.
+/// 503 (registry not configured) or 404 (older server build without
+/// the route) so callers can render a "feature off" hint.
 export async function fetchSubAgentRuns(): Promise<SubAgentRun[]> {
   const res = await fetch(apiUrl("/v1/subagents/runs"));
-  if (res.status === 503) {
+  if (res.status === 404 || res.status === 503) {
     throw new Error("subagent runs registry not configured");
   }
   if (!res.ok) {

@@ -29,11 +29,6 @@ export interface AutoModeStatus {
   max_retries?: number;
   /** Wall-clock budget per agent loop pickup, in milliseconds. */
   run_timeout_ms?: number;
-  /** When `true`, the loop will pick up Approved Requirements with no assignee. */
-  allow_unassigned?: boolean;
-  /** Optional fallback assignee profile id / display name. */
-  default_assignee?: string;
-
   // ---- Live runtime state. ----
 
   /** Free permits in the concurrency semaphore right now. */

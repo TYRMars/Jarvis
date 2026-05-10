@@ -39,6 +39,9 @@ export interface LifecycleSlice {
   /// Per-conversation run state. `inFlight` remains as a
   /// compatibility mirror for the currently active conversation.
   conversationRuns: Record<string, ConversationRuntime>;
+  /// Local-only unread counters for background conversations. The
+  /// server does not persist unread state yet; a reload starts clean.
+  conversationUnread: Record<string, number>;
 
   setActiveId: (id: string | null) => void;
   setInFlight: (v: boolean) => void;
@@ -51,6 +54,8 @@ export interface LifecycleSlice {
     patch?: Partial<Omit<ConversationRuntime, "conversationId" | "status">>,
   ) => void;
   isConversationRunning: (id: string | null) => boolean;
+  markConversationUnread: (id: string) => void;
+  clearConversationUnread: (id: string) => void;
   setConvoRows: (rows: ConvoListRow[]) => void;
   setConvoListLoading: (v: boolean) => void;
   setLoadingConvoId: (id: string | null) => void;
@@ -70,6 +75,7 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
   tasks: [],
   conversationSurfaces: {},
   conversationRuns: {},
+  conversationUnread: {},
 
   setActiveId: (id) => {
     set((s) => {
@@ -164,6 +170,20 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
     if (!id) return false;
     return isRunActive(get().conversationRuns[id]?.status);
   },
+  markConversationUnread: (id) =>
+    set((s) => ({
+      conversationUnread: {
+        ...s.conversationUnread,
+        [id]: (s.conversationUnread[id] ?? 0) + 1,
+      },
+    })),
+  clearConversationUnread: (id) =>
+    set((s) => {
+      if (!(id in s.conversationUnread)) return s;
+      const next = { ...s.conversationUnread };
+      delete next[id];
+      return { conversationUnread: next };
+    }),
   setConvoRows: (rows) =>
     set((s) => {
       const activeRow = s.activeId

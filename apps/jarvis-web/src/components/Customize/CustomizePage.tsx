@@ -2,7 +2,7 @@
 // The default `/customize` surface is now the plugin marketplace;
 // `#manage` / `#manage-*` opens the installed-capabilities controls.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { McpSection } from "../Settings/sections/McpSection";
 import { SkillsSection } from "../Settings/sections/SkillsSection";
 import { PluginsSection } from "../Settings/sections/PluginsSection";
@@ -27,6 +27,7 @@ type CustomizeView = { mode: CustomizeMode; manageTab: ManageTab; marketTab: Mar
 
 const MANAGE_TABS: ManageTab[] = ["plugins", "mcp", "skills"];
 const MARKET_TABS: MarketTab[] = ["plugins", "skills", "mcp"];
+const PLUGIN_MARKET_PAGE_SIZE = 12;
 
 type CustomizeStats = Record<ManageTab, { total: number; active: number; hint: string }>;
 
@@ -285,7 +286,12 @@ function ManageView({
   onMarket: () => void;
   onInstalled: (report: PluginInstallReport) => void;
 }) {
-  const currentMeta = MANAGE_META[tab];
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    setQuery("");
+  }, [tab]);
+
   return (
     <>
       <header className="customize-topbar customize-manage-topbar">
@@ -312,21 +318,31 @@ function ManageView({
                 </button>
               ))}
             </nav>
-            <div className="customize-manage-search" aria-hidden="true">
+            <label className="customize-manage-search">
               <SearchIcon />
-              <span>{tx("customizeManageSearch", "Search installed")}</span>
-            </div>
-          </div>
-          <div className="customize-section-label">
-            {tx(`customizeNav${capitalize(tab)}`, currentMeta.label)}
-            <span>{stats[tab].hint}</span>
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={tx("customizeManageSearch", "Search installed")}
+              />
+            </label>
           </div>
           <div className="customize-content-panel">
             {tab === "plugins" ? (
-              <PluginsSection embedded showMarketplace={false} onInstalled={onInstalled} />
+              <PluginsSection
+                embedded
+                showMarketplace={false}
+                query={query}
+                onInstalled={onInstalled}
+              />
             ) : null}
-            {tab === "mcp" ? <McpSection embedded refreshToken={mcpRefreshToken} /> : null}
-            {tab === "skills" ? <SkillsSection embedded refreshToken={skillsRefreshToken} /> : null}
+            {tab === "mcp" ? (
+              <McpSection embedded refreshToken={mcpRefreshToken} query={query} />
+            ) : null}
+            {tab === "skills" ? (
+              <SkillsSection embedded refreshToken={skillsRefreshToken} query={query} />
+            ) : null}
           </div>
         </div>
       </section>
@@ -342,6 +358,7 @@ type PluginMarketState =
 function PluginMarketHome({ onInstalled }: { onInstalled: () => void }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState<PluginMarketState>({ kind: "loading" });
+  const [visibleCount, setVisibleCount] = useState(PLUGIN_MARKET_PAGE_SIZE);
   const [installing, setInstalling] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -378,6 +395,18 @@ function PluginMarketHome({ onInstalled }: { onInstalled: () => void }) {
       return haystack.includes(q);
     });
   }, [query, state]);
+
+  useEffect(() => {
+    setVisibleCount(PLUGIN_MARKET_PAGE_SIZE);
+  }, [query]);
+
+  const visibleEntries = filtered.slice(0, visibleCount);
+  const hasMore = filtered.length > visibleCount;
+  const loadMore = () => {
+    if (!hasMore) return;
+    setVisibleCount((count) => Math.min(count + PLUGIN_MARKET_PAGE_SIZE, filtered.length));
+  };
+  const loadMoreRef = useAutoLoadMore(hasMore, loadMore);
 
   const install = async (entry: MarketplaceEntry) => {
     setInstalling(entry.value);
@@ -426,7 +455,7 @@ function PluginMarketHome({ onInstalled }: { onInstalled: () => void }) {
       ) : null}
       {state.kind === "ready" ? (
         <ul className="customize-plugin-market-grid">
-          {filtered.map((entry) => {
+          {visibleEntries.map((entry) => {
             const installed = state.installed.has(entry.value);
             return (
               <li key={entry.value} className="customize-plugin-market-item">
@@ -449,8 +478,57 @@ function PluginMarketHome({ onInstalled }: { onInstalled: () => void }) {
           })}
         </ul>
       ) : null}
+      <CustomizeLoadMore
+        refEl={loadMoreRef}
+        hasMore={state.kind === "ready" && hasMore}
+        onLoadMore={loadMore}
+      />
       {message && <div className="settings-form-success">{message}</div>}
       {error && <div className="settings-form-error">{error}</div>}
+    </div>
+  );
+}
+
+function useAutoLoadMore(enabled: boolean, onLoadMore: () => void) {
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const onLoadMoreRef = useRef(onLoadMore);
+
+  useEffect(() => {
+    onLoadMoreRef.current = onLoadMore;
+  }, [onLoadMore]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (typeof IntersectionObserver === "undefined") return;
+    const node = sentinelRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        onLoadMoreRef.current();
+      }
+    }, { rootMargin: "240px 0px" });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [enabled]);
+
+  return sentinelRef;
+}
+
+function CustomizeLoadMore({
+  refEl,
+  hasMore,
+  onLoadMore,
+}: {
+  refEl: RefObject<HTMLDivElement | null>;
+  hasMore: boolean;
+  onLoadMore: () => void;
+}) {
+  if (!hasMore) return null;
+  return (
+    <div ref={refEl} className="market-load-more">
+      <button type="button" className="settings-btn" onClick={onLoadMore}>
+        {tx("marketLoadMore", "Load more")}
+      </button>
     </div>
   );
 }

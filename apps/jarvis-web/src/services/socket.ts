@@ -113,6 +113,11 @@ export function connect(): void {
     // Re-apply the user's routing first (server starts on its own
     // default after reconnect — same as initial open).
     applyRouting({ reconnectOnDefault: false });
+    const skillsToRestore = appStore.getState().activeSkills;
+    if (skillsToRestore.length > 0) {
+      appStore.getState().setActiveSkills?.([]);
+      reapplyActiveSkills(skillsToRestore);
+    }
 
     // If we had an active conversation when the socket dropped,
     // ask the server to resume it so subsequent user turns land
@@ -197,6 +202,13 @@ export function sendFrame(obj: unknown): boolean {
   }
   socket.send(JSON.stringify(obj));
   return true;
+}
+
+function reapplyActiveSkills(names: string[]): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  for (const name of names) {
+    socket.send(JSON.stringify({ type: "activate_skill", name }));
+  }
 }
 
 /// Returns true when a user-initiated frame can ride the live socket
