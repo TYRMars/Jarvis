@@ -56,13 +56,21 @@ member crates always reference deps as `foo.workspace = true`. New crates go und
 ## Commands
 
 ```bash
-cargo check --workspace
-cargo clippy --workspace --all-targets -- -D warnings   # CI gate
-cargo test --workspace
-cargo test -p harness-core message::                    # filter by path
-cargo run -p jarvis                                     # needs OPENAI_API_KEY
+cargo check --workspace --exclude jarvis-desktop
+cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings   # CI gate
+cargo test --workspace --exclude jarvis-desktop
+cargo test -p harness-core message::                                             # filter by path
+cargo run -p jarvis                                                              # needs OPENAI_API_KEY
 cargo build --release -p jarvis
 ```
+
+`--exclude jarvis-desktop` matches Linux CI: the Tauri crate needs
+WebKitGTK + GObject system libs (`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`,
+`librsvg2-dev`) that aren't installed on a stock dev box. Drop the flag
+once you've installed the GTK toolchain locally, or use the `Makefile`
+targets (`make check` / `make lint` / `make test`) which apply the
+exclusion automatically — override with `WORKSPACE_EXCLUDE=` on a fully
+provisioned machine.
 
 Env vars consumed by the `jarvis` binary:
 `JARVIS_PROVIDER` (`openai` (default), `openai-responses`, `anthropic`, `google`, `codex`, `kimi`, or `ollama`),
@@ -978,8 +986,9 @@ are usually marketing / human-PR docs, not agent guidance.
   `anyhow` freely.
 - **Errors:** library code uses `thiserror`-derived `Error` in `harness-core`; provider
   errors get wrapped in `Error::Provider(String)` rather than leaking `reqwest::Error`.
-- **Clippy is the gate.** `cargo clippy --workspace --all-targets -- -D warnings` must
-  pass; the existing code is clean against it.
+- **Clippy is the gate.** `cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings`
+  must pass; the existing code is clean against it. CI runs the same command
+  (see `.github/workflows/rust.yml`); `make lint` wraps it.
 - **Streaming lives on its own method.** `LlmProvider::complete_stream` is a
   parallel entry point to `complete`; don't retrofit `complete`'s return type.
   New providers can skip it — the default impl returns a stream that calls

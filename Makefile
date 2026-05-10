@@ -23,6 +23,15 @@ IMAGE         ?= jarvis:local
 WEB_DIR       := apps/jarvis-web
 WEB_DIST      := $(WEB_DIR)/dist
 
+# `jarvis-desktop` is a Tauri shell that requires WebKitGTK + GObject system
+# libs on Linux (libgtk-3-dev, libwebkit2gtk-4.1-dev, librsvg2-dev, ...).
+# Linux CI excludes it (see .github/workflows/rust.yml) so the default
+# workspace targets stay buildable on a stock Ubuntu box without the GTK
+# toolchain. Mirror the exclusion here so `make check` matches CI.
+# Override `WORKSPACE_EXCLUDE=` (empty) on a machine with the GTK deps
+# installed to lint / test the desktop crate too.
+WORKSPACE_EXCLUDE ?= --exclude jarvis-desktop
+
 # ---------------------------------------------------------------------------
 # Help
 # ---------------------------------------------------------------------------
@@ -66,11 +75,11 @@ fmt: ## Format Rust code (rustfmt)
 
 .PHONY: lint
 lint: ## Clippy with -D warnings (CI gate)
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(CARGO) clippy --workspace --all-targets $(WORKSPACE_EXCLUDE) -- -D warnings
 
 .PHONY: test
 test: ## Run the workspace test suite
-	$(CARGO) test --workspace
+	$(CARGO) test --workspace $(WORKSPACE_EXCLUDE)
 
 .PHONY: check
 check: lint test ## Run clippy + tests, what CI runs
