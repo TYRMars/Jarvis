@@ -17,10 +17,9 @@ use std::sync::{mpsc, Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use harness_core::{
-    AgentConfig, AlwaysApprove, AlwaysDeny, Approver, EvalStore, LlmProvider, Memory,
-    ObservabilityStore, RequirementRunStore, ToolRegistry,
-};
+use harness_core::{AgentConfig, AlwaysApprove, AlwaysDeny, Approver, LlmProvider, Memory, ToolRegistry};
+use harness_observability::{EvalStore, ObservabilityStore};
+use harness_project::{RequirementRunStore};
 use harness_llm::{
     canonical_kind, AnthropicConfig, AnthropicProvider, CapabilityValidatingProvider, CodexAuth,
     FallbackEntry, FallbackProvider,
@@ -92,6 +91,7 @@ pub async fn run(
         comment_store,
         label_store,
         channel_instance_store,
+        channel_binding_store,
     ) = match persistence_url.as_deref() {
         Some(url) => {
             let bundle = harness_store::connect_all(url)
@@ -99,7 +99,7 @@ pub async fn run(
                 .with_context(|| format!("opening persistence url `{url}`"))?;
             info!(
                 url = %url,
-                "conversation + project + todo + requirement + run + activity + agent_profile + doc + comment + label + channel-instance store connected"
+                "conversation + project + todo + requirement + run + activity + agent_profile + doc + comment + label + channel-instance + channel-binding store connected"
             );
             (
                 Some(bundle.conversations),
@@ -113,14 +113,15 @@ pub async fn run(
                 Some(bundle.comments),
                 Some(bundle.labels),
                 Some(bundle.channel_instances),
+                Some(bundle.channel_bindings),
             )
         }
         None => {
             info!(
                 "no persistence URL resolved (HOME unset?); running in-memory \
-                 (conversations / TODOs / requirements / runs / activities / profiles / docs / comments / labels / channels will not survive restart)"
+                 (conversations / TODOs / requirements / runs / activities / profiles / docs / comments / labels / channels / bindings will not survive restart)"
             );
-            (None, None, None, None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None, None, None, None)
         }
     };
 
@@ -200,6 +201,24 @@ pub async fn run(
     // tools the model actually got.
     if project_store.is_some() && requirement_store.is_some() {
         info!("project + requirement stores both active (roadmap.import tool registered)");
+    }
+    // `channel.send` tool — share the same adapter registry the
+    // `/v1/channels*` REST endpoints will use later (built once,
+    // injected into AppState below). The tool needs `(store ×
+    // registry)`; without a channel-instance store there's nothing
+    // to dispatch to, so the tool stays unregistered in that case.
+    let channel_adapter_registry = std::sync::Arc::new(
+        harness_server::ChannelAdapterRegistry::with_defaults(),
+    );
+    if let Some(store) = channel_instance_store.clone() {
+        bcfg.channel_dispatcher = Some(std::sync::Arc::new(
+            harness_server::ChannelDispatcherImpl {
+                store,
+                registry: std::sync::Arc::clone(&channel_adapter_registry),
+            },
+        )
+            as std::sync::Arc<dyn harness_channel::ChannelDispatcher>);
+        info!("channel-instance store active (channel.send tool registered)");
     }
 
     register_builtins(&mut tools, bcfg);
@@ -671,6 +690,14 @@ pub async fn run(
     if let Some(cis) = channel_instance_store {
         state = state.with_channel_instance_store(cis);
     }
+    if let Some(cbs) = channel_binding_store {
+        state = state.with_channel_binding_store(cbs);
+    }
+    // Share the same adapter registry the `channel.send` tool uses,
+    // so any future runtime adapter registration (tests, custom
+    // binaries) stays consistent across the REST surface and the
+    // agent tool.
+    state = state.with_channel_adapters(channel_adapter_registry);
     if let Some(os) = observability_store {
         state = state.with_observability_store(os);
     }
@@ -1831,7 +1858,7 @@ fn dirs_user_config() -> Result<PathBuf> {
 /// `XDG_DATA_HOME` first so XDG-compliant setups land in the right
 /// place. Returns an error if no home directory can be resolved
 /// (rare — tests, locked-down containers).
-fn dirs_user_data() -> Result<PathBuf> {
+pub(crate) fn dirs_user_data() -> Result<PathBuf> {
     if let Some(custom) = std::env::var_os("XDG_DATA_HOME") {
         return Ok(PathBuf::from(custom).join("jarvis"));
     }
@@ -1846,7 +1873,7 @@ fn dirs_user_data() -> Result<PathBuf> {
 /// `[persistence].url` is set. Returns `json:///<data-dir>/conversations`
 /// — `harness-store` creates the directory on first write. `None`
 /// only when [`dirs_user_data`] can't resolve a home dir.
-fn default_json_persistence_url() -> Option<String> {
+pub(crate) fn default_json_persistence_url() -> Option<String> {
     let dir = dirs_user_data().ok()?.join("conversations");
     // Three slashes makes it a proper file URI (`json:///abs/path`).
     Some(format!("json://{}", dir.display()))

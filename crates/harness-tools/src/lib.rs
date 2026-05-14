@@ -11,6 +11,7 @@
 //! `http.fetch`, `time.now`, `echo`, `ask.text`) are always on.
 
 pub mod ask;
+pub mod channel;
 pub mod checks;
 pub mod claude_code;
 pub mod codex;
@@ -68,9 +69,9 @@ pub use todo::{TodoAddTool, TodoDeleteTool, TodoListTool, TodoUpdateTool};
 pub use triage_scan::TriageScanTool;
 pub use workspace::WorkspaceContextTool;
 
-use harness_core::{
-    ActivityStore, DocStore, ProjectStore, RequirementStore, TodoStore, ToolRegistry,
-};
+use harness_channel::ChannelDispatcher;
+use harness_core::{TodoStore, ToolRegistry};
+use harness_project::{ActivityStore, DocStore, ProjectStore, RequirementStore};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -132,21 +133,21 @@ pub struct BuiltinsConfig {
     /// in-memory storage would defeat the persistence promise, so
     /// the model simply can't see them.
     pub todo_store: Option<Arc<dyn TodoStore>>,
-    /// Backing store for [`Project`](harness_core::Project) CRUD.
+    /// Backing store for [`Project`](harness_project::Project) CRUD.
     /// When `Some(_)`, the seven `project.*` tools are registered.
     /// When `None` (default), the tools are skipped (same opt-in
     /// pattern as `todo_store`). Write operations (`create`,
     /// `update`, `archive`, `restore`, `delete`) are
     /// approval-gated.
     pub project_store: Option<Arc<dyn ProjectStore>>,
-    /// Backing store for [`DocProject`](harness_core::DocProject) +
-    /// [`DocDraft`](harness_core::DocDraft) CRUD. When `Some(_)`,
+    /// Backing store for [`DocProject`](harness_project::DocProject) +
+    /// [`DocDraft`](harness_project::DocDraft) CRUD. When `Some(_)`,
     /// the `doc.*` / `doc.draft.*` tools are registered. When
     /// `None` (default), they're skipped. Write operations
     /// (`create`, `update`, `delete`, `draft.save`) are
     /// approval-gated.
     pub doc_store: Option<Arc<dyn DocStore>>,
-    /// Backing store for [`Requirement`](harness_core::Requirement)
+    /// Backing store for [`Requirement`](harness_project::Requirement)
     /// kanban rows. Paired with [`Self::activity_store`] — both
     /// must be `Some(_)` for the four `requirement.*` tools to
     /// register. A half-enabled set (mutations land but the audit
@@ -155,10 +156,18 @@ pub struct BuiltinsConfig {
     /// (`start`, `block`, `complete`) are approval-gated.
     pub requirement_store: Option<Arc<dyn RequirementStore>>,
     /// Backing store for per-requirement
-    /// [`Activity`](harness_core::Activity) audit rows. Required
+    /// [`Activity`](harness_project::Activity) audit rows. Required
     /// alongside [`Self::requirement_store`] for the
     /// `requirement.*` tools — see that field's doc for rationale.
     pub activity_store: Option<Arc<dyn ActivityStore>>,
+    /// Channel dispatcher for the `channel.send` tool. When
+    /// `Some(_)`, the tool is registered and the agent can push
+    /// messages out to user-configured WeCom / future Feishu /
+    /// DingTalk / WeChat MP channels via Settings → Channels rows.
+    /// `None` (default) means the tool isn't registered — same
+    /// opt-in pattern as `todo_store` / `project_store`.
+    /// Approval-gated.
+    pub channel_dispatcher: Option<Arc<dyn ChannelDispatcher>>,
     /// Whether to register `codex.run`. Defaults to `false` — spawning
     /// the Codex CLI as a sub-agent is a powerful primitive that
     /// touches the host filesystem under Codex's own sandbox; opt in
@@ -190,6 +199,7 @@ impl Default for BuiltinsConfig {
             doc_store: None,
             requirement_store: None,
             activity_store: None,
+            channel_dispatcher: None,
             enable_codex_run: false,
             enable_claude_code_run: false,
         }
@@ -255,6 +265,9 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     }
     if cfg.enable_claude_code_run {
         registry.register(ClaudeCodeRunTool::new(root.clone()));
+    }
+    if let Some(dispatcher) = cfg.channel_dispatcher {
+        registry.register(crate::channel::ChannelSendTool::new(dispatcher));
     }
     if let Some(store) = cfg.todo_store {
         registry.register(TodoListTool::new(store.clone(), root.clone()));

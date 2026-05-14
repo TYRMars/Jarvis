@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::state::AppState;
+use crate::state_layers::WorkspaceLayer;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -34,8 +35,8 @@ pub fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_store(state: &AppState) -> Result<Arc<WorkspaceStore>, Response> {
-    state.workspaces.clone().ok_or_else(|| {
+fn require_store(ws: &WorkspaceLayer) -> Result<Arc<WorkspaceStore>, Response> {
+    ws.registry.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "workspaces registry not configured" })),
@@ -44,8 +45,8 @@ fn require_store(state: &AppState) -> Result<Arc<WorkspaceStore>, Response> {
     })
 }
 
-async fn list(State(state): State<AppState>) -> Response {
-    let store = match require_store(&state) {
+async fn list(State(ws): State<WorkspaceLayer>) -> Response {
+    let store = match require_store(&ws) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -61,8 +62,8 @@ struct TouchBody {
     path: String,
 }
 
-async fn touch(State(state): State<AppState>, Json(body): Json<TouchBody>) -> Response {
-    let store = match require_store(&state) {
+async fn touch(State(ws): State<WorkspaceLayer>, Json(body): Json<TouchBody>) -> Response {
+    let store = match require_store(&ws) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -85,8 +86,8 @@ struct ForgetQuery {
     path: String,
 }
 
-async fn forget(State(state): State<AppState>, Query(q): Query<ForgetQuery>) -> Response {
-    let store = match require_store(&state) {
+async fn forget(State(ws): State<WorkspaceLayer>, Query(q): Query<ForgetQuery>) -> Response {
+    let store = match require_store(&ws) {
         Ok(s) => s,
         Err(r) => return r,
     };

@@ -1,7 +1,7 @@
 //! Persistent Doc CRUD — `doc.{list,get,create,update,delete}` and
 //! `doc.draft.{get,save}` tools.
 //!
-//! Surfaces the [`harness_core::DocStore`] API to the LLM. Mirrors the
+//! Surfaces the [`harness_project::DocStore`] API to the LLM. Mirrors the
 //! REST endpoints in `harness-server::docs_routes` but with typed
 //! schemas and per-call workspace resolution. Drafts are append-only
 //! by design — `doc.draft.save` always inserts a new revision; the UI
@@ -21,10 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_core::{
-    active_workspace_or, canonicalize_workspace, BoxError, DocDraft, DocKind, DocProject, DocStore,
-    Tool, ToolCategory,
-};
+use harness_core::{active_workspace_or, canonicalize_workspace, BoxError, Tool, ToolCategory};
+use harness_project::{DocDraft, DocKind, DocProject, DocStore};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -1002,7 +1000,7 @@ impl Tool for DocDraftSaveTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::DocEvent;
+    use harness_project::DocEvent;
     use std::collections::HashMap;
     use tokio::sync::{broadcast, RwLock};
 

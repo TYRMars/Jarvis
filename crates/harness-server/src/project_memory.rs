@@ -10,10 +10,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use harness_core::{
-    BoxError, Project, ProjectStore, Requirement, RequirementStatus, RequirementStore,
-    RequirementTodo,
-};
+use harness_core::{BoxError};
+use harness_project::{Project, ProjectStore, Requirement, RequirementStatus, RequirementStore, RequirementTodo};
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
@@ -573,7 +571,7 @@ fn status_label(project: &Project, status: RequirementStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::Requirement;
+    use harness_project::Requirement;
 
     #[test]
     fn date_scanner_only_keeps_valid_iso_dates() {

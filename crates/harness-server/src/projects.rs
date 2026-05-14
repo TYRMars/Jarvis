@@ -1,4 +1,4 @@
-//! REST routes for [`Project`](harness_core::Project) CRUD.
+//! REST routes for [`Project`](harness_project::Project) CRUD.
 //!
 //! Mounted only when `AppState` carries a `ProjectStore`; otherwise
 //! every endpoint here returns `503 Service Unavailable` so callers
@@ -24,11 +24,8 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use harness_core::{
-    derive_slug, validate_column_id, validate_slug, ConversationStore, KanbanColumn, Project,
-    ProjectAutomation, ProjectMemory, ProjectMemoryKind, ProjectMemoryStore, ProjectStore,
-    ProjectWorkspace,
-};
+use harness_core::{ConversationStore};
+use harness_project::{derive_slug, validate_column_id, validate_slug, KanbanColumn, Project, ProjectAutomation, ProjectMemory, ProjectMemoryKind, ProjectMemoryStore, ProjectStore, ProjectWorkspace};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -134,7 +131,7 @@ fn require_memory_config(
 #[allow(clippy::result_large_err)]
 fn require_requirement_store(
     state: &AppState,
-) -> Result<Arc<dyn harness_core::RequirementStore>, Response> {
+) -> Result<Arc<dyn harness_project::RequirementStore>, Response> {
     state.requirements.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -147,7 +144,7 @@ fn require_requirement_store(
 #[allow(clippy::result_large_err)]
 fn require_run_store(
     state: &AppState,
-) -> Result<Arc<dyn harness_core::RequirementRunStore>, Response> {
+) -> Result<Arc<dyn harness_project::RequirementRunStore>, Response> {
     state.requirement_runs.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -725,7 +722,7 @@ async fn delete_memory_file(
 }
 
 /// `GET /v1/projects/:id_or_slug/memories` — list the project's
-/// captured / curated [`harness_core::ProjectMemory`] rows
+/// captured / curated [`harness_project::ProjectMemory`] rows
 /// (newest-first by `updated_at`). Returns 503 when no memory store
 /// is configured.
 async fn list_memories(State(state): State<AppState>, Path(id_or_slug): Path<String>) -> Response {

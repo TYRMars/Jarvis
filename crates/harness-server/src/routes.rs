@@ -4,29 +4,25 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
+    Router,
     extract::{
-        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         Path, Query, State,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse, Json, Response,
+        sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
-    Router,
 };
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
-use harness_core::{
-    canonicalize_workspace, ActivityEvent, AgentEvent, AgentProfileEvent, ApprovalDecision,
-    Approver, ChannelApprover, CommentEvent, Conversation, ConversationMetadata, ConversationStore,
-    DocEvent, HitlResponse, HitlStatus, LabelEvent, Message, ObservabilityStore, ObservedOutcome,
-    ObservedRun, ObservedRunKind, PendingHitl, RequirementEvent, RequirementRunEvent, RunOutcome,
-    SubAgentEvent, TodoEvent,
-};
+use harness_core::{AgentEvent, AgentProfileEvent, ApprovalDecision, Approver, ChannelApprover, Conversation, ConversationMetadata, ConversationStore, HitlResponse, HitlStatus, Message, PendingHitl, RunOutcome, SubAgentEvent, TodoEvent, canonicalize_workspace};
+use harness_observability::{ObservabilityStore, ObservedOutcome, ObservedRun, ObservedRunKind};
+use harness_project::{ActivityEvent, CommentEvent, DocEvent, LabelEvent, RequirementEvent, RequirementRunEvent};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info, warn};
 
@@ -90,6 +86,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::diagnostics_routes::router())
         .merge(crate::auto_mode_routes::router())
         .merge(crate::channels_routes::router())
+        .merge(crate::channels_inbound_routes::router())
+        .merge(crate::channels_oauth_routes::router())
         .merge(crate::comments_routes::router())
         .merge(crate::labels_routes::router())
         .merge(crate::docs_routes::router())
@@ -125,7 +123,7 @@ async fn loopback_cors(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use axum::http::{header, HeaderValue, Method, StatusCode};
+    use axum::http::{HeaderValue, Method, StatusCode, header};
 
     let origin = req
         .headers()
@@ -1543,6 +1541,28 @@ fn route_error(e: crate::provider_registry::RouteError) -> Response {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WsClientMessage {
+    /// Atomic persisted-session turn start. This folds the old
+    /// `new/resume` + `user` handshake into one frame so the server
+    /// either prepares the requested persisted conversation and starts
+    /// the user turn, or rejects the whole request before any model
+    /// call can run against the wrong in-memory session.
+    StartTurn {
+        mode: StartTurnMode,
+        id: String,
+        content: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        provider: Option<String>,
+        #[serde(default)]
+        soul_prompt: Option<String>,
+        #[serde(default)]
+        project_id: Option<String>,
+        #[serde(default)]
+        workspace_path: Option<String>,
+        #[serde(default)]
+        active_skills: Option<Vec<String>>,
+    },
     /// Append a user turn and run the agent loop to completion, streaming
     /// events back. In persisted mode (after `resume` or `new`) the
     /// conversation is auto-saved when the agent finishes.
@@ -1679,11 +1699,19 @@ enum WsClientMessage {
     SetWorkspace { path: Option<String> },
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StartTurnMode {
+    New,
+    Resume,
+}
+
 /// Static label for a `WsClientMessage` variant — used by the
 /// per-frame `info!` log so we can replay ordering without dumping
 /// payloads (which can be huge).
 fn client_msg_kind(msg: &WsClientMessage) -> &'static str {
     match msg {
+        WsClientMessage::StartTurn { .. } => "start_turn",
         WsClientMessage::User { .. } => "user",
         WsClientMessage::Reset => "reset",
         WsClientMessage::Resume { .. } => "resume",
@@ -1898,8 +1926,7 @@ fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
                 // RequirementRun can't survive a tab close / network
                 // drop / page reload mid-turn.
                 if let Some(conv_id) = persisted_id.as_deref() {
-                    let succeeded =
-                        !matches!(final_outcome, ObservedOutcome::Error);
+                    let succeeded = !matches!(final_outcome, ObservedOutcome::Error);
                     crate::requirements_routes::reconcile_runs_for_conversation(
                         &state,
                         conv_id,
@@ -1930,6 +1957,198 @@ fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
         }
         .instrument(turn_span),
     )
+}
+
+async fn resolve_requested_workspace(
+    raw: Option<&str>,
+) -> std::result::Result<Option<(std::path::PathBuf, String, Value)>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    match std::fs::canonicalize(raw) {
+        Ok(p) if p.is_dir() => {
+            let path = p.display().to_string();
+            let snapshot = workspace_snapshot(&p).await;
+            Ok(Some((p, path, snapshot)))
+        }
+        Ok(p) => Err(format!("workspace `{}` is not a directory", p.display())),
+        Err(e) => Err(format!("workspace `{raw}` is not reachable: {e}")),
+    }
+}
+
+fn validate_active_skills(
+    catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
+    requested: &[String],
+) -> std::result::Result<Vec<String>, String> {
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(cat) = catalog else {
+        return Err("skill catalogue not configured".to_string());
+    };
+    let guard = cat
+        .read()
+        .map_err(|_| "skill catalogue lock poisoned".to_string())?;
+    let mut out = Vec::with_capacity(requested.len());
+    for name in requested {
+        if guard.get(name).is_none() {
+            return Err(format!("no such skill `{name}`"));
+        }
+        if !out.iter().any(|n| n == name) {
+            out.push(name.clone());
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn begin_user_turn(
+    content: String,
+    model: Option<String>,
+    provider: Option<String>,
+    soul_prompt: Option<String>,
+    ws_tx: &mut SplitSink<WebSocket, WsMessage>,
+    state: &AppState,
+    socket_approver: &Arc<dyn Approver>,
+    mode_handle: &Arc<tokio::sync::RwLock<harness_core::PermissionMode>>,
+    conv: &mut Conversation,
+    persisted_id: &mut Option<String>,
+    persisted_project_id: &mut Option<String>,
+    last_injection: &mut Option<TurnInjection>,
+    event_rx: &mut Option<mpsc::Receiver<AgentEvent>>,
+    current_task: &mut Option<tokio::task::JoinHandle<()>>,
+    sticky_provider: &mut Option<String>,
+    sticky_model: &mut Option<String>,
+    active_skills: &[String],
+    socket_workspace: &Option<std::path::PathBuf>,
+    hitl_tx: &mpsc::Sender<PendingHitl>,
+) -> bool {
+    if event_rx.is_some() {
+        send_error(ws_tx, "turn already in progress").await;
+        return true;
+    }
+    if persisted_id
+        .as_deref()
+        .is_some_and(|id| state.chat_runs.is_active(id))
+    {
+        send_error(ws_tx, "turn already in progress").await;
+        return true;
+    }
+
+    let content = expand_goal_command(&content).unwrap_or(content);
+    let provider_pick = provider.as_deref().or(sticky_provider.as_deref());
+    let model_pick = model.as_deref().or(sticky_model.as_deref());
+    let approver = socket_approver.clone();
+    let hitl = hitl_tx.clone();
+    let active_mode = *mode_handle.read().await;
+    let skills_catalog = state.skills.as_ref().cloned();
+    let skills_snapshot = merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
+    let workspace_for_turn = socket_workspace.clone();
+    let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
+        cfg.approver = Some(approver);
+        cfg.hitl_tx = Some(hitl);
+        if matches!(active_mode, harness_core::PermissionMode::Plan) {
+            cfg.tool_filter = Some(plan_mode_tool_filter());
+        }
+        if let Some(prompt) = compose_with_skills(
+            cfg.system_prompt.as_deref(),
+            skills_catalog.as_ref(),
+            &skills_snapshot,
+        ) {
+            cfg.system_prompt = Some(prompt);
+        }
+        if workspace_for_turn.is_some() {
+            cfg.session_workspace = workspace_for_turn;
+        }
+    }) {
+        Ok(a) => a,
+        Err(e) => {
+            send_error(ws_tx, &e.to_string()).await;
+            return true;
+        }
+    };
+    let record_provider = provider_pick.map(str::to_string);
+    let record_model = model_pick.map(str::to_string);
+    if provider.is_some() {
+        *sticky_provider = provider;
+    }
+    if model.is_some() {
+        *sticky_model = model;
+    }
+
+    conv.push(Message::user(content));
+    let (soul_conv, soul_injected_at) = inject_soul_prompt(conv.clone(), soul_prompt.as_deref());
+    let prepared = match materialise(
+        state.projects.as_ref(),
+        state.project_memory.as_ref(),
+        soul_conv,
+        persisted_project_id.as_deref(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            send_error(ws_tx, &format!("project binder: {e}")).await;
+            conv.messages.pop();
+            return true;
+        }
+    };
+    let workspace_key = active_workspace_key(state, socket_workspace.as_deref());
+    let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
+        state.todos.as_ref(),
+        prepared.conversation.clone(),
+        workspace_key.as_deref(),
+        state.todos_in_prompt,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            send_error(ws_tx, &format!("todo binder: {e}")).await;
+            conv.messages.pop();
+            return true;
+        }
+    };
+    let injection = TurnInjection {
+        project: prepared,
+        todos: todos_prepared,
+        soul_injected_at,
+    };
+    *last_injection = Some(injection.clone());
+    let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
+    *event_rx = Some(new_rx);
+    if let Some(id) = persisted_id.as_deref() {
+        if !state.chat_runs.try_start(id) {
+            *event_rx = None;
+            *last_injection = None;
+            conv.messages.pop();
+            send_error(ws_tx, "turn already in progress").await;
+            return true;
+        }
+    }
+    let handle = spawn_detached_turn(DetachedTurn {
+        agent,
+        conversation: snapshot,
+        event_tx,
+        chat_runs: state.chat_runs.clone(),
+        subagent_runs: state.subagent_runs.clone(),
+        observability: state.observability.clone(),
+        run_id: Uuid::new_v4().to_string(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        started: Instant::now(),
+        provider: record_provider,
+        model: record_model,
+        persisted_id: persisted_id.clone(),
+        persisted_project_id: persisted_project_id.clone(),
+        store: state.store.clone(),
+        injection: Some(injection),
+        state: state.clone(),
+    });
+    state
+        .chat_runs
+        .attach_abort_handle(persisted_id.as_deref(), handle.abort_handle());
+    *current_task = Some(handle);
+    true
 }
 
 async fn chat_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
@@ -2676,146 +2895,280 @@ async fn handle_client_frame(
                 warn!(%request_id, "hitl_response frame for unknown id (already resolved or stale)");
             }
         }
+        WsClientMessage::StartTurn {
+            mode,
+            id,
+            content,
+            model,
+            provider,
+            soul_prompt,
+            project_id,
+            workspace_path,
+            active_skills: requested_skills,
+        } => {
+            if event_rx.is_some() {
+                send_error(ws_tx, "turn already in progress").await;
+                return true;
+            }
+            if state.chat_runs.is_active(&id) {
+                send_error(ws_tx, "turn already in progress").await;
+                return true;
+            }
+            if let Some(requested) = requested_skills.as_ref() {
+                match validate_active_skills(state.skills.as_ref(), requested) {
+                    Ok(validated) => *active_skills = validated,
+                    Err(e) => {
+                        send_error(ws_tx, &e).await;
+                        return true;
+                    }
+                }
+            }
+            let provider_pick = provider.as_deref().or(sticky_provider.as_deref());
+            let model_pick = model.as_deref().or(sticky_model.as_deref());
+            if let Err(e) = state.providers.pick(provider_pick, model_pick) {
+                send_error(ws_tx, &e.to_string()).await;
+                return true;
+            }
+
+            match mode {
+                StartTurnMode::New => {
+                    if is_internal_id(&id) {
+                        send_error(
+                            ws_tx,
+                            "ids starting with `__` are reserved for internal use",
+                        )
+                        .await;
+                        return true;
+                    }
+                    let Some(store) = state.store.as_ref() else {
+                        send_error(ws_tx, "persistence not configured").await;
+                        return true;
+                    };
+                    let resolved_project_id: Option<String> = match project_id.as_ref() {
+                        None => None,
+                        Some(needle) => {
+                            let Some(ps) = state.projects.as_ref() else {
+                                send_error(
+                                    ws_tx,
+                                    "project store not configured; cannot bind to a project",
+                                )
+                                .await;
+                                return true;
+                            };
+                            match lookup_project(ps.as_ref(), needle).await {
+                                Ok(Some(p)) if !p.archived => Some(p.id),
+                                Ok(Some(_)) => {
+                                    send_error(ws_tx, &format!("project `{needle}` is archived"))
+                                        .await;
+                                    return true;
+                                }
+                                Ok(None) => {
+                                    send_error(ws_tx, &format!("project `{needle}` not found"))
+                                        .await;
+                                    return true;
+                                }
+                                Err(e) => {
+                                    send_error(ws_tx, &format!("project lookup failed: {e}")).await;
+                                    return true;
+                                }
+                            }
+                        }
+                    };
+                    let workspace_binding =
+                        match resolve_requested_workspace(workspace_path.as_deref()).await {
+                            Ok(binding) => binding,
+                            Err(e) => {
+                                send_error(ws_tx, &e).await;
+                                return true;
+                            }
+                        };
+
+                    *conv = Conversation::new();
+                    let metadata = ConversationMetadata {
+                        project_id: resolved_project_id.clone(),
+                        ..Default::default()
+                    };
+                    if let Err(e) = store.save_envelope(&id, conv, &metadata).await {
+                        error!(error = %e, %id, "ws start_turn save_envelope failed");
+                        send_error(ws_tx, &format!("create failed: {e}")).await;
+                        return true;
+                    }
+                    *persisted_id = Some(id.clone());
+                    *persisted_project_id = resolved_project_id.clone();
+
+                    let (bound_workspace, bound_workspace_info) =
+                        if let Some((path, path_str, snapshot)) = workspace_binding {
+                            *socket_workspace = Some(path);
+                            if let Some(ws) = state.workspaces.as_ref() {
+                                let _ = ws.touch(&path_str);
+                                ws.bind(&id, &path_str);
+                            }
+                            (Some(path_str), Some(snapshot))
+                        } else {
+                            *socket_workspace = None;
+                            (None, None)
+                        };
+
+                    let _ = ws_tx
+                        .send(WsMessage::Text(
+                            json!({
+                                "type": "started",
+                                "id": id,
+                                "project_id": resolved_project_id,
+                                "workspace_path": bound_workspace,
+                                "workspace": bound_workspace_info,
+                            })
+                            .to_string(),
+                        ))
+                        .await;
+                }
+                StartTurnMode::Resume => {
+                    if is_internal_id(&id) {
+                        send_error(ws_tx, &format!("conversation `{id}` not found")).await;
+                        return true;
+                    }
+                    let Some(store) = state.store.as_ref() else {
+                        send_error(ws_tx, "persistence not configured").await;
+                        return true;
+                    };
+                    match store.load_envelope(&id).await {
+                        Ok(Some((mut loaded, meta))) => {
+                            let count = loaded.messages.len();
+                            let bound_project = meta.project_id.clone();
+                            loaded.last_response_id = None;
+                            loaded.last_response_chain_origin = None;
+                            *conv = loaded;
+                            *persisted_id = Some(id.clone());
+                            *persisted_project_id = bound_project.clone();
+
+                            let stored_workspace =
+                                state.workspaces.as_ref().and_then(|s| s.lookup(&id));
+                            let mut resumed_workspace: Option<String> = None;
+                            if let Some(path_str) = stored_workspace.as_deref() {
+                                match std::fs::canonicalize(path_str) {
+                                    Ok(p) if p.is_dir() => {
+                                        *socket_workspace = Some(p.clone());
+                                        resumed_workspace = Some(p.display().to_string());
+                                        let workspace_info = workspace_snapshot(&p).await;
+                                        let _ = ws_tx
+                                            .send(WsMessage::Text(
+                                                json!({
+                                                    "type": "workspace_changed",
+                                                    "path": p.display().to_string(),
+                                                    "workspace": workspace_info,
+                                                })
+                                                .to_string(),
+                                            ))
+                                            .await;
+                                    }
+                                    _ => {
+                                        warn!(
+                                            convo = %id,
+                                            path = %path_str,
+                                            "bound workspace no longer exists; clearing pin",
+                                        );
+                                        if let Some(s) = state.workspaces.as_ref() {
+                                            s.unbind(&id);
+                                        }
+                                        *socket_workspace = None;
+                                        let _ = ws_tx
+                                            .send(WsMessage::Text(
+                                                json!({
+                                                    "type": "workspace_changed",
+                                                    "path": null
+                                                })
+                                                .to_string(),
+                                            ))
+                                            .await;
+                                    }
+                                }
+                            } else {
+                                *socket_workspace = None;
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({ "type": "workspace_changed", "path": null })
+                                            .to_string(),
+                                    ))
+                                    .await;
+                            }
+                            let _ = ws_tx
+                                .send(WsMessage::Text(
+                                    json!({
+                                        "type": "resumed",
+                                        "id": id,
+                                        "message_count": count,
+                                        "project_id": bound_project,
+                                        "workspace_path": resumed_workspace,
+                                        "live": false,
+                                    })
+                                    .to_string(),
+                                ))
+                                .await;
+                        }
+                        Ok(None) => {
+                            send_error(ws_tx, &format!("conversation `{id}` not found")).await;
+                            return true;
+                        }
+                        Err(e) => {
+                            error!(error = %e, %id, "ws start_turn resume load failed (treating as not found)");
+                            send_error(ws_tx, &format!("conversation `{id}` not found")).await;
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return begin_user_turn(
+                content,
+                model,
+                provider,
+                soul_prompt,
+                ws_tx,
+                state,
+                socket_approver,
+                mode_handle,
+                conv,
+                persisted_id,
+                persisted_project_id,
+                last_injection,
+                event_rx,
+                current_task,
+                sticky_provider,
+                sticky_model,
+                active_skills,
+                socket_workspace,
+                hitl_tx,
+            )
+            .await;
+        }
         WsClientMessage::User {
             content,
             model,
             provider,
             soul_prompt,
         } => {
-            if event_rx.is_some() {
-                send_error(ws_tx, "turn already in progress").await;
-                return true;
-            }
-            if persisted_id
-                .as_deref()
-                .is_some_and(|id| state.chat_runs.is_active(id))
-            {
-                send_error(ws_tx, "turn already in progress").await;
-                return true;
-            }
-            let content = expand_goal_command(&content).unwrap_or(content);
-            // Per-turn override falls back to socket-level sticky.
-            let provider_pick = provider.as_deref().or(sticky_provider.as_deref());
-            let model_pick = model.as_deref().or(sticky_model.as_deref());
-            let approver = socket_approver.clone();
-            let hitl = hitl_tx.clone();
-            // Apply Plan-Mode tool filter if the per-socket mode says
-            // so. Done per-turn (not once at socket open) so a mid-
-            // session `set_mode` flip takes effect on the next message.
-            let active_mode = *mode_handle.read().await;
-            let skills_catalog = state.skills.as_ref().cloned();
-            let skills_snapshot =
-                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
-            let workspace_for_turn = socket_workspace.clone();
-            let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
-                cfg.approver = Some(approver);
-                cfg.hitl_tx = Some(hitl);
-                if matches!(active_mode, harness_core::PermissionMode::Plan) {
-                    cfg.tool_filter = Some(plan_mode_tool_filter());
-                }
-                if let Some(prompt) = compose_with_skills(
-                    cfg.system_prompt.as_deref(),
-                    skills_catalog.as_ref(),
-                    &skills_snapshot,
-                ) {
-                    cfg.system_prompt = Some(prompt);
-                }
-                if workspace_for_turn.is_some() {
-                    cfg.session_workspace = workspace_for_turn;
-                }
-            }) {
-                Ok(a) => a,
-                Err(e) => {
-                    send_error(ws_tx, &e.to_string()).await;
-                    return true;
-                }
-            };
-            let record_provider = provider_pick.map(str::to_string);
-            let record_model = model_pick.map(str::to_string);
-            // Persist the explicit selection as the new sticky.
-            if provider.is_some() {
-                *sticky_provider = provider;
-            }
-            if model.is_some() {
-                *sticky_model = model;
-            }
-            conv.push(Message::user(content));
-            let (soul_conv, soul_injected_at) =
-                inject_soul_prompt(conv.clone(), soul_prompt.as_deref());
-            // Late-bind the project (no-op for free-chat sessions).
-            let prepared = match materialise(
-                state.projects.as_ref(),
-                state.project_memory.as_ref(),
-                soul_conv,
-                persisted_project_id.as_deref(),
+            return begin_user_turn(
+                content,
+                model,
+                provider,
+                soul_prompt,
+                ws_tx,
+                state,
+                socket_approver,
+                mode_handle,
+                conv,
+                persisted_id,
+                persisted_project_id,
+                last_injection,
+                event_rx,
+                current_task,
+                sticky_provider,
+                sticky_model,
+                active_skills,
+                socket_workspace,
+                hitl_tx,
             )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    send_error(ws_tx, &format!("project binder: {e}")).await;
-                    // Roll back the user message we just pushed.
-                    conv.messages.pop();
-                    return true;
-                }
-            };
-            // Late-bind the persistent TODO list (no-op when no
-            // store / no workspace / opt-out).
-            let workspace_key = active_workspace_key(state, socket_workspace.as_deref());
-            let (snapshot, todos_prepared) = match crate::todo_binder::materialise_todos(
-                state.todos.as_ref(),
-                prepared.conversation.clone(),
-                workspace_key.as_deref(),
-                state.todos_in_prompt,
-            )
-            .await
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    send_error(ws_tx, &format!("todo binder: {e}")).await;
-                    conv.messages.pop();
-                    return true;
-                }
-            };
-            let injection = TurnInjection {
-                project: prepared,
-                todos: todos_prepared,
-                soul_injected_at,
-            };
-            *last_injection = Some(injection.clone());
-            let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
-            *event_rx = Some(new_rx);
-            if let Some(id) = persisted_id.as_deref() {
-                if !state.chat_runs.try_start(id) {
-                    *event_rx = None;
-                    *last_injection = None;
-                    conv.messages.pop();
-                    send_error(ws_tx, "turn already in progress").await;
-                    return true;
-                }
-            }
-            let handle = spawn_detached_turn(DetachedTurn {
-                agent,
-                conversation: snapshot,
-                event_tx,
-                chat_runs: state.chat_runs.clone(),
-                subagent_runs: state.subagent_runs.clone(),
-                observability: state.observability.clone(),
-                run_id: Uuid::new_v4().to_string(),
-                started_at: chrono::Utc::now().to_rfc3339(),
-                started: Instant::now(),
-                provider: record_provider,
-                model: record_model,
-                persisted_id: persisted_id.clone(),
-                persisted_project_id: persisted_project_id.clone(),
-                store: state.store.clone(),
-                injection: Some(injection),
-                state: state.clone(),
-            });
-            state
-                .chat_runs
-                .attach_abort_handle(persisted_id.as_deref(), handle.abort_handle());
-            *current_task = Some(handle);
+            .await;
         }
         WsClientMessage::Configure { model, provider } => {
             if event_rx.is_some() {
@@ -3085,15 +3438,22 @@ async fn handle_client_frame(
                 }
             };
 
+            let workspace_binding =
+                match resolve_requested_workspace(workspace_path.as_deref()).await {
+                    Ok(binding) => binding,
+                    Err(e) => {
+                        send_error(ws_tx, &e).await;
+                        return true;
+                    }
+                };
+
             let new_id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
             *conv = Conversation::new();
             // Eager persistence: write the empty conversation row up
             // front so a `New` followed by tab-close / network drop /
             // mid-tool abandonment still leaves a resumable row on
-            // disk. Without this, the optimistic stub the web UI
-            // prepends to its sidebar (lifecycleFrames.ts onStarted)
-            // dangles, and a later resume gets `Ok(None)` →
-            // `conversation '<id>' not found`.
+            // disk. Validate all user-supplied bindings before this
+            // point so rejected starts do not leave empty rows behind.
             let metadata = ConversationMetadata {
                 project_id: resolved_project_id.clone(),
                 ..Default::default()
@@ -3106,42 +3466,18 @@ async fn handle_client_frame(
             *persisted_id = Some(new_id.clone());
             *persisted_project_id = resolved_project_id.clone();
 
-            // Optional workspace pin. Validate the same way
-            // SetWorkspace does, then bind it in the registry so
-            // Resume restores it. Failure here surfaces as an
-            // error and aborts — we already saved the conversation
-            // row, but the user's next attempt can use a different
-            // path (the `started` echo isn't sent on this path).
-            let mut bound_workspace_info: Option<Value> = None;
-            let bound_workspace = if let Some(raw) = workspace_path.as_deref() {
-                match std::fs::canonicalize(raw) {
-                    Ok(p) if p.is_dir() => {
-                        *socket_workspace = Some(p.clone());
-                        if let Some(ws) = state.workspaces.as_ref() {
-                            let path_str = p.display().to_string();
-                            let _ = ws.touch(&path_str);
-                            ws.bind(&new_id, &path_str);
-                        }
-                        bound_workspace_info = Some(workspace_snapshot(&p).await);
-                        Some(p.display().to_string())
+            let (bound_workspace, bound_workspace_info) =
+                if let Some((path, path_str, snapshot)) = workspace_binding {
+                    *socket_workspace = Some(path);
+                    if let Some(ws) = state.workspaces.as_ref() {
+                        let _ = ws.touch(&path_str);
+                        ws.bind(&new_id, &path_str);
                     }
-                    Ok(p) => {
-                        send_error(
-                            ws_tx,
-                            &format!("workspace `{}` is not a directory", p.display()),
-                        )
-                        .await;
-                        return true;
-                    }
-                    Err(e) => {
-                        send_error(ws_tx, &format!("workspace `{raw}` is not reachable: {e}"))
-                            .await;
-                        return true;
-                    }
-                }
-            } else {
-                None
-            };
+                    (Some(path_str), Some(snapshot))
+                } else {
+                    *socket_workspace = None;
+                    (None, None)
+                };
 
             let _ = ws_tx
                 .send(WsMessage::Text(
@@ -3883,13 +4219,58 @@ mod goal_command_tests {
 }
 
 #[cfg(test)]
+mod ws_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn start_turn_frame_deserializes() {
+        let msg: WsClientMessage = serde_json::from_value(json!({
+            "type": "start_turn",
+            "mode": "new",
+            "id": "conv-1",
+            "content": "hello",
+            "provider": "openai",
+            "model": "gpt-test",
+            "project_id": "proj-1",
+            "workspace_path": "/tmp/project",
+            "active_skills": ["code-review"],
+        }))
+        .unwrap();
+
+        match msg {
+            WsClientMessage::StartTurn {
+                mode,
+                id,
+                content,
+                provider,
+                model,
+                project_id,
+                workspace_path,
+                active_skills,
+                ..
+            } => {
+                assert!(matches!(mode, StartTurnMode::New));
+                assert_eq!(id, "conv-1");
+                assert_eq!(content, "hello");
+                assert_eq!(provider.as_deref(), Some("openai"));
+                assert_eq!(model.as_deref(), Some("gpt-test"));
+                assert_eq!(project_id.as_deref(), Some("proj-1"));
+                assert_eq!(workspace_path.as_deref(), Some("/tmp/project"));
+                assert_eq!(active_skills, Some(vec!["code-review".to_string()]));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod model_catalog_tests {
     use super::*;
     use crate::provider_registry::ProviderRegistry;
     use crate::router as full_router;
     use crate::state::AppState;
     use async_trait::async_trait;
-    use axum::body::{to_bytes, Body};
+    use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use harness_core::{
         Agent, AgentConfig, ChatRequest, ChatResponse, FinishReason, LlmProvider, Message,
@@ -4084,7 +4465,7 @@ mod tools_catalog_tests {
     use crate::router as full_router;
     use crate::state::AppState;
     use async_trait::async_trait;
-    use axum::body::{to_bytes, Body};
+    use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use harness_core::{
         Agent, AgentConfig, ChatRequest, ChatResponse, FinishReason, LlmProvider, Message,
@@ -4366,7 +4747,7 @@ mod routing_tests {
     use crate::router as full_router;
     use crate::state::AppState;
     use async_trait::async_trait;
-    use axum::body::{to_bytes, Body};
+    use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use harness_core::{
         Agent, AgentConfig, ChatRequest, ChatResponse, FinishReason, LlmProvider, Message,

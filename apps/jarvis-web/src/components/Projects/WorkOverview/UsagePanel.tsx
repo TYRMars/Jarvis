@@ -103,6 +103,26 @@ function fmtCostEstimate(cost: CostEstimate): string {
   return fmtCost(cost.knownUSD);
 }
 
+function FormulaHint({ lines }: { lines: string[] }) {
+  return (
+    <span className="harness-formula-hint">
+      <button
+        type="button"
+        aria-label={t("harnessMetricFormulaLabel")}
+        title={t("harnessMetricFormulaLabel")}
+        className="harness-formula-icon"
+      >
+        i
+      </button>
+      <span className="harness-formula-tooltip" role="tooltip">
+        {lines.map((line) => (
+          <span key={line}>{line}</span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
 export function UsagePanel({ windowDays }: Props) {
   // Re-render on every cumulator mutation. The cumulator already
   // batches per-frame so this is cheap.
@@ -164,7 +184,10 @@ export function UsagePanel({ windowDays }: Props) {
   return (
     <div className="work-panel work-panel-usage">
       <header className="work-panel-header">
-        <h3>{t("usagePanelTitle")}</h3>
+        <h3 className="harness-metric-label-with-hint">
+          {t("usagePanelTitle")}
+          <FormulaHint lines={[t("usagePanelHint")]} />
+        </h3>
         <button
           type="button"
           className="usage-reset-btn"
@@ -178,7 +201,7 @@ export function UsagePanel({ windowDays }: Props) {
 
       {/* Headline today block */}
       <div className="usage-headline">
-        <div className="usage-headline-block">
+        <div className="usage-headline-block" title={t("usagePanelTodayHint")}>
           <div className="usage-headline-label">{t("usagePanelToday")}</div>
           <div className="usage-headline-value tabular-nums">
             {fmtTokens(today.total)}
@@ -187,7 +210,7 @@ export function UsagePanel({ windowDays }: Props) {
             {fmtCostEstimate(todayCost)}
           </div>
         </div>
-        <div className="usage-headline-block">
+        <div className="usage-headline-block" title={t("usagePanelWindowHint")}>
           <div className="usage-headline-label">
             {t("usagePanelWindow", windowDays)}
           </div>
@@ -214,11 +237,13 @@ export function UsagePanel({ windowDays }: Props) {
           label={t("usagePanelPrompt")}
           value={fmtTokens(windowTotals.prompt)}
           tone="prompt"
+          hint={t("usagePanelPromptHint")}
         />
         <BreakdownChip
           label={t("usagePanelCompletion")}
           value={fmtTokens(windowTotals.completion)}
           tone="completion"
+          hint={t("usagePanelCompletionHint")}
         />
         <BreakdownChip
           label={t("usagePanelCached")}
@@ -230,6 +255,7 @@ export function UsagePanel({ windowDays }: Props) {
           label={t("usagePanelCalls")}
           value={String(windowTotals.calls)}
           tone="calls"
+          hint={t("usagePanelCallsHint")}
         />
       </div>
 

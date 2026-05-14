@@ -1,12 +1,16 @@
 //! Tracing subscriber + optional OTLP exporter init.
 //!
 //! Reads `JARVIS_OTEL_*` env vars at process start. OTLP export is
-//! enabled by default and can be disabled with
-//! `JARVIS_OTEL_ENABLED=0` / `false`. When enabled, the subscriber
-//! gains a `tracing-opentelemetry` layer backed by OTLP (gRPC
-//! default, `http/protobuf` opt-in).
+//! **opt-in** via `JARVIS_OTEL_ENABLED=1` / `true`. Default off —
+//! the previous "default on, default endpoint 127.0.0.1:4317" mode
+//! flooded logs with `BatchSpanProcessor.Flush.ExportError tcp
+//! connect error` lines on every local dev box that didn't happen
+//! to be running an OTLP collector. Operators who want telemetry
+//! know to set the env var; everyone else stays quiet.
 //!
-//! The returned [`TelemetryGuard`] flushes the exporter on drop. Hold
+//! When enabled, the subscriber gains a `tracing-opentelemetry`
+//! layer backed by OTLP (gRPC default, `http/protobuf` opt-in). The
+//! returned [`TelemetryGuard`] flushes the exporter on drop. Hold
 //! it for the full process lifetime — dropping it early stops trace
 //! export.
 
@@ -60,7 +64,12 @@ pub fn init() -> TelemetryGuard {
 }
 
 pub fn init_with_default_filter(default_filter: &str) -> TelemetryGuard {
-    let enabled = env_flag_default("JARVIS_OTEL_ENABLED", true);
+    // Opt-in. The pre-2026-05 default of `true` produced ERROR log
+    // spam on every local dev box (BatchSpanProcessor retrying its
+    // tcp connect to 127.0.0.1:4317 every few seconds). Operators
+    // who want telemetry set the env var; everyone else gets a
+    // clean log.
+    let enabled = env_flag_default("JARVIS_OTEL_ENABLED", false);
     // When OTel is on but `RUST_LOG` is unset, lift the baseline to
     // `info` so the instrumented spans actually reach the layer
     // pipeline. Otherwise the exporter would have nothing to send.

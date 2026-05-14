@@ -4,10 +4,8 @@
 //! SQLite and a file-backed SQLite in a tempdir. Postgres/MySQL are covered
 //! by whatever CI environment has those services available.
 
-use harness_core::{
-    Conversation, EvalBaseline, EvalFilter, Message, ObservabilityFilter, ObservedOutcome,
-    ObservedRun, ObservedRunKind,
-};
+use harness_core::{Conversation, Message};
+use harness_observability::{EvalBaseline, EvalFilter, ObservabilityFilter, ObservedOutcome, ObservedRun, ObservedRunKind};
 use harness_store::{connect, connect_evals, connect_observability, StoreError};
 
 #[cfg(feature = "sqlite")]
@@ -120,7 +118,7 @@ async fn connect_json_eval_backend() {
     let baseline = EvalBaseline {
         id: "baseline-connect".into(),
         suite: "smoke".into(),
-        suite_kind: harness_core::EvalSuiteKind::Smoke,
+        suite_kind: harness_observability::EvalSuiteKind::Smoke,
         created_at: "2026-05-08T00:00:00Z".into(),
         git_ref: None,
         model: None,

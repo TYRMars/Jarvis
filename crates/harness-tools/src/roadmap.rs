@@ -17,7 +17,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_core::{BoxError, ProjectStore, RequirementStore, Tool, ToolCategory};
+use harness_core::{BoxError, Tool, ToolCategory};
+use harness_project::{ProjectStore, RequirementStore};
 use harness_requirement::{import_proposals, ImportOptions};
 use serde_json::{json, Value};
 

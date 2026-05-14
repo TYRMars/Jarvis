@@ -23,6 +23,7 @@ use clap::{Args, Parser, Subcommand};
 use tracing::info;
 
 mod auth_store;
+mod channels_cli;
 mod config;
 mod doctor_cli;
 mod init;
@@ -132,6 +133,17 @@ enum Cmd {
     Project {
         #[command(subcommand)]
         cmd: project_cmd::ProjectCmd,
+    },
+    /// Manage messaging-channel instances (WeCom / Feishu / DingTalk
+    /// / WeCom self-built app) directly against the persistence
+    /// store — same data the web `Settings → 渠道` page edits. Useful
+    /// for SSH / headless setups and for ops scripts that want to
+    /// preconfigure rows from a config-management tool. Inbound-
+    /// capable kinds (`wecom_app`) print the callback URL operators
+    /// need to paste into the platform admin panel.
+    Channels {
+        #[command(subcommand)]
+        action: channels_cli::ChannelsAction,
     },
     /// Manage runtime MCP servers on a running `jarvis serve`.
     Mcp {
@@ -245,6 +257,7 @@ async fn main() -> Result<()> {
         Cmd::Status => status::run(cli.config.as_deref()),
         Cmd::Workspace { workspace, json } => serve::run_workspace(cfg, workspace, json).await,
         Cmd::Project { cmd } => project_cmd::run(cfg, cmd).await,
+        Cmd::Channels { action } => channels_cli::run(cfg, action).await,
         Cmd::Mcp { action } => mcp_cli::run(action, cfg.as_ref()).await,
         Cmd::Skill { action } => skill_cli::run(action, cfg.as_ref()).await,
         Cmd::Plugin { action } => plugin_cli::run(action, cfg.as_ref()).await,

@@ -52,6 +52,26 @@ function scoreStyle(score: number): CSSProperties & { "--model-score": string } 
   return { "--model-score": `${score}%` };
 }
 
+function FormulaHint({ lines }: { lines: string[] }) {
+  return (
+    <span className="harness-formula-hint">
+      <button
+        type="button"
+        aria-label={t("harnessMetricFormulaLabel")}
+        title={t("harnessMetricFormulaLabel")}
+        className="harness-formula-icon"
+      >
+        i
+      </button>
+      <span className="harness-formula-tooltip" role="tooltip">
+        {lines.map((line) => (
+          <span key={line}>{line}</span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
 export function ModelComparisonPanel({ windowDays }: Props) {
   const [, force] = useState(0);
   useEffect(() => subscribeUsageCumulator(() => force((n) => n + 1)), []);
@@ -120,7 +140,15 @@ export function ModelComparisonPanel({ windowDays }: Props) {
   return (
     <div className="work-panel model-score-panel">
       <header className="work-panel-header">
-        <h3>{t("modelScoreTitle")}</h3>
+        <h3 className="harness-metric-label-with-hint">
+          {t("modelScoreTitle")}
+          <FormulaHint
+            lines={[
+              t("modelScoreFormulaHint"),
+              t("modelScoreConfidenceHint"),
+            ]}
+          />
+        </h3>
         <span className="work-panel-header-meta">
           {t("modelScoreWindow", windowDays)}
         </span>
@@ -131,13 +159,13 @@ export function ModelComparisonPanel({ windowDays }: Props) {
       ) : (
         <>
           <div className="model-score-summary">
-            <div>
+            <div title={t("modelScoreFormulaHint")}>
               <span>{t("modelScoreBest")}</span>
               <strong title={leader?.model}>
                 {leader ? `${leader.score}` : "—"}
               </strong>
             </div>
-            <div>
+            <div title={t("modelScoreConfidenceHint")}>
               <span>{t("modelScoreConfidence")}</span>
               <strong title={strongestSignal?.model ?? undefined}>
                 {strongestSignal ? pct(strongestSignal.confidence) : "—"}
@@ -148,8 +176,12 @@ export function ModelComparisonPanel({ windowDays }: Props) {
           <div className="model-score-list" role="table" aria-label={t("modelScoreTitle")}>
             <div className="model-score-row model-score-row-head" role="row">
               <span role="columnheader">{t("modelScoreModel")}</span>
-              <span role="columnheader">{t("modelScoreScore")}</span>
-              <span role="columnheader">{t("modelScoreSignals")}</span>
+              <span role="columnheader" title={t("modelScoreFormulaHint")}>
+                {t("modelScoreScore")}
+              </span>
+              <span role="columnheader" title={t("modelScoreSignalsHint")}>
+                {t("modelScoreSignals")}
+              </span>
             </div>
             {rows.slice(0, 6).map((row) => (
               <div className="model-score-row" role="row" key={row.model}>

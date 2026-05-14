@@ -43,6 +43,10 @@ export interface ChannelKind {
     >;
   };
   test_supported: boolean;
+  /** Optional callback path for inbound kinds (`/v1/channels/<id>/callback`).
+   *  When present, the row offers a "copy callback URL" affordance so
+   *  the operator can paste it into the platform's admin panel. */
+  callback_path?: string;
 }
 
 /// `null` ⇒ store not configured (503). Throws on other errors.

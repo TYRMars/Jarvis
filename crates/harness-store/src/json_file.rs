@@ -1,5 +1,5 @@
 //! On-disk JSON-file [`ConversationStore`](harness_core::ConversationStore)
-//! and [`ProjectStore`](harness_core::ProjectStore).
+//! and [`ProjectStore`](harness_project::ProjectStore).
 //!
 //! One JSON file per record, all in a directory. The simplest possible
 //! "real" backend — no external dependency, no migrations, no daemon.
@@ -42,16 +42,14 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use harness_core::{
-    Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, ChannelBinding, ChannelBindingStore, Comment, CommentEvent, CommentStore,
-    Conversation, ConversationLifecycle, ConversationMetadata, ConversationRecord,
-    ConversationStore, DashboardSnapshot,
-    DocDraft, DocEvent, DocProject, DocStore, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore,
-    EvalSuiteRun, Label, LabelEvent, LabelStore, Message, MetricPoint, ObservabilityFilter,
-    ObservabilityStore, ObservedOutcome, ObservedRun, ObservedSpanSummary, Project, ProjectStore,
+use harness_channel::{ChannelBinding, ChannelBindingStore};
+use harness_core::{AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation, ConversationLifecycle, ConversationMetadata, ConversationRecord, ConversationStore, Message, Tenant, TenantStore, TodoEvent, TodoItem, TodoStore};
+use harness_observability::{DashboardSnapshot, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteRun, MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun, ObservedSpanSummary, TimeWindow};
+use harness_project::{
+    Activity, ActivityEvent, ActivityStore, Comment, CommentEvent, CommentStore, DocDraft,
+    DocEvent, DocProject, DocStore, Label, LabelEvent, LabelStore, Project, ProjectStore,
     Requirement, RequirementEvent, RequirementRun, RequirementRunEvent, RequirementRunStore,
-    RequirementStore, Tenant, TenantStore, TimeWindow, TodoEvent, TodoItem, TodoStore,
+    RequirementStore,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -1990,7 +1988,7 @@ impl ChannelBindingStore for JsonFileChannelBindingStore {
 /// whole-file rewrite on every mutation is cheap.
 pub struct JsonFileChannelInstanceStore {
     path: PathBuf,
-    state: tokio::sync::RwLock<Vec<harness_core::ChannelInstance>>,
+    state: tokio::sync::RwLock<Vec<harness_channel::ChannelInstance>>,
 }
 
 impl JsonFileChannelInstanceStore {
@@ -2000,7 +1998,7 @@ impl JsonFileChannelInstanceStore {
         let path = base.join("channel_instances.json");
         let initial = match std::fs::read(&path) {
             Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice::<
-                Vec<harness_core::ChannelInstance>,
+                Vec<harness_channel::ChannelInstance>,
             >(&bytes)
             {
                 Ok(v) => v,
@@ -2021,17 +2019,17 @@ impl JsonFileChannelInstanceStore {
         })
     }
 
-    async fn flush(&self, snapshot: &[harness_core::ChannelInstance]) -> Result<(), BoxError> {
+    async fn flush(&self, snapshot: &[harness_channel::ChannelInstance]) -> Result<(), BoxError> {
         let bytes = serde_json::to_vec_pretty(snapshot)?;
         atomic_write(&self.path, &bytes).await
     }
 }
 
 #[async_trait]
-impl harness_core::ChannelInstanceStore for JsonFileChannelInstanceStore {
+impl harness_channel::ChannelInstanceStore for JsonFileChannelInstanceStore {
     async fn upsert(
         &self,
-        instance: &harness_core::ChannelInstance,
+        instance: &harness_channel::ChannelInstance,
     ) -> Result<(), BoxError> {
         let mut guard = self.state.write().await;
         if let Some(slot) = guard.iter_mut().find(|i| i.id == instance.id) {
@@ -2047,14 +2045,14 @@ impl harness_core::ChannelInstanceStore for JsonFileChannelInstanceStore {
     async fn get(
         &self,
         id: &str,
-    ) -> Result<Option<harness_core::ChannelInstance>, BoxError> {
+    ) -> Result<Option<harness_channel::ChannelInstance>, BoxError> {
         let guard = self.state.read().await;
         Ok(guard.iter().find(|i| i.id == id).cloned())
     }
 
-    async fn list(&self) -> Result<Vec<harness_core::ChannelInstance>, BoxError> {
+    async fn list(&self) -> Result<Vec<harness_channel::ChannelInstance>, BoxError> {
         let guard = self.state.read().await;
-        let mut rows: Vec<harness_core::ChannelInstance> = guard.clone();
+        let mut rows: Vec<harness_channel::ChannelInstance> = guard.clone();
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(rows)
     }
@@ -2506,7 +2504,7 @@ mod tests {
 
     // ---- RequirementStore -----------------------------------------------
 
-    use harness_core::RequirementStatus;
+    use harness_project::RequirementStatus;
 
     #[tokio::test]
     async fn requirement_round_trip_persists_to_disk() {
@@ -2558,7 +2556,7 @@ mod tests {
 
     #[tokio::test]
     async fn requirement_delete_cascades_runs_activities_comments() {
-        use harness_core::{Activity, ActivityActor, ActivityKind};
+        use harness_project::{Activity, ActivityActor, ActivityKind};
         use serde_json::json;
         let dir = tempdir().unwrap();
         let req_store = JsonFileRequirementStore::open(dir.path()).unwrap();
@@ -2593,7 +2591,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_delete_cascades_to_requirements_and_runs() {
-        use harness_core::{Activity, ActivityActor, ActivityKind};
+        use harness_project::{Activity, ActivityActor, ActivityKind};
         use serde_json::json;
         let dir = tempdir().unwrap();
         let proj_store = JsonFileProjectStore::open(dir.path()).unwrap();
@@ -2647,7 +2645,7 @@ mod tests {
 
     // ---- RequirementRunStore --------------------------------------------
 
-    use harness_core::RequirementRunStatus;
+    use harness_project::RequirementRunStatus;
 
     #[tokio::test]
     async fn requirement_run_round_trip_persists_to_disk() {
@@ -2748,7 +2746,7 @@ mod tests {
 
     // ---- ActivityStore --------------------------------------------------
 
-    use harness_core::{ActivityActor, ActivityKind};
+    use harness_project::{ActivityActor, ActivityKind};
     use serde_json::json;
 
     #[tokio::test]
@@ -2798,7 +2796,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = JsonFileDocStore::open(dir.path()).unwrap();
         let mut p = DocProject::new("/r-a", "weekly review");
-        p.kind = harness_core::DocKind::Report;
+        p.kind = harness_project::DocKind::Report;
         store.upsert_project(&p).await.unwrap();
 
         let listed = store.list_projects("/r-a").await.unwrap();
@@ -2885,7 +2883,7 @@ mod tests {
             trace_id: Some("trace-1".into()),
             span_id: Some("span-1".into()),
             parent_run_id: None,
-            kind: harness_core::ObservedRunKind::Agent,
+            kind: harness_observability::ObservedRunKind::Agent,
             name: "jarvis.agent.run".into(),
             started_at: "2026-05-08T00:00:00Z".into(),
             ended_at: Some("2026-05-08T00:00:01Z".into()),
@@ -2922,7 +2920,7 @@ mod tests {
         let baseline = EvalBaseline {
             id: "base-1".into(),
             suite: "coding-smoke".into(),
-            suite_kind: harness_core::EvalSuiteKind::Regression,
+            suite_kind: harness_observability::EvalSuiteKind::Regression,
             created_at: "2026-05-08T00:00:00Z".into(),
             git_ref: Some("main".into()),
             model: Some("test-model".into()),
@@ -2937,18 +2935,18 @@ mod tests {
             suite_run_id: "suite-run-1".into(),
             case_id: "case-1".into(),
             suite: "coding-smoke".into(),
-            suite_kind: harness_core::EvalSuiteKind::Regression,
+            suite_kind: harness_observability::EvalSuiteKind::Regression,
             scenario: "tool-use".into(),
             trial_index: 0,
             trial_count: Some(3),
             outcome: ObservedOutcome::Error,
             trace_id: Some("trace-1".into()),
             transcript_artifact_id: Some("transcript-1".into()),
-            failure_class: Some(harness_core::EvalFailureClass::AgentError),
-            grader_results: vec![harness_core::EvalGraderResult {
+            failure_class: Some(harness_observability::EvalFailureClass::AgentError),
+            grader_results: vec![harness_observability::EvalGraderResult {
                 id: "grader-1".into(),
-                kind: harness_core::EvalGraderKind::ToolCall,
-                verdict: harness_core::EvalGraderVerdict::Fail,
+                kind: harness_observability::EvalGraderKind::ToolCall,
+                verdict: harness_observability::EvalGraderVerdict::Fail,
                 score: Some(0.0),
                 explanation: Some("missing expected tool call".into()),
                 attributes: serde_json::json!({}),
@@ -2970,7 +2968,7 @@ mod tests {
 
         let regression_rows = store
             .list_case_results(EvalFilter {
-                suite_kind: Some(harness_core::EvalSuiteKind::Regression),
+                suite_kind: Some(harness_observability::EvalSuiteKind::Regression),
                 ..EvalFilter::default()
             })
             .await

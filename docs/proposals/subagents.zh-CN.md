@@ -17,7 +17,9 @@ Reviewer 的产品能力同时落地，把 Requirement `Review → Done` 的人�
 - Web UI：RequirementDetail / 看板卡片展示评审状态；新增 SubAgent 列表
   设置页 (复用 Settings → Models → Subagents tab — 这个 tab 已存在但今天
   只是 placeholder)
-- 配置：环境变量 `JARVIS_REVIEW_MODE` + 每条 Requirement 的
+- 配置：环境变量 `JARVIS_REVIEWER_AUTO_ACCEPT` (布尔；v1.0 实现选了布尔
+  而非三态枚举，足以覆盖 v1.0 的 off / subagent 两种语义；后续要加
+  `auto-pass` 这类第三档时再扩枚举) + 每条 Requirement 的
   `acceptance_policy` 双层
 
 ## 背景
@@ -286,7 +288,7 @@ System prompt：
 - 主入口：`POST /v1/requirements/:id/review` (手动触发，本地验证用)
 - 自动入口：`auto_mode::tick` 在 work outcome 翻 Review 时自动派发
   (前提：`req.acceptance_policy == Subagent` 且
-  `JARVIS_REVIEW_MODE != off`)
+  `JARVIS_REVIEWER_AUTO_ACCEPT=true`)
 
 #### Reviewer 的 Requirement 状态机改动
 
@@ -318,7 +320,7 @@ Auto-mode 流程：
 work agent loop
   ↓ 完成 → requirement.complete → status = Review
   ↓
-  if acceptance_policy == Subagent && JARVIS_REVIEW_MODE != off:
+  if acceptance_policy == Subagent && JARVIS_REVIEWER_AUTO_ACCEPT=true:
     spawn reviewer subagent
     verdict = reviewer.run(verification_plan, work_run_id)
     if verdict.pass:
@@ -327,7 +329,7 @@ work agent loop
       status = InProgress; activity.record(ReviewFailed { commentary })
       // 下次 work agent pickup 时，prompt 注入 "上次评审未通过：<commentary>"
   else:
-    停在 Review，等人工
+    停在 Review，等人工或 `POST /v1/requirements/:id/review`
 ```
 
 失败次数复用 `JARVIS_WORK_MAX_RETRIES`，超出后停在 Review 并写
@@ -348,20 +350,28 @@ work agent loop
 
 ## 配置
 
-环境变量 (新增；同时更新 CLAUDE.md):
-- `JARVIS_REVIEW_MODE` = `subagent` (默认) / `off` / `auto-pass`
-- `JARVIS_REVIEW_MAX_ITERATIONS` = `5`
-- `JARVIS_REVIEW_RUN_TIMEOUT_MS` = `300000`
+环境变量 (v1.0 实际落地名，与原提案略有出入)：
+- `JARVIS_REVIEWER_AUTO_ACCEPT` = 布尔 (默认 off)。设为 `1` / `true` /
+  任何非空非 `0`/`false` 值开启自动评审；默认关闭。原提案的三态枚举
+  (`subagent` / `off` / `auto-pass`) 缩成布尔——v1.0 暂不需要 `auto-pass`
+  的强制通过档位，留口将来再扩。
 - `JARVIS_SUBAGENT_CLAUDE_CODE_BIN` (默认 `claude`)
-- `JARVIS_SUBAGENT_CODEX_BIN` (默认 `codex`)
-- `JARVIS_SUBAGENT_READER_MODEL` (默认随主 provider 选最便宜)
-- `JARVIS_DISABLE_SUBAGENTS` (any value disables all built-in subagents — 测试用)
+- `JARVIS_SUBAGENT_CLAUDE_CODE_MODEL` (默认 None — 用 CLI 自带的设置)
+- `JARVIS_SUBAGENT_CLAUDE_CODE_ARGS` (默认空；空格切分，转发给 `claude`
+  二进制，e.g. `--bare` 在没有 keychain 的环境里强制走 env 鉴权)
+- `JARVIS_SUBAGENT_CODEX_MODEL` (默认 None)
+- `JARVIS_SUBAGENT_READER_MODEL` (默认 None — 让 reader 跟主 provider)
+- `JARVIS_SUBAGENT_REVIEWER_MODEL` (默认 None)
+- `JARVIS_SUBAGENT_MAX_CONCURRENCY` (默认 3，`subagent.batch` 并行度)
 
 每条 Requirement 维度的 `acceptance_policy` 字段 (UI 切换) 优先于
-`JARVIS_REVIEW_MODE`：
-- `JARVIS_REVIEW_MODE=off`：所有 Requirement 都人工验收
-- `JARVIS_REVIEW_MODE=subagent` 且 `acceptance_policy=Human`：仍人工
-- `JARVIS_REVIEW_MODE=subagent` 且 `acceptance_policy=Subagent`：默认路径
+`JARVIS_REVIEWER_AUTO_ACCEPT`：
+- `JARVIS_REVIEWER_AUTO_ACCEPT=false` (默认)：所有 Subagent-policy
+  Requirement 停在 Review 等人工或 `POST /v1/requirements/:id/review`
+- `JARVIS_REVIEWER_AUTO_ACCEPT=true` 且 `acceptance_policy=Human`：仍人工
+- `JARVIS_REVIEWER_AUTO_ACCEPT=true` 且 `acceptance_policy=Subagent`：
+  auto picker 在翻 Review 后再次 pickup，主 agent 调用
+  `subagent.review` 走自动评审路径
 
 ## Web UI 改动
 

@@ -86,6 +86,21 @@ function BuiltinSubAgentList({ items }: { items: BuiltinSubAgent[] }) {
           <BuiltinSubAgentCard key={b.tool_name} item={b} />
         ))}
       </div>
+      <p className="settings-agent-builtins-hint">
+        {tx(
+          "settingsAgentsBuiltinOverrideHint",
+          "Override model or CLI flags for a built-in subagent via env vars: ",
+        )}
+        <code>JARVIS_SUBAGENT_CLAUDE_CODE_MODEL</code>,{" "}
+        <code>JARVIS_SUBAGENT_CLAUDE_CODE_ARGS</code>,{" "}
+        <code>JARVIS_SUBAGENT_CODEX_MODEL</code>,{" "}
+        <code>JARVIS_SUBAGENT_READER_MODEL</code>,{" "}
+        <code>JARVIS_SUBAGENT_REVIEWER_MODEL</code>
+        {tx(
+          "settingsAgentsBuiltinOverrideHintTail",
+          ". Restart the binary to apply.",
+        )}
+      </p>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 //! SQLite-backed [`ConversationStore`](harness_core::ConversationStore) and
-//! [`ProjectStore`](harness_core::ProjectStore).
+//! [`ProjectStore`](harness_project::ProjectStore).
 //!
 //! Opens a pool against the given URL (`sqlite://path/to.db` or
 //! `sqlite::memory:`), runs DDL idempotently, and stores each
@@ -17,15 +17,8 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use harness_core::{
-    Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, Comment, CommentEvent, CommentStore, Conversation, ConversationMetadata,
-    ConversationRecord, ConversationStore, DocDraft, DocEvent, DocKind, DocProject, DocStore,
-    KanbanColumn, Label, LabelEvent, LabelStore, Project, ProjectAutomation, ProjectStore,
-    Requirement, RequirementEvent, RequirementRun, RequirementRunEvent, RequirementRunStore,
-    RequirementStatus, RequirementStore, Tenant, TenantStore, TodoEvent, TodoItem, TodoPriority,
-    TodoStatus, TodoStore,
-};
+use harness_core::{AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation, ConversationMetadata, ConversationRecord, ConversationStore, Tenant, TenantStore, TodoEvent, TodoItem, TodoPriority, TodoStatus, TodoStore};
+use harness_project::{Activity, ActivityEvent, ActivityStore, Comment, CommentEvent, CommentStore, DocDraft, DocEvent, DocKind, DocProject, DocStore, KanbanColumn, Label, LabelEvent, LabelStore, Project, ProjectAutomation, ProjectStore, Requirement, RequirementEvent, RequirementRun, RequirementRunEvent, RequirementRunStore, RequirementStatus, RequirementStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -786,7 +779,7 @@ impl ProjectRow {
         let tags: Vec<String> = serde_json::from_str(&self.tags).map_err(StoreError::from)?;
         // Tolerate empty / NULL-equivalent payloads; the migration
         // backfills `'[]'` but a hand-edited DB might not.
-        let workspaces: Vec<harness_core::ProjectWorkspace> = if self.workspaces.is_empty() {
+        let workspaces: Vec<harness_project::ProjectWorkspace> = if self.workspaces.is_empty() {
             Vec::new()
         } else {
             serde_json::from_str(&self.workspaces).map_err(StoreError::from)?
@@ -1022,10 +1015,10 @@ impl RequirementRow {
             assignee_id: self.assignee_id,
             verification_plan,
             todos: Vec::new(),
-            triage_state: harness_core::TriageState::Approved,
+            triage_state: harness_project::TriageState::Approved,
             depends_on: Vec::new(),
             label_ids: Vec::new(),
-            acceptance_policy: harness_core::AcceptancePolicy::Subagent,
+            acceptance_policy: harness_project::AcceptancePolicy::Subagent,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -2423,7 +2416,7 @@ mod tests {
 
     // ---- RequirementRunStore --------------------------------------------
 
-    use harness_core::RequirementRunStatus;
+    use harness_project::RequirementRunStatus;
 
     async fn make_run_store() -> (SqliteConversationStore, SqliteRequirementRunStore) {
         let conv = make().await;
@@ -2549,7 +2542,7 @@ mod tests {
 
     // ---- ActivityStore --------------------------------------------------
 
-    use harness_core::{ActivityActor, ActivityKind};
+    use harness_project::{ActivityActor, ActivityKind};
     use serde_json::json;
 
     async fn make_activity_store() -> (SqliteConversationStore, SqliteActivityStore) {

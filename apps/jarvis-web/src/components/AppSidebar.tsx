@@ -149,29 +149,6 @@ function ChatSidebarBody() {
       <nav className="nav-list" aria-label={t("sidebarModeChat")}>
         <NewConvoButton />
         <NavLink
-          to="/conversations"
-          className={({ isActive }) =>
-            "nav-item" + (isActive ? " active" : "")
-          }
-        >
-          <svg
-            width="17"
-            height="17"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <path d="M3 9h18" />
-            <path d="M9 21V9" />
-          </svg>
-          <span>{t("sidebarNavConversationsArchive")}</span>
-        </NavLink>
-        <NavLink
           to="/customize"
           className={({ isActive }) =>
             "nav-item" + (isActive ? " active" : "")
@@ -188,15 +165,10 @@ function ChatSidebarBody() {
             strokeLinejoin="round"
             aria-hidden="true"
           >
-            <path d="M12 3v3" />
-            <path d="M12 18v3" />
-            <path d="M5.6 5.6l2.1 2.1" />
-            <path d="M16.3 16.3l2.1 2.1" />
-            <path d="M3 12h3" />
-            <path d="M18 12h3" />
-            <path d="M5.6 18.4l2.1-2.1" />
-            <path d="M16.3 7.7l2.1-2.1" />
-            <circle cx="12" cy="12" r="3" />
+            <path d="M6.5 8.5h11l-.8 10.5a2 2 0 0 1-2 1.8H9.3a2 2 0 0 1-2-1.8L6.5 8.5Z" />
+            <path d="M9 8.5V7a3 3 0 0 1 6 0v1.5" />
+            <path d="M12 12v4" />
+            <path d="M10 14h4" />
           </svg>
           <span>{translateOrFallback("sidebarNavCustomize", "能力市场")}</span>
         </NavLink>

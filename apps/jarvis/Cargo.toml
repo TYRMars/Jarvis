@@ -11,7 +11,10 @@ name = "jarvis"
 path = "src/main.rs"
 
 [dependencies]
+harness-channel.workspace = true
 harness-core.workspace = true
+harness-observability.workspace = true
+harness-project.workspace = true
 harness-llm.workspace = true
 harness-mcp.workspace = true
 harness-memory.workspace = true

@@ -1,5 +1,5 @@
 //! sqlx-backed [`ConversationStore`](harness_core::ConversationStore) and
-//! [`ProjectStore`](harness_core::ProjectStore) implementations.
+//! [`ProjectStore`](harness_project::ProjectStore) implementations.
 //!
 //! Each driver is behind a cargo feature, so downstream crates only compile
 //! what they actually use:
@@ -81,10 +81,12 @@ pub use mysql::{
 
 use std::sync::Arc;
 
-use harness_core::{
-    ActivityStore, AgentProfileStore, ChannelBindingStore, ChannelInstanceStore, CommentStore,
-    ConversationStore, DocStore, EvalStore, LabelStore, ObservabilityStore, ProjectStore,
-    RequirementRunStore, RequirementStore, TenantStore, TodoStore,
+use harness_channel::{ChannelBindingStore, ChannelInstanceStore};
+use harness_core::{AgentProfileStore, ConversationStore, TenantStore, TodoStore};
+use harness_observability::{EvalStore, ObservabilityStore};
+use harness_project::{
+    ActivityStore, CommentStore, DocStore, LabelStore, ProjectStore, RequirementRunStore,
+    RequirementStore,
 };
 
 /// Bundle of stores returned by [`connect_all`]. The backends share

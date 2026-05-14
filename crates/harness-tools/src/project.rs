@@ -1,6 +1,6 @@
 //! Persistent Project CRUD — `project.{list,get,create,update,archive,restore,delete}` tools.
 //!
-//! Surfaces the [`harness_core::ProjectStore`] API to the LLM. Mirrors
+//! Surfaces the [`harness_project::ProjectStore`] API to the LLM. Mirrors
 //! the REST endpoints in `harness-server::projects` but with typed
 //! schemas instead of HTTP-shaped bodies. All write operations are
 //! [`ToolCategory::Write`] and `requires_approval = true` so the
@@ -15,16 +15,15 @@
 //! Slug uniqueness is the store's responsibility; on collision we
 //! surface the underlying error string verbatim. New projects without
 //! an explicit `slug` get one derived from `name` via
-//! [`harness_core::derive_slug`] — uniqueness is *not* guaranteed by
+//! [`harness_project::derive_slug`] — uniqueness is *not* guaranteed by
 //! the deriver, so the model should `project.list` first or be ready
 //! to retry with a disambiguating suffix.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_core::{
-    derive_slug, validate_slug, BoxError, Project, ProjectStore, Tool, ToolCategory,
-};
+use harness_core::{BoxError, Tool, ToolCategory};
+use harness_project::{derive_slug, validate_slug, Project, ProjectStore};
 use serde::Deserialize;
 use serde_json::{json, Value};
 

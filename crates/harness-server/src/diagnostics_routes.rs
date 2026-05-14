@@ -52,7 +52,7 @@ fn require_worktree_root(state: &AppState) -> Result<std::path::PathBuf, Respons
 #[allow(clippy::result_large_err)]
 fn require_run_store(
     state: &AppState,
-) -> Result<std::sync::Arc<dyn harness_core::RequirementRunStore>, Response> {
+) -> Result<std::sync::Arc<dyn harness_project::RequirementRunStore>, Response> {
     state.requirement_runs.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,

@@ -1,7 +1,7 @@
 //! Persistent Requirement kanban tools — `requirement.{list,start,block,complete}`.
 //!
-//! Surfaces the [`harness_core::RequirementStore`] +
-//! [`harness_core::ActivityStore`] APIs to the LLM. Mirrors the
+//! Surfaces the [`harness_project::RequirementStore`] +
+//! [`harness_project::ActivityStore`] APIs to the LLM. Mirrors the
 //! status-mutation paths in `harness-server::requirements_routes`
 //! but with typed schemas instead of HTTP-shaped bodies.
 //!
@@ -75,10 +75,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_core::{
-    Activity, ActivityActor, ActivityKind, ActivityStore, BoxError, Requirement, RequirementStatus,
+use harness_core::{BoxError, Tool, ToolCategory};
+use harness_project::{
+    Activity, ActivityActor, ActivityKind, ActivityStore, Requirement, RequirementStatus,
     RequirementStore, RequirementTodo, RequirementTodoCreator, RequirementTodoEvidence,
-    RequirementTodoKind, RequirementTodoStatus, Tool, ToolCategory, TriageState, VerificationPlan,
+    RequirementTodoKind, RequirementTodoStatus, TriageState, VerificationPlan,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1143,7 +1144,7 @@ impl Tool for RequirementDeleteTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::{ActivityEvent, RequirementEvent};
+    use harness_project::{ActivityEvent, RequirementEvent};
     use std::collections::HashMap;
     use tokio::sync::{broadcast, RwLock};
 

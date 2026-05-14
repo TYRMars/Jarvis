@@ -36,8 +36,9 @@
 //! (`claude /login`) gets seamless auth — the credentials live in
 //! the OS keychain (or `~/.claude/.credentials.json`). If keychain
 //! access is unavailable, set `ANTHROPIC_API_KEY` for the
-//! `jarvis` process and add `--bare` via
-//! [`ClaudeCodeConfig::extra_args`] (TODO).
+//! `jarvis` process and forward extra CLI flags (e.g. `--bare`) via
+//! [`ClaudeCodeConfig::extra_args`] — populated at the composition
+//! root from `JARVIS_SUBAGENT_CLAUDE_CODE_ARGS` (whitespace-split).
 
 use crate::{Artifact, SubAgent, SubAgentEvent, SubAgentFrame, SubAgentInput, SubAgentOutput};
 use async_trait::async_trait;
@@ -62,6 +63,16 @@ pub struct ClaudeCodeConfig {
     /// `None` lets the CLI use its configured default (whatever the
     /// user picked via `claude /model` or their settings).
     pub model: Option<String>,
+    /// Extra positional args forwarded verbatim to the `claude`
+    /// binary, inserted after the standard `--print --output-format
+    /// stream-json --verbose --permission-mode bypassPermissions`
+    /// head and any `--model`, before the final task positional.
+    /// Used for one-off flags the binary supports — e.g. `--bare`
+    /// in keychain-less environments. Populated at the composition
+    /// root from `JARVIS_SUBAGENT_CLAUDE_CODE_ARGS` (whitespace-
+    /// split). Empty by default.
+    #[serde(default)]
+    pub extra_args: Vec<String>,
 }
 
 impl Default for ClaudeCodeConfig {
@@ -69,6 +80,7 @@ impl Default for ClaudeCodeConfig {
         Self {
             claude_bin: "claude".into(),
             model: None,
+            extra_args: Vec::new(),
         }
     }
 }
@@ -168,6 +180,9 @@ impl SubAgent for ClaudeCodeSubAgent {
         ]);
         if let Some(m) = &self.config.model {
             cmd.args(["--model", m.as_str()]);
+        }
+        if !self.config.extra_args.is_empty() {
+            cmd.args(&self.config.extra_args);
         }
         // Final positional: the task itself.
         cmd.arg(&input.task);
@@ -583,5 +598,91 @@ mod tests {
     async fn probe_returns_err_when_binary_missing() {
         let err = probe("/no/such/binary-jarvis-test").await.unwrap_err();
         assert!(err.contains("spawn"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn extra_args_round_trip_through_serde() {
+        // Wire-shape test: confirms the new field is in the JSON
+        // surface (so config-file callers can set it) and survives
+        // a round trip with the documented default (empty Vec).
+        let cfg = ClaudeCodeConfig {
+            claude_bin: "claude".into(),
+            model: Some("claude-sonnet-4-5".into()),
+            extra_args: vec!["--bare".into(), "--foo=bar".into()],
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(
+            json["extra_args"],
+            serde_json::json!(["--bare", "--foo=bar"])
+        );
+        let back: ClaudeCodeConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back.extra_args, vec!["--bare", "--foo=bar"]);
+    }
+
+    #[test]
+    fn extra_args_default_empty_when_legacy_json_omits_field() {
+        // Pre-extra_args configs on disk shouldn't fail to load:
+        // serde(default) keeps the Vec empty.
+        let json = serde_json::json!({
+            "claude_bin": "claude",
+            "model": null
+        });
+        let cfg: ClaudeCodeConfig = serde_json::from_value(json).unwrap();
+        assert!(cfg.extra_args.is_empty());
+    }
+
+    #[test]
+    fn extra_args_appear_in_assembled_command_before_task() {
+        // Sanity-check the spawn order: `--model` (when set) →
+        // `extra_args` → final task positional. We exercise the
+        // same argument-building shape `invoke` uses, against a
+        // sync `std::process::Command` so `get_args()` is stable.
+        use std::process::Command as StdCommand;
+        let cfg = ClaudeCodeConfig {
+            claude_bin: "claude".into(),
+            model: Some("claude-sonnet-4-5".into()),
+            extra_args: vec!["--bare".into()],
+        };
+        let mut cmd = StdCommand::new(&cfg.claude_bin);
+        cmd.args([
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ]);
+        if let Some(m) = &cfg.model {
+            cmd.args(["--model", m.as_str()]);
+        }
+        if !cfg.extra_args.is_empty() {
+            cmd.args(&cfg.extra_args);
+        }
+        cmd.arg("the task");
+
+        let args: Vec<&str> = cmd
+            .get_args()
+            .map(|s| s.to_str().expect("arg utf8"))
+            .collect();
+        let bare_idx = args
+            .iter()
+            .position(|a| *a == "--bare")
+            .expect("--bare present");
+        let task_idx = args
+            .iter()
+            .position(|a| *a == "the task")
+            .expect("task present");
+        assert!(
+            bare_idx < task_idx,
+            "extra_args must precede the task positional; got {args:?}"
+        );
+        let model_idx = args
+            .iter()
+            .position(|a| *a == "claude-sonnet-4-5")
+            .expect("model present");
+        assert!(
+            model_idx < bare_idx,
+            "--model value must precede extra_args; got {args:?}"
+        );
     }
 }

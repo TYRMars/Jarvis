@@ -45,6 +45,7 @@ export async function refreshChatRuns(): Promise<void> {
     }
     if (!r.ok) return;
     const rows = (await r.json()) as ServerChatRun[];
+    const seen = new Set(rows.map((row) => row.conversation_id));
     for (const row of rows) {
       appStore.getState().setConversationRunStatus(
         row.conversation_id,
@@ -68,6 +69,7 @@ export async function refreshChatRuns(): Promise<void> {
         trackedConversationIds.delete(row.conversation_id);
       }
     }
+    clearMissingLocalRuns(seen);
   } catch (e) {
     console.warn("chat run refresh failed", e);
   }
@@ -134,5 +136,24 @@ async function replayChatRunEvents(conversationId: string): Promise<void> {
 }
 
 function isActiveStatus(status: ServerChatRunStatus): boolean {
+  return status === "running" || status === "waiting_approval" || status === "waiting_hitl";
+}
+
+function clearMissingLocalRuns(seen: Set<string>): void {
+  const store = appStore.getState();
+  for (const run of Object.values(store.conversationRuns)) {
+    if (!isClientActiveStatus(run.status)) continue;
+    if (seen.has(run.conversationId)) continue;
+    if (isConversationSocketOpen(run.conversationId)) continue;
+    store.setConversationRunStatus(run.conversationId, "failed", {
+      currentTool: null,
+      lastError: "run state unavailable on server",
+    });
+    trackedConversationIds.delete(run.conversationId);
+    lastSeqByConversation.delete(run.conversationId);
+  }
+}
+
+function isClientActiveStatus(status: ConversationRunStatus): boolean {
   return status === "running" || status === "waiting_approval" || status === "waiting_hitl";
 }

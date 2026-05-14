@@ -13,6 +13,12 @@
 //! - `PATCH  /v1/requirements/:id`
 //!   — partial update (body: any subset of
 //!   `{title, description, status, conversation_ids}`)
+//! - `POST   /v1/requirements/:id/review`
+//!   — manually dispatch the reviewer subagent against a row at
+//!   `Review` status under `Subagent` acceptance policy. Returns
+//!   202 with `{dispatched: true, requirement_id}`; the run is
+//!   spawned in the background — clients poll
+//!   `GET /v1/requirements/:id/runs` for the freshly-minted run.
 //! - `POST   /v1/requirements/:id/conversations`
 //!   — link a conversation id (body: `{conversation_id}`); idempotent
 //! - `GET    /v1/requirements/:id/todos`
@@ -31,7 +37,7 @@
 //!   Returns `{run, conversation_id, manifest_summary, requirement}`.
 //!   Requires both a configured requirement store and a
 //!   conversation store; returns 503 otherwise. When the optional
-//!   [`RequirementRunStore`](harness_core::RequirementRunStore) is
+//!   [`RequirementRunStore`](harness_project::RequirementRunStore) is
 //!   configured the [`RequirementRun`] row is persisted (a
 //!   subscribe-time miss only loses telemetry, never the response).
 //! - `GET    /v1/requirements/:id/runs`
@@ -45,7 +51,7 @@
 //!   `requirement_run_finished` WS frame when the patch flips the
 //!   row to a terminal status.
 //! - `POST   /v1/runs/:id/verification`
-//!   — attach a [`VerificationResult`](harness_core::VerificationResult)
+//!   — attach a [`VerificationResult`](harness_project::VerificationResult)
 //!   to a run. Idempotent overwrite. Triggers a
 //!   `requirement_run_verified` WS frame; if the result is terminal
 //!   for the run the row is also flipped to `Completed` / `Failed`
@@ -55,7 +61,7 @@
 //!
 //! WS clients subscribe via the existing chat socket; the broadcast
 //! bridge in `routes.rs` filters [`RequirementEvent`]s and
-//! [`RequirementRunEvent`](harness_core::RequirementRunEvent)s and
+//! [`RequirementRunEvent`](harness_project::RequirementRunEvent)s and
 //! forwards as `requirement_upserted` / `requirement_deleted` /
 //! `requirement_run_started` / `requirement_run_finished` /
 //! `requirement_run_verified` frames.
@@ -69,13 +75,8 @@ use axum::{
     routing::{get, patch, post},
     Router,
 };
-use harness_core::{
-    Activity, ActivityActor, ActivityKind, ActivityStore, Conversation, ConversationMetadata,
-    Message, Requirement, RequirementRun, RequirementRunEvent, RequirementRunLogLevel,
-    RequirementRunStatus, RequirementRunStore, RequirementStatus, RequirementStore,
-    RequirementTodo, RequirementTodoCreator, RequirementTodoEvidence, RequirementTodoKind,
-    RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult, VerificationStatus,
-};
+use harness_core::{Conversation, ConversationMetadata, Message};
+use harness_project::{AcceptancePolicy, Activity, ActivityActor, ActivityKind, ActivityStore, Requirement, RequirementRun, RequirementRunEvent, RequirementRunLogLevel, RequirementRunStatus, RequirementRunStore, RequirementStatus, RequirementStore, RequirementTodo, RequirementTodoCreator, RequirementTodoEvidence, RequirementTodoKind, RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult, VerificationStatus};
 use harness_requirement::{build_default_manifest, render_manifest_summary};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -95,6 +96,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/v1/requirements/:id/approve", post(approve_requirement))
         .route("/v1/requirements/:id/reject", post(reject_requirement))
+        .route("/v1/requirements/:id/review", post(dispatch_review))
         .route(
             "/v1/requirements/:id/conversations",
             post(link_conversation),
@@ -624,6 +626,123 @@ async fn reject_requirement(
         }
         Err(e) => internal_error(e),
     }
+}
+
+// ----------------------- POST /v1/requirements/:id/review ----------------
+
+/// Manually dispatch the reviewer subagent against a Requirement
+/// that's at `Review` status under the `Subagent` acceptance policy.
+///
+/// Mirrors the auto-mode reviewer pickup but is operator-initiated:
+/// useful when `JARVIS_REVIEWER_AUTO_ACCEPT=0` (the default) and a
+/// human wants to ask Jarvis to verify a completed run on demand,
+/// or when the auto picker has skipped the row (e.g. the
+/// `review_completed_awaiting_acceptance` skip guard fired) and the
+/// operator decides to override.
+///
+/// Wire shape:
+///
+/// - **Success:** `202 Accepted` with
+///   `{ "dispatched": true, "requirement_id": "<id>" }`. The run row
+///   itself is minted asynchronously by the spawned `drive_one`
+///   pickup — clients poll `GET /v1/requirements/:id/runs` (or
+///   subscribe to the chat WS for `requirement_run_started` frames)
+///   to discover the new run id.
+/// - **404:** unknown requirement id.
+/// - **409 `requirement not at review`:** the row isn't at Review.
+///   Reviewer dispatch only makes sense after a work run has flipped
+///   the row to Review; flipping earlier or later is an operator
+///   error.
+/// - **409 `human-policy requirement; complete manually`:** the row
+///   carries `acceptance_policy=Human`. By contract the reviewer
+///   subagent is **not** invoked under Human policy — a human must
+///   click Complete in the kanban detail panel.
+/// - **503:** the requirement store isn't configured, or
+///   `subagent.review` isn't registered in the tool registry (e.g.
+///   the binary was built without harness-subagents, or the reviewer
+///   was muted).
+///
+/// Idempotency: the spawned task respects the same in-flight claim
+/// as `spawn_background_run`, so repeated POSTs while a previous
+/// dispatch is still running are no-ops (the background task logs
+/// INFO and bails). Clients that want strict at-most-once should
+/// gate on the run history.
+async fn dispatch_review(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let item = match store.get(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("requirement `{id}` not found") })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_error(e),
+    };
+    if item.status != RequirementStatus::Review {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "requirement not at review",
+                "status": item.status.as_wire(),
+            })),
+        )
+            .into_response();
+    }
+    if item.acceptance_policy != AcceptancePolicy::Subagent {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "human-policy requirement; complete manually",
+                "acceptance_policy": item.acceptance_policy.as_wire(),
+            })),
+        )
+            .into_response();
+    }
+    // Verify `subagent.review` is actually in the tool registry. A
+    // muted tool still counts as present (the agent simply doesn't
+    // see it on a per-request snapshot, but the binary advertises
+    // it as available).
+    let has_reviewer = match state.tools.read() {
+        Ok(reg) => reg.contains("subagent.review"),
+        Err(_) => false,
+    };
+    if !has_reviewer {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "subagent.review tool not registered",
+            })),
+        )
+            .into_response();
+    }
+    record_activity(
+        &state,
+        &item.id,
+        ActivityKind::Comment,
+        ActivityActor::Human,
+        json!({
+            "kind": "reviewer_dispatched_manually",
+        }),
+    )
+    .await;
+    crate::auto_mode::spawn_background_run(state.clone(), item.clone());
+    info!(
+        requirement_id = %item.id,
+        "manual reviewer dispatch spawned"
+    );
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "dispatched": true,
+            "requirement_id": item.id,
+        })),
+    )
+        .into_response()
 }
 
 // ----------------------- POST /v1/requirements/:id/conversations ---------
@@ -2514,7 +2633,7 @@ mod tests {
         let req_store: Arc<dyn RequirementStore> = Arc::new(MemoryRequirementStore::new());
         let convo_store: Arc<dyn harness_core::ConversationStore> =
             Arc::new(MemoryConversationStore::new());
-        let proj_store: Arc<dyn harness_core::ProjectStore> = Arc::new(MemoryProjectStore::new());
+        let proj_store: Arc<dyn harness_project::ProjectStore> = Arc::new(MemoryProjectStore::new());
         base_state()
             .with_requirement_store(req_store)
             .with_store(convo_store)
@@ -2811,7 +2930,7 @@ mod tests {
 
         // The store should fan out a Finished event.
         match rx.recv().await.unwrap() {
-            harness_core::RequirementRunEvent::Finished(run) => {
+            harness_project::RequirementRunEvent::Finished(run) => {
                 assert_eq!(run.id, run_id);
                 assert_eq!(run.status.as_wire(), "completed");
             }
@@ -2872,11 +2991,11 @@ mod tests {
         // (RunStarted append happens after StatusChange, so it has
         // the later timestamp).
         assert_eq!(acts.len(), 2);
-        assert_eq!(acts[0].kind, harness_core::ActivityKind::RunStarted);
-        assert_eq!(acts[1].kind, harness_core::ActivityKind::StatusChange);
+        assert_eq!(acts[0].kind, harness_project::ActivityKind::RunStarted);
+        assert_eq!(acts[1].kind, harness_project::ActivityKind::StatusChange);
         // System actor on the auto-advance, Human on the run start.
-        assert_eq!(acts[1].actor, harness_core::ActivityActor::System);
-        assert_eq!(acts[0].actor, harness_core::ActivityActor::Human);
+        assert_eq!(acts[1].actor, harness_project::ActivityActor::System);
+        assert_eq!(acts[0].actor, harness_project::ActivityActor::Human);
     }
 
     #[tokio::test]
@@ -2983,10 +3102,10 @@ mod tests {
         let kinds: Vec<&str> = acts
             .iter()
             .map(|a| match a.kind {
-                harness_core::ActivityKind::StatusChange => "status",
-                harness_core::ActivityKind::RunStarted => "run_started",
-                harness_core::ActivityKind::RunFinished => "run_finished",
-                harness_core::ActivityKind::VerificationFinished => "verify",
+                harness_project::ActivityKind::StatusChange => "status",
+                harness_project::ActivityKind::RunStarted => "run_started",
+                harness_project::ActivityKind::RunFinished => "run_finished",
+                harness_project::ActivityKind::VerificationFinished => "verify",
                 _ => "other",
             })
             .collect();
@@ -3072,8 +3191,8 @@ mod tests {
         // Activity should include verification_finished + run_finished.
         let acts = act_store.list_for_requirement(&req_id).await.unwrap();
         let kinds: Vec<_> = acts.iter().map(|a| a.kind).collect();
-        assert!(kinds.contains(&harness_core::ActivityKind::VerificationFinished));
-        assert!(kinds.contains(&harness_core::ActivityKind::RunFinished));
+        assert!(kinds.contains(&harness_project::ActivityKind::VerificationFinished));
+        assert!(kinds.contains(&harness_project::ActivityKind::RunFinished));
     }
 
     #[tokio::test]
@@ -3086,10 +3205,10 @@ mod tests {
             .with_workspace_root(fallback.path().to_path_buf())
             .with_workspaces(Arc::new(WorkspaceStore::open(None)));
 
-        let mut project = harness_core::Project::new("Bound Project", "instructions");
+        let mut project = harness_project::Project::new("Bound Project", "instructions");
         project.slug = "bound-project".into();
         let project_path = std::fs::canonicalize(project_dir.path()).unwrap();
-        project.set_workspaces(vec![harness_core::ProjectWorkspace::new(
+        project.set_workspaces(vec![harness_project::ProjectWorkspace::new(
             project_path.display().to_string(),
         )]);
         state
@@ -3332,8 +3451,8 @@ mod tests {
         let mut saw_verified = false;
         for _ in 0..2 {
             match rx.recv().await.unwrap() {
-                harness_core::RequirementRunEvent::Finished(_) => saw_finished = true,
-                harness_core::RequirementRunEvent::Verified { run_id: id, .. } => {
+                harness_project::RequirementRunEvent::Finished(_) => saw_finished = true,
+                harness_project::RequirementRunEvent::Verified { run_id: id, .. } => {
                     assert_eq!(id, run_id);
                     saw_verified = true;
                 }
@@ -3356,22 +3475,22 @@ mod tests {
         // Seed a Pending run by directly upserting (mirrors the
         // post-`start_run` shape — Pending status, conversation_id
         // tying it to a WS turn that is about to terminate).
-        let mut orphan = harness_core::RequirementRun::new("req-1", "conv-X");
+        let mut orphan = harness_project::RequirementRun::new("req-1", "conv-X");
         // Promote to Running so we cover the realistic post-start
         // state (the frontend PATCHes "running" right after it gets
         // the run id).
-        orphan.status = harness_core::RequirementRunStatus::Running;
+        orphan.status = harness_project::RequirementRunStatus::Running;
         run_store.upsert(&orphan).await.unwrap();
 
         // A second run on the same requirement but a DIFFERENT
         // conversation — must NOT be touched.
-        let unrelated = harness_core::RequirementRun::new("req-1", "conv-OTHER");
+        let unrelated = harness_project::RequirementRun::new("req-1", "conv-OTHER");
         run_store.upsert(&unrelated).await.unwrap();
 
         // A third run on the target conversation that's already
         // terminal — also must NOT be touched (idempotency).
-        let mut already_done = harness_core::RequirementRun::new("req-1", "conv-X");
-        already_done.finish(harness_core::RequirementRunStatus::Completed);
+        let mut already_done = harness_project::RequirementRun::new("req-1", "conv-X");
+        already_done.finish(harness_project::RequirementRunStatus::Completed);
         run_store.upsert(&already_done).await.unwrap();
 
         super::reconcile_runs_for_conversation(&state, "conv-X", true, None).await;
@@ -3382,7 +3501,7 @@ mod tests {
 
         assert_eq!(
             by_id.get(&orphan.id).unwrap().status,
-            harness_core::RequirementRunStatus::Completed,
+            harness_project::RequirementRunStatus::Completed,
             "orphan run was reconciled"
         );
         assert!(
@@ -3391,12 +3510,12 @@ mod tests {
         );
         assert_eq!(
             by_id.get(&unrelated.id).unwrap().status,
-            harness_core::RequirementRunStatus::Pending,
+            harness_project::RequirementRunStatus::Pending,
             "unrelated conversation untouched"
         );
         assert_eq!(
             by_id.get(&already_done.id).unwrap().status,
-            harness_core::RequirementRunStatus::Completed,
+            harness_project::RequirementRunStatus::Completed,
             "already-terminal run not double-flipped"
         );
     }
@@ -3404,8 +3523,8 @@ mod tests {
     #[tokio::test]
     async fn reconcile_runs_for_conversation_marks_failed_on_error() {
         let (state, run_store, _act_store) = state_with_activities();
-        let mut orphan = harness_core::RequirementRun::new("req-2", "conv-Y");
-        orphan.status = harness_core::RequirementRunStatus::Running;
+        let mut orphan = harness_project::RequirementRun::new("req-2", "conv-Y");
+        orphan.status = harness_project::RequirementRunStatus::Running;
         run_store.upsert(&orphan).await.unwrap();
 
         super::reconcile_runs_for_conversation(
@@ -3419,7 +3538,7 @@ mod tests {
         let after = run_store.get(&orphan.id).await.unwrap().unwrap();
         assert_eq!(
             after.status,
-            harness_core::RequirementRunStatus::Failed
+            harness_project::RequirementRunStatus::Failed
         );
         assert_eq!(
             after.error.as_deref(),
@@ -3442,7 +3561,7 @@ mod tests {
     /// own data.
     async fn sweep_test_state() -> (
         AppState,
-        Arc<dyn harness_core::ProjectStore>,
+        Arc<dyn harness_project::ProjectStore>,
         Arc<dyn RequirementStore>,
         Arc<dyn RequirementRunStore>,
         Arc<dyn harness_core::ConversationStore>,
@@ -3452,11 +3571,11 @@ mod tests {
         let run_store: Arc<dyn RequirementRunStore> = Arc::new(MemoryRequirementRunStore::new());
         let convo_store: Arc<dyn harness_core::ConversationStore> =
             Arc::new(MemoryConversationStore::new());
-        let proj_store: Arc<dyn harness_core::ProjectStore> =
+        let proj_store: Arc<dyn harness_project::ProjectStore> =
             Arc::new(MemoryProjectStore::new());
         let act_store: Arc<dyn ActivityStore> = Arc::new(MemoryActivityStore::new());
 
-        let project = harness_core::Project::new("svelte-learn", "");
+        let project = harness_project::Project::new("svelte-learn", "");
         let project_id = project.id.clone();
         proj_store.save(&project).await.unwrap();
 
@@ -3491,12 +3610,12 @@ mod tests {
         let (state, _proj, req_store, run_store, convo_store, project_id) =
             sweep_test_state().await;
 
-        let mut req = harness_core::Requirement::new(&project_id, "stuck requirement");
+        let mut req = harness_project::Requirement::new(&project_id, "stuck requirement");
         req.status = RequirementStatus::InProgress;
         req_store.upsert(&req).await.unwrap();
 
-        let mut run = harness_core::RequirementRun::new(&req.id, "conv-A");
-        run.status = harness_core::RequirementRunStatus::Cancelled;
+        let mut run = harness_project::RequirementRun::new(&req.id, "conv-A");
+        run.status = harness_project::RequirementRunStatus::Cancelled;
         run.finished_at = Some("2026-05-08T19:08:26+00:00".into());
         run.error = Some("auto-mode reaper".into());
         run_store.upsert(&run).await.unwrap();
@@ -3514,7 +3633,7 @@ mod tests {
         let after_run = run_store.get(&run.id).await.unwrap().unwrap();
         assert_eq!(
             after_run.status,
-            harness_core::RequirementRunStatus::Completed
+            harness_project::RequirementRunStatus::Completed
         );
         assert!(after_run.error.is_none(), "reaper error string cleared");
         let after_req = req_store.get(&req.id).await.unwrap().unwrap();
@@ -3529,12 +3648,12 @@ mod tests {
         let (state, _proj, req_store, run_store, convo_store, project_id) =
             sweep_test_state().await;
 
-        let mut req = harness_core::Requirement::new(&project_id, "crashed requirement");
+        let mut req = harness_project::Requirement::new(&project_id, "crashed requirement");
         req.status = RequirementStatus::InProgress;
         req_store.upsert(&req).await.unwrap();
 
-        let mut run = harness_core::RequirementRun::new(&req.id, "conv-B");
-        run.status = harness_core::RequirementRunStatus::Running;
+        let mut run = harness_project::RequirementRun::new(&req.id, "conv-B");
+        run.status = harness_project::RequirementRunStatus::Running;
         run_store.upsert(&run).await.unwrap();
 
         save_convo(
@@ -3547,7 +3666,7 @@ mod tests {
         let n = super::sweep_orphan_requirements_on_startup(&state).await;
         assert_eq!(n, 1);
         let after = run_store.get(&run.id).await.unwrap().unwrap();
-        assert_eq!(after.status, harness_core::RequirementRunStatus::Completed);
+        assert_eq!(after.status, harness_project::RequirementRunStatus::Completed);
     }
 
     /// Negative case: latest run is `Failed` — that's a legitimate
@@ -3559,12 +3678,12 @@ mod tests {
         let (state, _proj, req_store, run_store, convo_store, project_id) =
             sweep_test_state().await;
 
-        let mut req = harness_core::Requirement::new(&project_id, "really failed");
+        let mut req = harness_project::Requirement::new(&project_id, "really failed");
         req.status = RequirementStatus::InProgress;
         req_store.upsert(&req).await.unwrap();
 
-        let mut run = harness_core::RequirementRun::new(&req.id, "conv-C");
-        run.status = harness_core::RequirementRunStatus::Failed;
+        let mut run = harness_project::RequirementRun::new(&req.id, "conv-C");
+        run.status = harness_project::RequirementRunStatus::Failed;
         run.error = Some("verification failed".into());
         run_store.upsert(&run).await.unwrap();
 
@@ -3578,7 +3697,7 @@ mod tests {
         let n = super::sweep_orphan_requirements_on_startup(&state).await;
         assert_eq!(n, 0, "Failed runs are not candidates");
         let after = run_store.get(&run.id).await.unwrap().unwrap();
-        assert_eq!(after.status, harness_core::RequirementRunStatus::Failed);
+        assert_eq!(after.status, harness_project::RequirementRunStatus::Failed);
     }
 
     /// Negative case: the conversation's last message is from the
@@ -3589,12 +3708,12 @@ mod tests {
         let (state, _proj, req_store, run_store, convo_store, project_id) =
             sweep_test_state().await;
 
-        let mut req = harness_core::Requirement::new(&project_id, "ambiguous");
+        let mut req = harness_project::Requirement::new(&project_id, "ambiguous");
         req.status = RequirementStatus::InProgress;
         req_store.upsert(&req).await.unwrap();
 
-        let mut run = harness_core::RequirementRun::new(&req.id, "conv-D");
-        run.status = harness_core::RequirementRunStatus::Cancelled;
+        let mut run = harness_project::RequirementRun::new(&req.id, "conv-D");
+        run.status = harness_project::RequirementRunStatus::Cancelled;
         run_store.upsert(&run).await.unwrap();
 
         save_convo(
@@ -3616,12 +3735,12 @@ mod tests {
         let (state, _proj, req_store, run_store, convo_store, project_id) =
             sweep_test_state().await;
 
-        let mut req = harness_core::Requirement::new(&project_id, "already reviewed");
+        let mut req = harness_project::Requirement::new(&project_id, "already reviewed");
         req.status = RequirementStatus::Review;
         req_store.upsert(&req).await.unwrap();
 
-        let mut run = harness_core::RequirementRun::new(&req.id, "conv-E");
-        run.status = harness_core::RequirementRunStatus::Cancelled;
+        let mut run = harness_project::RequirementRun::new(&req.id, "conv-E");
+        run.status = harness_project::RequirementRunStatus::Cancelled;
         run_store.upsert(&run).await.unwrap();
 
         save_convo(

@@ -31,10 +31,11 @@ import { RequirementLabelChips, useEnsureLabels } from "./RequirementLabels";
 import { ProjectLessonsPanel } from "./ProjectLessonsPanel";
 import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
+import { FilesSurface } from "../Workspace/FilesSurface";
 import { Modal } from "../ui";
 import { parseRoadmapDescription } from "./roadmapDescription";
 
-type ProjectBoardTab = "board" | "data";
+type ProjectBoardTab = "board" | "data" | "files";
 
 // The kanban board for a single project: header row, optional inline
 // "create requirement" panel, four columns (one per RequirementStatus).
@@ -441,6 +442,28 @@ export function ProjectBoard({
             </svg>
             <span>{t("projectTabData")}</span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "files"}
+            className={"project-board-tab" + (activeTab === "files" ? " active" : "")}
+            onClick={() => setActiveTab("files")}
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+            </svg>
+            <span>{t("projectTabFiles")}</span>
+          </button>
         </div>
         <div className="project-board-toolbar-meta">
           <span className="project-board-count tabular-nums">
@@ -456,6 +479,10 @@ export function ProjectBoard({
             requirements={boardRequirements}
             onOpenDetail={(id) => setSelectedId(id)}
           />
+        </div>
+      ) : activeTab === "files" ? (
+        <div role="tabpanel" className="project-board-tab-panel project-board-tab-panel-files">
+          <FilesSurface project={project} />
         </div>
       ) : (
         <div role="tabpanel" className="project-board-tab-panel">

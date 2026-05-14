@@ -11,15 +11,47 @@ interface KpiCardProps {
   label: string;
   value: string;
   hint?: string;
+  formulaLines?: string[];
   tone?: "neutral" | "danger" | "ok";
   icon: ReactNode;
   loading?: boolean;
+}
+
+function FormulaHint({ lines }: { lines: string[] }) {
+  return (
+    <span className="harness-formula-hint">
+      <button
+        type="button"
+        aria-label={t("harnessMetricFormulaLabel")}
+        title={t("harnessMetricFormulaLabel")}
+        className="harness-formula-icon"
+      >
+        i
+      </button>
+      <span className="harness-formula-tooltip" role="tooltip">
+        {lines.map((line) => (
+          <span key={line}>{line}</span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+function LabelWithHint({ label, lines }: { label: string; lines?: string[] }) {
+  if (!lines || lines.length === 0) return <span>{label}</span>;
+  return (
+    <span className="harness-metric-label-with-hint">
+      {label}
+      <FormulaHint lines={lines} />
+    </span>
+  );
 }
 
 function KpiCard({
   label,
   value,
   hint,
+  formulaLines,
   tone = "neutral",
   icon,
   loading = false,
@@ -38,7 +70,9 @@ function KpiCard({
         <span className="work-kpi-icon" aria-hidden="true">
           {icon}
         </span>
-        <span className="work-kpi-label">{label}</span>
+        <span className="work-kpi-label">
+          <LabelWithHint label={label} lines={formulaLines} />
+        </span>
       </div>
       {loading ? (
         <div className="work-kpi-skeleton" aria-hidden="true" />
@@ -105,6 +139,7 @@ export function KpiStrip({ overview, loading }: Props) {
       <KpiCard
         label={t("kpiRunningNow")}
         value={runningNow === null ? placeholder : String(runningNow)}
+        formulaLines={[t("kpiRunningNowHint")]}
         tone={runningNow && runningNow > 0 ? "ok" : "neutral"}
         icon={<RunningIcon />}
         loading={loading && runningNow === null}
@@ -112,6 +147,7 @@ export function KpiStrip({ overview, loading }: Props) {
       <KpiCard
         label={t("kpiFailedInWindow")}
         value={failed === null ? placeholder : String(failed)}
+        formulaLines={[t("kpiFailedInWindowHint")]}
         tone={failed && failed > 0 ? "danger" : "neutral"}
         icon={<FailedIcon />}
         loading={loading && failed === null}
@@ -119,6 +155,7 @@ export function KpiStrip({ overview, loading }: Props) {
       <KpiCard
         label={t("kpiCompletedInWindow")}
         value={completed === null ? placeholder : String(completed)}
+        formulaLines={[t("kpiCompletedInWindowHint")]}
         tone={completed && completed > 0 ? "ok" : "neutral"}
         icon={<CompletedIcon />}
         loading={loading && completed === null}
@@ -131,6 +168,7 @@ export function KpiStrip({ overview, loading }: Props) {
             ? t("kpiVerificationPassRateNoData")
             : undefined
         }
+        formulaLines={[t("kpiVerificationPassRateHint")]}
         icon={<PassRateIcon />}
         loading={loading && (passRate === null || passRate === undefined)}
         tone={

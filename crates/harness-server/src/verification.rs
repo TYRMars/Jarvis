@@ -34,7 +34,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use harness_core::{CommandResult, VerificationPlan, VerificationResult, VerificationStatus};
+use harness_project::{CommandResult, VerificationPlan, VerificationResult, VerificationStatus};
 use tokio::process::Command;
 
 /// Per-command output cap. Mirrors `harness_tools::shell::SHELL_OUTPUT_CAP`

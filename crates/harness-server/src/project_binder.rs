@@ -1,4 +1,4 @@
-//! Late-binding [`Project`](harness_core::Project) injection.
+//! Late-binding [`Project`](harness_project::Project) injection.
 //!
 //! For every turn of every project-bound conversation we want the
 //! project's current `instructions` to reach the LLM as part of the
@@ -39,7 +39,8 @@
 
 use std::sync::Arc;
 
-use harness_core::{BoxError, Conversation, Message, ProjectStore};
+use harness_core::{BoxError, Conversation, Message};
+use harness_project::{ProjectStore};
 use tracing::warn;
 
 use crate::project_memory::{load_project_memory_prompt, ProjectMemoryConfig};
@@ -167,7 +168,7 @@ fn leading_system_count(messages: &[Message]) -> usize {
 /// `injected_at` index without parsing the body. The trailing
 /// `=== /project ===` close marker isn't required for stripping but
 /// reads more naturally as a delimited block.
-fn render_project_block(project: &harness_core::Project) -> String {
+fn render_project_block(project: &harness_project::Project) -> String {
     let mut out = String::with_capacity(256);
     out.push_str("=== project: ");
     out.push_str(&project.name);
@@ -213,7 +214,8 @@ fn render_project_block(project: &harness_core::Project) -> String {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use harness_core::{BoxError, Project};
+    use harness_core::{BoxError};
+use harness_project::{Project};
     use std::collections::HashMap;
     use tokio::sync::RwLock;
 
@@ -308,11 +310,11 @@ mod tests {
             .with_slug("jarvis-product")
             .with_description("Upper-layer product workspace.");
         p.set_workspaces(vec![
-            harness_core::ProjectWorkspace {
+            harness_project::ProjectWorkspace {
                 path: "/Users/zj/Jarvis".into(),
                 name: Some("Repo".into()),
             },
-            harness_core::ProjectWorkspace::new("/Users/zj/Notes"),
+            harness_project::ProjectWorkspace::new("/Users/zj/Notes"),
         ]);
         let pid = p.id.clone();
         store.put(p).await;

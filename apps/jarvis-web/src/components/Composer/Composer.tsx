@@ -102,10 +102,6 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
     if (store.inFlight) return;
     const raw = value.trim();
     if (!raw) return;
-    // Flip the gate FIRST so the second click bails before pushing
-    // a duplicate user bubble. Roll back if the WS send actually
-    // fails — the user shouldn't be locked out by a closed socket.
-    store.setInFlight(true);
     const content = expandPaste(raw);
     const { provider, model } = pickedRouting();
     if (store.persistEnabled) {
@@ -137,6 +133,10 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
       store.saveConversationSurface(conversationId);
       return;
     }
+    // Non-persisted sessions use the shared socket service, which
+    // does not synchronously create a per-conversation run. Flip the
+    // gate before sending so same-tick duplicate submits are blocked.
+    store.setInFlight(true);
     if (!isOpen()) {
       showBanner(t("websocketNotConnected"));
       store.setInFlight(false);

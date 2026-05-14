@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Claude Code-style plugin packaging for the agent harness — install / uninstall plugins that bundle skills + MCP servers."
 
 [dependencies]
+harness-channel.workspace = true
 harness-core.workspace = true
 harness-mcp.workspace = true
 harness-skill.workspace = true

@@ -7,7 +7,10 @@ rust-version.workspace = true
 description = "Built-in `Tool` implementations: echo, time, http.fetch, fs.{read,list,write,edit}, code.grep, shell.exec, codex.run, claude_code.run."
 
 [dependencies]
+harness-channel.workspace = true
 harness-core.workspace = true
+harness-observability.workspace = true
+harness-project.workspace = true
 harness-requirement.workspace = true
 async-trait.workspace = true
 serde.workspace = true

@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_core::{
-    BoxError, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteKind, ObservabilityFilter,
-    ObservabilityStore, ObservedOutcome, ObservedRun, ObservedRunKind, RequirementRun,
-    RequirementRunStatus, RequirementRunStore, Tool, ToolCategory, VerificationStatus,
+use harness_core::{BoxError, Tool, ToolCategory};
+use harness_observability::{EvalCaseResult, EvalFilter, EvalStore, EvalSuiteKind, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun, ObservedRunKind};
+use harness_project::{
+    RequirementRun, RequirementRunStatus, RequirementRunStore, VerificationStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1059,7 +1059,7 @@ fn short_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::{RequirementRun, VerificationResult};
+    use harness_project::{RequirementRun, VerificationResult};
     use harness_store::MemoryRequirementRunStore;
 
     #[tokio::test]

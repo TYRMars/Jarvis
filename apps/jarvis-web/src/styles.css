@@ -8016,9 +8016,163 @@ body.approvals-open #panel {
   font-size: var(--fs-12);
   font-family: var(--font-mono, monospace);
 }
+.channels-row-direction {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+.channels-row-callback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel-raised, var(--panel));
+}
+.channels-row-callback-label {
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.channels-row-callback-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-12);
+  color: var(--text);
+}
+.settings-btn.ghost {
+  background: transparent;
+  border-color: var(--border-soft);
+}
 .channels-row-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* QR-code drawer under the OAuth login URL row. Renders only when
+   the operator toggles the "QR" button on; off by default to keep
+   the row compact. */
+.channels-row-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 8px;
+  background: #ffffff;
+  /* QR contrast is finicky in dark mode — force a white background
+     under the SVG so phone cameras lock on reliably regardless of
+     the surrounding theme. */
+}
+.channels-row-qr-caption {
+  font-size: var(--fs-12, 12px);
+  color: var(--text-soft);
+  max-width: 280px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+/* OAuth result landing page — standalone (no sidebar), reached only
+   via the WeCom OAuth callback. Centered card, generous padding,
+   reads well on mobile. */
+.oauth-result-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--panel, #f7f7f8);
+}
+.oauth-result-card {
+  width: min(480px, 100%);
+  padding: 32px 28px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--panel-raised, #ffffff);
+  text-align: center;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+.oauth-result-icon {
+  font-size: 48px;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+.oauth-result-icon-error {
+  filter: saturate(0.7);
+}
+.oauth-result-title {
+  font-size: var(--fs-18, 20px);
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: var(--text);
+}
+.oauth-result-subtitle {
+  font-size: var(--fs-14, 14px);
+  color: var(--text-soft);
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+.oauth-result-field {
+  text-align: left;
+  margin-top: 16px;
+}
+.oauth-result-field-label {
+  font-size: var(--fs-12, 12px);
+  font-weight: 600;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.oauth-result-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.oauth-result-userid {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-13, 13px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-result-ctx {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-12, 12px);
+  word-break: break-all;
+  white-space: pre-wrap;
+  color: var(--text-soft);
+}
+.oauth-result-actions {
+  margin-top: 24px;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
   flex-wrap: wrap;
 }
 .settings-btn.danger {
@@ -14534,6 +14688,26 @@ select.settings-input {
   font-size: var(--fs-12);
   color: var(--text);
   line-height: 1.4;
+}
+
+.settings-agent-builtins-hint {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  font-size: var(--fs-11);
+  color: var(--text-soft);
+  line-height: 1.5;
+  background: var(--bg-soft, rgba(0, 0, 0, 0.02));
+  border: 1px dashed var(--border-soft);
+  border-radius: 6px;
+}
+
+.settings-agent-builtins-hint code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--fs-11);
+  color: var(--text);
+  padding: 1px 4px;
+  background: var(--bg, rgba(0, 0, 0, 0.04));
+  border-radius: 3px;
 }
 
 /* ----- Settings → Diagnostics (Phase 5b) ----- */

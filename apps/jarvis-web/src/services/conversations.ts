@@ -5,6 +5,7 @@
 // from the store, so we just dispatch and the UI catches up.
 
 import { appStore } from "../store/appStore";
+import { confirm } from "../components/ui";
 import { t } from "../utils/i18n";
 import { apiUrl } from "./api";
 import { sendFrame } from "./socket";
@@ -140,7 +141,12 @@ export async function deleteConversation(id: string): Promise<void> {
     showError(t("turnInProgress"));
     return;
   }
-  if (!confirm(t("deleteConfirm", id.slice(0, 8)))) return;
+  const ok = await confirm({
+    title: t("deleteConfirm", id.slice(0, 8)),
+    danger: true,
+    confirmLabel: t("uiConfirmDeleteOk"),
+  });
+  if (!ok) return;
   try {
     const r = await fetch(
       apiUrl(`/v1/conversations/${encodeURIComponent(id)}`),
@@ -202,7 +208,12 @@ export async function setConversationLifecycle(
 /// RequirementRuns. Returns true if the user confirmed and the
 /// server accepted; false if cancelled or errored.
 export async function abandonConversation(id: string): Promise<boolean> {
-  if (!confirm(t("abandonConfirm", id.slice(0, 8)))) return false;
+  const ok = await confirm({
+    title: t("abandonConfirm", id.slice(0, 8)),
+    danger: true,
+    confirmLabel: t("abandon"),
+  });
+  if (!ok) return false;
   try {
     await setConversationLifecycle(id, "abandoned");
     void refreshConvoList();

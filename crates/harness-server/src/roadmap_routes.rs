@@ -6,9 +6,9 @@
 //! - `POST /v1/roadmap/import` — scan the workspace for proposal-style
 //!   markdown (`docs/proposals/`, `docs/roadmap/`, `roadmap/`, or
 //!   `ROADMAP.md`), parse each file's `**Status:**` line, and
-//!   create / update one [`Requirement`](harness_core::Requirement)
+//!   create / update one [`Requirement`](harness_project::Requirement)
 //!   per proposal under a workspace-derived
-//!   [`Project`](harness_core::Project). Returns the
+//!   [`Project`](harness_project::Project). Returns the
 //!   [`ImportSummary`](harness_requirement::ImportSummary) directly
 //!   as the JSON body.
 //!
@@ -32,6 +32,7 @@ use serde_json::json;
 use tracing::error;
 
 use crate::state::AppState;
+use crate::state_layers::{ProjectLayer, WorkspaceLayer};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new().route("/v1/roadmap/import", post(import))
@@ -54,16 +55,16 @@ fn internal_error(e: impl std::fmt::Display) -> Response {
         .into_response()
 }
 
-async fn import(State(state): State<AppState>, body: Option<Json<ImportOptions>>) -> Response {
-    let projects = match state.projects.clone() {
+async fn import(State(project): State<ProjectLayer>, State(ws): State<WorkspaceLayer>, body: Option<Json<ImportOptions>>) -> Response {
+    let projects = match project.projects.clone() {
         Some(s) => s,
         None => return unavailable("project store not configured; set JARVIS_DB_URL"),
     };
-    let requirements = match state.requirements.clone() {
+    let requirements = match project.requirements.clone() {
         Some(s) => s,
         None => return unavailable("requirement store not configured; set JARVIS_DB_URL"),
     };
-    let workspace = match state.workspace_root.clone() {
+    let workspace = match ws.root.clone() {
         Some(p) => p,
         None => {
             return unavailable(

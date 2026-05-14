@@ -3,8 +3,8 @@
 //! Run records (`RequirementRun`, `RequirementRunStatus`) and
 //! verification value types (`VerificationPlan` / `VerificationResult`
 //! / `VerificationStatus` / `CommandResult`) live in
-//! [`harness_core::requirement_run`] so the
-//! [`harness_core::RequirementRunStore`] trait can name them without
+//! [`harness_project::requirement_run`] so the
+//! [`harness_project::RequirementRunStore`] trait can name them without
 //! pulling `harness-requirement` into `harness-core`. They are
 //! re-exported from `crate::lib` for callers that historically
 //! imported `harness_requirement::RequirementRun` etc.
@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use harness_core::requirement_run::VerificationPlan;
+pub use harness_project::requirement_run::VerificationPlan;
 
 // ---------- RequirementContextManifest ------------------------------------
 

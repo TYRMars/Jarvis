@@ -197,6 +197,19 @@ export interface NewClientFrame {
   workspace_path?: string;
 }
 
+export interface StartTurnClientFrame {
+  type: "start_turn";
+  mode: "new" | "resume";
+  id: string;
+  content: string;
+  model?: string;
+  provider?: string;
+  soul_prompt?: string;
+  project_id?: string;
+  workspace_path?: string;
+  active_skills?: string[];
+}
+
 export interface ConfigureClientFrame {
   type: "configure";
   model?: string;
@@ -227,6 +240,7 @@ export type ClientFrame =
   | ResetClientFrame
   | ResumeClientFrame
   | NewClientFrame
+  | StartTurnClientFrame
   | ConfigureClientFrame
   | ApproveClientFrame
   | DenyClientFrame

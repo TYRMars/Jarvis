@@ -18,6 +18,9 @@ tokio = { workspace = true, features = ["sync"] }
 uuid.workspace = true
 chrono.workspace = true
 utoipa.workspace = true
+# PII-redaction helper hashes identifiers with SHA-256 before they
+# hit logs (see `crate::redact`).
+sha2.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }

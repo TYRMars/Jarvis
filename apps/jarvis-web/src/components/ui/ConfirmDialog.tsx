@@ -27,6 +27,7 @@
 //     `confirm` → `await confirm` mechanical edit.
 
 import { useEffect, useState, type ReactNode } from "react";
+import { Button } from "./Button";
 import { Modal } from "./Modal";
 import { t } from "../../utils/i18n";
 
@@ -121,24 +122,16 @@ export function ConfirmDialogHost() {
     >
       {req?.detail ? <p className="ui-confirm-detail">{req.detail}</p> : null}
       <footer className="ui-modal-actions">
-        <button
-          type="button"
-          className="settings-btn"
-          onClick={() => settle(false)}
-        >
+        <Button onClick={() => settle(false)}>
           {req?.cancelLabel ?? t("docsCreateCancel")}
-        </button>
-        <button
-          type="button"
-          className={
-            "settings-btn " +
-            (req?.danger ? "settings-btn-danger" : "settings-btn-primary")
-          }
+        </Button>
+        <Button
+          variant={req?.danger ? "danger" : "primary"}
           onClick={() => settle(true)}
           autoFocus
         >
           {req?.confirmLabel ?? t("uiConfirmOk")}
-        </button>
+        </Button>
       </footer>
     </Modal>
   );

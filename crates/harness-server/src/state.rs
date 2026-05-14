@@ -1,12 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use harness_core::{
-    ActivityStore, Agent, AgentConfig, AgentProfileStore, ChannelInstanceStore, CommentStore,
-    ConversationStore, DocStore, EvalStore, LabelStore, LlmProvider, ObservabilityStore,
-    PermissionMode, PermissionStore, ProjectMemoryStore, ProjectStore, RequirementRunStore,
-    RequirementStore, TodoStore, ToolRegistry,
-};
+use harness_channel::{ChannelBindingStore, ChannelInstanceStore};
+use harness_core::{Agent, AgentConfig, AgentProfileStore, ConversationStore, LlmProvider, PermissionMode, PermissionStore, TodoStore, ToolRegistry};
+use harness_observability::{EvalStore, ObservabilityStore};
+use harness_project::{ActivityStore, CommentStore, DocStore, LabelStore, ProjectMemoryStore, ProjectStore, RequirementRunStore, RequirementStore};
 use harness_mcp::McpManager;
 use harness_plugin::PluginManager;
 use harness_skill::SkillCatalog;
@@ -188,7 +186,7 @@ pub struct AppState {
     pub requirements: Option<Arc<dyn RequirementStore>>,
     /// Optional persistent Requirement-run store. When `Some(_)`,
     /// `POST /v1/requirements/:id/runs` writes a typed
-    /// [`RequirementRun`](harness_core::RequirementRun) row at run
+    /// [`RequirementRun`](harness_project::RequirementRun) row at run
     /// start, the new `/v1/requirements/:id/runs` (list) /
     /// `/v1/runs/:id` (get/patch) / `/v1/runs/:id/verification`
     /// endpoints work, and WS sessions broadcast
@@ -210,6 +208,19 @@ pub struct AppState {
     /// the M2 outbound senders use it to look up credentials. `None`
     /// ⇒ all `/v1/channels*` endpoints return 503.
     pub channel_instances: Option<Arc<dyn ChannelInstanceStore>>,
+    /// Per-platform `(channel, channel_chat_id) → conversation_id`
+    /// lookup. Written by inbound channel routes; consulted on
+    /// every callback to decide "resume that conversation" vs.
+    /// "mint a new one for this chat". `None` ⇒ inbound routes
+    /// return 503 (the kind that ships them is `wecom_app`; the
+    /// 3 outbound-only kinds don't need this store).
+    pub channel_bindings: Option<Arc<dyn ChannelBindingStore>>,
+    /// Per-binary catalogue of channel adapters (one per `kind`).
+    /// Initialized to [`ChannelAdapterRegistry::with_defaults`] so
+    /// every shipped kind is registered without callers needing to
+    /// know the list. Tests / specialised binaries can reach in via
+    /// [`AppState::with_channel_adapters`] to swap a stub registry.
+    pub channel_adapters: Arc<crate::channel_adapter::ChannelAdapterRegistry>,
     /// Optional persistent named-agent-profile store. When
     /// `Some(_)`, the Settings page's Agents tab and the kanban
     /// card assignee picker work; `start_run` looks up the
@@ -245,7 +256,7 @@ pub struct AppState {
     /// the same trait.
     pub evals: Option<Arc<dyn EvalStore>>,
     /// Optional project-scoped long-term memory store. When `Some(_)`,
-    /// the auto loop captures a [`harness_core::ProjectMemory`] row
+    /// the auto loop captures a [`harness_project::ProjectMemory`] row
     /// for every Failed run and prepends the most recent project
     /// memories into the next run's system prompt — the agent's
     /// institutional memory across runs. `None` ⇒ capture / inject
@@ -339,6 +350,8 @@ impl AppState {
             requirement_runs: None,
             activities: None,
             channel_instances: None,
+            channel_bindings: None,
+            channel_adapters: Arc::new(crate::channel_adapter::ChannelAdapterRegistry::with_defaults()),
             agent_profiles: None,
             docs: None,
             comments: None,
@@ -390,6 +403,8 @@ impl AppState {
             requirement_runs: None,
             activities: None,
             channel_instances: None,
+            channel_bindings: None,
+            channel_adapters: Arc::new(crate::channel_adapter::ChannelAdapterRegistry::with_defaults()),
             agent_profiles: None,
             docs: None,
             comments: None,
@@ -560,6 +575,46 @@ impl AppState {
     ) -> Self {
         self.channel_instances = Some(store);
         self
+    }
+
+    /// Wire in the persistent channel-binding store. Required for
+    /// any inbound channel kind (`wecom_app` today, future
+    /// `feishu_app` / `dingtalk_stream`). Without one, the inbound
+    /// route paths can't decide "resume" vs. "create" and return
+    /// 503.
+    pub fn with_channel_binding_store(
+        mut self,
+        store: Arc<dyn ChannelBindingStore>,
+    ) -> Self {
+        self.channel_bindings = Some(store);
+        self
+    }
+
+    /// Override the channel-adapter registry. Most production
+    /// binaries should keep the default (every kind compiled in
+    /// gets registered automatically); tests use this to swap in a
+    /// stub registry that records calls without making real HTTP
+    /// requests.
+    pub fn with_channel_adapters(
+        mut self,
+        adapters: Arc<crate::channel_adapter::ChannelAdapterRegistry>,
+    ) -> Self {
+        self.channel_adapters = adapters;
+        self
+    }
+
+    /// Construct a [`ChannelDispatcherImpl`] from the wired-in
+    /// stores. Returns `None` when the channel-instance store isn't
+    /// configured — callers (e.g. the `channel.send` agent tool)
+    /// then surface "channels not configured" to the user.
+    pub fn channel_dispatcher(
+        &self,
+    ) -> Option<Arc<dyn harness_channel::ChannelDispatcher>> {
+        let store = self.channel_instances.clone()?;
+        Some(Arc::new(crate::channel_adapter::ChannelDispatcherImpl {
+            store,
+            registry: Arc::clone(&self.channel_adapters),
+        }) as Arc<dyn harness_channel::ChannelDispatcher>)
     }
 
     /// Wire in the persistent named-agent-profile store. Without
