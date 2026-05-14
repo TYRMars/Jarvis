@@ -1,8 +1,0 @@
-{
-	"/": [
-		"src/routes/+page.server.ts"
-	],
-	"/api/plans": [
-		"src/routes/api/plans/+server.ts"
-	]
-}

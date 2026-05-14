@@ -37,6 +37,7 @@ use serde_json::{json, Value};
 use tracing::error;
 
 use crate::state::AppState;
+use crate::state_layers::{TodosLayer, WorkspaceLayer};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -45,8 +46,8 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_store(state: &AppState) -> Result<Arc<dyn TodoStore>, Response> {
-    state.todos.clone().ok_or_else(|| {
+fn require_store(todos: &TodosLayer) -> Result<Arc<dyn TodoStore>, Response> {
+    todos.store.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "todo store not configured" })),
@@ -72,10 +73,10 @@ fn bad_request(reason: impl Into<String>) -> Response {
         .into_response()
 }
 
-fn resolve_workspace(state: &AppState, override_path: Option<&str>) -> Option<String> {
+fn resolve_workspace(ws: &WorkspaceLayer, override_path: Option<&str>) -> Option<String> {
     let path: PathBuf = match override_path {
         Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => match state.workspace_root.as_ref() {
+        _ => match ws.root.as_ref() {
             Some(root) => root.clone(),
             None => return None,
         },
@@ -91,12 +92,12 @@ struct ListQuery {
     workspace: Option<String>,
 }
 
-async fn list_todos(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Response {
-    let store = match require_store(&state) {
+async fn list_todos(State(todos): State<TodosLayer>, State(ws): State<WorkspaceLayer>, Query(q): Query<ListQuery>) -> Response {
+    let store = match require_store(&todos) {
         Ok(s) => s,
         Err(r) => return r,
     };
-    let Some(workspace) = resolve_workspace(&state, q.workspace.as_deref()) else {
+    let Some(workspace) = resolve_workspace(&ws, q.workspace.as_deref()) else {
         return bad_request(
             "no workspace pinned on the server; pass `?workspace=<abs path>` explicitly",
         );
@@ -122,8 +123,8 @@ struct CreateBody {
     workspace: Option<String>,
 }
 
-async fn create_todo(State(state): State<AppState>, Json(body): Json<CreateBody>) -> Response {
-    let store = match require_store(&state) {
+async fn create_todo(State(todos): State<TodosLayer>, State(ws): State<WorkspaceLayer>, Json(body): Json<CreateBody>) -> Response {
+    let store = match require_store(&todos) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -131,7 +132,7 @@ async fn create_todo(State(state): State<AppState>, Json(body): Json<CreateBody>
     if title.is_empty() {
         return bad_request("`title` must not be blank");
     }
-    let Some(workspace) = resolve_workspace(&state, body.workspace.as_deref()) else {
+    let Some(workspace) = resolve_workspace(&ws, body.workspace.as_deref()) else {
         return bad_request("no workspace pinned on the server; include `workspace` in the body");
     };
     let mut item = TodoItem::new(workspace, title);
@@ -174,11 +175,11 @@ struct UpdateBody {
 }
 
 async fn update_todo(
-    State(state): State<AppState>,
+    State(todos): State<TodosLayer>,
     Path(id): Path<String>,
     Json(body): Json<UpdateBody>,
 ) -> Response {
-    let store = match require_store(&state) {
+    let store = match require_store(&todos) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -232,8 +233,8 @@ async fn update_todo(
 
 // ----------------------- DELETE /v1/todos/:id -----------------------
 
-async fn delete_todo(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let store = match require_store(&state) {
+async fn delete_todo(State(todos): State<TodosLayer>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&todos) {
         Ok(s) => s,
         Err(r) => return r,
     };

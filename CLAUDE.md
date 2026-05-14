@@ -35,17 +35,48 @@ apps/
                    # settings page).
 
 crates/
+  harness-channel/ # Channel value types (OutboundMessage, SendOutcome,
+                   # ChannelInstance, ChannelBinding, inbound primitives) +
+                   # ChannelDispatcher trait + ChannelInstanceStore /
+                   # ChannelBindingStore traits. Shared vocabulary between
+                   # harness-tools (the channel.send tool), harness-store
+                   # (persistence impls), and harness-server (adapter
+                   # registry + HTTP routes). harness-core does NOT
+                   # depend on it.
+  harness-project/ # Project domain — Project / Requirement /
+                   # RequirementRun / Activity / Comment / Label /
+                   # DocProject / DocDraft / ProjectMemory value types +
+                   # their 8 *Store traits. The "Work" feature
+                   # (kanban + audit timeline + comments + labels).
+                   # Extracted from harness-core so the latter stays
+                   # agent-loop-only. Depends on harness-core for the
+                   # single shared LLM type (`Usage` on RequirementRun).
+                   # Used by harness-tools, harness-store, harness-server.
   harness-core/    # Agent, Conversation, Message, Tool, LlmProvider, Memory, Approver traits + run loop
   harness-llm/     # LlmProvider impls: OpenAI, Anthropic, Google, Codex (ChatGPT OAuth)
   harness-mcp/     # MCP bridge (rmcp): McpClient adapts remote tools into Tool;
                    # McpServer exposes a local ToolRegistry over stdio
   harness-memory/  # Memory impls: SlidingWindowMemory + SummarizingMemory
-  harness-server/  # Axum router + `serve(addr, AppState)` helper
+  harness-observability/ # Local quality / telemetry value types and
+                   # persistence traits — Eval* (suite runs / grader
+                   # verdicts / baselines) + Observed* (run / span
+                   # facts / metrics / dashboards) + ObservabilityStore
+                   # / EvalStore. Extracted from harness-core to
+                   # decouple "is the agent doing well?" concerns
+                   # from the agent loop. True leaf — no harness-*
+                   # deps.
+  harness-server/  # Axum router + `serve(addr, AppState)` helper.
+                   # Owns the ChannelAdapter trait + per-kind impls
+                   # (wecom_webhook / feishu_bot / dingtalk_bot /
+                   # wecom_app) and the inbound callback routes.
   harness-store/   # ConversationStore / ProjectStore / TodoStore;
                    # JSON-file + in-memory by default, SQLite /
-                   # Postgres / MySQL behind opt-in cargo features
+                   # Postgres / MySQL behind opt-in cargo features.
+                   # Also implements the channel store traits from
+                   # harness-channel.
   harness-tools/   # Built-in `Tool` impls: echo, time.now, http.fetch,
-                   # fs.{read,list,write,edit}, code.grep, shell.exec
+                   # fs.{read,list,write,edit}, code.grep, shell.exec,
+                   # channel.send (talks to harness-channel::ChannelDispatcher)
 ```
 
 `Cargo.toml` at the root is a workspace manifest with shared `[workspace.dependencies]`;
@@ -172,6 +203,20 @@ budget per agent loop pickup),
 value opts in to reviewer-subagent dispatch on Review → Done under
 `AcceptancePolicy::Subagent`; default off — see "Reviewer
 auto-accept" below),
+`JARVIS_SUBAGENT_CLAUDE_CODE_BIN` (default `claude` — path / name
+of the Claude Code CLI used by `subagent.claude_code`),
+`JARVIS_SUBAGENT_CLAUDE_CODE_MODEL` (default unset — forwarded as
+`--model <id>`; when absent the CLI picks whatever
+`claude /model` configured),
+`JARVIS_SUBAGENT_CLAUDE_CODE_ARGS` (default unset — whitespace-split
+extra args forwarded verbatim to the `claude` binary, inserted
+after `--model` and before the task positional. Use for
+`--bare` in keychain-less environments, etc.),
+`JARVIS_SUBAGENT_CODEX_MODEL` / `JARVIS_SUBAGENT_READER_MODEL` /
+`JARVIS_SUBAGENT_REVIEWER_MODEL` (each defaults to unset —
+overrides the model for the named subagent's internal agent loop),
+`JARVIS_SUBAGENT_MAX_CONCURRENCY` (default `3` — parallel-dispatch
+cap for `subagent.batch`),
 `JARVIS_WORKTREE_MODE` (`off` / `per_run` / `per_unit`; auto mode
 upgrades from `off` to `per_run` automatically so the scheduler
 never mutates the main checkout),
@@ -723,24 +768,40 @@ row) rather than via an explicit "blocked" signal.
 **Reviewer auto-accept** — opt-in via
 `JARVIS_REVIEWER_AUTO_ACCEPT=1` (any non-empty / non-`0` /
 non-`false` value enables it). When enabled and a Completed run
-arrives against a `Subagent`-policy requirement, the auto loop
-holds the row at Review and dispatches the
+arrives against a `Subagent`-policy requirement, the auto picker
+re-picks the row at Review and runs the main agent again via
+[`drive_one`](crates/harness-server/src/auto_mode.rs); the system
+prompt directs the agent to delegate verification to the
 [`subagent.review`](crates/harness-subagents/src/reviewer.rs)
-subagent (looked up in `state.tools`). The reviewer's terminal
-call to
+subagent. The reviewer's terminal call to
 [`requirement.review_verdict`](crates/harness-tools/src/requirement.rs)
 flips the row to Done (`pass`) or InProgress (`fail`) with the
-commentary attached so the next pickup can adapt. Two Activity
-rows fire around the dispatch:
-`{kind:"reviewer_dispatched", run_id}` before, plus
-`{kind:"reviewer_dispatch_failed", run_id, error}` if the
-subagent tool isn't registered or the invocation errors.
+commentary attached so the next pickup can adapt.
 
-Default off so existing deployments keep the synchronous
-auto-flip. Tests live in
+Default off so completed work pauses at Review for a human
+acceptance click — that's the v1.0 safe default. Tests live in
 [`auto_mode.rs::tests`](crates/harness-server/src/auto_mode.rs)
-(`advance_dispatches_reviewer_when_flag_enabled_and_policy_subagent`,
-`advance_skips_dispatch_when_flag_disabled`, etc.).
+under the `reviewer_flag`-prefixed names (e.g.
+`tick_does_not_re_pick_review_subagent_after_completed_run_under_reviewer_flag`,
+`tick_still_picks_review_row_with_no_completed_history_under_reviewer_flag`,
+`tick_skips_review_with_completed_history_when_reviewer_flag_off`).
+
+**Manual reviewer trigger** — `POST /v1/requirements/:id/review`:
+
+Operator-initiated dispatch for the same flow, useful when
+`JARVIS_REVIEWER_AUTO_ACCEPT` is off (the default) or when the
+auto picker has skipped the row (e.g.
+`review_completed_awaiting_acceptance` guard fired) and a human
+wants to ask Jarvis to verify on demand. Validates
+`status == Review`, `acceptance_policy == Subagent`, and that
+`subagent.review` is registered in `state.tools`. Spawns the run
+via [`auto_mode::spawn_background_run`](crates/harness-server/src/auto_mode.rs)
+and returns `202 Accepted` with `{dispatched: true, requirement_id}`;
+the new run id is discoverable through
+`GET /v1/requirements/:id/runs`. Writes a
+`{kind:"reviewer_dispatched_manually"}` Comment Activity for the
+audit trail. 409s when the row is at the wrong status or under
+Human policy; 503 when `subagent.review` isn't registered.
 
 **Roadmap → Work bootstrap** — `POST /v1/roadmap/import`:
 

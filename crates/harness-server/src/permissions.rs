@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 use tracing::error;
 
 use crate::state::AppState;
+use crate::state_layers::PermissionLayer;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -36,8 +37,8 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_store(state: &AppState) -> Result<Arc<dyn PermissionStore>, Response> {
-    state.permission_store.clone().ok_or_else(|| {
+fn require_store(perms: &PermissionLayer) -> Result<Arc<dyn PermissionStore>, Response> {
+    perms.store.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
@@ -63,8 +64,8 @@ fn bad_request(reason: &str) -> Response {
 
 // ----------------------- GET /v1/permissions -----------------------
 
-async fn get_table(State(state): State<AppState>) -> Response {
-    let store = match require_store(&state) {
+async fn get_table(State(perms): State<PermissionLayer>) -> Response {
+    let store = match require_store(&perms) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -91,8 +92,8 @@ struct PostRuleBody {
     rule: PermissionRule,
 }
 
-async fn post_rule(State(state): State<AppState>, Json(body): Json<PostRuleBody>) -> Response {
-    let store = match require_store(&state) {
+async fn post_rule(State(perms): State<PermissionLayer>, Json(body): Json<PostRuleBody>) -> Response {
+    let store = match require_store(&perms) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -114,8 +115,8 @@ struct DeleteRuleQuery {
     index: usize,
 }
 
-async fn delete_rule(State(state): State<AppState>, Query(q): Query<DeleteRuleQuery>) -> Response {
-    let store = match require_store(&state) {
+async fn delete_rule(State(perms): State<PermissionLayer>, Query(q): Query<DeleteRuleQuery>) -> Response {
+    let store = match require_store(&perms) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -141,8 +142,8 @@ struct PutModeBody {
     mode: PermissionMode,
 }
 
-async fn put_mode(State(state): State<AppState>, Json(body): Json<PutModeBody>) -> Response {
-    let store = match require_store(&state) {
+async fn put_mode(State(perms): State<PermissionLayer>, Json(body): Json<PutModeBody>) -> Response {
+    let store = match require_store(&perms) {
         Ok(s) => s,
         Err(r) => return r,
     };

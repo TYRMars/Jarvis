@@ -31,12 +31,9 @@ import { ProjectsPage } from "./components/Projects/ProjectsPage";
 import { DocsPage } from "./components/Docs/DocsPage";
 import { WorkOverviewPage } from "./components/Projects/WorkOverview/WorkOverviewPage";
 import { AutoModeDashboardPage } from "./components/AutoMode/AutoModeDashboardPage";
-import {
-  ConversationDeepLinkRedirect,
-  ConversationsArchivePage,
-} from "./components/Conversations/ConversationsArchivePage";
 import { WorktreesPage } from "./components/Worktrees/WorktreesPage";
 import { SubAgentDemoPage } from "./components/SubAgent/SubAgentDemoPage";
+import { OAuthResultPage } from "./components/OAuth/OAuthResultPage";
 import { DesktopStartupOverlay } from "./components/Desktop/DesktopStartupOverlay";
 import { useAppStore, appStore } from "./store/appStore";
 import { boot, applyI18n } from "./services/boot";
@@ -46,6 +43,7 @@ import { showHelpOverlay } from "./services/slash_commands";
 import { newConversation, resumeConversation } from "./services/conversations";
 import { loadProviders } from "./services/providers";
 import { apiUrl } from "./services/api";
+import { ConfirmDialogHost } from "./components/ui";
 import "./styles.css";
 
 export function App() {
@@ -112,15 +110,6 @@ export function App() {
           path="/diagnostics"
           element={<Navigate to="/projects/overview" replace />}
         />
-        <Route path="/conversations" element={<ConversationsArchiveLayout />} />
-        {/* `/conversations/:id` resumes the persisted conversation
-            and redirects to the stable session URL. Useful for old
-            bookmarks / shared URLs that should land back in the
-            right thread. */}
-        <Route
-          path="/conversations/:id"
-          element={<ConversationDeepLinkRedirect />}
-        />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/customize" element={<CustomizeLayout />} />
         {/* SubAgent UI preview — static prototype with mocked frame
@@ -128,11 +117,17 @@ export function App() {
             be replaced by the real components consuming WS events
             once the subagent backend lands. */}
         <Route path="/demo/subagent" element={<SubAgentDemoPage />} />
+        {/* WeCom OAuth2 landing page. Reached by `/v1/channels/:id/oauth/callback`
+            after it 302s here with `?userid=&ctx=`. Standalone — no
+            sidebar / chrome, since the audience is a freshly opened
+            tab from a WeCom client deep link. */}
+        <Route path="/oauth/result" element={<OAuthResultPage />} />
         {/* Catch-all: send unknown SPA paths home rather than rendering
             a blank page. Server-side `spa_fallback` already serves
             index.html for these, so this is the client-side mirror. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <ConfirmDialogHost />
     </Router>
   );
 }
@@ -211,36 +206,8 @@ function DocsLayout() {
   );
 }
 
-// Conversation history archive — full-page browse over every
-// persisted conversation. Same shell as ProjectsLayout so the
-// sidebar stays put.
-function ConversationsArchiveLayout() {
-  return (
-    <>
-      <a className="skip-link" href="#conversations-archive-page">
-        Skip to main content
-      </a>
-      <div id="app" className="page-app projects-app">
-        <AppSidebar />
-        <ConversationsArchivePage />
-
-        <div
-          id="resize-sidebar"
-          className="resize-handle resize-sidebar"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          tabIndex={-1}
-        />
-
-        <QuickSwitcher />
-      </div>
-    </>
-  );
-}
-
 // Customize — unified entry point for Skills / MCP / Plugins.
-// Reachable from the chat sidebar under "全部会话". Shares the same
+// Reachable from the chat sidebar under "能力市场". Shares the same
 // shell as ProjectsLayout so the global sidebar still anchors the
 // page.
 function CustomizeLayout() {

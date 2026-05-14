@@ -16,6 +16,41 @@ function rateTone(rate: number): "ok" | "neutral" | "danger" {
   return "danger";
 }
 
+function FormulaHint({ lines }: { lines: string[] }) {
+  return (
+    <span className="harness-formula-hint">
+      <button
+        type="button"
+        aria-label={t("harnessMetricFormulaLabel")}
+        title={t("harnessMetricFormulaLabel")}
+        className="harness-formula-icon"
+      >
+        i
+      </button>
+      <span className="harness-formula-tooltip" role="tooltip">
+        {lines.map((line) => (
+          <span key={line}>{line}</span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+function SectionLabelWithHint({
+  label,
+  lines,
+}: {
+  label: string;
+  lines: string[];
+}) {
+  return (
+    <span className="harness-metric-label-with-hint">
+      {label}
+      <FormulaHint lines={lines} />
+    </span>
+  );
+}
+
 export function ProjectLeaderboard({ overview }: Props) {
   const items = overview?.project_leaderboard ?? null;
   const reqStatus = overview?.requirement_status_counts ?? null;
@@ -33,7 +68,10 @@ export function ProjectLeaderboard({ overview }: Props) {
 
       <div className="work-panel-section">
         <div className="work-panel-section-label">
-          {t("workReqStatusBreakdown")}
+          <SectionLabelWithHint
+            label={t("workReqStatusBreakdown")}
+            lines={[t("workReqStatusBreakdownHint")]}
+          />
         </div>
         {reqStatus === null ? (
           <div className="work-panel-empty">
@@ -67,7 +105,13 @@ export function ProjectLeaderboard({ overview }: Props) {
 
       <div className="work-panel-section">
         <div className="work-panel-section-label">
-          {t("workLeaderboardTopProjects")}
+          <SectionLabelWithHint
+            label={t("workLeaderboardTopProjects")}
+            lines={[
+              t("workLeaderboardTopProjectsHint"),
+              t("leaderCompletionHint"),
+            ]}
+          />
         </div>
         {items === null ? (
           <div className="work-panel-empty">
@@ -104,7 +148,7 @@ export function ProjectLeaderboard({ overview }: Props) {
                     </span>
                     <span
                       className={"work-leaderboard-bar tone-" + tone}
-                      title={`${t("leaderCompletion")}: ${pct}%`}
+                      title={`${t("leaderCompletion")}: ${pct}% · ${t("leaderCompletionHint")}`}
                     >
                       <span
                         className="work-leaderboard-bar-fill"

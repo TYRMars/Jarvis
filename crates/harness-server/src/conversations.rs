@@ -30,11 +30,8 @@ use axum::{
     Router,
 };
 use futures::{Stream, StreamExt};
-use harness_core::{
-    AgentEvent, Conversation, ConversationLifecycle, ConversationMetadata, ConversationStore,
-    Message, Requirement, RequirementRun, RequirementRunStatus, RequirementRunLogLevel,
-    RunOutcome,
-};
+use harness_core::{AgentEvent, Conversation, ConversationLifecycle, ConversationMetadata, ConversationStore, Message, RunOutcome};
+use harness_project::{Requirement, RequirementRun, RequirementRunStatus, RequirementRunLogLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{error, warn};
@@ -334,7 +331,7 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
 }
 
 async fn collect_project_names(
-    ps: &dyn harness_core::ProjectStore,
+    ps: &dyn harness_project::ProjectStore,
     rows: &[harness_core::ConversationRecord],
 ) -> std::collections::HashMap<String, String> {
     use std::collections::HashMap;
@@ -1583,7 +1580,7 @@ mod tests {
         let app = full_router(state);
 
         // Seed project.
-        let mut p = harness_core::Project::new("Customer Support", "tone: terse").with_slug("cs");
+        let mut p = harness_project::Project::new("Customer Support", "tone: terse").with_slug("cs");
         proj_store.save(&p).await.unwrap();
 
         // Create a bound conversation.
@@ -1691,7 +1688,7 @@ mod tests {
         let state =
             make_state(true).with_project_store(Arc::new(harness_store::MemoryProjectStore::new()));
         let proj_store = state.projects.clone().unwrap();
-        let p = harness_core::Project::new("P", "x").with_slug("p");
+        let p = harness_project::Project::new("P", "x").with_slug("p");
         proj_store.save(&p).await.unwrap();
 
         let app = full_router(state);

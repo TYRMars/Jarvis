@@ -1,6 +1,7 @@
 import { wsUrl } from "./api";
 import { handleFrameForConversation } from "./frames";
 import { appStore } from "../store/appStore";
+import type { ConversationSurfaceSnapshot } from "../store/types";
 import { showError } from "./status";
 import { t } from "../utils/i18n";
 
@@ -43,6 +44,10 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
     return false;
   }
   closeConversationSocket(opts.conversationId);
+  const startupSurface = captureConversationSurface();
+  const startupActiveId = appStore.getState().activeId;
+  let acceptedByServer = false;
+  let legacyFallbackSent = false;
 
   const ws = new WebSocket(wsUrl());
   const managed: ManagedSocket = {
@@ -66,24 +71,7 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
 
   ws.addEventListener("open", () => {
     managed.open = true;
-    const first: any = opts.isNew
-      ? { type: "new", id: opts.conversationId }
-      : { type: "resume", id: opts.conversationId };
-    if (opts.routing.provider) first.provider = opts.routing.provider;
-    if (opts.routing.model) first.model = opts.routing.model;
-    if (opts.isNew && opts.projectId) first.project_id = opts.projectId;
-    if (opts.isNew && opts.workspacePath) first.workspace_path = opts.workspacePath;
-    ws.send(JSON.stringify(first));
-
-    for (const name of appStore.getState().activeSkills) {
-      ws.send(JSON.stringify({ type: "activate_skill", name }));
-    }
-
-    const user: any = { type: "user", content: opts.content };
-    if (opts.routing.provider) user.provider = opts.routing.provider;
-    if (opts.routing.model) user.model = opts.routing.model;
-    if (opts.soulPrompt) user.soul_prompt = opts.soulPrompt;
-    ws.send(JSON.stringify(user));
+    sendStartTurnFrame(ws, opts);
   });
 
   ws.addEventListener("message", (e) => {
@@ -94,8 +82,30 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
       console.error("bad conversation frame", err, e.data);
       return;
     }
+    if (frame?.type === "started" || frame?.type === "resumed") {
+      acceptedByServer = true;
+    }
+    if (
+      frame?.type === "error" &&
+      !acceptedByServer &&
+      !legacyFallbackSent &&
+      isStartTurnUnsupported(frame.message)
+    ) {
+      legacyFallbackSent = true;
+      sendLegacyTurnFrames(ws, opts);
+      return;
+    }
     if (isTerminalFrame(frame)) managed.terminal = true;
     handleFrameForConversation(opts.conversationId, frame);
+    if (frame?.type === "error" && !acceptedByServer) {
+      rollbackStartupFailure(
+        opts.conversationId,
+        opts.isNew === true,
+        startupActiveId,
+        startupSurface,
+        typeof frame.message === "string" ? frame.message : undefined,
+      );
+    }
     if (isTerminalFrame(frame)) {
       if (opts.requirementRunId) {
         void reconcileRequirementRun(opts.requirementRunId, frame, opts.verificationCommands);
@@ -119,6 +129,47 @@ export function startConversationTurn(opts: StartConversationTurnOptions): boole
   });
 
   return true;
+}
+
+function sendStartTurnFrame(ws: WebSocket, opts: StartConversationTurnOptions): void {
+  const frame: any = {
+    type: "start_turn",
+    mode: opts.isNew ? "new" : "resume",
+    id: opts.conversationId,
+    content: opts.content,
+    active_skills: appStore.getState().activeSkills,
+  };
+  if (opts.routing.provider) frame.provider = opts.routing.provider;
+  if (opts.routing.model) frame.model = opts.routing.model;
+  if (opts.isNew && opts.projectId) frame.project_id = opts.projectId;
+  if (opts.isNew && opts.workspacePath) frame.workspace_path = opts.workspacePath;
+  if (opts.soulPrompt) frame.soul_prompt = opts.soulPrompt;
+  ws.send(JSON.stringify(frame));
+}
+
+function sendLegacyTurnFrames(ws: WebSocket, opts: StartConversationTurnOptions): void {
+  const first: any = opts.isNew
+    ? { type: "new", id: opts.conversationId }
+    : { type: "resume", id: opts.conversationId };
+  if (opts.routing.provider) first.provider = opts.routing.provider;
+  if (opts.routing.model) first.model = opts.routing.model;
+  if (opts.isNew && opts.projectId) first.project_id = opts.projectId;
+  if (opts.isNew && opts.workspacePath) first.workspace_path = opts.workspacePath;
+  ws.send(JSON.stringify(first));
+
+  for (const name of appStore.getState().activeSkills) {
+    ws.send(JSON.stringify({ type: "activate_skill", name }));
+  }
+
+  const user: any = { type: "user", content: opts.content };
+  if (opts.routing.provider) user.provider = opts.routing.provider;
+  if (opts.routing.model) user.model = opts.routing.model;
+  if (opts.soulPrompt) user.soul_prompt = opts.soulPrompt;
+  ws.send(JSON.stringify(user));
+}
+
+function isStartTurnUnsupported(message: unknown): boolean {
+  return typeof message === "string" && message.includes("unknown variant `start_turn`");
 }
 
 export function sendFrameToConversation(conversationId: string | null, frame: any): boolean {
@@ -161,6 +212,53 @@ export function closeConversationSocket(conversationId: string): void {
 function isTerminalFrame(frame: unknown): frame is TerminalFrame {
   const type = (frame as TerminalFrame | null)?.type;
   return type === "done" || type === "error" || type === "interrupted";
+}
+
+function captureConversationSurface(): ConversationSurfaceSnapshot {
+  const s = appStore.getState();
+  return {
+    messages: s.messages,
+    emptyHintIdShort: s.emptyHintIdShort,
+    toolBlocks: s.toolBlocks,
+    approvals: s.approvals,
+    hitls: s.hitls,
+    tasks: s.tasks,
+    plan: s.plan,
+    proposedPlan: s.proposedPlan,
+    subAgentRuns: s.subAgentRuns,
+  };
+}
+
+function rollbackStartupFailure(
+  conversationId: string,
+  isNew: boolean,
+  startupActiveId: string | null,
+  startupSurface: ConversationSurfaceSnapshot,
+  message?: string,
+): void {
+  document.body.classList.toggle("turn-in-flight", false);
+  const notFound = /^conversation `[^`]+` not found$/.test(message ?? "");
+  appStore.setState((s) => {
+    const runs = { ...s.conversationRuns };
+    delete runs[conversationId];
+    const unread = { ...s.conversationUnread };
+    delete unread[conversationId];
+    const surfaces = { ...s.conversationSurfaces };
+    if (isNew || notFound) {
+      delete surfaces[conversationId];
+    } else {
+      surfaces[conversationId] = startupSurface;
+    }
+    return {
+      ...startupSurface,
+      activeId: isNew || notFound ? null : startupActiveId,
+      inFlight: false,
+      turnStartedAt: null,
+      conversationRuns: runs,
+      conversationUnread: unread,
+      conversationSurfaces: surfaces,
+    };
+  });
 }
 
 async function reconcileRequirementRun(

@@ -1,8 +1,8 @@
 //! Phase 6 — background scheduler that picks Ready
-//! [`Requirement`](harness_core::Requirement)s,
-//! mints a fresh-session [`RequirementRun`](harness_core::RequirementRun),
+//! [`Requirement`](harness_project::Requirement)s,
+//! mints a fresh-session [`RequirementRun`](harness_project::RequirementRun),
 //! drives the agent loop, persists the result, and (when the
-//! requirement carries a [`VerificationPlan`](harness_core::VerificationPlan))
+//! requirement carries a [`VerificationPlan`](harness_project::VerificationPlan))
 //! auto-runs verification against it.
 //!
 //! Goals + non-goals match the work-orchestration proposal's "v1
@@ -34,13 +34,8 @@ use std::time::Duration;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use harness_core::{
-    ActivityActor, ActivityKind, CommandResult, Conversation, ConversationMetadata, Message,
-    Project, ProjectMemory, ProjectMemoryKind, Requirement, RequirementRun, RequirementRunEvent,
-    RequirementRunLogLevel, RequirementRunStatus, RequirementStatus, RequirementTodoEvidence,
-    RequirementTodoKind, RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult,
-    VerificationStatus,
-};
+use harness_core::{Conversation, ConversationMetadata, Message};
+use harness_project::{ActivityActor, ActivityKind, CommandResult, Project, ProjectMemory, ProjectMemoryKind, Requirement, RequirementRun, RequirementRunEvent, RequirementRunLogLevel, RequirementRunStatus, RequirementStatus, RequirementTodoEvidence, RequirementTodoKind, RequirementTodoStatus, TriageState, VerificationPlan, VerificationResult, VerificationStatus};
 use harness_requirement::{build_default_manifest, render_manifest_summary};
 use serde::Deserialize;
 use serde_json::json;
@@ -893,7 +888,7 @@ const RUNNING_STALE_MULTIPLIER: u64 = 3;
 /// doesn't count it, so a panic'd run doesn't permanently burn
 /// a retry slot.
 async fn reclaim_stale_pending_runs(
-    runs: &Arc<dyn harness_core::RequirementRunStore>,
+    runs: &Arc<dyn harness_project::RequirementRunStore>,
     history: &mut [RequirementRun],
     timeout_ms: u64,
 ) {
@@ -1075,7 +1070,7 @@ pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// be invisible (the run row would record it anyway), but we
 /// also don't want to abort an entire HTTP response because a
 /// peripheral lookup failed.
-pub(crate) fn spawn_background_run(state: AppState, requirement: Requirement) {
+pub fn spawn_background_run(state: AppState, requirement: Requirement) {
     tokio::spawn(async move {
         let claim = match state.auto_mode_runtime.as_ref() {
             Some(runtime) => match runtime.try_claim_requirement(&requirement.id) {
@@ -1522,7 +1517,7 @@ async fn drive_one_with_prompt(
 
 async fn advance_completed_requirement(
     state: &AppState,
-    req_store: &Arc<dyn harness_core::RequirementStore>,
+    req_store: &Arc<dyn harness_project::RequirementStore>,
     requirement: &mut Requirement,
     run: &RequirementRun,
 ) {
@@ -1620,8 +1615,8 @@ fn is_verification_only_requirement(req: &Requirement) -> bool {
 
 async fn execute_verification_for_run(
     state: &AppState,
-    req_store: &Arc<dyn harness_core::RequirementStore>,
-    run_store: &Arc<dyn harness_core::RequirementRunStore>,
+    req_store: &Arc<dyn harness_project::RequirementStore>,
+    run_store: &Arc<dyn harness_project::RequirementRunStore>,
     requirement: &mut Requirement,
     run: &mut RequirementRun,
     workspace: &Path,
@@ -1887,7 +1882,7 @@ async fn record_activity(
     let Some(store) = state.activities.as_ref() else {
         return;
     };
-    let activity = harness_core::Activity::new(requirement_id, kind, actor, body);
+    let activity = harness_project::Activity::new(requirement_id, kind, actor, body);
     if let Err(e) = store.append(&activity).await {
         warn!(error = %e, "auto mode: activity append failed");
     }
@@ -2050,11 +2045,8 @@ fn render_failure_memory_body(run: &RequirementRun) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::{
-        AgentConfig, AgentProfile, ChatRequest, ChatResponse, Error, FinishReason, LlmProvider,
-        Message, Project, ProjectWorkspace, Requirement, RequirementStatus, RequirementTodo,
-        RequirementTodoCreator, VerificationPlan,
-    };
+    use harness_core::{AgentConfig, AgentProfile, ChatRequest, ChatResponse, Error, FinishReason, LlmProvider, Message};
+use harness_project::{Project, ProjectWorkspace, Requirement, RequirementStatus, RequirementTodo, RequirementTodoCreator, VerificationPlan};
     use harness_store::{
         MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore,
         MemoryProjectMemoryStore, MemoryProjectStore, MemoryRequirementRunStore,
@@ -2431,7 +2423,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
     /// reviewer_auto_accept, decides whether the row can move to Done.
     #[tokio::test]
     async fn tick_does_not_re_pick_review_subagent_after_completed_run_under_reviewer_flag() {
-        use harness_core::AcceptancePolicy;
+        use harness_project::AcceptancePolicy;
 
         let state = wire_stores(base_state_with_canned_llm("MUST NOT BE CALLED."));
         let (proj, prof) = seed_project_and_profile(&state).await;
@@ -2478,7 +2470,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
     /// reviewer. The guard only fires AFTER a completed run exists.
     #[tokio::test]
     async fn tick_still_picks_review_row_with_no_completed_history_under_reviewer_flag() {
-        use harness_core::AcceptancePolicy;
+        use harness_project::AcceptancePolicy;
 
         let state = wire_stores(base_state_with_canned_llm("first review run."));
         let (proj, prof) = seed_project_and_profile(&state).await;
@@ -2514,7 +2506,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
     /// retry-budget burn-down when the provider has partial outages.
     #[tokio::test]
     async fn tick_skips_review_with_completed_history_when_reviewer_flag_off() {
-        use harness_core::AcceptancePolicy;
+        use harness_project::AcceptancePolicy;
 
         let state = wire_stores(base_state_with_canned_llm("MUST NOT BE CALLED."));
         let (proj, prof) = seed_project_and_profile(&state).await;
@@ -2620,7 +2612,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
     /// Jarvis owns both progression and completion.
     #[tokio::test]
     async fn tick_skips_human_acceptance_policy_at_review() {
-        use harness_core::AcceptancePolicy;
+        use harness_project::AcceptancePolicy;
 
         let state = wire_stores(base_state_with_canned_llm("review accepted."));
         let (proj, prof) = seed_project_and_profile(&state).await;
@@ -2647,7 +2639,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
     /// gate kicks in at the right place.
     #[tokio::test]
     async fn tick_advances_human_policy_in_progress_to_review() {
-        use harness_core::AcceptancePolicy;
+        use harness_project::AcceptancePolicy;
 
         let state = wire_stores(base_state_with_canned_llm("done"));
         let (proj, prof) = seed_project_and_profile(&state).await;
@@ -2701,7 +2693,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
     /// async, no stores, just the execution-checklist completion gate.
     #[test]
     fn completed_target_status_respects_execution_checklist() {
-        use harness_core::{VerificationResult, VerificationStatus};
+        use harness_project::{VerificationResult, VerificationStatus};
 
         fn run(
             status: RequirementRunStatus,
@@ -2901,9 +2893,9 @@ Do {{ requirement.title }} in {{ issue.state }}.
             require_tests: false,
             require_human_review: false,
         });
-        let mut pass = harness_core::RequirementTodo::new("pass check", RequirementTodoKind::Ci);
+        let mut pass = harness_project::RequirementTodo::new("pass check", RequirementTodoKind::Ci);
         pass.command = Some(pass_cmd.into());
-        let mut fail = harness_core::RequirementTodo::new("fail check", RequirementTodoKind::Ci);
+        let mut fail = harness_project::RequirementTodo::new("fail check", RequirementTodoKind::Ci);
         fail.command = Some(fail_cmd.into());
         req.todos = vec![pass, fail];
         state
@@ -3756,7 +3748,7 @@ Do {{ requirement.title }} in {{ issue.state }}.
             require_tests: false,
             require_human_review: false,
         });
-        let mut todo = harness_core::RequirementTodo::new("fails", RequirementTodoKind::Ci);
+        let mut todo = harness_project::RequirementTodo::new("fails", RequirementTodoKind::Ci);
         todo.command = Some(fail_cmd.into());
         req.todos = vec![todo];
         state

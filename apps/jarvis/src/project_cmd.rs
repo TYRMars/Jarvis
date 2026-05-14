@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
-use harness_core::{derive_slug, validate_slug, Project, ProjectStore};
+use harness_project::{derive_slug, validate_slug, Project, ProjectStore};
 
 use crate::config::Config;
 

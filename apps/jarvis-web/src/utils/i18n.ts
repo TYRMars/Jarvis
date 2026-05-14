@@ -824,6 +824,35 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     channelsSummaryWeComUrl: "Webhook: ",
     channelsSave: "Save",
     channelsCreateNow: "Create",
+    channelsCallbackUrl: "Callback URL",
+    channelsCopyCallbackUrl: "Copy",
+    channelsDirInbound: "Inbound",
+    channelsDirBidirectional: "Bidirectional",
+    channelsOauthUrl: "OAuth login URL",
+    channelsOauthCopyUrl: "Copy",
+    channelsOauthOpen: "Open",
+    channelsOauthOpenHint:
+      "Open inside the WeCom client (or a browser signed into WeCom Web). On mobile this triggers the silent snsapi_base flow; on desktop WeCom Web renders a QR code.",
+    channelsOauthQrShow: "QR",
+    channelsOauthQrHide: "Hide QR",
+    channelsOauthQrHint:
+      "Scan with the WeCom client on your phone to test the flow",
+    channelsOauthQrAlt: "QR code for the OAuth login URL",
+    channelsOauthQrCaption:
+      "Scan with WeCom on your phone. Desktop WeCom Web users can click 'Open' instead.",
+    oauthResultTitleOk: "Identity verified",
+    oauthResultSubtitleOk:
+      "WeCom returned the userid below. Copy it or use it in your active conversation.",
+    oauthResultTitleError: "Verification failed",
+    oauthResultTitleMissing: "No verification result",
+    oauthResultSubtitleMissing:
+      "Open this page via the OAuth flow from Settings → Channels — direct visits have no userid to show.",
+    oauthResultUseridLabel: "userid",
+    oauthResultCtxLabel: "ctx (caller-supplied)",
+    oauthResultCopy: "Copy",
+    oauthResultCopied: "Copied!",
+    oauthResultBackToSettings: "Back to settings",
+    oauthResultHome: "Home",
     permModeAsk: "Ask",
     permModeAcceptEdits: "Accept edits",
     permModePlan: "Plan",
@@ -1125,9 +1154,17 @@ Expected workflow:
     workOverviewDiagnosticsSubtitle:
       "Orphan worktrees, runs stuck > 1 hour, and recent failures. Inspect and clean up here when something looks off.",
     kpiRunningNow: "Running now",
+    kpiRunningNowHint:
+      "Running now = requirement runs currently in pending or running state. It is a live queue pressure signal.",
     kpiFailedInWindow: "Failed runs",
+    kpiFailedInWindowHint:
+      "Failed runs = terminal requirement runs marked failed inside the selected dashboard window.",
     kpiCompletedInWindow: "Completed runs",
+    kpiCompletedInWindowHint:
+      "Completed runs = terminal requirement runs marked completed inside the selected dashboard window.",
     kpiVerificationPassRate: "Verification pass rate",
+    kpiVerificationPassRateHint:
+      "Verification pass rate = passed verification attempts / all recorded passed, failed, or needs-review verification attempts in the selected window.",
     kpiVerificationPassRateNoData: "No verified runs yet",
     runtimeStripTitle: "Agent runtime",
     runtimeStripSubtitle: "Live state of the harness scheduler.",
@@ -1217,13 +1254,19 @@ Expected workflow:
     workOpenConversation: "Open",
     workThroughputTotal: (n: number) =>
       `${n} run${n === 1 ? "" : "s"} started`,
+    workThroughputHint:
+      "Stacked bars by day. Total height is runs started; segments split completed, failed, and other non-completed states.",
     workLegendCompleted: "Completed",
     workLegendFailed: "Failed",
     workLegendOther: "Other",
     workQualitySparkLabel: "Pass rate trend",
     workQualityTopFailing: "Top failing commands",
     workReqStatusBreakdown: "Requirement status",
+    workReqStatusBreakdownHint:
+      "Counts requirements by their current board status. This is current backlog shape, not a run count.",
     workLeaderboardTopProjects: "Most active",
+    workLeaderboardTopProjectsHint:
+      "Ranks projects by requirement runs started in the selected window.",
     workRunsCount: (n: number) => `${n} run${n === 1 ? "" : "s"}`,
     relSecondsAgo: (n: number) => `${n}s ago`,
     relMinutesAgo: (n: number) => `${n}m ago`,
@@ -1763,6 +1806,7 @@ Expected workflow:
     projectAutomationPanelEmpty: "No active projects.",
     projectTabsAria: "Project sections",
     projectTabData: "Data",
+    projectTabFiles: "Files",
     projectAutomationOverview: "Project automation overview",
     projectAutoEligible: "Eligible",
     projectAutoRunning: "Running",
@@ -1776,7 +1820,6 @@ Expected workflow:
     sidebarNavWorkOverview: "Overview",
     sidebarNavAutoMode: "Auto-mode",
     sidebarNavProjectList: "Project list",
-    sidebarNavConversationsArchive: "All conversations",
     sidebarNavWorktrees: "Worktrees",
     workOverviewAutoModeLink: "Auto-mode dashboard →",
 
@@ -1941,15 +1984,29 @@ Expected workflow:
     // ProjectLeaderboard additions
     leaderRank: (n: number) => `#${n}`,
     leaderCompletion: "Completion",
+    leaderCompletionHint:
+      "Completion = completed runs / runs started for that project inside the selected window.",
     // UsagePanel
     usagePanelTitle: "Tokens & Cost",
+    usagePanelHint:
+      "Usage is browser-local telemetry accumulated from streamed usage frames. Cost is an estimate from the local price table.",
     usagePanelToday: "Today",
+    usagePanelTodayHint:
+      "Today = prompt + completion tokens recorded by this browser since local midnight, plus estimated cost.",
     usagePanelWindow: (n: number) => `Last ${n}d`,
+    usagePanelWindowHint:
+      "Window total = prompt + completion tokens recorded by this browser inside the selected dashboard window.",
     usagePanelPrompt: "Prompt",
+    usagePanelPromptHint:
+      "Prompt tokens are input tokens sent to the model, including cached prompt tokens when reported.",
     usagePanelCompletion: "Completion",
+    usagePanelCompletionHint:
+      "Completion tokens are model output tokens returned by recorded LLM calls.",
     usagePanelCached: "Cached",
     usagePanelCachedHint: "Subset of prompt tokens served from cache (charged at ~50%).",
     usagePanelCalls: "LLM calls",
+    usagePanelCallsHint:
+      "LLM calls = number of streamed usage records captured by this browser in the selected window.",
     usagePanelTotal: "Total",
     usagePanelNoData: "No usage recorded in this window.",
     usagePanelSparkLabel: "Daily token total",
@@ -2062,11 +2119,23 @@ Expected workflow:
     harnessObsNoSubagents: "No SubAgent runs recorded yet.",
     harnessObsEvalMaturity: "Eval maturity",
     harnessObsEvalCapability: "Capability",
+    harnessObsEvalCapabilityHint:
+      "Capability = pass rate for recorded capability eval cases.",
     harnessObsEvalRegression: "Regression",
+    harnessObsEvalRegressionHint:
+      "Regression = pass rate for recorded regression eval cases.",
     harnessObsEvalPassAtK: "pass@k",
+    harnessObsEvalPassAtKHint:
+      "pass@k = share of multi-trial eval cases where at least one trial passed.",
     harnessObsEvalPassAll: "pass^k",
+    harnessObsEvalPassAllHint:
+      "pass^k = share of multi-trial eval cases where every recorded trial passed.",
     harnessObsEvalGraders: "Graders",
+    harnessObsEvalGradersHint:
+      "Graders = number of distinct grader kinds represented in the eval summary.",
     harnessObsEvalTranscripts: "Transcripts",
+    harnessObsEvalTranscriptsHint:
+      "Transcripts = eval cases with recorded conversation transcripts / all eval cases.",
     harnessObsRecommendations: "Immediate findings",
     harnessCapabilityTitle: "Jarvis capability score",
     harnessCapabilitySubtitle:
@@ -2203,6 +2272,12 @@ Expected workflow:
     modelScoreModel: "Model",
     modelScoreScore: "Score",
     modelScoreSignals: "Signals",
+    modelScoreFormulaHint:
+      "Score = 34% cost efficiency + 24% token efficiency + 16% cache use + 16% output balance + 10% confidence.",
+    modelScoreConfidenceHint:
+      "Confidence = call count / 8, capped at 100%; more calls make the model comparison less noisy.",
+    modelScoreSignalsHint:
+      "Signals are normalized sub-scores: cost per call, average tokens per call, cached prompt share, and output-token balance.",
     modelScoreUsageLine: (calls: number, tokens: string, cost: string) =>
       `${calls} calls · ${tokens} tokens · ${cost}/call`,
     modelScoreCostEfficiency: (value: string) => `Cost ${value}`,
@@ -3110,6 +3185,34 @@ Expected workflow:
     channelsSummaryWeComUrl: "Webhook：",
     channelsSave: "保存",
     channelsCreateNow: "创建",
+    channelsCallbackUrl: "回调 URL",
+    channelsCopyCallbackUrl: "复制",
+    channelsDirInbound: "入站",
+    channelsDirBidirectional: "双向",
+    channelsOauthUrl: "OAuth 登录 URL",
+    channelsOauthCopyUrl: "复制",
+    channelsOauthOpen: "打开",
+    channelsOauthOpenHint:
+      "在企业微信客户端或已登录企业微信网页版的浏览器里打开。手机端会无感走 snsapi_base 流程；桌面端会跳出二维码扫码登录。",
+    channelsOauthQrShow: "二维码",
+    channelsOauthQrHide: "隐藏二维码",
+    channelsOauthQrHint: "用手机企业微信扫码测试流程",
+    channelsOauthQrAlt: "OAuth 登录 URL 二维码",
+    channelsOauthQrCaption:
+      "用手机企业微信扫码；桌面端登录企业微信网页版可以直接点「打开」。",
+    oauthResultTitleOk: "身份验证成功",
+    oauthResultSubtitleOk:
+      "企业微信返回了下面的 userid，可以复制下来或在当前会话里使用。",
+    oauthResultTitleError: "验证失败",
+    oauthResultTitleMissing: "无验证结果",
+    oauthResultSubtitleMissing:
+      "请从「设置 → 渠道」里的 OAuth 流程进入；直接访问这个页面拿不到 userid。",
+    oauthResultUseridLabel: "userid",
+    oauthResultCtxLabel: "ctx（调用方传入）",
+    oauthResultCopy: "复制",
+    oauthResultCopied: "已复制！",
+    oauthResultBackToSettings: "返回设置",
+    oauthResultHome: "首页",
     permModeAsk: "每次询问",
     permModeAcceptEdits: "自动接受编辑",
     permModePlan: "计划模式",
@@ -3388,9 +3491,17 @@ ${blockedRows}
     workOverviewDiagnosticsSubtitle:
       "孤儿 worktree、卡住超过 1 小时的 run、近期失败。看到异常时来这里查看并清理。",
     kpiRunningNow: "正在运行 (Running now)",
+    kpiRunningNowHint:
+      "正在运行 = 当前处于 pending 或 running 状态的需求运行数量，用来判断实时队列压力。",
     kpiFailedInWindow: "失败运行 (Failed runs)",
+    kpiFailedInWindowHint:
+      "失败运行 = 所选看板窗口内，最终状态为 failed 的需求运行数量。",
     kpiCompletedInWindow: "已完成运行 (Completed runs)",
+    kpiCompletedInWindowHint:
+      "已完成运行 = 所选看板窗口内，最终状态为 completed 的需求运行数量。",
     kpiVerificationPassRate: "验证通过率 (Verification pass rate)",
+    kpiVerificationPassRateHint:
+      "验证通过率 = 已通过验证次数 / 所选窗口内所有 passed、failed、needs-review 的验证记录。",
     kpiVerificationPassRateNoData: "尚无验证数据",
     runtimeStripTitle: "调度器运行状态 (Agent runtime)",
     runtimeStripSubtitle: "Harness 调度器的实时运行情况。",
@@ -3471,13 +3582,19 @@ ${blockedRows}
     workNoLeaderboardData: "窗口内没有项目活动。",
     workOpenConversation: "打开",
     workThroughputTotal: (n: number) => `共 ${n} 个 Run`,
+    workThroughputHint:
+      "按天堆叠展示启动的 run 数量；总高度是 started，分段表示 completed、failed 与其他未完成状态。",
     workLegendCompleted: "已完成 (Completed)",
     workLegendFailed: "失败 (Failed)",
     workLegendOther: "进行中/取消 (Other)",
     workQualitySparkLabel: "通过率趋势 (Pass-rate trend)",
     workQualityTopFailing: "高频失败命令 (Top failing commands)",
     workReqStatusBreakdown: "需求状态分布 (Requirement status)",
+    workReqStatusBreakdownHint:
+      "按需求当前看板状态统计，表示当前 backlog 结构，不是 run 数量。",
     workLeaderboardTopProjects: "最活跃项目 (Most active)",
+    workLeaderboardTopProjectsHint:
+      "按所选窗口内启动的需求 run 数量对项目排序。",
     workRunsCount: (n: number) => `${n} 个 Run`,
     relSecondsAgo: (n: number) => `${n} 秒前`,
     relMinutesAgo: (n: number) => `${n} 分钟前`,
@@ -3986,6 +4103,7 @@ ${blockedRows}
     projectAutomationPanelEmpty: "暂无活跃项目。",
     projectTabsAria: "项目分区",
     projectTabData: "数据",
+    projectTabFiles: "文件",
     projectAutomationOverview: "项目自动化概览",
     projectAutoEligible: "可执行 (Eligible)",
     projectAutoRunning: "运行中 (Running)",
@@ -3999,7 +4117,6 @@ ${blockedRows}
     sidebarNavWorkOverview: "总览",
     sidebarNavAutoMode: "自动调度",
     sidebarNavProjectList: "项目列表",
-    sidebarNavConversationsArchive: "全部会话",
     sidebarNavWorktrees: "Worktree 管理",
     workOverviewAutoModeLink: "自动调度看板 →",
 
@@ -4154,15 +4271,29 @@ ${blockedRows}
     // ProjectLeaderboard additions
     leaderRank: (n: number) => `#${n}`,
     leaderCompletion: "完成率 (Completion)",
+    leaderCompletionHint:
+      "完成率 = 该项目在所选窗口内 completed run 数 / started run 数。",
     // UsagePanel
     usagePanelTitle: "Token 与成本 (Tokens & cost)",
+    usagePanelHint:
+      "用量来自浏览器本地累计的流式 usage 帧；成本按本地价表估算。",
     usagePanelToday: "今天 (Today)",
+    usagePanelTodayHint:
+      "今天 = 本浏览器从本地零点开始记录的 prompt + completion token，以及对应估算成本。",
     usagePanelWindow: (n: number) => `近 ${n} 天`,
+    usagePanelWindowHint:
+      "窗口总量 = 本浏览器在所选看板窗口内记录的 prompt + completion token。",
     usagePanelPrompt: "Prompt",
+    usagePanelPromptHint:
+      "Prompt token 是发送给模型的输入 token；如果服务端返回缓存命中，也包含 cached prompt。",
     usagePanelCompletion: "Completion",
+    usagePanelCompletionHint:
+      "Completion token 是已记录 LLM 调用中模型返回的输出 token。",
     usagePanelCached: "缓存 (Cached)",
     usagePanelCachedHint: "Prompt 中由缓存命中的部分（按约 50% 计费）。",
     usagePanelCalls: "LLM 调用 (LLM calls)",
+    usagePanelCallsHint:
+      "LLM 调用 = 本浏览器在所选窗口内捕获到的 usage 记录数量。",
     usagePanelTotal: "合计 (Total)",
     usagePanelNoData: "本窗口内尚无 token 用量记录。",
     usagePanelSparkLabel: "每日 token 总量",
@@ -4269,11 +4400,23 @@ ${blockedRows}
     harnessObsNoSubagents: "还没有记录到子智能体运行。",
     harnessObsEvalMaturity: "评测成熟度 (Eval maturity)",
     harnessObsEvalCapability: "能力评测 (Capability eval)",
+    harnessObsEvalCapabilityHint:
+      "能力评测 = 已记录 capability 类型评测用例的通过率。",
     harnessObsEvalRegression: "回归评测 (Regression eval)",
+    harnessObsEvalRegressionHint:
+      "回归评测 = 已记录 regression 类型评测用例的通过率。",
     harnessObsEvalPassAtK: "至少一次通过 (Pass@K)",
+    harnessObsEvalPassAtKHint:
+      "Pass@K = 多次试跑的评测用例中，至少有一次通过的比例。",
     harnessObsEvalPassAll: "多次全通过 (Pass all)",
+    harnessObsEvalPassAllHint:
+      "Pass all = 多次试跑的评测用例中，每一次记录的试跑都通过的比例。",
     harnessObsEvalGraders: "评分器 (Graders)",
+    harnessObsEvalGradersHint:
+      "评分器 = 当前评测摘要中出现过的不同 grader 类型数量。",
     harnessObsEvalTranscripts: "过程记录 (Transcripts)",
+    harnessObsEvalTranscriptsHint:
+      "过程记录 = 有会话 transcript 的评测用例数 / 全部评测用例数。",
     harnessObsRecommendations: "即时诊断 (Instant diagnosis)",
     harnessCapabilityTitle: "Jarvis 四项能力评分 (Capability score)",
     harnessCapabilitySubtitle:
@@ -4410,6 +4553,12 @@ ${blockedRows}
     modelScoreModel: "模型 (Model)",
     modelScoreScore: "评分 (Score)",
     modelScoreSignals: "信号 (Signals)",
+    modelScoreFormulaHint:
+      "评分 = 34% 成本效率 + 24% token 效率 + 16% 缓存利用 + 16% 输出均衡 + 10% 置信度。",
+    modelScoreConfidenceHint:
+      "置信度 = 调用次数 / 8，最高 100%；调用越多，模型对比的噪声越低。",
+    modelScoreSignalsHint:
+      "信号是归一化后的子分数：单次成本、单次平均 token、缓存 prompt 占比和输出 token 均衡度。",
     modelScoreUsageLine: (calls: number, tokens: string, cost: string) =>
       `${calls} 次调用 · ${tokens} tokens · ${cost}/次`,
     modelScoreCostEfficiency: (value: string) => `成本 ${value}`,

@@ -32,6 +32,26 @@ interface Layout {
   slot: number;
 }
 
+function FormulaHint({ lines }: { lines: string[] }) {
+  return (
+    <span className="harness-formula-hint">
+      <button
+        type="button"
+        aria-label={t("harnessMetricFormulaLabel")}
+        title={t("harnessMetricFormulaLabel")}
+        className="harness-formula-icon"
+      >
+        i
+      </button>
+      <span className="harness-formula-tooltip" role="tooltip">
+        {lines.map((line) => (
+          <span key={line}>{line}</span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
 function buildLayout(overview: WorkOverview | null): Layout | null {
   if (!overview) return null;
   const days = overview.throughput_by_day;
@@ -125,7 +145,10 @@ export function ThroughputChart({ overview }: Props) {
   return (
     <div className="work-panel work-panel-throughput">
       <header className="work-panel-header">
-        <h3>{t("panelThroughput")}</h3>
+        <h3 className="harness-metric-label-with-hint">
+          {t("panelThroughput")}
+          <FormulaHint lines={[t("workThroughputHint")]} />
+        </h3>
         <span className="work-panel-header-meta">
           {t("workThroughputTotal", totalStarted)}
         </span>

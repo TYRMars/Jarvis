@@ -468,37 +468,55 @@ export function HarnessObservabilityPanel({
           </div>
           <div className="harness-eval-maturity-grid">
             <div>
-              <span>{t("harnessObsEvalCapability")}</span>
+              <LabelWithHint
+                label={t("harnessObsEvalCapability")}
+                lines={[t("harnessObsEvalCapabilityHint")]}
+              />
               <strong className="tabular-nums">
                 {pct(state.evalSummary.capability_pass_rate)}
               </strong>
             </div>
             <div>
-              <span>{t("harnessObsEvalRegression")}</span>
+              <LabelWithHint
+                label={t("harnessObsEvalRegression")}
+                lines={[t("harnessObsEvalRegressionHint")]}
+              />
               <strong className="tabular-nums">
                 {pct(state.evalSummary.regression_pass_rate)}
               </strong>
             </div>
             <div>
-              <span>{t("harnessObsEvalPassAtK")}</span>
+              <LabelWithHint
+                label={t("harnessObsEvalPassAtK")}
+                lines={[t("harnessObsEvalPassAtKHint")]}
+              />
               <strong className="tabular-nums">
                 {pct(state.evalSummary.trial_reliability.pass_at_k)}
               </strong>
             </div>
             <div>
-              <span>{t("harnessObsEvalPassAll")}</span>
+              <LabelWithHint
+                label={t("harnessObsEvalPassAll")}
+                lines={[t("harnessObsEvalPassAllHint")]}
+              />
               <strong className="tabular-nums">
                 {pct(state.evalSummary.trial_reliability.pass_all)}
               </strong>
             </div>
             <div>
-              <span>{t("harnessObsEvalGraders")}</span>
+              <LabelWithHint
+                label={t("harnessObsEvalGraders")}
+                lines={[t("harnessObsEvalGradersHint")]}
+              />
               <strong className="tabular-nums">
                 {countKeys(state.evalSummary.by_grader_kind)}
               </strong>
             </div>
             <div>
-              <span>{t("harnessObsEvalTranscripts")}</span>
+              <LabelWithHint
+                label={t("harnessObsEvalTranscripts")}
+                lines={[t("harnessObsEvalTranscriptsHint")]}
+              />
               <strong className="tabular-nums">
                 {state.evalSummary.transcript_cases}/{state.evalSummary.total_cases}
               </strong>

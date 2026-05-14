@@ -14,15 +14,13 @@ use axum::{
     routing::get,
     Router,
 };
-use harness_core::{
-    EvalCaseResult, EvalFilter, EvalStore, ObservabilityFilter, ObservabilityStore,
-    ObservedOutcome, ObservedRun, ObservedRunKind, RequirementRun, RequirementRunStatus,
-    TimeWindow, VerificationStatus,
-};
+use harness_observability::{EvalCaseResult, EvalFilter, EvalStore, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun, ObservedRunKind, TimeWindow};
+use harness_project::{RequirementRun, RequirementRunStatus, VerificationStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::state::AppState;
+use crate::state_layers::{ObservabilityLayer, ProjectLayer};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -48,8 +46,8 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/v1/evals/cases", get(list_eval_cases))
 }
 
-async fn get_exporter_status(State(state): State<AppState>) -> Response {
-    let status = state.telemetry.clone().unwrap_or_default();
+async fn get_exporter_status(State(obs): State<ObservabilityLayer>) -> Response {
+    let status = obs.telemetry.clone().unwrap_or_default();
     Json(json!({
         "enabled": status.enabled,
         "endpoint": status.endpoint,
@@ -69,12 +67,12 @@ async fn get_exporter_status(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
-fn observability_store(state: &AppState) -> Option<Arc<dyn ObservabilityStore>> {
-    state.observability.clone()
+fn observability_store(obs: &ObservabilityLayer) -> Option<Arc<dyn ObservabilityStore>> {
+    obs.observability.clone()
 }
 
-fn eval_store(state: &AppState) -> Option<Arc<dyn EvalStore>> {
-    state.evals.clone()
+fn eval_store(obs: &ObservabilityLayer) -> Option<Arc<dyn EvalStore>> {
+    obs.evals.clone()
 }
 
 fn unavailable(message: &str) -> Response {
@@ -95,8 +93,8 @@ fn default_window() -> String {
     "24h".into()
 }
 
-async fn get_dashboard(State(state): State<AppState>, Query(q): Query<DashboardQuery>) -> Response {
-    let store = match observability_store(&state) {
+async fn get_dashboard(State(obs): State<ObservabilityLayer>, Query(q): Query<DashboardQuery>) -> Response {
+    let store = match observability_store(&obs) {
         Some(store) => store,
         None => return unavailable("observability store not configured"),
     };
@@ -144,19 +142,20 @@ struct HealthQuery {
 /// sources are configured (the tool would return all-`configured:
 /// false` rows in that case, but a hard 503 is more honest).
 async fn get_harness_health(
-    State(state): State<AppState>,
+    State(obs): State<ObservabilityLayer>,
+    State(project): State<ProjectLayer>,
     Query(q): Query<HealthQuery>,
 ) -> Response {
-    if state.observability.is_none() && state.evals.is_none() && state.requirement_runs.is_none() {
+    if obs.observability.is_none() && obs.evals.is_none() && project.requirement_runs.is_none() {
         return unavailable(
             "no observability / evals / requirement-runs store configured; \
              nothing to summarise",
         );
     }
     let tool = harness_tools::HarnessHealthTool::new(
-        state.observability.clone(),
-        state.evals.clone(),
-        state.requirement_runs.clone(),
+        obs.observability.clone(),
+        obs.evals.clone(),
+        project.requirement_runs.clone(),
     );
     let mut args = serde_json::Map::new();
     if let Some(limit) = q.limit {
@@ -188,8 +187,8 @@ async fn get_harness_health(
     }
 }
 
-async fn list_runs(State(state): State<AppState>, Query(q): Query<RunsQuery>) -> Response {
-    let store = match observability_store(&state) {
+async fn list_runs(State(obs): State<ObservabilityLayer>, Query(q): Query<RunsQuery>) -> Response {
+    let store = match observability_store(&obs) {
         Some(store) => store,
         None => return unavailable("observability store not configured"),
     };
@@ -330,25 +329,25 @@ struct SummaryBucket {
 }
 
 async fn list_tool_summary(
-    State(state): State<AppState>,
+    State(obs): State<ObservabilityLayer>,
     Query(q): Query<SummaryQuery>,
 ) -> Response {
-    list_kind_summary(state, ObservedRunKind::Tool, "tools", q.limit)
+    list_kind_summary(obs, ObservedRunKind::Tool, "tools", q.limit)
         .await
         .into_response()
 }
 
 async fn list_subagent_summary(
-    State(state): State<AppState>,
+    State(obs): State<ObservabilityLayer>,
     Query(q): Query<SummaryQuery>,
 ) -> Response {
-    list_kind_summary(state, ObservedRunKind::Subagent, "subagents", q.limit)
+    list_kind_summary(obs, ObservedRunKind::Subagent, "subagents", q.limit)
         .await
         .into_response()
 }
 
-async fn get_direction(State(state): State<AppState>, Query(q): Query<DirectionQuery>) -> Response {
-    let store = match observability_store(&state) {
+async fn get_direction(State(obs): State<ObservabilityLayer>, Query(q): Query<DirectionQuery>) -> Response {
+    let store = match observability_store(&obs) {
         Some(store) => store,
         None => return unavailable("observability store not configured"),
     };
@@ -370,7 +369,7 @@ async fn get_direction(State(state): State<AppState>, Query(q): Query<DirectionQ
         }
     };
 
-    let eval_cases = match eval_store(&state) {
+    let eval_cases = match eval_store(&obs) {
         Some(store) => match store
             .list_case_results(EvalFilter {
                 limit: Some(scan_limit),
@@ -394,11 +393,12 @@ async fn get_direction(State(state): State<AppState>, Query(q): Query<DirectionQ
 }
 
 async fn get_capability_score(
-    State(state): State<AppState>,
+    State(obs): State<ObservabilityLayer>,
+    State(project): State<ProjectLayer>,
     Query(q): Query<CapabilityScoreQuery>,
 ) -> Response {
     let scan_limit = q.limit.unwrap_or(2_000).min(10_000);
-    let obs_runs = match observability_store(&state) {
+    let obs_runs = match observability_store(&obs) {
         Some(store) => match store
             .list_runs(ObservabilityFilter {
                 limit: Some(scan_limit),
@@ -417,7 +417,7 @@ async fn get_capability_score(
         },
         None => Vec::new(),
     };
-    let eval_cases = match eval_store(&state) {
+    let eval_cases = match eval_store(&obs) {
         Some(store) => match store
             .list_case_results(EvalFilter {
                 limit: Some(scan_limit),
@@ -436,7 +436,7 @@ async fn get_capability_score(
         },
         None => Vec::new(),
     };
-    let requirement_runs = match state.requirement_runs.as_ref() {
+    let requirement_runs = match project.requirement_runs.as_ref() {
         Some(store) => match store.list_all(scan_limit).await {
             Ok(rows) => rows,
             Err(e) => {
@@ -453,9 +453,9 @@ async fn get_capability_score(
     if obs_runs.is_empty()
         && eval_cases.is_empty()
         && requirement_runs.is_empty()
-        && observability_store(&state).is_none()
-        && eval_store(&state).is_none()
-        && state.requirement_runs.is_none()
+        && observability_store(&obs).is_none()
+        && eval_store(&obs).is_none()
+        && project.requirement_runs.is_none()
     {
         return unavailable("capability scoring stores not configured");
     }
@@ -469,12 +469,12 @@ async fn get_capability_score(
 }
 
 async fn list_kind_summary(
-    state: AppState,
+    obs: ObservabilityLayer,
     kind: ObservedRunKind,
     key: &'static str,
     limit: Option<u32>,
 ) -> Response {
-    let store = match observability_store(&state) {
+    let store = match observability_store(&obs) {
         Some(store) => store,
         None => return unavailable("observability store not configured"),
     };
@@ -975,7 +975,7 @@ impl<'a> CapabilityFacts<'a> {
         let rows = self
             .eval_cases
             .iter()
-            .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Capability)
+            .filter(|case| case.suite_kind == harness_observability::EvalSuiteKind::Capability)
             .cloned()
             .collect::<Vec<_>>();
         eval_success_rate(&rows)
@@ -985,7 +985,7 @@ impl<'a> CapabilityFacts<'a> {
         let rows = self
             .eval_cases
             .iter()
-            .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Regression)
+            .filter(|case| case.suite_kind == harness_observability::EvalSuiteKind::Regression)
             .cloned()
             .collect::<Vec<_>>();
         eval_success_rate(&rows)
@@ -1588,7 +1588,7 @@ fn score_from_float(value: f64) -> u8 {
 #[derive(Debug, Deserialize)]
 struct EvalCasesQuery {
     suite: Option<String>,
-    suite_kind: Option<harness_core::EvalSuiteKind>,
+    suite_kind: Option<harness_observability::EvalSuiteKind>,
     case_id: Option<String>,
     outcome: Option<ObservedOutcome>,
     limit: Option<u32>,
@@ -1622,10 +1622,10 @@ struct EvalSummarySnapshot {
 }
 
 async fn get_eval_summary(
-    State(state): State<AppState>,
+    State(obs): State<ObservabilityLayer>,
     Query(q): Query<EvalSummaryQuery>,
 ) -> Response {
-    let store = match eval_store(&state) {
+    let store = match eval_store(&obs) {
         Some(store) => store,
         None => return unavailable("eval store not configured"),
     };
@@ -1647,10 +1647,10 @@ async fn get_eval_summary(
 }
 
 async fn list_eval_cases(
-    State(state): State<AppState>,
+    State(obs): State<ObservabilityLayer>,
     Query(q): Query<EvalCasesQuery>,
 ) -> Response {
-    let store = match eval_store(&state) {
+    let store = match eval_store(&obs) {
         Some(store) => store,
         None => return unavailable("eval store not configured"),
     };
@@ -1681,12 +1681,12 @@ fn eval_summary(cases: &[EvalCaseResult]) -> EvalSummarySnapshot {
         .count();
     let capability = cases
         .iter()
-        .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Capability)
+        .filter(|case| case.suite_kind == harness_observability::EvalSuiteKind::Capability)
         .cloned()
         .collect::<Vec<_>>();
     let regression = cases
         .iter()
-        .filter(|case| case.suite_kind == harness_core::EvalSuiteKind::Regression)
+        .filter(|case| case.suite_kind == harness_observability::EvalSuiteKind::Regression)
         .cloned()
         .collect::<Vec<_>>();
     let transcript_cases = cases
@@ -1826,7 +1826,7 @@ mod tests {
 
     fn eval_case(
         case_id: &str,
-        suite_kind: harness_core::EvalSuiteKind,
+        suite_kind: harness_observability::EvalSuiteKind,
         trial_index: u32,
         outcome: ObservedOutcome,
     ) -> EvalCaseResult {
@@ -1843,10 +1843,10 @@ mod tests {
             trace_id: None,
             transcript_artifact_id: Some(format!("transcript-{case_id}-{trial_index}")),
             failure_class: None,
-            grader_results: vec![harness_core::EvalGraderResult {
+            grader_results: vec![harness_observability::EvalGraderResult {
                 id: format!("grader-{case_id}-{trial_index}"),
-                kind: harness_core::EvalGraderKind::DeterministicTest,
-                verdict: harness_core::EvalGraderVerdict::Pass,
+                kind: harness_observability::EvalGraderKind::DeterministicTest,
+                verdict: harness_observability::EvalGraderVerdict::Pass,
                 score: Some(1.0),
                 explanation: None,
                 attributes: serde_json::json!({}),
@@ -1936,19 +1936,19 @@ mod tests {
         let cases = vec![
             eval_case(
                 "case-1",
-                harness_core::EvalSuiteKind::Regression,
+                harness_observability::EvalSuiteKind::Regression,
                 0,
                 ObservedOutcome::Success,
             ),
             eval_case(
                 "case-1",
-                harness_core::EvalSuiteKind::Regression,
+                harness_observability::EvalSuiteKind::Regression,
                 1,
                 ObservedOutcome::Error,
             ),
             eval_case(
                 "case-2",
-                harness_core::EvalSuiteKind::Capability,
+                harness_observability::EvalSuiteKind::Capability,
                 0,
                 ObservedOutcome::Error,
             ),
@@ -1990,7 +1990,7 @@ mod tests {
         ];
         let evals = vec![eval_case(
             "case-1",
-            harness_core::EvalSuiteKind::Regression,
+            harness_observability::EvalSuiteKind::Regression,
             0,
             ObservedOutcome::Error,
         )];

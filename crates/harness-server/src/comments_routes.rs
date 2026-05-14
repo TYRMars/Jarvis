@@ -1,4 +1,4 @@
-//! REST routes for [`Comment`](harness_core::Comment) — Phase 3.8
+//! REST routes for [`Comment`](harness_project::Comment) — Phase 3.8
 //! per-requirement discussion threads.
 //!
 //! Mounted only when [`AppState::comments`] is configured. All
@@ -42,12 +42,13 @@ use axum::{
     routing::{get, patch},
     Router,
 };
-use harness_core::{Activity, ActivityActor, ActivityKind, Comment, CommentStore};
+use harness_project::{Activity, ActivityActor, ActivityKind, Comment, CommentStore};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{error, warn};
 
 use crate::state::AppState;
+use crate::state_layers::ProjectLayer;
 
 /// Soft cap on a single comment body. Mirrors typical chat-app
 /// limits (Linear: 32 KiB, GitHub: 64 KiB). Past this the model
@@ -68,8 +69,8 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_comment_store(state: &AppState) -> Result<Arc<dyn CommentStore>, Response> {
-    state.comments.clone().ok_or_else(|| {
+fn require_comment_store(project: &ProjectLayer) -> Result<Arc<dyn CommentStore>, Response> {
+    project.comments.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "comment store not configured" })),
@@ -106,8 +107,8 @@ fn json_value(v: impl serde::Serialize) -> Json<Value> {
 /// Best-effort audit emit. Mirrors `requirements_routes::record_activity`
 /// — failures are logged at WARN, never bubbled, because losing a
 /// timeline row should not cost the comment write.
-async fn record_comment_activity(state: &AppState, comment: &Comment, action: &str) {
-    let Some(store) = state.activities.as_ref() else {
+async fn record_comment_activity(project: &ProjectLayer, comment: &Comment, action: &str) {
+    let Some(store) = project.activities.as_ref() else {
         return;
     };
     let body = json!({
@@ -146,8 +147,8 @@ fn preview(body: &str, cap: usize) -> String {
 
 // ----------------------- GET /v1/requirements/:id/comments --------------
 
-async fn list_comments(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let store = match require_comment_store(&state) {
+async fn list_comments(State(project): State<ProjectLayer>, Path(id): Path<String>) -> Response {
+    let store = match require_comment_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -169,11 +170,11 @@ struct PostCommentBody {
 }
 
 async fn post_comment(
-    State(state): State<AppState>,
+    State(project): State<ProjectLayer>,
     Path(id): Path<String>,
     Json(payload): Json<PostCommentBody>,
 ) -> Response {
-    let store = match require_comment_store(&state) {
+    let store = match require_comment_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -199,7 +200,7 @@ async fn post_comment(
 
     match store.create(&comment).await {
         Ok(()) => {
-            record_comment_activity(&state, &comment, "posted").await;
+            record_comment_activity(&project, &comment, "posted").await;
             (StatusCode::CREATED, json_value(&comment)).into_response()
         }
         Err(e) => {
@@ -233,12 +234,12 @@ struct CommentIdQuery {
 }
 
 async fn edit_comment(
-    State(state): State<AppState>,
+    State(project): State<ProjectLayer>,
     Path(comment_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<CommentIdQuery>,
     Json(payload): Json<EditCommentBody>,
 ) -> Response {
-    let store = match require_comment_store(&state) {
+    let store = match require_comment_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -281,7 +282,7 @@ async fn edit_comment(
                 Err(_) => None,
             };
             if let Some(c) = edited.as_ref() {
-                record_comment_activity(&state, c, "edited").await;
+                record_comment_activity(&project, c, "edited").await;
                 json_value(c).into_response()
             } else {
                 // Edge case: row vanished between update and re-list
@@ -313,11 +314,11 @@ struct DeleteQuery {
 }
 
 async fn delete_comment(
-    State(state): State<AppState>,
+    State(project): State<ProjectLayer>,
     Path(comment_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<DeleteQuery>,
 ) -> Response {
-    let store = match require_comment_store(&state) {
+    let store = match require_comment_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -329,7 +330,7 @@ async fn delete_comment(
             // We don't have the original Comment in hand here, so
             // emit a minimal activity row so the timeline shows the
             // delete. Author defaults to Human (v0 — see post handler).
-            if let Some(act_store) = state.activities.as_ref() {
+            if let Some(act_store) = project.activities.as_ref() {
                 let activity = Activity::new(
                     q.requirement_id.clone(),
                     ActivityKind::Comment,

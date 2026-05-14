@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { apiUrl } from "../../services/api";
-import type { ProjectWorkspace } from "../../types/frames";
+import type { Project, ProjectWorkspace } from "../../types/frames";
 import { t } from "../../utils/i18n";
 
 interface FsEntry {
@@ -118,31 +118,43 @@ async function fetchRead(root: string, path: string): Promise<ReadResponse | nul
   }
 }
 
-export function FilesSurface() {
+export function FilesSurface({ project }: { project?: Project } = {}) {
   const draftProjectId = useAppStore((s) => s.draftProjectId);
   const projectsById = useAppStore((s) => s.projectsById);
   const draftWorkspacePath = useAppStore((s) => s.draftWorkspacePath);
   const socketWorkspace = useAppStore((s) => s.socketWorkspace);
 
-  // Resolution: project.workspaces[] (when multiple) → active path.
+  // Resolution: explicit `project` prop (when the panel is hosted by a
+  // project page) → store-derived draft project → active socket /
+  // composer workspace → server-pinned default root.
   const roots = useMemo<RootDescriptor[]>(() => {
-    const project = draftProjectId ? projectsById[draftProjectId] : null;
-    const workspaces: ProjectWorkspace[] = project?.workspaces ?? [];
+    const scoped = project
+      ? project
+      : draftProjectId
+        ? projectsById[draftProjectId]
+        : null;
+    const workspaces: ProjectWorkspace[] = scoped?.workspaces ?? [];
     if (workspaces.length > 1) {
       return workspaces.map((w) => ({
         path: w.path,
         label: w.name || basename(w.path) || w.path,
       }));
     }
-    const active = socketWorkspace ?? draftWorkspacePath;
-    if (active) {
-      return [{ path: active, label: basename(active) || active }];
+    if (workspaces.length === 1) {
+      const w = workspaces[0];
+      return [{ path: w.path, label: w.name || basename(w.path) || w.path }];
     }
-    // No active workspace + no override → backend falls back to the
-    // server-pinned root. Use an empty path string so the API call
-    // sends no `?root=` param.
+    // No project-bound roots: fall back to whatever the chat surface
+    // is currently pointing at, then to the server-pinned default.
+    if (!project) {
+      const active = socketWorkspace ?? draftWorkspacePath;
+      if (active) {
+        return [{ path: active, label: basename(active) || active }];
+      }
+    }
+    // Empty path string ⇒ no `?root=` param ⇒ backend default.
     return [{ path: "", label: tx("filesRootLabel", "workspace") }];
-  }, [draftProjectId, projectsById, socketWorkspace, draftWorkspacePath]);
+  }, [project, draftProjectId, projectsById, socketWorkspace, draftWorkspacePath]);
 
   const [openPath, setOpenPath] = useState<{ root: string; path: string } | null>(null);
   const [preview, setPreview] = useState<ReadResponse | null>(null);

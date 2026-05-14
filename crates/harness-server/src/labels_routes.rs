@@ -1,4 +1,4 @@
-//! REST routes for [`Label`](harness_core::Label) — Phase 3.8
+//! REST routes for [`Label`](harness_project::Label) — Phase 3.8
 //! project-scoped tags.
 //!
 //! Mounted only when [`AppState::labels`] is configured. Returns
@@ -12,7 +12,7 @@
 //! - `DELETE /v1/labels/:label_id`                — delete (does NOT cascade into Requirement.label_ids)
 //!
 //! Validation comes from
-//! [`harness_core::label::validate_label_name`] and
+//! [`harness_project::label::validate_label_name`] and
 //! `validate_label_colour`. Name uniqueness inside a project is
 //! enforced by the store layer; we surface its `already exists`
 //! error as `409 Conflict`.
@@ -26,12 +26,13 @@ use axum::{
     routing::{get, patch},
     Router,
 };
-use harness_core::{validate_label_colour, validate_label_name, Label, LabelStore};
+use harness_project::{validate_label_colour, validate_label_name, Label, LabelStore};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::error;
 
 use crate::state::AppState;
+use crate::state_layers::ProjectLayer;
 
 /// Soft cap on `description`. Long descriptions belong in a doc, not
 /// hovering on a kanban chip.
@@ -50,8 +51,8 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_label_store(state: &AppState) -> Result<Arc<dyn LabelStore>, Response> {
-    state.labels.clone().ok_or_else(|| {
+fn require_label_store(layer: &ProjectLayer) -> Result<Arc<dyn LabelStore>, Response> {
+    layer.labels.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "label store not configured" })),
@@ -105,8 +106,8 @@ fn map_label_store_err(e: harness_core::BoxError) -> Response {
 
 // ----------------------- GET /v1/projects/:project_id/labels ------------
 
-async fn list_labels(State(state): State<AppState>, Path(project_id): Path<String>) -> Response {
-    let store = match require_label_store(&state) {
+async fn list_labels(State(layer): State<ProjectLayer>, Path(project_id): Path<String>) -> Response {
+    let store = match require_label_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -130,11 +131,11 @@ struct CreateLabelBody {
 }
 
 async fn create_label(
-    State(state): State<AppState>,
+    State(layer): State<ProjectLayer>,
     Path(project_id): Path<String>,
     Json(payload): Json<CreateLabelBody>,
 ) -> Response {
-    let store = match require_label_store(&state) {
+    let store = match require_label_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -174,11 +175,11 @@ struct UpdateLabelBody {
 }
 
 async fn update_label(
-    State(state): State<AppState>,
+    State(layer): State<ProjectLayer>,
     Path(label_id): Path<String>,
     Json(payload): Json<UpdateLabelBody>,
 ) -> Response {
-    let store = match require_label_store(&state) {
+    let store = match require_label_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -215,8 +216,8 @@ async fn update_label(
 
 // ----------------------- DELETE /v1/labels/:label_id --------------------
 
-async fn delete_label(State(state): State<AppState>, Path(label_id): Path<String>) -> Response {
-    let store = match require_label_store(&state) {
+async fn delete_label(State(layer): State<ProjectLayer>, Path(label_id): Path<String>) -> Response {
+    let store = match require_label_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -260,7 +261,7 @@ fn validate_description(raw: Option<&str>) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::MAX_LABEL_NAME_LEN;
+    use harness_project::MAX_LABEL_NAME_LEN;
 
     #[test]
     fn description_validator_clears_on_blank_input() {

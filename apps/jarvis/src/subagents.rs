@@ -87,8 +87,8 @@ fn build_doc_reader_tools(canonical: &ToolRegistry) -> ToolRegistry {
 /// recurse.
 fn build_reviewer_tools(
     canonical: &ToolRegistry,
-    requirement_store: Option<Arc<dyn harness_core::RequirementStore>>,
-    activity_store: Option<Arc<dyn harness_core::ActivityStore>>,
+    requirement_store: Option<Arc<dyn harness_project::RequirementStore>>,
+    activity_store: Option<Arc<dyn harness_project::ActivityStore>>,
 ) -> ToolRegistry {
     let mut reg = canonical.clone();
     strip_subagents(&mut reg);
@@ -172,8 +172,8 @@ pub async fn register_builtins(
     primary_provider: Arc<dyn LlmProvider>,
     primary_model: String,
     workspace_root: PathBuf,
-    requirement_store: Option<Arc<dyn harness_core::RequirementStore>>,
-    activity_store: Option<Arc<dyn harness_core::ActivityStore>>,
+    requirement_store: Option<Arc<dyn harness_project::RequirementStore>>,
+    activity_store: Option<Arc<dyn harness_project::ActivityStore>>,
     route_policy: Arc<ModelRoutePolicy>,
     // Lookup table of `provider_name → built provider Arc`. When a
     // route slot points at a provider in this map, the subagent
@@ -296,6 +296,10 @@ pub async fn register_builtins(
             let cc_cfg = claude_code::ClaudeCodeConfig {
                 claude_bin,
                 model: std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_MODEL").ok(),
+                extra_args: std::env::var("JARVIS_SUBAGENT_CLAUDE_CODE_ARGS")
+                    .ok()
+                    .map(|s| s.split_whitespace().map(String::from).collect())
+                    .unwrap_or_default(),
             };
             let cc = ClaudeCodeSubAgent::new(cc_cfg);
             let cc_arc: Arc<dyn SubAgent> = Arc::new(cc);

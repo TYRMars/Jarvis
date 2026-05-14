@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use harness_core::{RequirementRun, RequirementRunStatus, RequirementRunStore};
+use harness_project::{RequirementRun, RequirementRunStatus, RequirementRunStore};
 use serde::Serialize;
 
 use crate::worktree::remove_worktree;
@@ -295,7 +295,7 @@ async fn walk_size(root: &Path) -> std::io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::{RequirementRun, RequirementRunStatus};
+    use harness_project::{RequirementRun, RequirementRunStatus};
     use harness_store::MemoryRequirementRunStore;
     use tokio::process::Command;
 
@@ -401,7 +401,7 @@ mod tests {
 
     // ---- Phase 5c — stuck + recent-failure detectors -----------------
 
-    use harness_core::VerificationResult;
+    use harness_project::VerificationResult;
 
     fn rfc3339_seconds_ago(secs: i64) -> String {
         (chrono::Utc::now() - chrono::Duration::seconds(secs)).to_rfc3339()
@@ -461,7 +461,7 @@ mod tests {
         early_fail.started_at = rfc3339_seconds_ago(900);
         early_fail.finish(RequirementRunStatus::Failed);
         early_fail.verification = Some(VerificationResult {
-            status: harness_core::VerificationStatus::Failed,
+            status: harness_project::VerificationStatus::Failed,
             command_results: vec![],
             diff_summary: None,
             notes: None,

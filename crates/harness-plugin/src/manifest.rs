@@ -85,7 +85,7 @@ pub struct PluginManifest {
     /// WeCom / …). Each entry declares a subprocess that the
     /// `PluginManager` will spawn and supervise (Phase 2). Map key is
     /// the canonical channel handle (matches
-    /// `harness_core::ChannelBinding::channel`); value carries the
+    /// `harness_channel::ChannelBinding::channel`); value carries the
     /// transport + env. **Phase 1:** parsed and validated, but the
     /// manager does not yet spawn anything — same staging used for
     /// `slash_commands` / `hooks`. See

@@ -1,4 +1,4 @@
-//! Builders that turn a [`Requirement`](harness_core::Requirement) +
+//! Builders that turn a [`Requirement`](harness_project::Requirement) +
 //! a workspace root into a [`RequirementContextManifest`].
 //!
 //! The default builder reads a small allowlist of instruction files
@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use harness_core::Requirement;
+use harness_project::Requirement;
 
 use crate::model::{ContextKind, ContextRef, RequirementContextManifest, VerificationPlan};
 
@@ -165,7 +165,7 @@ fn truncate_to_utf8_lossy(bytes: &[u8], cap: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::{Requirement, RequirementStatus};
+    use harness_project::{Requirement, RequirementStatus};
     use tempfile::tempdir;
 
     fn req() -> Requirement {

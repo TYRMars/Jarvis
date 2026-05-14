@@ -632,6 +632,7 @@ function ConvoMenuRadio({
 
 function ConvoStatus({ kind }: { kind: "" | "disabled" | "empty" }) {
   if (!kind) return null;
+  if (kind === "empty") return null;
   if (kind === "disabled") {
     return (
       <EmptyState
@@ -646,16 +647,7 @@ function ConvoStatus({ kind }: { kind: "" | "disabled" | "empty" }) {
       />
     );
   }
-  return (
-    <EmptyState
-      icon={
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-      }
-      title={t("noConversations")}
-    />
-  );
+  return null;
 }
 
 type RenderEntry =

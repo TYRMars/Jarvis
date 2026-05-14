@@ -13,6 +13,7 @@
 // templates verbatim — no special handling needed.
 
 import { useEffect, useMemo, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { Section } from "./Section";
 import { t } from "../../../utils/i18n";
 import {
@@ -294,6 +295,11 @@ function ChannelRow({
   onTested: (result: { ok: boolean; error?: string }) => void;
 }) {
   const [pending, setPending] = useState(false);
+  // Toggleable inline QR for the OAuth login URL — operators
+  // typically have the Settings page open on a desktop and scan with
+  // their phone's WeCom client. Off by default so the row stays
+  // compact when the operator isn't actively testing.
+  const [showQr, setShowQr] = useState(false);
 
   const togglePause = async () => {
     setPending(true);
@@ -352,6 +358,62 @@ function ChannelRow({
     );
   }
 
+  // Inbound-capable kinds (bidirectional / inbound) carry a
+  // `callback_path` template the operator pastes into the
+  // platform's admin. Build the absolute URL relative to the
+  // current origin so what's shown in the UI matches what the
+  // platform will actually hit.
+  const callbackUrl = kindMeta?.callback_path
+    ? `${window.location.origin}${kindMeta.callback_path.replace("<id>", inst.id)}`
+    : null;
+  // Test button stays hidden for kinds that don't actually
+  // support outbound (inbound-only kinds). bidirectional kinds
+  // can still be tested via `channel.send`-shaped probes.
+  const isInboundOnly = kindMeta?.direction === "inbound";
+
+  // OAuth2 免登 is gated server-side to wecom_app for now. Match the
+  // gate here so we don't render an "OAuth test" affordance that
+  // would 405 if clicked. When more kinds grow OAuth, lift this to
+  // a `kindMeta.oauth_supported` field returned by /v1/channels/kinds.
+  const oauthSupported = inst.kind === "wecom_app";
+  const oauthStartUrl = oauthSupported
+    ? `${window.location.origin}/v1/channels/${inst.id}/oauth/start` +
+      `?next=${encodeURIComponent(`${window.location.origin}/oauth/result`)}`
+    : null;
+
+  const copyCallback = async () => {
+    if (!callbackUrl) return;
+    try {
+      await navigator.clipboard.writeText(callbackUrl);
+      onTested({ ok: true });
+    } catch {
+      // Fallback when clipboard API isn't allowed (insecure origin
+      // / older browsers) — surface the URL via the flash so the
+      // operator can copy it manually from the toast.
+      onTested({ ok: false, error: callbackUrl });
+    }
+  };
+
+  // Operator clicks OAuth 测试. We need this to open in WeCom client
+  // (or a desktop browser that's logged into WeCom Web), so open in
+  // a new tab — the WeCom client deep-link will intercept the
+  // `open.weixin.qq.com` redirect on mobile. Desktop browsers see a
+  // QR code page rendered by WeCom.
+  const openOAuthFlow = () => {
+    if (!oauthStartUrl) return;
+    window.open(oauthStartUrl, "_blank", "noopener,noreferrer");
+  };
+
+  const copyOAuthUrl = async () => {
+    if (!oauthStartUrl) return;
+    try {
+      await navigator.clipboard.writeText(oauthStartUrl);
+      onTested({ ok: true });
+    } catch {
+      onTested({ ok: false, error: oauthStartUrl });
+    }
+  };
+
   return (
     <li className={"channels-row status-" + inst.status}>
       <div className="channels-row-head">
@@ -362,10 +424,117 @@ function ChannelRow({
         <span className="channels-row-kind">
           {kindMeta?.label ?? inst.kind}
         </span>
+        {kindMeta?.direction && kindMeta.direction !== "outbound" && (
+          <span className="channels-row-direction">
+            {kindMeta.direction === "inbound"
+              ? tx("channelsDirInbound", "Inbound")
+              : tx("channelsDirBidirectional", "Bidirectional")}
+          </span>
+        )}
       </div>
       <div className="channels-row-summary">{summariseConfig(inst)}</div>
+      {callbackUrl && (
+        <div className="channels-row-callback">
+          <span className="channels-row-callback-label">
+            {tx("channelsCallbackUrl", "Callback URL")}
+          </span>
+          <code className="channels-row-callback-url" title={callbackUrl}>
+            {callbackUrl}
+          </code>
+          <button
+            type="button"
+            className="settings-btn ghost"
+            onClick={() => void copyCallback()}
+          >
+            {tx("channelsCopyCallbackUrl", "Copy")}
+          </button>
+        </div>
+      )}
+      {oauthStartUrl && (
+        <>
+          <div className="channels-row-callback">
+            <span className="channels-row-callback-label">
+              {tx("channelsOauthUrl", "OAuth login URL")}
+            </span>
+            <code className="channels-row-callback-url" title={oauthStartUrl}>
+              {oauthStartUrl}
+            </code>
+            <button
+              type="button"
+              className="settings-btn ghost"
+              onClick={() => void copyOAuthUrl()}
+            >
+              {tx("channelsOauthCopyUrl", "Copy")}
+            </button>
+            <button
+              type="button"
+              className="settings-btn"
+              onClick={openOAuthFlow}
+              disabled={inst.status === "disabled"}
+              title={tx(
+                "channelsOauthOpenHint",
+                "Open inside the WeCom client (or a browser signed into WeCom Web)",
+              )}
+            >
+              {tx("channelsOauthOpen", "Open")}
+            </button>
+            <button
+              type="button"
+              className="settings-btn ghost"
+              onClick={() => setShowQr((v) => !v)}
+              aria-expanded={showQr}
+              aria-controls={`channels-oauth-qr-${inst.id}`}
+              title={tx(
+                "channelsOauthQrHint",
+                "Scan with the WeCom client on your phone to test the flow",
+              )}
+            >
+              {showQr
+                ? tx("channelsOauthQrHide", "Hide QR")
+                : tx("channelsOauthQrShow", "QR")}
+            </button>
+          </div>
+          {showQr && (
+            <div
+              id={`channels-oauth-qr-${inst.id}`}
+              className="channels-row-qr"
+              role="img"
+              aria-label={tx(
+                "channelsOauthQrAlt",
+                "QR code for the OAuth login URL",
+              )}
+            >
+              <QRCodeSVG
+                value={oauthStartUrl}
+                // 200px renders crisp on most phone cameras from a
+                // typical desk distance (~30 cm). Bumped higher costs
+                // pixels with no scan reliability gain.
+                size={200}
+                // `M`(edium) error correction is the sweet spot — 15%
+                // recovery, ~22% denser modules than `L`. Higher levels
+                // are needed only when the QR sits over a noisy
+                // background or behind a logo overlay, neither of
+                // which applies here.
+                level="M"
+                marginSize={2}
+                // Inherit page colors so the QR looks at home in dark
+                // mode too. Most phone cameras tolerate non-pure-black
+                // foregrounds without trouble.
+                fgColor="#111827"
+                bgColor="#ffffff"
+              />
+              <div className="channels-row-qr-caption">
+                {tx(
+                  "channelsOauthQrCaption",
+                  "Scan with WeCom on your phone. Desktop WeCom Web users can click ‘Open’ instead.",
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
       <div className="channels-row-actions">
-        {kindMeta?.test_supported && (
+        {kindMeta?.test_supported && !isInboundOnly && (
           <button
             type="button"
             className="settings-btn"

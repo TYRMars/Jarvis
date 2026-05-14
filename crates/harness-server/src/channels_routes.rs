@@ -27,8 +27,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use harness_core::{
+use harness_channel::{
     resolve_env_templates, ChannelInstance, ChannelInstanceStatus, ChannelInstanceStore,
+    ChannelMessageFormat, OutboundMessage, SendOutcome,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -36,6 +37,7 @@ use std::sync::Arc;
 use tracing::{error, warn};
 
 use crate::state::AppState;
+use crate::state_layers::ChannelLayer;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -49,8 +51,10 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_store(state: &AppState) -> Result<Arc<dyn ChannelInstanceStore>, Response> {
-    state.channel_instances.clone().ok_or_else(|| {
+fn require_store(
+    layer: &ChannelLayer,
+) -> Result<Arc<dyn ChannelInstanceStore>, Response> {
+    layer.instances.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
@@ -100,8 +104,8 @@ fn instance_to_json(inst: &ChannelInstance) -> Value {
 
 // --------------------------- list / kinds --------------------------------
 
-async fn list(State(state): State<AppState>) -> Response {
-    let store = match require_store(&state) {
+async fn list(State(layer): State<ChannelLayer>) -> Response {
+    let store = match require_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -114,48 +118,14 @@ async fn list(State(state): State<AppState>) -> Response {
     }
 }
 
-/// Returns the catalogue of supported channel kinds and the JSON
-/// Schema each kind expects in its `config` blob. The frontend uses
-/// this to render the "Add channel" picker + dynamically build the
-/// config form per kind, so adding a new kind on the backend
-/// auto-surfaces in the UI without a frontend change.
-///
-/// M2 ships only `wecom_webhook`; M3 will add `wechat_mp`; future
-/// adapters slot in without touching this handler's structure.
-async fn list_kinds(State(_state): State<AppState>) -> Response {
-    Json(json!({
-        "kinds": kind_catalogue(),
-    }))
-    .into_response()
-}
-
-fn kind_catalogue() -> Vec<Value> {
-    vec![json!({
-        "kind": "wecom_webhook",
-        "label": "WeCom 群机器人",
-        "label_en": "WeCom group robot",
-        "direction": "outbound",
-        "description": "Outbound-only webhook to a WeCom group robot. Useful for alerts / notifications. The robot receives nothing in return.",
-        "schema": {
-            "type": "object",
-            "required": ["webhook_url"],
-            "properties": {
-                "webhook_url": {
-                    "type": "string",
-                    "title": "Webhook URL",
-                    "description": "Full webhook URL from WeCom group settings. Supports `${env:NAME}` templating to keep secrets out of the row.",
-                    "example": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${env:WECOM_PROD_KEY}"
-                },
-                "default_mention": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "title": "@mentioned member ids (optional)",
-                    "description": "Member ids to @-mention on every message. Use `@all` to mention everyone."
-                }
-            }
-        },
-        "test_supported": true
-    })]
+/// Returns the catalogue of supported channel kinds. Pulled from
+/// the [`ChannelAdapterRegistry`] in `AppState`, so the schema is
+/// always in lockstep with what the backend can actually send —
+/// adding a kind = registering one adapter, no separate hardcoded
+/// catalogue to keep in sync.
+async fn list_kinds(State(layer): State<ChannelLayer>) -> Response {
+    let kinds: Vec<Value> = layer.adapters.iter().map(|a| a.schema()).collect();
+    Json(json!({ "kinds": kinds })).into_response()
 }
 
 // --------------------------- create --------------------------------------
@@ -168,8 +138,8 @@ struct CreateRequest {
     config: Value,
 }
 
-async fn create(State(state): State<AppState>, Json(body): Json<CreateRequest>) -> Response {
-    let store = match require_store(&state) {
+async fn create(State(layer): State<ChannelLayer>, Json(body): Json<CreateRequest>) -> Response {
+    let store = match require_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -180,18 +150,17 @@ async fn create(State(state): State<AppState>, Json(body): Json<CreateRequest>) 
     if display_name.len() > 64 {
         return bad_request("display_name must be ≤ 64 chars");
     }
-    if !is_known_kind(&body.kind) {
+    let Some(adapter) = layer.adapters.get(&body.kind) else {
         return bad_request(format!(
             "unknown channel kind '{}' — see GET /v1/channels/kinds",
             body.kind
         ));
-    }
+    };
     let mut inst = ChannelInstance::new(body.kind, display_name, body.config);
-    // Validate config — when valid, mark Enabled so the new row goes
-    // live immediately (the user can flip back to Disabled later).
-    // Invalid configs stay in `Unconfigured` so the UI prompts
-    // "继续配置".
-    if validate_config(&inst.kind, &inst.config).is_ok() {
+    // Validate via the kind's adapter — when the config parses,
+    // promote to Enabled so the new row goes live immediately.
+    // Invalid configs stay Unconfigured so the UI prompts "继续配置".
+    if adapter.validate_config(&inst.config).is_ok() {
         inst.status = ChannelInstanceStatus::Enabled;
     }
     if let Err(e) = store.upsert(&inst).await {
@@ -200,39 +169,10 @@ async fn create(State(state): State<AppState>, Json(body): Json<CreateRequest>) 
     (StatusCode::CREATED, Json(instance_to_json(&inst))).into_response()
 }
 
-fn is_known_kind(kind: &str) -> bool {
-    kind_catalogue()
-        .iter()
-        .any(|k| k.get("kind").and_then(|v| v.as_str()) == Some(kind))
-}
-
-/// Validate a `config` blob against its kind's expected shape.
-/// Returns the offending field name on failure. M2 only validates
-/// `wecom_webhook`; future kinds extend this match arm.
-fn validate_config(kind: &str, config: &Value) -> Result<(), String> {
-    match kind {
-        "wecom_webhook" => {
-            let url = config
-                .get("webhook_url")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "webhook_url required".to_string())?;
-            // Allow templated URLs (`${env:NAME}`) since the literal
-            // string itself isn't a valid URL until resolution.
-            if !url.starts_with("https://") && !url.contains("${env:") {
-                return Err("webhook_url must be https:// (or contain an ${env:…} template)".into());
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
 // --------------------------- get / patch / delete ------------------------
 
-async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let store = match require_store(&state) {
+async fn get_one(State(layer): State<ChannelLayer>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -254,11 +194,11 @@ struct PatchRequest {
 }
 
 async fn patch_one(
-    State(state): State<AppState>,
+    State(layer): State<ChannelLayer>,
     Path(id): Path<String>,
     Json(body): Json<PatchRequest>,
 ) -> Response {
-    let store = match require_store(&state) {
+    let store = match require_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -280,10 +220,17 @@ async fn patch_one(
     if let Some(cfg) = body.config {
         inst.config = cfg;
     }
-    // Re-validate after every patch so a config edit can promote
+    // Re-validate via the adapter so a config edit can promote
     // Unconfigured → Enabled (or kick a healthy row back to
-    // Unconfigured if the operator nukes a required field).
-    let cfg_ok = validate_config(&inst.kind, &inst.config).is_ok();
+    // Unconfigured if the operator nukes a required field). Unknown
+    // kinds (could happen if a row was created on an older binary
+    // that registered a kind this one doesn't) treat as valid so we
+    // don't accidentally demote them — operator can manually flip
+    // status if they really want.
+    let cfg_ok = match layer.adapters.get(&inst.kind) {
+        Some(adapter) => adapter.validate_config(&inst.config).is_ok(),
+        None => true,
+    };
     if let Some(s) = body.status.as_deref() {
         match ChannelInstanceStatus::from_wire(s) {
             Some(want) => {
@@ -317,8 +264,8 @@ async fn patch_one(
     Json(instance_to_json(&inst)).into_response()
 }
 
-async fn delete_one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let store = match require_store(&state) {
+async fn delete_one(State(layer): State<ChannelLayer>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -337,14 +284,19 @@ struct TestRequest {
     /// "Jarvis test ping" so a "test" button click is one tap.
     #[serde(default)]
     text: Option<String>,
+    /// Optional format override — defaults to `text`. Adapters that
+    /// don't support the requested format degrade gracefully and
+    /// flag `downgraded_format: true` on the response.
+    #[serde(default)]
+    format: Option<String>,
 }
 
 async fn send_test(
-    State(state): State<AppState>,
+    State(layer): State<ChannelLayer>,
     Path(id): Path<String>,
     body: Option<Json<TestRequest>>,
 ) -> Response {
-    let store = match require_store(&state) {
+    let store = match require_store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -356,72 +308,111 @@ async fn send_test(
     if matches!(inst.status, ChannelInstanceStatus::Disabled) {
         return bad_request("instance is disabled — flip status to enabled before testing");
     }
+    let body = body.map(|Json(b)| b);
     let text = body
-        .and_then(|Json(b)| b.text)
+        .as_ref()
+        .and_then(|b| b.text.clone())
         .unwrap_or_else(|| "Jarvis 测试消息 (test ping)".to_string());
-
-    let resolved_config = resolve_env_templates(&inst.config);
-    match inst.kind.as_str() {
-        "wecom_webhook" => match crate::channels_wecom::send_text(&resolved_config, &text).await {
-            Ok(_) => Json(json!({
-                "ok": true,
-                "kind": inst.kind,
-                "message_preview": text.chars().take(80).collect::<String>(),
-            }))
-            .into_response(),
-            Err(e) => {
-                warn!(channel_id = %id, error = %e, "wecom_webhook test send failed");
-                (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({"ok": false, "error": e.to_string()})),
-                )
-                    .into_response()
+    let format = match body.as_ref().and_then(|b| b.format.as_deref()) {
+        None => ChannelMessageFormat::Text,
+        Some(s) => match ChannelMessageFormat::from_wire(s) {
+            Some(f) => f,
+            None => {
+                return bad_request(format!(
+                    "unknown format '{s}' — expected text|markdown"
+                ))
             }
         },
-        other => bad_request(format!("kind '{other}' has no test sender (M2 only ships wecom_webhook)")),
+    };
+    let Some(adapter) = layer.adapters.get(&inst.kind) else {
+        return bad_request(format!(
+            "kind '{}' has no registered adapter in this binary",
+            inst.kind
+        ));
+    };
+    let resolved = resolve_env_templates(&inst.config);
+    let outcome = adapter
+        .send(&resolved, &OutboundMessage::text(text.clone()).with_format(format))
+        .await;
+    match outcome {
+        SendOutcome::Sent {
+            message_id,
+            truncated,
+            downgraded_format,
+        } => Json(json!({
+            "ok": true,
+            "kind": inst.kind,
+            "message_preview": text.chars().take(80).collect::<String>(),
+            "message_id": message_id,
+            "truncated": truncated,
+            "downgraded_format": downgraded_format,
+        }))
+        .into_response(),
+        SendOutcome::Failed {
+            message,
+            code,
+            retryable,
+        } => {
+            warn!(channel_id = %id, kind = %inst.kind, %message, "test send failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "ok": false,
+                    "error": message,
+                    "code": code,
+                    "retryable": retryable,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_adapter::ChannelAdapterRegistry;
 
     #[test]
-    fn validate_wecom_requires_webhook_url() {
-        assert!(validate_config("wecom_webhook", &json!({})).is_err());
-        assert!(validate_config("wecom_webhook", &json!({"webhook_url": ""})).is_err());
-        assert!(validate_config("wecom_webhook", &json!({"webhook_url": "http://insecure"})).is_err());
-        assert!(validate_config(
-            "wecom_webhook",
-            &json!({"webhook_url": "https://qyapi.weixin.qq.com/x"})
-        )
-        .is_ok());
-        // Templated URLs allowed even though the literal isn't a valid URL.
-        assert!(validate_config(
-            "wecom_webhook",
-            &json!({"webhook_url": "https://qyapi.weixin.qq.com/x?key=${env:WECOM_KEY}"})
-        )
-        .is_ok());
-        // Pure template (no scheme prefix) still allowed.
-        assert!(validate_config(
-            "wecom_webhook",
-            &json!({"webhook_url": "${env:WECOM_FULL_URL}"})
-        )
-        .is_ok());
+    fn default_registry_lists_all_shipped_kinds() {
+        // Phase-0 invariant: the default registry surfaces every
+        // shipped kind through its `schema()`. The Settings page +
+        // create-time kind gate both consult this exact iterator,
+        // so this test guards against a kind being added to one
+        // place but not the other.
+        let registry = ChannelAdapterRegistry::with_defaults();
+        let kinds: Vec<&str> = registry.iter().map(|a| a.kind()).collect();
+        assert!(
+            kinds.contains(&"wecom_webhook"),
+            "wecom_webhook missing from default registry: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"feishu_bot"),
+            "feishu_bot missing from default registry: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"dingtalk_bot"),
+            "dingtalk_bot missing from default registry: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"wecom_app"),
+            "wecom_app missing from default registry: {kinds:?}"
+        );
     }
 
     #[test]
-    fn validate_unknown_kind_passes() {
-        // Unknown kinds aren't validated by name here — `is_known_kind`
-        // is the gate that rejects them at create time.
-        assert!(validate_config("not_a_real_kind", &json!({})).is_ok());
-    }
-
-    #[test]
-    fn kind_catalogue_lists_wecom_webhook() {
-        let kinds = kind_catalogue();
-        assert!(kinds
-            .iter()
-            .any(|k| k["kind"] == "wecom_webhook" && k["test_supported"] == true));
+    fn default_registry_validates_wecom_via_adapter() {
+        // Validation now lives on the adapter, not in routes — make
+        // sure the bridge (registry → adapter::validate_config) is
+        // wired so create / patch reject broken configs.
+        let registry = ChannelAdapterRegistry::with_defaults();
+        let adapter = registry.get("wecom_webhook").expect("wecom_webhook");
+        assert!(adapter.validate_config(&json!({})).is_err());
+        assert!(adapter
+            .validate_config(&json!({"webhook_url": "https://qyapi.weixin.qq.com/x"}))
+            .is_ok());
+        assert!(adapter
+            .validate_config(&json!({"webhook_url": "${env:WECOM_FULL_URL}"}))
+            .is_ok());
     }
 }

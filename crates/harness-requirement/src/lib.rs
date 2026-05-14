@@ -2,9 +2,9 @@
 //!
 //! Sibling to [`harness_core`]. Where `harness-core` owns the
 //! Requirement *value type* (kanban row stored in
-//! [`RequirementStore`](harness_core::RequirementStore)) **and** the
+//! [`RequirementStore`](harness_project::RequirementStore)) **and** the
 //! per-run records ([`RequirementRun`] etc., persisted via
-//! [`RequirementRunStore`](harness_core::RequirementRunStore)), this
+//! [`RequirementRunStore`](harness_project::RequirementRunStore)), this
 //! crate owns the *executable shape* of work: a context manifest
 //! builder that gathers workspace instructions, plus thin re-exports
 //! of the value types so existing import paths keep working.
@@ -25,7 +25,7 @@ pub mod model;
 pub mod roadmap;
 
 pub use events::RequirementRunEvent;
-pub use harness_core::requirement_run::{
+pub use harness_project::requirement_run::{
     CommandResult, RequirementRun, RequirementRunStatus, VerificationResult, VerificationStatus,
 };
 pub use manifest::{build_default_manifest, render_manifest_summary};

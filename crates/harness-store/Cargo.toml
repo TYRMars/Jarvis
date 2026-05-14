@@ -7,7 +7,10 @@ rust-version.workspace = true
 description = "Pluggable persistence for the agent harness. JSON-file by default; SQLite / Postgres / MySQL behind opt-in features."
 
 [dependencies]
+harness-channel.workspace = true
 harness-core.workspace = true
+harness-observability.workspace = true
+harness-project.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

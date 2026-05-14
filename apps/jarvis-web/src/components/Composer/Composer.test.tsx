@@ -20,14 +20,22 @@ vi.mock("../../services/socket", () => ({
 }));
 vi.mock("../../services/conversationSockets", () => ({
   startConversationTurn: (opts: any) => {
-    startTurnMock(opts);
-    return true;
+    return startTurnMock(opts) !== false;
   },
 }));
 
 beforeEach(() => {
   sendMock.mockClear();
   startTurnMock.mockClear();
+  startTurnMock.mockImplementation((opts: any) => {
+    const store = useAppStore.getState();
+    if (store.isConversationRunning(opts.conversationId)) return false;
+    store.setConversationRunStatus(opts.conversationId, "running", {
+      startedAt: Date.now(),
+      lastError: null,
+    });
+    return true;
+  });
 });
 
 function mount() {

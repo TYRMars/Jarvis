@@ -27,10 +27,7 @@ use axum::{
     Router,
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use harness_core::{
-    Project, Requirement, RequirementRun, RequirementRunStatus, RequirementRunStore,
-    RequirementStatus, VerificationStatus,
-};
+use harness_project::{Project, Requirement, RequirementRun, RequirementRunStatus, RequirementRunStore, RequirementStatus, VerificationStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::error;
@@ -437,10 +434,10 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
                 let mut latest_unblock_ts: Option<String> = None;
                 for a in activities.into_iter().take(ACTIVITY_PEEK) {
                     match a.kind {
-                        harness_core::ActivityKind::Blocked if latest_block.is_none() => {
+                        harness_project::ActivityKind::Blocked if latest_block.is_none() => {
                             latest_block = Some((a.created_at.clone(), a.body.clone()));
                         }
-                        harness_core::ActivityKind::Unblocked if latest_unblock_ts.is_none() => {
+                        harness_project::ActivityKind::Unblocked if latest_unblock_ts.is_none() => {
                             latest_unblock_ts = Some(a.created_at.clone());
                         }
                         _ => {}

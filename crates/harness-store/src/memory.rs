@@ -1,5 +1,5 @@
 //! In-process [`ConversationStore`](harness_core::ConversationStore) and
-//! [`ProjectStore`](harness_core::ProjectStore).
+//! [`ProjectStore`](harness_project::ProjectStore).
 //!
 //! Useful for tests and as the zero-dep reference impl of both traits.
 //! Not intended for production — data is lost when the process exits.
@@ -10,13 +10,17 @@ use std::sync::Arc;
 use crate::StoreError;
 use async_trait::async_trait;
 use chrono::Utc;
+use harness_channel::{ChannelBinding, ChannelBindingStore};
 use harness_core::{
-    Activity, ActivityEvent, ActivityStore, AgentProfile, AgentProfileEvent, AgentProfileStore,
-    BoxError, ChannelBinding, ChannelBindingStore, Comment, CommentEvent, CommentStore,
-    Conversation, ConversationMetadata, ConversationRecord, ConversationStore, DocDraft, DocEvent,
-    DocProject, DocStore, Label, LabelEvent, LabelStore, Project, ProjectMemory, ProjectMemoryStore,
-    ProjectStore, Requirement, RequirementEvent, RequirementRun, RequirementRunEvent,
-    RequirementRunStore, RequirementStore, Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
+    AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
+    ConversationMetadata, ConversationRecord, ConversationStore, Tenant, TenantStore, TodoEvent,
+    TodoItem, TodoStore,
+};
+use harness_project::{
+    Activity, ActivityEvent, ActivityStore, Comment, CommentEvent, CommentStore, DocDraft,
+    DocEvent, DocProject, DocStore, Label, LabelEvent, LabelStore, Project, ProjectMemory,
+    ProjectMemoryStore, ProjectStore, Requirement, RequirementEvent, RequirementRun,
+    RequirementRunEvent, RequirementRunStore, RequirementStore,
 };
 use tokio::sync::{broadcast, RwLock};
 
@@ -1115,7 +1119,7 @@ impl ChannelBindingStore for MemoryChannelBindingStore {
 /// the instance's stable UUID.
 #[derive(Default, Clone)]
 pub struct MemoryChannelInstanceStore {
-    inner: Arc<RwLock<HashMap<String, harness_core::ChannelInstance>>>,
+    inner: Arc<RwLock<HashMap<String, harness_channel::ChannelInstance>>>,
 }
 
 impl MemoryChannelInstanceStore {
@@ -1125,10 +1129,10 @@ impl MemoryChannelInstanceStore {
 }
 
 #[async_trait]
-impl harness_core::ChannelInstanceStore for MemoryChannelInstanceStore {
+impl harness_channel::ChannelInstanceStore for MemoryChannelInstanceStore {
     async fn upsert(
         &self,
-        instance: &harness_core::ChannelInstance,
+        instance: &harness_channel::ChannelInstance,
     ) -> Result<(), BoxError> {
         let mut guard = self.inner.write().await;
         guard.insert(instance.id.clone(), instance.clone());
@@ -1138,14 +1142,14 @@ impl harness_core::ChannelInstanceStore for MemoryChannelInstanceStore {
     async fn get(
         &self,
         id: &str,
-    ) -> Result<Option<harness_core::ChannelInstance>, BoxError> {
+    ) -> Result<Option<harness_channel::ChannelInstance>, BoxError> {
         let guard = self.inner.read().await;
         Ok(guard.get(id).cloned())
     }
 
-    async fn list(&self) -> Result<Vec<harness_core::ChannelInstance>, BoxError> {
+    async fn list(&self) -> Result<Vec<harness_channel::ChannelInstance>, BoxError> {
         let guard = self.inner.read().await;
-        let mut rows: Vec<harness_core::ChannelInstance> =
+        let mut rows: Vec<harness_channel::ChannelInstance> =
             guard.values().cloned().collect();
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(rows)
@@ -1364,7 +1368,7 @@ mod tests {
 
     // ---- RequirementStore -----------------------------------------------
 
-    use harness_core::RequirementStatus;
+    use harness_project::RequirementStatus;
 
     #[tokio::test]
     async fn requirement_upsert_list_round_trip_filters_by_project() {
@@ -1420,7 +1424,7 @@ mod tests {
 
     // ---- RequirementRunStore --------------------------------------------
 
-    use harness_core::RequirementRunStatus;
+    use harness_project::RequirementRunStatus;
 
     #[tokio::test]
     async fn requirement_run_round_trip_filters_and_sorts() {
@@ -1535,7 +1539,7 @@ mod tests {
 
     // ---- ActivityStore --------------------------------------------------
 
-    use harness_core::{ActivityActor, ActivityKind};
+    use harness_project::{ActivityActor, ActivityKind};
     use serde_json::json;
 
     #[tokio::test]
@@ -1875,7 +1879,7 @@ mod tests {
 
     // ---- DocStore -------------------------------------------------------
 
-    use harness_core::DocKind;
+    use harness_project::DocKind;
 
     #[tokio::test]
     async fn doc_project_round_trip_filters_by_workspace() {

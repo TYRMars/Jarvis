@@ -32,8 +32,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use harness_core::{
-    derive_slug, BoxError, Project, ProjectStore, Requirement, RequirementStatus, RequirementStore,
+use harness_core::BoxError;
+use harness_project::{
+    derive_slug, Project, ProjectStore, Requirement, RequirementStatus, RequirementStore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -151,7 +152,7 @@ pub async fn import_proposals(
         .slug
         .clone()
         .unwrap_or_else(|| format!("{derived_slug_base}-roadmap"));
-    harness_core::validate_slug(&slug)
+    harness_project::validate_slug(&slug)
         .map_err(|e| -> BoxError { format!("invalid slug `{slug}`: {e}").into() })?;
     let name = opts
         .name

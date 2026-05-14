@@ -25,8 +25,14 @@
 mod agent_profiles_routes;
 mod auto_mode;
 mod auto_mode_routes;
+mod channel_adapter;
+mod channels_dingtalk;
+mod channels_feishu;
+mod channels_inbound_routes;
+mod channels_oauth_routes;
 mod channels_routes;
 mod channels_wecom;
+mod channels_wecom_app;
 mod chat_runs;
 mod comments_routes;
 mod conversations;
@@ -49,6 +55,7 @@ mod route_policy;
 mod routes;
 mod skill_routes;
 mod state;
+pub mod state_layers;
 mod subagent_runs;
 mod subagent_runs_routes;
 mod subagents_routes;
@@ -64,6 +71,7 @@ mod workspace_terminal;
 mod workspaces_routes;
 mod worktree;
 
+pub use channel_adapter::{ChannelAdapter, ChannelAdapterRegistry, ChannelDispatcherImpl};
 pub use skill_routes::default_roots as default_skill_roots;
 
 pub use project_memory::{spawn_project_memory_sync, ProjectMemoryConfig};

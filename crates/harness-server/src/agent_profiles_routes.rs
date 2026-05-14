@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 use tracing::error;
 
 use crate::state::AppState;
+use crate::state_layers::ProjectLayer;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -44,8 +45,8 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_store(state: &AppState) -> Result<Arc<dyn AgentProfileStore>, Response> {
-    state.agent_profiles.clone().ok_or_else(|| {
+fn require_store(project: &ProjectLayer) -> Result<Arc<dyn AgentProfileStore>, Response> {
+    project.agent_profiles.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "agent profile store not configured" })),
@@ -77,8 +78,8 @@ fn profile_json(p: &AgentProfile) -> Json<Value> {
 
 // ----------------------- GET /v1/agent-profiles -------------------------
 
-async fn list(State(state): State<AppState>) -> Response {
-    let store = match require_store(&state) {
+async fn list(State(project): State<ProjectLayer>) -> Response {
+    let store = match require_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -105,8 +106,8 @@ struct CreateBody {
     allowed_tools: Option<Vec<String>>,
 }
 
-async fn create(State(state): State<AppState>, Json(body): Json<CreateBody>) -> Response {
-    let store = match require_store(&state) {
+async fn create(State(project): State<ProjectLayer>, Json(body): Json<CreateBody>) -> Response {
+    let store = match require_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -144,8 +145,8 @@ async fn create(State(state): State<AppState>, Json(body): Json<CreateBody>) -> 
 
 // ----------------------- GET /v1/agent-profiles/:id ---------------------
 
-async fn fetch(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let store = match require_store(&state) {
+async fn fetch(State(project): State<ProjectLayer>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -182,11 +183,11 @@ struct UpdateBody {
 }
 
 async fn update(
-    State(state): State<AppState>,
+    State(project): State<ProjectLayer>,
     Path(id): Path<String>,
     Json(body): Json<UpdateBody>,
 ) -> Response {
-    let store = match require_store(&state) {
+    let store = match require_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -255,8 +256,8 @@ async fn update(
 
 // ----------------------- DELETE /v1/agent-profiles/:id ------------------
 
-async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let store = match require_store(&state) {
+async fn remove(State(project): State<ProjectLayer>, Path(id): Path<String>) -> Response {
+    let store = match require_store(&project) {
         Ok(s) => s,
         Err(r) => return r,
     };
