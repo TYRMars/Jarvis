@@ -62,7 +62,17 @@ pub const DEFAULT_SUMMARY_PROMPT: &str = "\
 You are a conversation summariser. Compress the supplied excerpt into a \
 short paragraph. Preserve concrete facts, decisions, file paths, names, \
 numbers, and any in-flight tool results that later turns may rely on. \
-Do not invent details, do not editorialise, and do not add a preamble.";
+Do not invent details, do not editorialise, and do not add a preamble.\n\n\
+BAD (do not do this):\n\
+\"The user wants me to summarise the conversation. I need to compress it into a short \
+paragraph. Key facts: ...\"\n\n\
+GOOD:\n\
+\"User asked for a kanban review of the jarvis-roadmap project. Agent ran \
+requirement.list (30 items, 12 in_progress) and triage.scan_candidates (4 todo \
+markers). Decided to focus on Web UI experience cluster; user approved.\"\n\n\
+Output ONLY the summary content. No \"The user wants me to...\", no \"I'll summarise...\", \
+no \"Here is a summary...\", no \"This excerpt...\" — start directly with the substantive \
+fact, decision, or state.";
 
 /// Reserved budget (in estimated tokens) carved out for the summary
 /// itself when planning what to keep recent. Keeps us from packing the
@@ -354,7 +364,7 @@ impl SummarizingMemory {
         // ended up persisting empty summaries and the agent saw no
         // prior context, hallucinating "对话历史被压缩了" on every
         // follow-up.
-        let text = match resp.message {
+        let raw = match resp.message {
             Message::Assistant {
                 content,
                 reasoning_content,
@@ -375,6 +385,14 @@ impl SummarizingMemory {
             }
             _ => return Err("summariser returned no assistant text".into()),
         };
+
+        // Belt-and-braces: even with the BAD/GOOD-example prompt, smaller
+        // models often leak "The user wants me to summarise..." preambles
+        // that eat 100-300 chars of the cache slot before the actual
+        // facts start. We strip a conservative set of openers here so
+        // downstream callers (and operators reading the persisted cache)
+        // get the substantive content directly.
+        let text = strip_summary_preamble(&raw);
 
         // Populate both cache tiers.
         self.cache_set(&fp, &text);
@@ -416,6 +434,58 @@ fn is_transport_error(e: &CoreError) -> bool {
 
 fn persist_key(fingerprint: &str) -> String {
     format!("{PERSIST_KEY_PREFIX}{fingerprint}")
+}
+
+/// Conservative preamble stripper for summariser output.
+///
+/// Smaller models often disregard the prompt's "no preamble" rule and
+/// emit something like *"The user wants me to summarise the conversation
+/// excerpt. Key facts: ..."*. The first sentence (or paragraph) is
+/// dead weight that eats the cache slot before the substantive content
+/// starts. This function looks for a known opener and, if found, skips
+/// past the first paragraph break (`\n\n`). When no clear preamble is
+/// present, or no paragraph break exists within the budget, it returns
+/// the input unchanged — better to keep a borderline-OK first sentence
+/// than to risk amputating real content.
+///
+/// Returns `String` (not `&str`) because the borrowed slice is rooted
+/// in the input; callers wanted ownership anyway.
+fn strip_summary_preamble(text: &str) -> String {
+    // Cheap guard: if it doesn't start with a known opener, return as-is.
+    // We compare on a leading-window prefix (lower-cased once) rather than
+    // case-folding the whole string.
+    const OPENERS: &[&str] = &[
+        "the user wants me to",
+        "the user is asking",
+        "the user has asked",
+        "the user asked me to",
+        "i'll summari",
+        "i will summari",
+        "let me summari",
+        "here is a summary",
+        "here's a summary",
+        "this excerpt",
+        "this conversation excerpt",
+        "the conversation excerpt",
+    ];
+    // Window large enough for the opener but cheap to lowercase.
+    let window: String = text.chars().take(40).collect::<String>().to_lowercase();
+    if !OPENERS.iter().any(|opener| window.starts_with(opener)) {
+        return text.to_string();
+    }
+    // Find the first paragraph break within a generous budget. If none,
+    // bail out to avoid eating the whole answer.
+    const SCAN_BUDGET: usize = 800;
+    let scan_end = text.char_indices().nth(SCAN_BUDGET).map(|(i, _)| i).unwrap_or(text.len());
+    let head = &text[..scan_end];
+    if let Some(rel) = head.find("\n\n") {
+        let after = &text[rel + 2..];
+        let trimmed = after.trim_start();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    text.to_string()
 }
 
 fn extract_summary(conv: &Conversation) -> Option<String> {
@@ -945,5 +1015,44 @@ mod tests {
         assert!(out
             .iter()
             .any(|m| matches!(m, Message::System { content, .. } if content.contains("SUMMARY"))));
+    }
+
+    #[test]
+    fn strip_preamble_removes_common_meta_opener() {
+        let raw = "The user wants me to summarise the conversation excerpt. \
+I need to compress it into a short paragraph.\n\n\
+Key facts: agent ran requirement.list (30 items, 12 in_progress).";
+        let out = strip_summary_preamble(raw);
+        assert!(out.starts_with("Key facts:"), "got: {out:?}");
+        assert!(!out.contains("The user wants me to"));
+    }
+
+    #[test]
+    fn strip_preamble_handles_summarize_us_spelling() {
+        let raw = "The user wants me to summarize the conversation. The excerpt is in Chinese.\n\n\
+Decision: focus on Web UI experience.";
+        let out = strip_summary_preamble(raw);
+        assert!(out.starts_with("Decision:"));
+    }
+
+    #[test]
+    fn strip_preamble_leaves_clean_summary_alone() {
+        let raw = "User asked for kanban review. Agent ran requirement.list.";
+        assert_eq!(strip_summary_preamble(raw), raw);
+    }
+
+    #[test]
+    fn strip_preamble_bails_when_no_paragraph_break() {
+        // Preamble pattern present but no \n\n boundary — leave as-is rather
+        // than risk amputating the only content.
+        let raw = "The user wants me to summarise something. Key facts inline.";
+        assert_eq!(strip_summary_preamble(raw), raw);
+    }
+
+    #[test]
+    fn strip_preamble_handles_lets_summarise() {
+        let raw = "Let me summarise what happened.\n\nUser approved the kanban triage.";
+        let out = strip_summary_preamble(raw);
+        assert!(out.starts_with("User approved"));
     }
 }

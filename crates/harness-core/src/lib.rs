@@ -52,7 +52,7 @@ pub use hitl::{
 pub use llm::{ChatRequest, ChatResponse, FinishReason, LlmChunk, LlmProvider, LlmStream, Usage};
 pub use memory::{
     cache_breakpoint_indices, default_estimator, estimate_tokens, estimate_total_tokens,
-    CharRatioEstimator, Memory, TokenEstimator,
+    CharRatioEstimator, JsonAwareEstimator, Memory, TokenEstimator,
 };
 pub use message::{CacheHint, Message, ToolCall};
 // `observability` module + all its types (Eval* / Observed* /

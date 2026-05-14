@@ -92,6 +92,15 @@ pub struct AgentConfig {
     /// dispatch is harmless because the LLM only emits one call at
     /// a time.
     pub parallel_tool_calls: bool,
+    /// When `true` (default), `ensure_system_prompt` will *replace* the
+    /// first `System` message of a loaded conversation when its content
+    /// no longer matches the configured `system_prompt`. The historical
+    /// behaviour was insert-if-missing only, which silently locked old
+    /// conversations into whatever prompt was active at creation —
+    /// updates to the binary's prompt template never reached resumed
+    /// sessions. Set to `false` for workflows that deliberately persist
+    /// per-conversation custom prompts.
+    pub refresh_system_prompt_on_resume: bool,
 }
 
 impl AgentConfig {
@@ -108,6 +117,7 @@ impl AgentConfig {
             tool_filter: None,
             session_workspace: None,
             parallel_tool_calls: false,
+            refresh_system_prompt_on_resume: true,
         }
     }
 
@@ -168,6 +178,13 @@ impl AgentConfig {
     /// [`AgentConfig::parallel_tool_calls`].
     pub fn with_parallel_tool_calls(mut self, enabled: bool) -> Self {
         self.parallel_tool_calls = enabled;
+        self
+    }
+
+    /// Toggle resume-time refresh of the system prompt. See
+    /// [`AgentConfig::refresh_system_prompt_on_resume`].
+    pub fn with_refresh_system_prompt_on_resume(mut self, enabled: bool) -> Self {
+        self.refresh_system_prompt_on_resume = enabled;
         self
     }
 }
@@ -375,7 +392,11 @@ impl Agent {
     }
 
     async fn run_inner(&self, conversation: &mut Conversation) -> Result<(RunOutcome, Usage)> {
-        Self::ensure_system_prompt(conversation, self.config.system_prompt.as_deref());
+        Self::ensure_system_prompt(
+            conversation,
+            self.config.system_prompt.as_deref(),
+            self.config.refresh_system_prompt_on_resume,
+        );
 
         let mut total_usage = Usage::default();
         let run_span = Span::current();
@@ -519,7 +540,11 @@ impl Agent {
             jarvis.transport = "stream",
         );
         let inner = stream! {
-            Self::ensure_system_prompt(&mut conversation, agent.config.system_prompt.as_deref());
+            Self::ensure_system_prompt(
+                &mut conversation,
+                agent.config.system_prompt.as_deref(),
+                agent.config.refresh_system_prompt_on_resume,
+            );
 
             for iter in 1..=agent.config.max_iterations {
                 let req = match agent.build_request(&conversation).await {
@@ -1145,15 +1170,28 @@ impl Agent {
         })
     }
 
-    fn ensure_system_prompt(conv: &mut Conversation, prompt: Option<&str>) {
+    fn ensure_system_prompt(conv: &mut Conversation, prompt: Option<&str>, refresh: bool) {
         let Some(prompt) = prompt else { return };
-        let has_system = conv
-            .messages
-            .first()
-            .map(|m| matches!(m, Message::System { .. }))
-            .unwrap_or(false);
-        if !has_system {
-            conv.messages.insert(0, Message::system(prompt));
+        match conv.messages.first() {
+            Some(Message::System { content, .. }) if content == prompt => {
+                // Already in sync — nothing to do.
+            }
+            Some(Message::System { .. }) if refresh => {
+                // First message is a stale System (different content from
+                // the configured prompt) and the refresh policy is on:
+                // replace it. This is what unblocks resumed conversations
+                // from staying stuck on whatever prompt was active when
+                // they were originally created.
+                conv.messages[0] = Message::system(prompt);
+            }
+            Some(Message::System { .. }) => {
+                // Stale but refresh is off — historical behaviour, leave
+                // the persisted custom prompt alone.
+            }
+            _ => {
+                // No leading System at all — insert one.
+                conv.messages.insert(0, Message::system(prompt));
+            }
         }
     }
 
@@ -1882,5 +1920,54 @@ mod tests {
         let conv = Conversation::new();
         let req = futures::executor::block_on(agent.build_request(&conv)).unwrap();
         assert_eq!(req.parallel_tool_calls, None);
+    }
+
+    #[test]
+    fn ensure_system_prompt_inserts_when_missing() {
+        let mut conv = Conversation::new();
+        conv.push(Message::user("hi"));
+        Agent::ensure_system_prompt(&mut conv, Some("PROMPT"), true);
+        assert!(matches!(conv.messages[0], Message::System { ref content, .. } if content == "PROMPT"));
+        assert_eq!(conv.messages.len(), 2);
+    }
+
+    #[test]
+    fn ensure_system_prompt_skips_when_already_in_sync() {
+        let mut conv = Conversation::new();
+        conv.push(Message::system("PROMPT"));
+        conv.push(Message::user("hi"));
+        let before_len = conv.messages.len();
+        Agent::ensure_system_prompt(&mut conv, Some("PROMPT"), true);
+        assert_eq!(conv.messages.len(), before_len);
+        assert!(matches!(conv.messages[0], Message::System { ref content, .. } if content == "PROMPT"));
+    }
+
+    #[test]
+    fn ensure_system_prompt_replaces_stale_when_refresh_on() {
+        let mut conv = Conversation::new();
+        conv.push(Message::system("STALE"));
+        conv.push(Message::user("hi"));
+        Agent::ensure_system_prompt(&mut conv, Some("FRESH"), true);
+        assert_eq!(conv.messages.len(), 2);
+        assert!(matches!(conv.messages[0], Message::System { ref content, .. } if content == "FRESH"));
+    }
+
+    #[test]
+    fn ensure_system_prompt_keeps_stale_when_refresh_off() {
+        let mut conv = Conversation::new();
+        conv.push(Message::system("STALE"));
+        conv.push(Message::user("hi"));
+        Agent::ensure_system_prompt(&mut conv, Some("FRESH"), false);
+        assert_eq!(conv.messages.len(), 2);
+        assert!(matches!(conv.messages[0], Message::System { ref content, .. } if content == "STALE"));
+    }
+
+    #[test]
+    fn ensure_system_prompt_no_op_when_no_prompt_configured() {
+        let mut conv = Conversation::new();
+        conv.push(Message::system("KEEP"));
+        conv.push(Message::user("hi"));
+        Agent::ensure_system_prompt(&mut conv, None, true);
+        assert!(matches!(conv.messages[0], Message::System { ref content, .. } if content == "KEEP"));
     }
 }
