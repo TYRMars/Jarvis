@@ -11,10 +11,10 @@ vi.mock("./frames", () => ({
 
 describe("chatRuns", () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
       ok: true,
       status: 200,
-      json: async () => [],
+      json: () => Promise.resolve([]),
     })));
   });
 
