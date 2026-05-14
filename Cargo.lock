@@ -2014,7 +2014,7 @@ dependencies = [
 
 [[package]]
 name = "harness-cloud"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "harness-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "harness-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "harness-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2086,7 +2086,7 @@ dependencies = [
 
 [[package]]
 name = "harness-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "harness-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "harness-channel",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "harness-requirement"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2157,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "harness-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "async-stream",
@@ -2202,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "harness-skill"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "harness-core",
  "include_dir",
@@ -2216,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "harness-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "harness-subagents"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2249,7 +2249,7 @@ dependencies = [
 
 [[package]]
 name = "harness-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2767,7 +2767,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jarvis"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2807,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "jarvis-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "jarvis-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "open",
