@@ -119,8 +119,10 @@ multi-hunk unified-diff apply, atomic per call, approval-gated),
 toolset, which is otherwise on by default),
 `JARVIS_NO_PROJECT_CONTEXT` (any value disables auto-loading
 `AGENTS.md` / `CLAUDE.md` / `AGENT.md` from the workspace into the
-system prompt; defaults to loading them, capped at 32 KiB),
-`JARVIS_PROJECT_CONTEXT_BYTES` (override the default 32 KiB cap),
+system prompt; defaults to loading them, capped at 8 KiB),
+`JARVIS_PROJECT_CONTEXT_BYTES` (override the default 8 KiB cap;
+truncation logs a startup WARN naming this env var so operators with
+larger instruction files can opt back to a higher cap explicitly),
 `JARVIS_SHELL_TIMEOUT_MS` (default `30000`, per-call default for `shell.exec`),
 `JARVIS_MCP_SERVERS` (comma-separated `prefix=command args...` list of
 external MCP servers to spawn and adapt into Tools),
@@ -968,9 +970,13 @@ binary appends the workspace's `AGENTS.md` / `CLAUDE.md` /
 `harness_tools::workspace::load_instructions(root, max_bytes)`.
 Each file is wrapped in a `=== project context: <name> ===` header
 so the model can tell injected guidance from its own template.
-Combined output is capped at 32 KiB (override:
+Combined output is capped at 8 KiB (override:
 `JARVIS_PROJECT_CONTEXT_BYTES`); overflow is truncated with a
-`[... project context truncated at N bytes ...]` marker. Disable
+`[... project context truncated at N bytes ...]` marker, and
+`apps/jarvis::serve` logs a startup WARN whenever truncation fires so
+operators with larger instruction files notice and can raise the cap
+deliberately. The lower default (was 32 KiB) keeps the system prompt
+focused so prior tool results stay in the model's attention window. Disable
 entirely via `JARVIS_NO_PROJECT_CONTEXT=1` or
 `[agent].include_project_context = false`. `jarvis-cli` honours the
 same env vars plus a `--no-project-context` CLI flag. Deliberately
