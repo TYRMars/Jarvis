@@ -26,12 +26,16 @@
 //! after first materialisation everything stays local.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 use harness_core::BoxError;
 
+#[cfg(target_os = "macos")]
 const BRCTL_TIMEOUT_MS: u64 = 8_000;
+#[cfg(target_os = "macos")]
 const POLL_INTERVAL_MS: u64 = 200;
+#[cfg(target_os = "macos")]
 const POLL_DEADLINE_MS: u64 = 4_000;
 
 /// True when `path` lives under macOS's iCloud Drive base
