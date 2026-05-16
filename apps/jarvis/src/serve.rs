@@ -514,8 +514,17 @@ pub async fn run(
         if let Some(extra) = load_instructions_bounded(workspace_root.clone(), project_ctx_cap) {
             info!(
                 bytes = extra.len(),
+                cap = project_ctx_cap,
                 "loaded project instructions (AGENTS.md / JARVIS.md / CLAUDE.md / .jarvis)"
             );
+            if extra.contains("project context truncated at") {
+                warn!(
+                    cap = project_ctx_cap,
+                    "project instructions exceeded cap — output truncated. \
+                     Set JARVIS_PROJECT_CONTEXT_BYTES=<n> or [agent].project_context_max_bytes \
+                     to raise (default lowered to 8 KiB to keep system prompt focused)."
+                );
+            }
             prompt_builder = prompt_builder.append_runtime_inject(extra);
             project_context_loaded = true;
         }
@@ -2418,7 +2427,18 @@ use ask.text instead of guessing.";
 /// checks, and end with a change report.
 const CODING_SYSTEM_PROMPT: &str =
     "You are Jarvis, a coding agent working in the user's repository. \
-Before editing, call workspace.context to orient yourself, then inspect git status. \
+\
+Reuse what you already gathered. Before calling any tool, scan earlier turns of THIS \
+conversation: if a recent tool result already answers the user's current question \
+(workspace.context, todo.list, requirement.list, triage.scan_candidates, fs.read of \
+the same path, code.grep of the same pattern, etc.), refer back to it instead of \
+re-running the tool. Re-running orientation tools on every user turn wastes the \
+user's tokens and dilutes your own attention. Only re-run when you have a specific \
+reason to believe the underlying state changed (a write happened, the user said the \
+file changed, enough turns have passed that staleness matters). \
+\
+If you don't already have the workspace layout in this conversation, call workspace.context \
+once to orient yourself, and inspect git status before editing. \
 Do not overwrite user changes you did not make. \
 Prefer code.grep, fs.read, fs.list, git.status, and git.diff before reaching for shell.exec. \
 When you need a human decision, missing information, or a choice among acceptable options, \
@@ -2427,7 +2447,7 @@ Use fs.edit (uniqueness-checked single replace) or fs.patch (unified-diff multi-
 reviewable edits; reach for fs.write only to create new files. \
 When you run checks (tests, lints, builds), keep them focused on the change rather than the \
 whole repo. \
-At the start of a fresh session, call todo.list to see persistent project follow-ups; \
+Once per conversation (not per turn), call todo.list to see persistent project follow-ups; \
 record new follow-ups via todo.add (not plan.update — that's for the current turn only) \
 and mark them completed/blocked as you go. \
 If your previous turn asked a yes/no question about a specific entity (\"标记为 Done?\", \
@@ -2449,7 +2469,8 @@ the final status report. \
 Spec → Project workflow: when the user describes new work — either inline (\"add a user-avatar \
 upload\") or by pointing at a doc (\"read docs/feature-x.md and lay out the work\") — drive the \
 following sequence: \
-(1) call workspace.context, plus fs.read on any doc the user named; \
+(1) make sure you have the workspace context (call workspace.context only if you don't already have \
+it from earlier in this conversation), and fs.read any doc the user named; \
 (2) call plan.update with the proposed breakdown (titles only) and let the user confirm or edit; \
 (3) once confirmed, resolve the project (project.list / project.get; project.create only if it \
 genuinely does not exist), then call requirement.create per item — populate `verification_plan.commands` \
@@ -2477,14 +2498,20 @@ fn include_project_context(cfg: &Config) -> bool {
 }
 
 /// Cap on the total bytes of project context appended to the system
-/// prompt. Defaults to 32 KiB — enough for realistic agent
-/// instruction files, far short of blowing a small-context model.
+/// prompt. Defaults to 8 KiB — large enough for realistic AGENTS.md /
+/// CLAUDE.md / .jarvis/rules files, but tight enough that the system
+/// prompt doesn't drown out mid-conversation tool results in the
+/// model's attention window. Override with `JARVIS_PROJECT_CONTEXT_BYTES`
+/// or `[agent].project_context_max_bytes` when you have larger
+/// instruction files you genuinely want to inline. The previous default
+/// (32 KiB) regularly produced 30-KiB system blocks that pushed prior
+/// tool output too deep for the model to reuse.
 fn project_context_max_bytes(cfg: &Config) -> usize {
     std::env::var("JARVIS_PROJECT_CONTEXT_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
         .or(cfg.agent.project_context_max_bytes)
-        .unwrap_or(32 * 1024)
+        .unwrap_or(8 * 1024)
 }
 
 /// Resolve the file-based project memory switch. `Some(true)` means

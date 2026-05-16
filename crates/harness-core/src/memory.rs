@@ -76,6 +76,53 @@ impl TokenEstimator for CharRatioEstimator {
     }
 }
 
+/// Variant estimator that keeps `CharRatioEstimator`'s numbers for
+/// natural-language messages but uses a tighter ratio (`chars * 2 / 7`,
+/// i.e. roughly `chars / 3.5`) plus a larger per-message overhead for
+/// `Message::Tool` payloads, which are typically dense JSON output from
+/// agent tools (escapes, brackets, quoted keys) and which the
+/// `chars / 4 + 4` heuristic systematically underestimates by ~15-25 %.
+///
+/// Use this when a memory backend is wired without a provider-supplied
+/// tokeniser (e.g. tests, jarvis-cli pipe-mode runs) and the
+/// conversation involves substantial tool output. Production paths
+/// already plug in `TiktokenEstimator` via `LlmProvider::estimator`,
+/// which is more accurate still — `JsonAwareEstimator` only matters
+/// where the provider doesn't override.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct JsonAwareEstimator;
+
+impl JsonAwareEstimator {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl TokenEstimator for JsonAwareEstimator {
+    fn estimate_message(&self, message: &Message) -> usize {
+        match message {
+            Message::Tool {
+                tool_call_id,
+                content,
+                ..
+            } => {
+                let chars = tool_call_id.chars().count() + content.chars().count();
+                // chars / 3.5 == chars * 2 / 7. Rounded up to be safe.
+                (chars * 2).div_ceil(7) + 8
+            }
+            other => estimate_tokens(other),
+        }
+    }
+
+    fn estimate_text(&self, text: &str) -> usize {
+        // Plain text doesn't carry the JSON-overhead penalty — fall back
+        // to the cheap ratio. This stays consistent with how
+        // `SummarizingMemory` measures the synthetic summary string,
+        // which is prose, not JSON.
+        text.chars().count().div_ceil(4)
+    }
+}
+
 /// Cheap, provider-agnostic token estimate. Roughly `chars / 4` plus a
 /// fixed per-message overhead for role/separator tokens. This is *not* a
 /// precise tiktoken count — it's a heuristic that lets memory backends
@@ -242,5 +289,47 @@ mod tests {
     fn cache_breakpoint_indices_empty_when_no_hints() {
         let msgs = vec![Message::system("sys"), Message::user("hi")];
         assert!(cache_breakpoint_indices(&msgs).is_empty());
+    }
+
+    #[test]
+    fn json_aware_estimates_tool_higher_than_char_ratio() {
+        let json_payload = r#"{"branch":"main","head":"abc1234","dirty":false,"instructions":[],"manifests":[{"path":"Cargo.toml","kind":"rust"}]}"#;
+        let tool_msg = Message::Tool {
+            tool_call_id: "call_workspace_ctx".into(),
+            content: json_payload.to_string(),
+            cache: None,
+        };
+        let char_ratio = CharRatioEstimator;
+        let json_aware = JsonAwareEstimator;
+        let cr = char_ratio.estimate_message(&tool_msg);
+        let ja = json_aware.estimate_message(&tool_msg);
+        assert!(
+            ja > cr,
+            "json-aware estimate ({ja}) should exceed char-ratio ({cr}) for dense JSON"
+        );
+        // Sanity: not absurdly higher (ballpark 15-30 % over).
+        assert!(ja < cr * 2, "json-aware ({ja}) blew past 2x char-ratio ({cr})");
+    }
+
+    #[test]
+    fn json_aware_matches_char_ratio_for_non_tool_messages() {
+        let json_aware = JsonAwareEstimator;
+        let char_ratio = CharRatioEstimator;
+        for m in [
+            Message::system("you are jarvis"),
+            Message::user("hello"),
+            Message::assistant_text("hi there"),
+        ] {
+            assert_eq!(json_aware.estimate_message(&m), char_ratio.estimate_message(&m));
+        }
+    }
+
+    #[test]
+    fn json_aware_text_matches_char_ratio() {
+        let json_aware = JsonAwareEstimator;
+        let char_ratio = CharRatioEstimator;
+        for s in ["", "hi", "the quick brown fox", "0123456789abcdef"] {
+            assert_eq!(json_aware.estimate_text(s), char_ratio.estimate_text(s));
+        }
     }
 }
