@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAppStore } from "../../../store/appStore";
 import { t } from "../../../utils/i18n";
 import { newConversation } from "../../../services/conversations";
 import type { WorkOverview, WindowDays } from "../../../services/workOverview";
 import { getAutoModeStatus, type AutoModeStatus } from "../../../services/autoMode";
+import { Tabs, type TabItem } from "../../ui/Tabs";
 import { useWorkOverview } from "./useWorkOverview";
-import { HealthCenter } from "./HealthCenter";
+import {
+  HealthCenterCompact,
+  HealthCenterDetails,
+  useHealthCenterState,
+} from "./HealthCenter";
 import { ThroughputChart } from "./ThroughputChart";
 import { ProjectLeaderboard } from "./ProjectLeaderboard";
 import { UsagePanel } from "./UsagePanel";
@@ -15,6 +20,27 @@ import { HarnessObservabilityPanel } from "./HarnessObservabilityPanel";
 import { SubAgentRunsRail } from "./SubAgentRunsRail";
 
 const WINDOW_OPTIONS: WindowDays[] = [7, 30, 90];
+
+type OverviewTab =
+  | "overview"
+  | "quality"
+  | "usage"
+  | "activity"
+  | "observability";
+
+const TAB_IDS: OverviewTab[] = [
+  "overview",
+  "quality",
+  "usage",
+  "activity",
+  "observability",
+];
+
+function readTabFromHash(): OverviewTab {
+  if (typeof window === "undefined") return "overview";
+  const raw = window.location.hash.replace(/^#/, "");
+  return (TAB_IDS as string[]).includes(raw) ? (raw as OverviewTab) : "overview";
+}
 
 function pct(value: number | null | undefined): string {
   return value === null || value === undefined
@@ -98,13 +124,50 @@ function projectIdsWithRunIssues(overview: WorkOverview | null): string[] {
 
 // Top-level dashboard shown on `/projects/overview`. Owns the
 // time-window state + the data hook; child panels just render slices
-// of the response.
+// of the response. Layout is two-tier:
+//
+//   1. Always-visible header: title row, ProjectLeaderboard,
+//      HealthCenterCompact (status + KPI strip + runtime + top-3
+//      next actions).
+//   2. Tab body: Overview / Quality / Usage / Activity / Observability —
+//      synced to URL hash so deep-links + back button work.
 export function WorkOverviewPage() {
   const [windowDays, setWindowDays] = useState<WindowDays>(7);
   const state = useWorkOverview(windowDays);
   const navigate = useNavigate();
   const projectsById = useAppStore((s) => s.projectsById);
   const setComposerValue = useAppStore((s) => s.setComposerValue);
+  const [activeTab, setActiveTab] = useState<OverviewTab>(() => readTabFromHash());
+  const healthState = useHealthCenterState({
+    overview: state.overview,
+    quality: state.quality,
+    overviewUnavailable: state.overviewUnavailable,
+    qualityUnavailable: state.qualityUnavailable,
+    loading: state.loading,
+    error: state.error,
+    onRefresh: state.refetch,
+  });
+
+  // Keep URL hash in sync with the active tab without polluting
+  // history. Use replaceState so back-button still steps out of the
+  // page rather than cycling through tabs.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const current = window.location.hash.replace(/^#/, "");
+    if (current === activeTab) return;
+    history.replaceState(null, "", "#" + activeTab);
+  }, [activeTab]);
+
+  // Pick up hash changes that came from elsewhere (manual edit,
+  // back/forward navigation across other state changes).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onHashChange = () => {
+      setActiveTab(readTabFromHash());
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   const startDiagnosis = async () => {
     const issueProjectIds = projectIdsWithRunIssues(state.overview);
@@ -156,6 +219,46 @@ export function WorkOverviewPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [state.refetch]);
+
+  const tabItems: TabItem[] = useMemo(
+    () => [
+      {
+        id: "overview",
+        label: t("workOverviewTabOverview"),
+        content: <ThroughputChart overview={state.overview} />,
+      },
+      {
+        id: "quality",
+        label: t("workOverviewTabQuality"),
+        content: <HealthCenterDetails state={healthState} />,
+      },
+      {
+        id: "usage",
+        label: t("workOverviewTabUsage"),
+        content: (
+          <div className="work-insights-grid work-overview-tab-usage-grid">
+            <div className="work-insights-cell work-insights-cell-usage">
+              <UsagePanel windowDays={windowDays} />
+            </div>
+            <div className="work-insights-cell work-insights-cell-models">
+              <ModelComparisonPanel windowDays={windowDays} />
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: "activity",
+        label: t("workOverviewTabActivity"),
+        content: <SubAgentRunsRail />,
+      },
+      {
+        id: "observability",
+        label: t("workOverviewTabObservability"),
+        content: <HarnessObservabilityPanel windowDays={windowDays} />,
+      },
+    ],
+    [healthState, state.overview, windowDays],
+  );
 
   return (
     <section className="work-overview" aria-label={t("workOverviewTitle")}>
@@ -212,44 +315,18 @@ export function WorkOverviewPage() {
         <ProjectLeaderboard overview={state.overview} />
       </div>
 
-      <div id="work-overview-operational" className="work-overview-anchor">
-        <HealthCenter
-          overview={state.overview}
-          quality={state.quality}
-          overviewUnavailable={state.overviewUnavailable}
-          qualityUnavailable={state.qualityUnavailable}
-          loading={state.loading}
-          error={state.error}
-          onRefresh={state.refetch}
-        />
-      </div>
+      <HealthCenterCompact
+        state={healthState}
+        onExpandSignals={() => setActiveTab("quality")}
+      />
 
-      <section className="work-insights-group" aria-label={t("workInsightsTitle")}>
-        <header className="work-insights-head">
-          <div>
-            <h3>{t("workInsightsTitle")}</h3>
-            <p>{t("workInsightsSubtitle")}</p>
-          </div>
-        </header>
-        <div className="work-insights-grid">
-          <div
-            id="work-overview-throughput"
-            className="work-insights-cell work-insights-cell-throughput"
-          >
-            <ThroughputChart overview={state.overview} />
-          </div>
-          <div className="work-insights-cell work-insights-cell-usage">
-            <UsagePanel windowDays={windowDays} />
-          </div>
-          <div className="work-insights-cell work-insights-cell-models">
-            <ModelComparisonPanel windowDays={windowDays} />
-          </div>
-        </div>
-      </section>
-
-      <SubAgentRunsRail />
-
-      <HarnessObservabilityPanel windowDays={windowDays} />
+      <Tabs
+        ariaLabel={t("workOverviewTabsLabel")}
+        className="work-overview-tabs"
+        value={activeTab}
+        onChange={(id) => setActiveTab(id as OverviewTab)}
+        items={tabItems}
+      />
 
       {/* Footer kept for absolute timestamp (the banner already shows
           relative time, but exact wall-clock is useful for ops

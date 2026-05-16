@@ -28,9 +28,29 @@ export const approvalFrameHandlers: Record<string, (ev: any) => void> = {
   },
   permission_mode: (ev) => {
     appStore.getState().setPermissionMode(ev.mode ?? "ask");
+    // M2.3 UX: when the model itself switched the mode (via the
+    // `enter_plan_mode` tool), surface a transient toast so the
+    // operator isn't silently surprised on the next turn. The
+    // store action no-ops when `via` isn't "tool".
+    if (typeof ev?.via === "string") {
+      appStore.getState().setRecentModeChange?.({
+        mode: ev.mode ?? "ask",
+        via: ev.via,
+        at: Date.now(),
+      });
+    }
   },
   permission_rules_changed: () => {
     // Trigger any subscribed surface (Settings / Permissions) to refetch.
     appStore.getState().bumpPermissionRulesVersion?.();
+  },
+  /// M3.3: server's prediction of which skills would auto-activate
+  /// on the next user turn given the agent's recently-touched
+  /// files. Emitted at end-of-turn (Done) and at session start;
+  /// payload `{skills: string[]}`. Empty array clears any stale
+  /// Composer chip when the user pivots and no files match.
+  skill_auto_activated_for_next_turn: (ev) => {
+    const names: string[] = Array.isArray(ev?.skills) ? ev.skills : [];
+    appStore.getState().setAutoActivatedNextTurnSkills(names);
   },
 };

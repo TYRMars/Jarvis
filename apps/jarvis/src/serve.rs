@@ -62,6 +62,103 @@ pub async fn run(
         || bcfg.enable_fs_patch
         || bcfg.enable_shell_exec;
 
+    // `enter_plan_mode` defaults to ON in coding mode so the model
+    // can volunteer "let me draft a plan first" before risky edits.
+    // Operators who want the historical "operator-driven plan-mode
+    // entry only" can flip `JARVIS_ENABLE_ENTER_PLAN_MODE=0` or set
+    // `[agent].allow_self_plan_mode = false`. Resolution mirrors the
+    // existing `pick_bool_flag` order: env > config > default.
+    bcfg.enable_enter_plan_mode = pick_bool_flag(
+        "JARVIS_ENABLE_ENTER_PLAN_MODE",
+        cfg.agent.allow_self_plan_mode,
+        coding_mode,
+    );
+    // `memory.*` tools stay off by default but obey the same
+    // env/config override pattern so operators can flip them on
+    // without recompiling. Coding mode is *not* enough to flip
+    // these — memory is a longer-term storage primitive whose
+    // value depends on the operator actively wanting it.
+    bcfg.enable_memory = pick_bool_flag(
+        "JARVIS_ENABLE_MEMORY",
+        cfg.agent.enable_memory,
+        false,
+    );
+    // P9 — user-scope memory root. Defaults to the operator's home
+    // directory (the `.jarvis/memory/` subtree under it), so a
+    // single `~/.jarvis/memory/MEMORY.md` follows the user across
+    // workspaces. `JARVIS_MEMORY_USER_ROOT=/path` overrides for
+    // ops that want it under e.g. Dropbox; `=` (empty) disables.
+    // Unset and home unresolvable ⇒ user scope is off, writes to
+    // `scope:"user"` error cleanly.
+    bcfg.memory_user_root = resolve_memory_user_root();
+    // P10 — git-as-transport memory sync. Off by default; flip
+    // on when the operator has set up `git remote add origin
+    // <url>` inside their memory dirs.
+    bcfg.enable_memory_sync = pick_bool_flag(
+        "JARVIS_ENABLE_MEMORY_SYNC",
+        cfg.agent.enable_memory_sync,
+        false,
+    );
+    // P13 — explicit sync backend choice. Resolution order:
+    //   1. JARVIS_MEMORY_SYNC_BACKEND env
+    //   2. [agent].memory_sync_backend config
+    //   3. fall back to `Git` when legacy `enable_memory_sync` is
+    //      on, `None` otherwise (handled inside register_builtins)
+    let backend_pick = pick_string_opt(
+        "JARVIS_MEMORY_SYNC_BACKEND",
+        cfg.agent.memory_sync_backend.as_deref(),
+    );
+    bcfg.memory_sync_backend = match backend_pick {
+        Some(s) => harness_tools::MemorySyncBackend::from_wire(&s)
+            .unwrap_or(harness_tools::MemorySyncBackend::None),
+        None => harness_tools::MemorySyncBackend::None,
+    };
+    // iCloud backend auto-resolves user_root to iCloud Drive when
+    // the operator didn't pin one explicitly. Saves them having to
+    // remember `~/Library/Mobile Documents/com~apple~CloudDocs/`.
+    if matches!(
+        bcfg.memory_sync_backend,
+        harness_tools::MemorySyncBackend::ICloud
+    ) && bcfg.memory_user_root.is_none()
+    {
+        match harness_tools::icloud_memory_root() {
+            Some(p) => {
+                info!(path = %p.display(), "iCloud backend: pinning user memory root");
+                bcfg.memory_user_root = Some(p);
+            }
+            None => {
+                warn!(
+                    "iCloud backend selected but iCloud Drive base \
+                     (`~/Library/Mobile Documents/com~apple~CloudDocs/`) not found; \
+                     iCloud sync will be unavailable. \
+                     Enable iCloud Drive in System Settings, then restart."
+                );
+            }
+        }
+    }
+    // P11.2 — background auto-sync ticker. Sub-flag of
+    // `enable_memory_sync` because there's nothing to tick when
+    // the sync tools aren't even registered. Default off so the
+    // existing "agent calls memory.sync explicitly" workflow
+    // doesn't grow background network calls without explicit
+    // opt-in. P13: the ticker is git-only — iCloud syncs at OS
+    // level, so a Jarvis-side ticker would be redundant.
+    let git_backend_active = matches!(
+        bcfg.memory_sync_backend,
+        harness_tools::MemorySyncBackend::Git
+    ) || (bcfg.enable_memory_sync
+        && matches!(
+            bcfg.memory_sync_backend,
+            harness_tools::MemorySyncBackend::None
+        ));
+    let auto_sync_enabled =
+        git_backend_active && pick_bool_flag("JARVIS_MEMORY_AUTO_SYNC", None, false);
+    let auto_sync_user_root = bcfg.memory_user_root.clone();
+    let auto_sync_interval = std::env::var("JARVIS_MEMORY_AUTO_SYNC_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(harness_tools::memory_sync::DEFAULT_AUTO_SYNC_INTERVAL_SECS);
+
     // Open persistence early so the TODO store can flow into
     // [`BuiltinsConfig`] before [`register_builtins`] runs. The same
     // URL drives all three stores (conversations, projects, todos);
@@ -221,6 +318,20 @@ pub async fn run(
         info!("channel-instance store active (channel.send tool registered)");
     }
 
+    // Snapshot the few flags later code paths still need before
+    // `register_builtins` consumes `bcfg`. Avoids cloning the whole
+    // config (which holds Arc<dyn Store> handles).
+    let memory_tools_enabled = bcfg.enable_memory;
+    let memory_user_root = bcfg.memory_user_root.clone();
+    // Effective backend after the same resolution
+    // `register_builtins` applies: an explicit backend wins,
+    // otherwise the legacy `enable_memory_sync` bool maps to Git.
+    let memory_sync_backend_active = match bcfg.memory_sync_backend {
+        harness_tools::MemorySyncBackend::None if bcfg.enable_memory_sync => {
+            harness_tools::MemorySyncBackend::Git
+        }
+        other => other,
+    };
     register_builtins(&mut tools, bcfg);
     tools.register(HarnessHealthTool::new(
         observability_store.clone(),
@@ -388,7 +499,15 @@ pub async fn run(
     // opened earlier so the TODO store could flow into
     // `BuiltinsConfig`. The same handles are reused below — no
     // second connection.
-    let mut system_prompt = pick_system_prompt(&cfg, coding_mode);
+    // Assemble the system prompt via the typed slot builder. The
+    // result is byte-equivalent to the prior `push_str` flow (slots
+    // joined with `\n\n` in slot order) so the LLM prompt-cache
+    // fingerprint doesn't rotate, but the structure makes it easy
+    // for future subsystems (M3.1 Project Memory writes, sub-agent
+    // overrides) to drop their text into a known slot without
+    // touching this site.
+    let mut prompt_builder = harness_core::SystemPromptBuilder::new()
+        .with_base(pick_system_prompt(&cfg, coding_mode));
     let project_ctx_cap = project_context_max_bytes(&cfg);
     let mut project_context_loaded = false;
     if include_project_context(&cfg) {
@@ -397,8 +516,7 @@ pub async fn run(
                 bytes = extra.len(),
                 "loaded project instructions (AGENTS.md / JARVIS.md / CLAUDE.md / .jarvis)"
             );
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&extra);
+            prompt_builder = prompt_builder.append_runtime_inject(extra);
             project_context_loaded = true;
         }
     }
@@ -425,11 +543,73 @@ pub async fn run(
                 dir = %project_memory_dir.display(),
                 "loaded project memory prompt"
             );
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&extra);
+            prompt_builder = prompt_builder.append_runtime_inject(extra);
             project_memory_loaded = true;
         }
     }
+    // Agent-maintained memory indices (M3.1 + P9). When the memory
+    // tools are enabled, inject both scopes' MEMORY.md files so the
+    // model wakes up with "what do I know about this project" AND
+    // "what do I know about this user" before turn 1. Each entry's
+    // body is fetched on demand via `memory.read(slug, scope?)`.
+    let user_memory_root = resolve_memory_user_root();
+    let mut memory_index_loaded = false;
+    let include_cache_root = home_dir()
+        .map(|h| h.join(".jarvis/include-cache"))
+        .unwrap_or_else(|| std::env::temp_dir().join("jarvis-include-cache"));
+    // P18.3 — optional gentle TTL refresh. `JARVIS_INCLUDE_TTL_HOURS=N`
+    // causes git+ includes whose cache is older than N hours to
+    // trigger a `git pull --ff-only` before being injected.
+    // Unset (or `0`) keeps the original "manual refresh only"
+    // behaviour from P16.
+    let include_ttl = std::env::var("JARVIS_INCLUDE_TTL_HOURS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .map(|n| std::time::Duration::from_secs(n * 3600));
+    if memory_tools_enabled {
+        // Shared dedup set spans both scope walks so a directive
+        // included from both workspace + user injects only once.
+        let mut include_seen: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let (next, loaded) = inject_memory_with_includes(
+            prompt_builder,
+            "project memory index",
+            "workspace",
+            &workspace_root,
+            &include_cache_root,
+            &mut include_seen,
+            include_ttl,
+        )
+        .await;
+        prompt_builder = next;
+        if loaded {
+            memory_index_loaded = true;
+        }
+        if let Some(user_root) = user_memory_root.as_deref() {
+            let (next, loaded) = inject_memory_with_includes(
+                prompt_builder,
+                "user memory index",
+                "user",
+                user_root,
+                &include_cache_root,
+                &mut include_seen,
+                include_ttl,
+            )
+            .await;
+            prompt_builder = next;
+            if loaded {
+                memory_index_loaded = true;
+            }
+        }
+    }
+    let _ = memory_index_loaded; // reserved for future telemetry
+    let system_prompt = prompt_builder.build();
+    info!(
+        slots = ?prompt_builder.trace(),
+        total_bytes = system_prompt.len(),
+        "system prompt assembled",
+    );
     // Snapshot the canonical registry as the agent template's tool
     // catalogue. `AppState::build_agent` always re-snapshots from
     // `canonical_tools` per request, so this seed is only for the
@@ -455,8 +635,10 @@ pub async fn run(
         &extras,
         &route_policy,
     );
-    if let Some(mem) = build_memory(&cfg, &llm, &model, store.as_ref(), summary_resolver)? {
-        agent_cfg = agent_cfg.with_memory(mem);
+    let mut memory_stats: Option<Arc<dyn harness_core::MemoryStatsProvider>> = None;
+    if let Some(bundle) = build_memory(&cfg, &llm, &model, store.as_ref(), summary_resolver)? {
+        agent_cfg = agent_cfg.with_memory(bundle.memory);
+        memory_stats = bundle.stats;
     }
     if let Some(approver) = build_approver(&cfg)? {
         agent_cfg = agent_cfg.with_approver(approver);
@@ -654,6 +836,20 @@ pub async fn run(
         .with_worktree_config(worktree_mode, worktree_root, worktree_allow_dirty)
         .with_route_policy(route_policy)
         .with_subagent_runs(harness_server::SubAgentRunRegistry::new());
+    if let Some(stats) = memory_stats {
+        state = state.with_memory_stats(stats);
+    }
+    // P14 — expose memory runtime metadata to the Web UI / REST.
+    // Only attached when the memory tools are actually enabled —
+    // otherwise the panel's REST endpoints render 503 cleanly so
+    // the UI knows to show an "off, enable in config" state.
+    if memory_tools_enabled {
+        state = state.with_memory_runtime(harness_server::MemoryRuntime {
+            workspace_root: workspace_root.clone(),
+            user_root: memory_user_root.clone(),
+            backend: memory_sync_backend_active,
+        });
+    }
     if let Some(pm) = project_memory_runtime.clone() {
         state = state.with_project_memory(pm);
     }
@@ -904,6 +1100,33 @@ pub async fn run(
             }
         });
     }
+
+    // P11.2 — background memory auto-sync. Started after AppState
+    // is finalised but before `serve(...)` runs forever; the
+    // handle is held by `serve(...)`'s lifetime via Drop semantics.
+    // When the process exits the task drops along with it.
+    let _auto_sync_handle = if auto_sync_enabled {
+        if let Some(user_root) = auto_sync_user_root {
+            let mut roots = harness_tools::MemoryRoots::new(workspace_root.clone());
+            roots = roots.with_user_root(user_root);
+            let cfg = harness_tools::memory_sync::AutoSyncConfig {
+                roots,
+                scope: harness_tools::MemoryScope::User,
+                interval: std::time::Duration::from_secs(auto_sync_interval),
+                initial_pull: true,
+            };
+            info!(
+                interval_secs = auto_sync_interval,
+                "memory auto-sync ticker started"
+            );
+            Some(harness_tools::memory_sync::spawn_auto_sync_task(cfg))
+        } else {
+            warn!("JARVIS_MEMORY_AUTO_SYNC set but user_root is unconfigured; ticker not started");
+            None
+        }
+    } else {
+        None
+    };
 
     serve(addr, state).await?;
 
@@ -1216,6 +1439,142 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+/// Per-include body cap when injected into the system prompt
+/// (P18). Anything larger gets truncated with a stable marker so
+/// the model knows there's more behind it. Same value as
+/// `harness_tools::memory::MAX_INDEX_BYTES` because that's also
+/// the limit on the index file itself — keeps the prompt budget
+/// predictable when both scopes pull from sizeable upstreams.
+const INCLUDE_INJECT_MAX_BYTES: usize = 25 * 1024;
+
+/// P16/P18: read one memory scope's MEMORY.md, append it as a
+/// slot in the prompt, then walk its include directives and
+/// append each upstream MEMORY.md as its own
+/// `=== included from <label> ===` block.
+///
+/// - **Cycle-safe by construction**: depth=1 only.
+/// - **Cross-scope dedup**: `seen` accumulates directive
+///   wire-strings across workspace + user invocations, so a
+///   `git+...` URL referenced by both scopes is injected only
+///   once (whichever scope sees it first wins).
+/// - **Body cap**: each upstream body is truncated to
+///   [`INCLUDE_INJECT_MAX_BYTES`] before append, with a marker.
+/// - **Failures are warn'd**, never propagated — a broken
+///   include can't bring down startup.
+///
+/// Returns the (possibly mutated) builder + whether anything was
+/// injected for this scope.
+async fn inject_memory_with_includes(
+    mut builder: harness_core::SystemPromptBuilder,
+    label: &str,
+    scope_tag: &str,
+    root: &std::path::Path,
+    cache_root: &std::path::Path,
+    seen: &mut std::collections::HashSet<String>,
+    ttl: Option<std::time::Duration>,
+) -> (harness_core::SystemPromptBuilder, bool) {
+    let body = match harness_tools::memory::read_index(root).await {
+        Ok(Some(b)) if !b.trim().is_empty() => b,
+        Ok(_) => return (builder, false),
+        Err(e) => {
+            warn!(error = %e, scope = scope_tag, path = %root.display(),
+                  "failed to load memory index");
+            return (builder, false);
+        }
+    };
+    let block = format!("=== {label} ===\n{}", body.trim_end());
+    info!(
+        bytes = block.len(),
+        scope = scope_tag,
+        path = %root.display(),
+        "loaded memory index"
+    );
+    builder = builder.append_runtime_inject(block);
+
+    let directives = harness_tools::memory_include::parse_include_directives(&body);
+    for d in directives {
+        let key = d.as_wire();
+        if !seen.insert(key.clone()) {
+            info!(target = %d.label(), scope = scope_tag,
+                  "include skipped (already injected from another scope)");
+            continue;
+        }
+        // P18.3 — TTL-driven gentle refresh before resolve.
+        // Skipped when no TTL is configured or the directive
+        // isn't a git URL. Failures are logged inside the helper;
+        // we keep the stale cache and continue.
+        if let Some(ttl_dur) = ttl {
+            let _ = harness_tools::memory_include::maybe_refresh_git_cache(
+                &d, cache_root, ttl_dur,
+            )
+            .await;
+        }
+        let dir = match harness_tools::memory_include::resolve_include(&d, cache_root).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, target = %d.label(),
+                      "include resolution failed; skipping");
+                continue;
+            }
+        };
+        let path = dir.join("MEMORY.md");
+        let upstream = match tokio::fs::read_to_string(&path).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, target = %d.label(),
+                      "include read failed; skipping");
+                continue;
+            }
+        };
+        let trimmed = upstream.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let capped = if trimmed.len() > INCLUDE_INJECT_MAX_BYTES {
+            // Truncate at a UTF-8 char boundary, then append a
+            // stable marker so the byte count of the marker
+            // doesn't shift the cache key.
+            let mut cut = INCLUDE_INJECT_MAX_BYTES;
+            while cut > 0 && !trimmed.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let mut s = trimmed[..cut].to_string();
+            s.push_str(
+                "\n\n[... include body truncated to fit system-prompt budget ...]",
+            );
+            s
+        } else {
+            trimmed.to_string()
+        };
+        let inc_block = format!("=== included from {} ===\n{}", d.label(), capped);
+        info!(
+            bytes = inc_block.len(),
+            target = %d.label(),
+            truncated = trimmed.len() > INCLUDE_INJECT_MAX_BYTES,
+            "loaded include"
+        );
+        builder = builder.append_runtime_inject(inc_block);
+    }
+    (builder, true)
+}
+
+/// Resolve where user-scope memory (P9) should live.
+/// Order: explicit env var > `~`. Empty env value disables the
+/// scope. Returns `None` when the home directory can't be resolved
+/// and no override is set — user-scope writes will then error
+/// cleanly via the tool's "user-scope not configured" message.
+fn resolve_memory_user_root() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("JARVIS_MEMORY_USER_ROOT") {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            // Explicitly disabled.
+            return None;
+        }
+        return Some(PathBuf::from(trimmed));
+    }
+    home_dir().map(|h| h.join(".jarvis"))
 }
 
 /// Read `JARVIS_SHELL_LIMITS=safe` to opt into the
@@ -1743,7 +2102,7 @@ fn build_memory(
     active_model: &str,
     store: Option<&Arc<dyn harness_core::ConversationStore>>,
     route_resolver: Option<Arc<harness_memory::LlmRouteResolver>>,
-) -> Result<Option<Arc<dyn Memory>>> {
+) -> Result<Option<MemoryBundle>> {
     let budget = std::env::var("JARVIS_MEMORY_TOKENS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -1757,6 +2116,7 @@ fn build_memory(
     // reflects what the model actually counts. Cheap to ask once per
     // memory backend; the estimator is `Arc`-shared internally.
     let estimator = llm.estimator();
+    let mut stats: Option<Arc<dyn harness_core::MemoryStatsProvider>> = None;
     let mem: Arc<dyn Memory> = match mode.as_str() {
         "summary" => {
             let summary_model = pick_string_opt("JARVIS_MEMORY_MODEL", cfg.memory.model.as_deref())
@@ -1782,6 +2142,11 @@ fn build_memory(
                 routed,
                 "summarising memory enabled",
             );
+            // P8: expose the backend's compaction counters so the
+            // diagnostics endpoint can render them. SlidingWindow
+            // has no LLM-driven state worth tracking; its branch
+            // below leaves `stats` as `None`.
+            stats = Some(sm.counters() as Arc<dyn harness_core::MemoryStatsProvider>);
             Arc::new(sm)
         }
         "window" => {
@@ -1792,7 +2157,15 @@ fn build_memory(
             anyhow::bail!("memory.mode=`{other}` is not recognised; use `window` or `summary`");
         }
     };
-    Ok(Some(mem))
+    Ok(Some(MemoryBundle { memory: mem, stats }))
+}
+
+/// Memory backend + the optional telemetry handle the diagnostics
+/// surface needs. Wrapper struct so `build_memory` can return both
+/// without the caller needing to branch on memory mode.
+pub struct MemoryBundle {
+    pub memory: Arc<dyn Memory>,
+    pub stats: Option<Arc<dyn harness_core::MemoryStatsProvider>>,
 }
 
 /// Build the global [`Approver`] attached to the agent's

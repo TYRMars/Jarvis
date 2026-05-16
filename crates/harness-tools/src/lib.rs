@@ -17,12 +17,18 @@ pub mod claude_code;
 pub mod codex;
 pub mod doc;
 pub mod echo;
+pub mod enter_plan_mode;
 pub mod exit_plan;
 pub mod fs;
 pub mod git;
 pub mod grep;
 pub mod harness_health;
 pub mod http;
+pub mod memory;
+pub mod memory_icloud;
+pub mod memory_include;
+pub mod memory_include_tools;
+pub mod memory_sync;
 pub mod patch;
 pub mod plan;
 pub mod project;
@@ -44,6 +50,7 @@ pub use doc::{
     DocSearchTool, DocUpdateTool, DocUpsertTool,
 };
 pub use echo::EchoTool;
+pub use enter_plan_mode::EnterPlanModeTool;
 pub use exit_plan::ExitPlanTool;
 pub use fs::{FsEditTool, FsListTool, FsReadTool, FsWriteTool};
 pub use git::{
@@ -52,6 +59,17 @@ pub use git::{
 pub use grep::CodeGrepTool;
 pub use harness_health::HarnessHealthTool;
 pub use http::HttpFetchTool;
+pub use memory::{
+    MemoryDeleteTool, MemoryListTool, MemoryReadTool, MemoryRoots, MemoryScope, MemoryWriteTool,
+};
+pub use memory_include_tools::{
+    MemoryIncludeAddTool, MemoryIncludeListTool, MemoryIncludeRefreshTool,
+    MemoryIncludeRemoveTool,
+};
+pub use memory_sync::{
+    icloud_memory_root, MemoryICloudSetupTool, MemorySyncBackend, MemorySyncSetupTool,
+    MemorySyncStatusTool, MemorySyncTool,
+};
 pub use patch::FsPatchTool;
 pub use plan::PlanUpdateTool;
 pub use project::{
@@ -84,6 +102,10 @@ pub struct BuiltinsConfig {
     /// Cap on response body size (in bytes) for `http.fetch`. Responses
     /// larger than this are truncated with a trailing marker.
     pub http_max_bytes: usize,
+    /// Cap on file size (in bytes) for `fs.read`. Files larger than this
+    /// are truncated with a trailing marker so a single `fs.read` can't
+    /// blow the LLM context window.
+    pub fs_max_bytes: usize,
     /// Whether to register `fs.write`. Defaults to `false` because writes
     /// are a destructive primitive.
     pub enable_fs_write: bool,
@@ -178,6 +200,48 @@ pub struct BuiltinsConfig {
     /// [`Self::enable_codex_run`]; see
     /// [`docs/proposals/claude-code-subagent.zh-CN.md`].
     pub enable_claude_code_run: bool,
+    /// Whether to register `enter_plan_mode`. Off by default — when
+    /// the operator never wants the model to escape into a different
+    /// mode on its own, leaving this off keeps Plan-Mode entry
+    /// strictly operator-driven (CLI flag / WS `SetMode` frame).
+    /// Coding deployments typically want this on so the model can
+    /// volunteer "let me draft a plan first" for risky changes.
+    pub enable_enter_plan_mode: bool,
+    /// Whether to register the `memory.*` tools (M3.1). When
+    /// enabled, the agent can persist project-scoped notes under
+    /// `<workspace>/.jarvis/memory/` and the system prompt picks up
+    /// the index on every new conversation. Off by default —
+    /// memory is a long-term storage primitive whose value depends
+    /// on the operator actively wanting an agent-maintained memo
+    /// system. See [`crate::memory`].
+    pub enable_memory: bool,
+    /// Root for **user-scope** memory (P9). When `Some(p)`, the
+    /// `memory.*` tools also accept `scope: "user"` and persist
+    /// under `<p>/.jarvis/memory/` — typically the operator's home
+    /// directory so the same notes follow them across workspaces.
+    /// `None` (default) means user scope is disabled: writes to
+    /// `scope:"user"` error cleanly and the system-prompt injection
+    /// omits the user index. Independent of `enable_memory`: the
+    /// tools have to be on for this to matter.
+    pub memory_user_root: Option<PathBuf>,
+    /// Whether to register the P10 git-sync tools
+    /// (`memory.sync`, `memory.sync_status`). When enabled, the
+    /// agent can pull/push the memory tree against a remote git
+    /// repo so notes flow between machines / teammates without a
+    /// custom sync server. Off by default — opting in means the
+    /// host has `git` on `PATH` and the operator has thought
+    /// about which remote to use. Requires `enable_memory` to
+    /// matter (the underlying tree only exists when the memory
+    /// tools are registered).
+    pub enable_memory_sync: bool,
+    /// P13 — which sync transport to register. Mutually exclusive
+    /// with the other backends because the model would get
+    /// confused if both `git` and `iCloud` setup tools were on at
+    /// the same time. Defaults to `None`; serve.rs translates the
+    /// legacy `enable_memory_sync == true` into `Git` for
+    /// backwards compatibility, but the explicit env /
+    /// `[agent].memory_sync_backend` config wins.
+    pub memory_sync_backend: MemorySyncBackend,
 }
 
 impl Default for BuiltinsConfig {
@@ -185,6 +249,7 @@ impl Default for BuiltinsConfig {
         Self {
             fs_root: PathBuf::from("."),
             http_max_bytes: 256 * 1024,
+            fs_max_bytes: 256 * 1024,
             enable_fs_write: false,
             enable_fs_edit: false,
             enable_fs_patch: false,
@@ -202,6 +267,11 @@ impl Default for BuiltinsConfig {
             channel_dispatcher: None,
             enable_codex_run: false,
             enable_claude_code_run: false,
+            enable_enter_plan_mode: false,
+            enable_memory: false,
+            memory_user_root: None,
+            enable_memory_sync: false,
+            memory_sync_backend: MemorySyncBackend::None,
         }
     }
 }
@@ -218,7 +288,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     registry.register(EchoTool);
     registry.register(TimeNowTool);
     registry.register(HttpFetchTool::new(cfg.http_max_bytes));
-    registry.register(FsReadTool::new(root.clone()));
+    registry.register(FsReadTool::new(root.clone()).with_max_bytes(cfg.fs_max_bytes));
     registry.register(FsListTool::new(root.clone()));
     registry.register(CodeGrepTool::new(root.clone()));
     registry.register(WorkspaceContextTool::new(root.clone()));
@@ -232,6 +302,53 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     // means the Plan-Mode tool filter doesn't have to mutate the
     // registry to enable it — much simpler than per-mode registration.
     registry.register(ExitPlanTool);
+    if cfg.enable_enter_plan_mode {
+        registry.register(EnterPlanModeTool);
+    }
+    if cfg.enable_memory {
+        let mut mem_roots = MemoryRoots::new(root.clone());
+        if let Some(user_root) = cfg.memory_user_root.clone() {
+            mem_roots = mem_roots.with_user_root(user_root);
+        }
+        registry.register(MemoryListTool::new(mem_roots.clone()));
+        registry.register(MemoryReadTool::new(mem_roots.clone()));
+        registry.register(MemoryWriteTool::new(mem_roots.clone()));
+        registry.register(MemoryDeleteTool::new(mem_roots.clone()));
+        // P16: include directive management. Always-on alongside
+        // the memory tools — there's no reason to ship include
+        // resolution at the prompt level but hide the tools that
+        // edit them.
+        registry.register(MemoryIncludeAddTool::new(mem_roots.clone()));
+        registry.register(MemoryIncludeListTool::new(mem_roots.clone()));
+        registry.register(MemoryIncludeRemoveTool::new(mem_roots.clone()));
+        registry.register(MemoryIncludeRefreshTool);
+        // Backend resolution: the explicit `memory_sync_backend`
+        // wins; falling back to the legacy `enable_memory_sync`
+        // boolean keeps existing setups working without churn.
+        let backend = match cfg.memory_sync_backend {
+            MemorySyncBackend::None if cfg.enable_memory_sync => MemorySyncBackend::Git,
+            other => other,
+        };
+        match backend {
+            MemorySyncBackend::None => {}
+            MemorySyncBackend::Git => {
+                registry.register(MemorySyncTool::new(mem_roots.clone()));
+                registry.register(MemorySyncStatusTool::new(mem_roots.clone()));
+                registry.register(MemorySyncSetupTool::new(mem_roots));
+            }
+            MemorySyncBackend::ICloud => {
+                // iCloud surface = setup helper + status only.
+                // The git pull/push tools are intentionally not
+                // registered: iCloud Drive does the sync at OS
+                // level, so a `memory.sync` call would be a
+                // no-op that misleads the model.
+                registry.register(crate::memory_sync::MemoryICloudSetupTool::new(
+                    mem_roots.clone(),
+                ));
+                registry.register(MemorySyncStatusTool::new(mem_roots));
+            }
+        }
+    }
     if cfg.enable_fs_write {
         registry.register(FsWriteTool::new(root.clone()));
     }

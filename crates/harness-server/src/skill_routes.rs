@@ -23,6 +23,7 @@ use serde_json::json;
 use tracing::info;
 
 use crate::state::AppState;
+use crate::state_layers::SkillsLayer;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -32,8 +33,8 @@ pub fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_catalog(state: &AppState) -> Result<Arc<RwLock<SkillCatalog>>, Response> {
-    state.skills.clone().ok_or_else(|| {
+fn require_catalog(skills: &SkillsLayer) -> Result<Arc<RwLock<SkillCatalog>>, Response> {
+    skills.catalog.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "skill catalogue not configured" })),
@@ -42,8 +43,8 @@ fn require_catalog(state: &AppState) -> Result<Arc<RwLock<SkillCatalog>>, Respon
     })
 }
 
-async fn list(State(state): State<AppState>) -> Response {
-    let cat = match require_catalog(&state) {
+async fn list(State(skills): State<SkillsLayer>) -> Response {
+    let cat = match require_catalog(&skills) {
         Ok(c) => c,
         Err(r) => return r,
     };
@@ -76,8 +77,8 @@ async fn list(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(json!({ "skills": entries }))).into_response()
 }
 
-async fn get_one(State(state): State<AppState>, Path(name): Path<String>) -> Response {
-    let cat = match require_catalog(&state) {
+async fn get_one(State(skills): State<SkillsLayer>, Path(name): Path<String>) -> Response {
+    let cat = match require_catalog(&skills) {
         Ok(c) => c,
         Err(r) => return r,
     };
@@ -116,8 +117,8 @@ async fn get_one(State(state): State<AppState>, Path(name): Path<String>) -> Res
     }
 }
 
-async fn reload(State(state): State<AppState>) -> Response {
-    let cat = match require_catalog(&state) {
+async fn reload(State(skills): State<SkillsLayer>) -> Response {
+    let cat = match require_catalog(&skills) {
         Ok(c) => c,
         Err(r) => return r,
     };

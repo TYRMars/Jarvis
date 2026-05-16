@@ -257,6 +257,10 @@ impl Tool for ShellExecTool {
             .get("command")
             .and_then(Value::as_str)
             .ok_or_else(|| -> BoxError { "missing `command` argument".into() })?;
+        // Record into WorkingContext so post-compaction reinjection
+        // can remind the agent which commands it just ran. Truncation
+        // / dedup is handled inside `note_command`.
+        harness_core::note_working_command(command);
 
         let root = harness_core::active_workspace_or(&self.root);
         let cwd = match args.get("cwd").and_then(Value::as_str) {

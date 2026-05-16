@@ -323,6 +323,44 @@ export function describeStep(blocks: ToolBlockEntry[]): string {
   return out;
 }
 
+/// Tools that don't mutate the workspace, the network, or any
+/// external system. Used by the MessageList transcript-folding
+/// rule: runs of consecutive assistant iterations that *only* call
+/// these tools (and produce no visible content) collapse into a
+/// single summary card so a long investigation loop doesn't drown
+/// the user's view of the conversation.
+///
+/// Anything that writes a file, runs a shell command, sends a
+/// channel message, or mutates a project / requirement / doc /
+/// memory / todo must NOT appear here.
+const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "fs.read",
+  "fs.list",
+  "code.grep",
+  "grep",
+  "git.status",
+  "git.diff",
+  "git.log",
+  "git.show",
+  "workspace.context",
+  "project.checks",
+  "time.now",
+  "http.fetch",
+  "echo",
+  "doc.list",
+  "doc.search",
+  "doc.get",
+  "doc.draft.get",
+]);
+
+/// True when the tool is safe to fold under the transcript
+/// "read-only run" rule. Unknown / new tools default to false —
+/// folding aggressively for unrecognised tools could hide a
+/// dangerous mutation behind a "Read 5 files" summary.
+export function isReadOnlyTool(name: string): boolean {
+  return READ_ONLY_TOOL_NAMES.has(name);
+}
+
 /// Aggregate status for the whole step. Drives the row's badge:
 ///   • any running   → "running"
 ///   • any error     → "error"

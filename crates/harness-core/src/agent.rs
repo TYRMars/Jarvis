@@ -283,6 +283,15 @@ pub enum AgentEvent {
     /// stays in Plan Mode until the user accepts via the WS frame
     /// `{type:"accept_plan", post_mode:"..."}`.
     PlanProposed { plan: String },
+    /// A tool requested a permission-mode switch via
+    /// [`crate::mode_signal::emit`]. Emitted *after* the tool's
+    /// `ToolEnd`. Transports react by updating their per-session
+    /// mode handle so the next turn's approver / tool_filter see
+    /// the new mode. Today only the `enter_plan_mode` tool emits
+    /// this — it sends [`crate::PermissionMode::Plan`] so the model
+    /// can voluntarily switch into read-only investigation mode
+    /// without the operator clicking the UI toggle.
+    ModeChanged { mode: crate::permission::PermissionMode },
     /// Provider-reported token usage for the LLM call that just
     /// finished. Optional fields — see [`crate::Usage`]. Emitted at
     /// most once per LLM iteration; transports typically aggregate
@@ -371,7 +380,16 @@ impl Agent {
         // (`run_stream`) leaves scoping to its transport callers
         // because async-stream `yield` can't traverse a
         // `LocalKey::scope` boundary.
-        crate::todo::with_turn_budget(self.run_inner(conversation)).await
+        //
+        // The working-context slot is installed at the same level so
+        // every tool call inside the loop can `note_file` and every
+        // `Memory::compact` can snapshot the latest plan + recent
+        // files. Scope is per-run: a fresh `Agent::run` invocation
+        // gets a fresh slot.
+        crate::working_context::with_working_context(
+            crate::todo::with_turn_budget(self.run_inner(conversation)),
+        )
+        .await
     }
 
     async fn run_inner(&self, conversation: &mut Conversation) -> Result<(RunOutcome, Usage)> {
@@ -404,14 +422,30 @@ impl Agent {
                     {
                         // Parallel dispatch path: when the operator opted
                         // in *and* the model emitted >1 tool call this
-                        // turn, run them concurrently and push the
-                        // resulting `Message::Tool` rows in the original
+                        // turn *and* every called tool advertises
+                        // `is_concurrency_safe() && !is_destructive()`,
+                        // run them concurrently and push the resulting
+                        // `Message::Tool` rows in the original
                         // `tool_calls` index order. Order matters
                         // because OpenAI / Anthropic require tool
-                        // replies paired with the assistant's
-                        // tool_use ids — out-of-order or missing entries
-                        // trip 400s on the next request.
-                        if self.config.parallel_tool_calls && tool_calls.len() > 1 {
+                        // replies paired with the assistant's tool_use
+                        // ids — out-of-order or missing entries trip
+                        // 400s on the next request.
+                        //
+                        // The per-tool safety gate (M2.1) keeps a
+                        // mixed turn — e.g. 3 reads + 1 write —
+                        // fully serial so a sibling read can't observe
+                        // a half-applied mutation. The model rarely
+                        // mixes write tools into a parallel-friendly
+                        // batch anyway; investigation turns vs. action
+                        // turns are usually separate.
+                        if self.config.parallel_tool_calls
+                            && tool_calls.len() > 1
+                            && crate::tool::all_calls_concurrency_safe(
+                                &self.config.tools,
+                                tool_calls,
+                            )
+                        {
                             // Resolve approvals concurrently first so
                             // `run_one` sees a `Some(Deny { reason })`
                             // and surfaces the synthetic `tool denied:`
@@ -627,8 +661,17 @@ impl Agent {
                         // sequential path is preserved verbatim so
                         // single-tool turns and small-LLM compatibility
                         // don't regress.
+                        // Parallel gate matches the blocking path: opt-in
+                        // flag AND >1 call AND every call advertises
+                        // concurrency safety. A single destructive sibling
+                        // forces the whole turn back to serial dispatch
+                        // — see [`crate::all_calls_concurrency_safe`].
                         let parallel = agent.config.parallel_tool_calls
-                            && tool_calls.len() > 1;
+                            && tool_calls.len() > 1
+                            && crate::tool::all_calls_concurrency_safe(
+                                &agent.config.tools,
+                                tool_calls,
+                            );
 
                         if !parallel {
                             for call in tool_calls {
@@ -713,6 +756,8 @@ impl Agent {
                                     tokio::sync::mpsc::unbounded_channel::<Vec<crate::plan::PlanItem>>();
                                 let (sub_tx, mut sub_rx) =
                                     tokio::sync::mpsc::unbounded_channel::<crate::subagent::SubAgentFrame>();
+                                let (mode_tx, mut mode_rx) =
+                                    tokio::sync::mpsc::unbounded_channel::<crate::permission::PermissionMode>();
                                 let invoke = crate::workspace::with_session_workspace(
                                     agent.config.session_workspace.clone(),
                                     crate::progress::with_progress(
@@ -721,12 +766,15 @@ impl Agent {
                                             plan_tx,
                                             crate::subagent::with_subagent(
                                                 sub_tx,
-                                                run_one_with_optional_hitl(
-                                                    agent.config.hitl_tx.clone(),
-                                                    Self::run_one(
-                                                        &agent.config.tools,
-                                                        call,
-                                                        decision.as_ref(),
+                                                crate::mode_signal::with_mode_signal(
+                                                    mode_tx,
+                                                    run_one_with_optional_hitl(
+                                                        agent.config.hitl_tx.clone(),
+                                                        Self::run_one(
+                                                            &agent.config.tools,
+                                                            call,
+                                                            decision.as_ref(),
+                                                        ),
                                                     ),
                                                 ),
                                             ),
@@ -746,10 +794,14 @@ impl Agent {
                                             };
                                         }
                                         Some(items) = plan_rx.recv() => {
+                                            crate::working_context::note_plan(items.clone());
                                             yield AgentEvent::PlanUpdate { items };
                                         }
                                         Some(frame) = sub_rx.recv() => {
                                             yield AgentEvent::SubAgentEvent { frame };
+                                        }
+                                        Some(mode) = mode_rx.recv() => {
+                                            yield AgentEvent::ModeChanged { mode };
                                         }
                                         res = &mut invoke => {
                                             // Drain anything the tool
@@ -765,10 +817,14 @@ impl Agent {
                                                 };
                                             }
                                             while let Ok(items) = plan_rx.try_recv() {
+                                                crate::working_context::note_plan(items.clone());
                                                 yield AgentEvent::PlanUpdate { items };
                                             }
                                             while let Ok(frame) = sub_rx.try_recv() {
                                                 yield AgentEvent::SubAgentEvent { frame };
+                                            }
+                                            while let Ok(mode) = mode_rx.try_recv() {
+                                                yield AgentEvent::ModeChanged { mode };
                                             }
                                             break res;
                                         }
@@ -962,6 +1018,7 @@ impl Agent {
                                         let (prog_tx, mut prog_rx) = tokio::sync::mpsc::unbounded_channel::<crate::progress::ToolProgress>();
                                         let (plan_tx, mut plan_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<crate::plan::PlanItem>>();
                                         let (sub_tx, mut sub_rx) = tokio::sync::mpsc::unbounded_channel::<crate::subagent::SubAgentFrame>();
+                                        let (mode_tx, mut mode_rx) = tokio::sync::mpsc::unbounded_channel::<crate::permission::PermissionMode>();
                                         let invoke = crate::workspace::with_session_workspace(
                                             agent.config.session_workspace.clone(),
                                             crate::progress::with_progress(
@@ -970,12 +1027,15 @@ impl Agent {
                                                     plan_tx,
                                                     crate::subagent::with_subagent(
                                                         sub_tx,
-                                                        run_one_with_optional_hitl(
-                                                            agent.config.hitl_tx.clone(),
-                                                            Self::run_one(
-                                                                &agent.config.tools,
-                                                                &call,
-                                                                decision.as_ref(),
+                                                        crate::mode_signal::with_mode_signal(
+                                                            mode_tx,
+                                                            run_one_with_optional_hitl(
+                                                                agent.config.hitl_tx.clone(),
+                                                                Self::run_one(
+                                                                    &agent.config.tools,
+                                                                    &call,
+                                                                    decision.as_ref(),
+                                                                ),
                                                             ),
                                                         ),
                                                     ),
@@ -997,10 +1057,14 @@ impl Agent {
                                                     });
                                                 }
                                                 Some(items) = plan_rx.recv() => {
+                                                    crate::working_context::note_plan(items.clone());
                                                     let _ = event_tx.send(AgentEvent::PlanUpdate { items });
                                                 }
                                                 Some(frame) = sub_rx.recv() => {
                                                     let _ = event_tx.send(AgentEvent::SubAgentEvent { frame });
+                                                }
+                                                Some(mode) = mode_rx.recv() => {
+                                                    let _ = event_tx.send(AgentEvent::ModeChanged { mode });
                                                 }
                                                 res = &mut invoke => {
                                                     while let Ok(p) = prog_rx.try_recv() {
@@ -1012,10 +1076,14 @@ impl Agent {
                                                         });
                                                     }
                                                     while let Ok(items) = plan_rx.try_recv() {
+                                                        crate::working_context::note_plan(items.clone());
                                                         let _ = event_tx.send(AgentEvent::PlanUpdate { items });
                                                     }
                                                     while let Ok(frame) = sub_rx.try_recv() {
                                                         let _ = event_tx.send(AgentEvent::SubAgentEvent { frame });
+                                                    }
+                                                    while let Ok(mode) = mode_rx.try_recv() {
+                                                        let _ = event_tx.send(AgentEvent::ModeChanged { mode });
                                                     }
                                                     break res;
                                                 }
@@ -1139,8 +1207,12 @@ impl Agent {
                 ),
             };
         };
+        // Wrap once for the working-context slot (per-stream, shared
+        // across all polls) and once for the tracing span. Both are
+        // shallow `poll_next` wrappers — they don't change the
+        // event sequence.
         Box::pin(SpanStream {
-            inner: Box::pin(inner),
+            inner: Box::pin(crate::working_context::scope_stream(inner)),
             span: run_span,
         })
     }

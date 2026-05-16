@@ -63,6 +63,16 @@ export interface LifecycleSlice {
     entry: Omit<TaskRailEntry, "startedAt" | "updatedAt"> & { startedAt?: number },
   ) => void;
   clearTasks: () => void;
+  /// Backend-pushed snapshot for the BackgroundTasksPanel
+  /// (`tasks_snapshot` WS frame). `null` means "no push received
+  /// yet — fall back to REST poll". A non-null empty array means
+  /// "the backend says nothing's in flight", which the panel
+  /// renders as the empty-state hint rather than re-polling.
+  /// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  backgroundTasksSnapshot: any[] | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setBackgroundTasksSnapshot: (items: any[] | null) => void;
 }
 
 export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlice> = (set, get) => ({
@@ -76,6 +86,7 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
   conversationSurfaces: {},
   conversationRuns: {},
   conversationUnread: {},
+  backgroundTasksSnapshot: null,
 
   setActiveId: (id) => {
     set((s) => {
@@ -238,6 +249,7 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
     });
   },
   clearTasks: () => set({ tasks: [] }),
+  setBackgroundTasksSnapshot: (items) => set({ backgroundTasksSnapshot: items }),
 });
 
 function isRunActive(status: ConversationRunStatus | undefined): boolean {

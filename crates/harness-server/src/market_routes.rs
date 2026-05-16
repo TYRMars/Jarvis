@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::state::AppState;
+use crate::state_layers::SkillsLayer;
 
 const MCP_REGISTRY_URL: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 const SKILLS_SH_URL: &str = "https://skills.sh";
@@ -89,8 +90,8 @@ struct InstallSkillRequest {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_catalog(state: &AppState) -> Result<Arc<RwLock<SkillCatalog>>, Response> {
-    state.skills.clone().ok_or_else(|| {
+fn require_catalog(skills: &SkillsLayer) -> Result<Arc<RwLock<SkillCatalog>>, Response> {
+    skills.catalog.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "skill catalogue not configured" })),
@@ -100,8 +101,8 @@ fn require_catalog(state: &AppState) -> Result<Arc<RwLock<SkillCatalog>>, Respon
 }
 
 #[allow(clippy::result_large_err)]
-fn require_user_skill_dir(state: &AppState) -> Result<PathBuf, Response> {
-    state.user_skills_dir.clone().ok_or_else(|| {
+fn require_user_skill_dir(skills: &SkillsLayer) -> Result<PathBuf, Response> {
+    skills.user_dir.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "user skill directory not configured" })),
@@ -172,14 +173,14 @@ async fn search_skills(Query(q): Query<MarketQuery>) -> Response {
 }
 
 async fn install_skill(
-    State(state): State<AppState>,
+    State(skills): State<SkillsLayer>,
     Json(req): Json<InstallSkillRequest>,
 ) -> Response {
-    let catalog = match require_catalog(&state) {
+    let catalog = match require_catalog(&skills) {
         Ok(c) => c,
         Err(r) => return r,
     };
-    let user_dir = match require_user_skill_dir(&state) {
+    let user_dir = match require_user_skill_dir(&skills) {
         Ok(d) => d,
         Err(r) => return r,
     };

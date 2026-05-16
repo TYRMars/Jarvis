@@ -20,11 +20,15 @@
 
 pub mod catalog;
 pub mod manifest;
+pub mod path_match;
 pub mod selector;
 
 pub use catalog::{SkillCatalog, SkillEntry, SkillSource};
 pub use manifest::{parse_skill, SkillActivation, SkillError, SkillManifest};
-pub use selector::{pick_auto_skills, query_token_set, score_skill};
+pub use path_match::{any_glob_matches, glob_matches};
+pub use selector::{
+    pick_auto_skills, pick_path_match_skills, query_token_set, score_skill,
+};
 
 /// Default skills shipped with the binary (`assets/defaults/<name>/SKILL.md`).
 /// Embedded at compile time via [`include_dir!`]. Pass to

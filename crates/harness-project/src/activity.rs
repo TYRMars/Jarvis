@@ -29,7 +29,8 @@ use serde::{Deserialize, Serialize};
 /// every consumer to know the full set. UIs that need to read a
 /// field do so on a per-kind basis; the wire format documents the
 /// expected shape per kind below.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub struct Activity {
     /// Stable identifier (UUID v4).
     pub id: String,
@@ -41,6 +42,7 @@ pub struct Activity {
     pub actor: ActivityActor,
     /// Free-form payload, shape varies by `kind`. See variant docs
     /// for the expected fields.
+    #[ts(type = "Record<string, unknown>")]
     pub body: serde_json::Value,
     /// RFC-3339 / ISO-8601 timestamp.
     pub created_at: String,
@@ -72,8 +74,9 @@ impl Activity {
 /// The set is intentionally small in v0; AssigneeChange / Comment /
 /// Blocked / Unblocked are reserved for Phases 3.6 / 4 when their
 /// driving features land.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum ActivityKind {
     /// Status flipped.
     /// Body: `{"from": "<wire>", "to": "<wire>"}`.
@@ -105,8 +108,9 @@ pub enum ActivityKind {
 /// when `requirement.*` tools let the model drive board state.
 /// `System` is the bucket for server-side auto-advances
 /// (e.g. `start_run` flipping `Backlog → InProgress`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum ActivityActor {
     Human,
     Agent { profile_id: String },

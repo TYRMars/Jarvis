@@ -96,6 +96,34 @@ pub trait Tool: Send + Sync {
     fn is_terminal(&self) -> bool {
         false
     }
+
+    /// Safe to invoke concurrently with sibling tool calls in the
+    /// same assistant turn. Default: `true` for [`ToolCategory::Read`]
+    /// tools (pure observation), `false` for everything else.
+    ///
+    /// The agent loop consults this when partitioning a turn's
+    /// `tool_calls` for parallel dispatch — see
+    /// [`crate::AgentConfig::parallel_tool_calls`]. Tools that look
+    /// safe by category but actually mutate hidden state (e.g. write
+    /// to a shared in-memory queue) should override to `false`.
+    fn is_concurrency_safe(&self) -> bool {
+        matches!(self.category(), ToolCategory::Read)
+    }
+
+    /// Mutates user data, state outside the workspace, or otherwise
+    /// requires an explicit "commit" semantics. Defaults to `true`
+    /// for [`ToolCategory::Write`] and [`ToolCategory::Exec`] tools.
+    ///
+    /// Combined with [`Tool::is_concurrency_safe`] this lets the
+    /// agent loop reason about which calls can interleave with
+    /// siblings: a destructive call is *always* dispatched in
+    /// isolation so a sibling read can't see a half-applied
+    /// mutation. `requires_approval` is a related-but-distinct
+    /// concern (user permission); `is_destructive` is about
+    /// scheduling.
+    fn is_destructive(&self) -> bool {
+        matches!(self.category(), ToolCategory::Write | ToolCategory::Exec)
+    }
 }
 
 /// Provider-agnostic description of a tool, suitable for serialising into a
@@ -294,6 +322,24 @@ impl ToolRegistry {
     pub fn len(&self) -> usize {
         self.tools.len()
     }
+}
+
+/// Decide whether every tool referenced by `calls` is safe to run
+/// concurrently with its siblings in the same batch. Used by the
+/// agent loop as a precondition for parallel dispatch — when any
+/// call resolves to a destructive or not-concurrency-safe tool,
+/// the loop falls back to strict serial execution.
+///
+/// Unknown / muted tools count as unsafe so the loop never
+/// parallelises a call it can't classify.
+pub fn all_calls_concurrency_safe(
+    registry: &ToolRegistry,
+    calls: &[crate::message::ToolCall],
+) -> bool {
+    calls.iter().all(|call| match registry.resolve(&call.name) {
+        Some(tool) => tool.is_concurrency_safe() && !tool.is_destructive(),
+        None => false,
+    })
 }
 
 pub async fn invoke_tool(registry: &ToolRegistry, name: &str, args: Value) -> Result<String> {
@@ -507,6 +553,129 @@ mod tests {
             v.get("cacheable").is_none(),
             "cacheable=false must be omitted"
         );
+    }
+
+    // --- M2.1: concurrency-safety helpers ---
+
+    struct CategorisedTool {
+        name: &'static str,
+        category: ToolCategory,
+    }
+    #[async_trait]
+    impl Tool for CategorisedTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "test"
+        }
+        fn parameters(&self) -> Value {
+            json!({"type":"object"})
+        }
+        fn category(&self) -> ToolCategory {
+            self.category
+        }
+        async fn invoke(&self, _args: Value) -> std::result::Result<String, BoxError> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn default_concurrency_flags_match_category() {
+        let read = CategorisedTool {
+            name: "fs.read",
+            category: ToolCategory::Read,
+        };
+        assert!(read.is_concurrency_safe());
+        assert!(!read.is_destructive());
+
+        let write = CategorisedTool {
+            name: "fs.write",
+            category: ToolCategory::Write,
+        };
+        assert!(!write.is_concurrency_safe());
+        assert!(write.is_destructive());
+
+        let exec = CategorisedTool {
+            name: "shell.exec",
+            category: ToolCategory::Exec,
+        };
+        assert!(!exec.is_concurrency_safe());
+        assert!(exec.is_destructive());
+
+        let net = CategorisedTool {
+            name: "http.fetch",
+            category: ToolCategory::Network,
+        };
+        // Network defaults: concurrency-safe=false (don't pound external
+        // services in parallel without explicit opt-in), destructive=false.
+        assert!(!net.is_concurrency_safe());
+        assert!(!net.is_destructive());
+    }
+
+    #[test]
+    fn all_calls_concurrency_safe_with_only_reads() {
+        let mut registry = ToolRegistry::new();
+        registry.register(CategorisedTool {
+            name: "fs.read",
+            category: ToolCategory::Read,
+        });
+        registry.register(CategorisedTool {
+            name: "code.grep",
+            category: ToolCategory::Read,
+        });
+        let calls = vec![
+            crate::message::ToolCall {
+                id: "1".into(),
+                name: "fs.read".into(),
+                arguments: json!({}),
+            },
+            crate::message::ToolCall {
+                id: "2".into(),
+                name: "code.grep".into(),
+                arguments: json!({}),
+            },
+        ];
+        assert!(all_calls_concurrency_safe(&registry, &calls));
+    }
+
+    #[test]
+    fn all_calls_concurrency_safe_rejects_mixed_batch() {
+        let mut registry = ToolRegistry::new();
+        registry.register(CategorisedTool {
+            name: "fs.read",
+            category: ToolCategory::Read,
+        });
+        registry.register(CategorisedTool {
+            name: "fs.write",
+            category: ToolCategory::Write,
+        });
+        let calls = vec![
+            crate::message::ToolCall {
+                id: "1".into(),
+                name: "fs.read".into(),
+                arguments: json!({}),
+            },
+            crate::message::ToolCall {
+                id: "2".into(),
+                name: "fs.write".into(),
+                arguments: json!({}),
+            },
+        ];
+        assert!(!all_calls_concurrency_safe(&registry, &calls));
+    }
+
+    #[test]
+    fn all_calls_concurrency_safe_rejects_unknown_tool() {
+        // An unknown / muted tool name forces the safe path: we
+        // can't classify what we can't resolve.
+        let registry = ToolRegistry::new();
+        let calls = vec![crate::message::ToolCall {
+            id: "1".into(),
+            name: "missing".into(),
+            arguments: json!({}),
+        }];
+        assert!(!all_calls_concurrency_safe(&registry, &calls));
     }
 
     #[test]

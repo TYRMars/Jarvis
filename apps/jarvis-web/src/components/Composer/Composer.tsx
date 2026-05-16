@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { SendButton, StopButton } from "../ComposerButtons";
+import { AutoActivatedSkillsChip } from "./AutoActivatedSkillsChip";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { sendFrame, isOpen } from "../../services/socket";
 import { startConversationTurn } from "../../services/conversationSockets";
@@ -163,6 +164,7 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
       autoComplete="off"
       onSubmit={(e) => { e.preventDefault(); submit(); }}
     >
+      <AutoActivatedSkillsChip />
       <div className="input-wrapper">
         <textarea
           id="input"

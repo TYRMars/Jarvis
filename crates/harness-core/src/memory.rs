@@ -155,6 +155,28 @@ pub fn default_estimator() -> Arc<dyn TokenEstimator> {
     Arc::new(CharRatioEstimator)
 }
 
+/// Diagnostics surface for memory backends — exposes a JSON snapshot
+/// of internal counters (compaction count, cache hits, circuit-breaker
+/// trips, PTL triggers, …) so a `GET /v1/diagnostics/memory` endpoint
+/// can render dashboards / tune budgets without backends having to
+/// depend on `harness-observability`.
+///
+/// Implementations should return cheap snapshots (a few atomic
+/// loads + a JSON serialization). The endpoint can be hit on every
+/// poll without affecting agent latency.
+///
+/// `harness-memory::SummarizingMemory` ships the canonical impl;
+/// future backends (e.g. an LLM-summary-with-retrieval one) can opt
+/// in by implementing the trait and getting picked up by the same
+/// surface for free.
+pub trait MemoryStatsProvider: Send + Sync {
+    /// Return a JSON object describing the backend's current
+    /// counters. Shape is backend-defined; the only contract is
+    /// that it's a JSON object (not a primitive) so the endpoint
+    /// can flatten / extend it.
+    fn snapshot(&self) -> serde_json::Value;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

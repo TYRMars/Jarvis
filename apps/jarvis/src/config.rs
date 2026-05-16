@@ -183,6 +183,39 @@ pub struct AgentSection {
     /// Env override: `JARVIS_PARALLEL_TOOL_CALLS=1`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+    /// Whether to register the `enter_plan_mode` tool so the agent
+    /// can voluntarily switch the session into Plan Mode. Unset =
+    /// "default on in coding mode" (any mutation tool enabled),
+    /// "default off otherwise". Set `false` to keep Plan Mode entry
+    /// strictly operator-driven (CLI flag / WS `SetMode` frame).
+    /// Env override: `JARVIS_ENABLE_ENTER_PLAN_MODE=0|1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_self_plan_mode: Option<bool>,
+    /// Whether to register the agent-maintained `memory.*` tools
+    /// (M3.1). Unset = off. Set `true` to expose
+    /// `memory.list / read / write / delete` and inject MEMORY.md
+    /// into the system prompt at conversation start. Env override:
+    /// `JARVIS_ENABLE_MEMORY=1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_memory: Option<bool>,
+    /// Whether to register the P10 git-sync tools
+    /// (`memory.sync`, `memory.sync_status`). When `true`, the
+    /// agent can pull/push the memory tree against a remote git
+    /// repo so notes flow between machines / teammates without a
+    /// custom sync server. Off by default — opt in once you've
+    /// hooked up a remote. Env override:
+    /// `JARVIS_ENABLE_MEMORY_SYNC=1`. Requires `enable_memory` to
+    /// also be on. Treated as a shortcut for
+    /// `memory_sync_backend = "git"` when the latter is unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_memory_sync: Option<bool>,
+    /// P13 — which sync transport the memory tools should expose.
+    /// One of `"git"` (default when sync is enabled), `"icloud"`
+    /// (macOS-only, OS-managed), or `"none"`. Env override:
+    /// `JARVIS_MEMORY_SYNC_BACKEND`. The explicit choice wins
+    /// over the legacy `enable_memory_sync` flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_sync_backend: Option<String>,
 }
 
 /// Per-provider config. All fields optional; provider-specific

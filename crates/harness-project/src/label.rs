@@ -29,7 +29,8 @@ use serde::{Deserialize, Serialize};
 pub const MAX_LABEL_NAME_LEN: usize = 32;
 
 /// One project-scoped tag.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub struct Label {
     /// Stable identifier (UUID v4).
     pub id: String,

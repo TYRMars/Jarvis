@@ -120,6 +120,53 @@ pub fn pick_auto_skills(
     scored.into_iter().take(top_k).map(|(_, n)| n).collect()
 }
 
+/// M3.3 — pick skills whose `paths` glob matches any of `recent_paths`.
+///
+/// Independent from [`pick_auto_skills`]: where that one matches
+/// against the user's message text, this matches against the
+/// workspace-relative paths the agent has recently touched. The
+/// caller (typically the WS handler) maintains a small bounded
+/// list of touched files across turns and passes it here at the
+/// top of each new turn.
+///
+/// `manual_active` is the "already-on" set used for dedup so we
+/// don't return a name the caller is already going to include.
+/// `top_k` caps the result so a file edit can't flood the system
+/// prompt with N matched skills.
+pub fn pick_path_match_skills(
+    catalog: &SkillCatalog,
+    recent_paths: &[String],
+    top_k: usize,
+    manual_active: &[String],
+) -> Vec<String> {
+    if recent_paths.is_empty() || top_k == 0 {
+        return Vec::new();
+    }
+    let manual: HashSet<&str> = manual_active.iter().map(String::as_str).collect();
+    let mut picks: Vec<String> = Vec::new();
+    for entry in catalog.entries() {
+        if matches!(entry.manifest.activation, SkillActivation::Manual) {
+            continue;
+        }
+        if entry.manifest.paths.is_empty() {
+            continue;
+        }
+        if manual.contains(entry.manifest.name.as_str()) {
+            continue;
+        }
+        let hit = recent_paths.iter().any(|p| {
+            crate::path_match::any_glob_matches(&entry.manifest.paths, p.as_str())
+        });
+        if hit {
+            picks.push(entry.manifest.name.clone());
+            if picks.len() >= top_k {
+                break;
+            }
+        }
+    }
+    picks
+}
+
 /// Token set for one query string. Lowercased, alpha-numeric runs
 /// only, stopwords removed. Public so callers that want to score
 /// against the same set multiple times can build it once.
@@ -155,6 +202,16 @@ mod tests {
     use std::path::PathBuf;
 
     fn entry(name: &str, desc: &str, keywords: &[&str], activation: SkillActivation) -> SkillEntry {
+        entry_with_paths(name, desc, keywords, activation, vec![])
+    }
+
+    fn entry_with_paths(
+        name: &str,
+        desc: &str,
+        keywords: &[&str],
+        activation: SkillActivation,
+        paths: Vec<String>,
+    ) -> SkillEntry {
         SkillEntry {
             manifest: SkillManifest {
                 name: name.to_string(),
@@ -164,11 +221,94 @@ mod tests {
                 activation,
                 keywords: keywords.iter().map(|s| s.to_string()).collect(),
                 version: None,
+                paths,
             },
             body: format!("body of {name}"),
             path: PathBuf::from(format!("/dev/{name}")),
             source: SkillSource::Workspace,
         }
+    }
+
+    #[test]
+    fn path_match_picks_skill_with_matching_glob() {
+        let mut cat = SkillCatalog::new();
+        cat.insert(entry_with_paths(
+            "rs-helper",
+            "Helps with Rust files.",
+            &[],
+            SkillActivation::Auto,
+            vec!["**/*.rs".to_string()],
+        ));
+        cat.insert(entry_with_paths(
+            "tsx-helper",
+            "Helps with React.",
+            &[],
+            SkillActivation::Auto,
+            vec!["**/*.tsx".to_string()],
+        ));
+        let picks = pick_path_match_skills(
+            &cat,
+            &["src/lib.rs".to_string()],
+            5,
+            &[],
+        );
+        assert_eq!(picks, vec!["rs-helper".to_string()]);
+    }
+
+    #[test]
+    fn path_match_skips_manual_only_skills() {
+        let mut cat = SkillCatalog::new();
+        cat.insert(entry_with_paths(
+            "manual-only",
+            "x",
+            &[],
+            SkillActivation::Manual,
+            vec!["**/*.rs".to_string()],
+        ));
+        let picks = pick_path_match_skills(&cat, &["lib.rs".to_string()], 5, &[]);
+        assert!(picks.is_empty());
+    }
+
+    #[test]
+    fn path_match_dedupes_against_manual_active() {
+        let mut cat = SkillCatalog::new();
+        cat.insert(entry_with_paths(
+            "rs-helper",
+            "x",
+            &[],
+            SkillActivation::Auto,
+            vec!["**/*.rs".to_string()],
+        ));
+        let picks = pick_path_match_skills(
+            &cat,
+            &["lib.rs".to_string()],
+            5,
+            &["rs-helper".to_string()],
+        );
+        assert!(picks.is_empty(), "manual-active skill should be skipped");
+    }
+
+    #[test]
+    fn path_match_respects_top_k_cap() {
+        let mut cat = SkillCatalog::new();
+        for i in 0..5 {
+            cat.insert(entry_with_paths(
+                &format!("rs-{i}"),
+                "x",
+                &[],
+                SkillActivation::Auto,
+                vec!["**/*.rs".to_string()],
+            ));
+        }
+        let picks = pick_path_match_skills(&cat, &["lib.rs".to_string()], 2, &[]);
+        assert_eq!(picks.len(), 2);
+    }
+
+    #[test]
+    fn path_match_empty_inputs_return_empty() {
+        let cat = SkillCatalog::new();
+        assert!(pick_path_match_skills(&cat, &[], 5, &[]).is_empty());
+        assert!(pick_path_match_skills(&cat, &["lib.rs".to_string()], 0, &[]).is_empty());
     }
 
     #[test]

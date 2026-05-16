@@ -36,6 +36,87 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/v1/diagnostics/runs/stuck", get(list_stuck_runs))
         .route("/v1/diagnostics/runs/failed", get(list_failed_runs))
         .route("/v1/diagnostics/runs/recent", get(list_recent_runs))
+        .route("/v1/diagnostics/memory", get(get_memory_stats))
+}
+
+/// P8 — `GET /v1/diagnostics/memory`. Returns the active memory
+/// backend's telemetry counters (compaction count, cache hits,
+/// circuit-breaker trips, PTL frequency) as a JSON object. 503
+/// when no stats provider is configured — typically because the
+/// binary is running with `SlidingWindowMemory` (no internal
+/// counters) or memory was disabled entirely.
+async fn get_memory_stats(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Response {
+    match state.memory_stats.as_ref() {
+        Some(provider) => Json(provider.snapshot()).into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "memory stats provider not configured" })),
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_core::MemoryStatsProvider;
+    use std::sync::Arc;
+
+    struct StubLlm;
+    #[async_trait::async_trait]
+    impl harness_core::LlmProvider for StubLlm {
+        async fn complete(
+            &self,
+            _: harness_core::ChatRequest,
+        ) -> Result<harness_core::ChatResponse, harness_core::Error> {
+            Err(harness_core::Error::Provider("stub".into()))
+        }
+    }
+
+    fn stub_state() -> AppState {
+        use harness_core::{Agent, AgentConfig};
+        let cfg = AgentConfig::new("stub-model");
+        let agent = Arc::new(Agent::new(Arc::new(StubLlm) as _, cfg));
+        AppState::new(agent)
+    }
+
+    async fn read_json(resp: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    struct StaticProvider(serde_json::Value);
+    impl MemoryStatsProvider for StaticProvider {
+        fn snapshot(&self) -> serde_json::Value {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_stats_returns_503_when_unconfigured() {
+        let state = stub_state();
+        let resp = get_memory_stats(axum::extract::State(state)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = read_json(resp).await;
+        assert!(body["error"].as_str().unwrap().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn memory_stats_returns_snapshot_when_configured() {
+        let provider: Arc<dyn MemoryStatsProvider> = Arc::new(StaticProvider(json!({
+            "backend": "summarizing",
+            "compactions_total": 42,
+        })));
+        let state = stub_state().with_memory_stats(provider);
+        let resp = get_memory_stats(axum::extract::State(state)).await;
+        let body = read_json(resp).await;
+        assert_eq!(body["backend"], "summarizing");
+        assert_eq!(body["compactions_total"], 42);
+    }
 }
 
 #[allow(clippy::result_large_err)]

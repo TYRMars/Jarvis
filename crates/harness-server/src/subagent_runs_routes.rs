@@ -21,6 +21,7 @@ use axum::{
 use serde_json::json;
 
 use crate::state::AppState;
+use crate::state_layers::SubAgentRunsLayer;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -29,16 +30,16 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/v1/subagents/runs/:id/cancel", post(cancel_run))
 }
 
-async fn list_runs(State(state): State<AppState>) -> Response {
-    let Some(reg) = state.subagent_runs.as_ref() else {
+async fn list_runs(State(runs): State<SubAgentRunsLayer>) -> Response {
+    let Some(reg) = runs.registry.as_ref() else {
         return service_unavailable();
     };
     let items = reg.list();
     Json(json!({ "items": items })).into_response()
 }
 
-async fn get_run(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let Some(reg) = state.subagent_runs.as_ref() else {
+async fn get_run(State(runs): State<SubAgentRunsLayer>, Path(id): Path<String>) -> Response {
+    let Some(reg) = runs.registry.as_ref() else {
         return service_unavailable();
     };
     match reg.get(&id) {
@@ -54,8 +55,8 @@ async fn get_run(State(state): State<AppState>, Path(id): Path<String>) -> Respo
     }
 }
 
-async fn cancel_run(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let Some(reg) = state.subagent_runs.as_ref() else {
+async fn cancel_run(State(runs): State<SubAgentRunsLayer>, Path(id): Path<String>) -> Response {
+    let Some(reg) = runs.registry.as_ref() else {
         return service_unavailable();
     };
     let ok = reg.cancel(&id);

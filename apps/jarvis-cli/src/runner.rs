@@ -151,6 +151,20 @@ pub(crate) async fn load_project_prelude(needle: &str) -> Result<String> {
     ))
 }
 
+fn resolve_memory_user_root() -> Option<std::path::PathBuf> {
+    if let Ok(v) = std::env::var("JARVIS_MEMORY_USER_ROOT") {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(std::path::PathBuf::from(trimmed));
+    }
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from))
+        .map(|h| h.join(".jarvis"))
+}
+
 fn build_tools(args: &Args, workspace: &Path) -> ToolRegistry {
     let cfg = BuiltinsConfig {
         fs_root: workspace.to_path_buf(),
@@ -165,6 +179,21 @@ fn build_tools(args: &Args, workspace: &Path) -> ToolRegistry {
         enable_fs_write: args.allow_fs_write,
         enable_shell_exec: args.allow_shell,
         enable_git_read: !args.no_git_read,
+        // CLI defaults: enter_plan_mode on (coding REPL benefits from
+        // the model being able to volunteer a plan-first pass);
+        // memory tools off until opted in.
+        enable_enter_plan_mode: !args.no_enter_plan_mode,
+        enable_memory: args.enable_memory,
+        // P9: user-scope memory follows the operator across
+        // workspaces. Default to `~/.jarvis` so the same notes
+        // are visible from any CLI invocation; `JARVIS_MEMORY_USER_ROOT`
+        // overrides (e.g. point at a Dropbox path) and an empty
+        // value disables. No-op when `enable_memory == false`.
+        memory_user_root: resolve_memory_user_root(),
+        // P10: git-as-transport sync. No-op when `enable_memory`
+        // is false (the underlying tree only exists when memory
+        // tools are registered).
+        enable_memory_sync: args.enable_memory_sync,
         ..Default::default()
     };
     let mut tools = ToolRegistry::new();
@@ -613,6 +642,17 @@ async fn run_one_turn(
                             event.from,
                             event.to,
                             event.reason,
+                        );
+                    }
+                    AgentEvent::ModeChanged { mode } => {
+                        // CLI mirrors the WS handler: surface the
+                        // mode change inline so the operator sees
+                        // why the next turn behaves differently.
+                        if delta_open { println!(); delta_open = false; }
+                        eprintln!(
+                            "{} permission mode → {:?}",
+                            yellow("⇄"),
+                            mode,
                         );
                     }
                     AgentEvent::Error { message } => {

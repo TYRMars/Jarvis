@@ -35,85 +35,29 @@ use harness_channel::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
-const WECOM_API_BASE: &str = "https://qyapi.weixin.qq.com";
+// Submodules — each owns a concern that was previously inlined in
+// this 1900-line file. mod.rs keeps the trait impls (the public
+// surface) plus codec / outbound HTTP helpers that are tightly
+// coupled to them; primitives that have a clean boundary moved out.
+mod crypto;
+mod oauth;
+mod token;
+
+use crypto::{constant_time_eq, decrypt_aes_payload, extract_tag, wecom_signature};
+use oauth::{
+    exchange_code_for_userid, make_oauth_state, oauth_authorize_url, verify_oauth_state, OAuthScope,
+};
+use token::{ensure_token, token_cache};
+
+pub(super) const WECOM_API_BASE: &str = "https://qyapi.weixin.qq.com";
 
 /// WeCom caps text body at ~2000 chars; markdown card body at ~4096.
 /// Use the more permissive bound and let the platform truncate
 /// anything above (it doesn't error, just clips).
 const WECOM_APP_MAX_BYTES: usize = 4096;
-
-/// How early to refresh `access_token` before its declared
-/// `expires_in`. WeCom hands out 7200-second tokens; refreshing 5
-/// minutes before keeps every send well clear of the boundary.
-const TOKEN_REFRESH_LEAD_SECS: u64 = 300;
-
-#[derive(Debug, Clone)]
-struct CachedToken {
-    token: String,
-    expires_at: Instant,
-}
-
-/// Process-level cache, keyed by `corp_id`. A separate
-/// `RwLock<HashMap>` per binary (not per-instance) because access
-/// tokens are corp-scoped, not app-scoped — multiple
-/// `ChannelInstance` rows for the same `corp_id` share one token to
-/// stay under WeCom's 2000-call/day refresh quota.
-#[derive(Default)]
-struct AccessTokenCache {
-    inner: RwLock<HashMap<String, CachedToken>>,
-}
-
-impl AccessTokenCache {
-    fn get(&self, corp_id: &str) -> Option<String> {
-        let g = self.inner.read().ok()?;
-        let cached = g.get(corp_id)?;
-        if Instant::now() < cached.expires_at {
-            Some(cached.token.clone())
-        } else {
-            None
-        }
-    }
-
-    fn set(&self, corp_id: &str, token: String, ttl_secs: u64) {
-        let safe_ttl = ttl_secs.saturating_sub(TOKEN_REFRESH_LEAD_SECS);
-        let expires_at = Instant::now() + Duration::from_secs(safe_ttl);
-        if let Ok(mut g) = self.inner.write() {
-            g.insert(
-                corp_id.to_string(),
-                CachedToken {
-                    token,
-                    expires_at,
-                },
-            );
-        }
-    }
-
-    fn invalidate(&self, corp_id: &str) {
-        if let Ok(mut g) = self.inner.write() {
-            g.remove(corp_id);
-        }
-    }
-}
-
-/// Singleton — every `WeComAppAdapter` invocation hits the same
-/// cache so deployments with multiple instances behind one
-/// `corp_id` share tokens. Lazy-init via `OnceLock`.
-fn token_cache() -> &'static AccessTokenCache {
-    static CACHE: std::sync::OnceLock<AccessTokenCache> = std::sync::OnceLock::new();
-    CACHE.get_or_init(AccessTokenCache::default)
-}
-
-/// Reset helper for tests — never called from production code.
-#[cfg(test)]
-fn reset_token_cache() {
-    if let Ok(mut g) = token_cache().inner.write() {
-        g.clear();
-    }
-}
 
 pub struct WeComAppAdapter;
 
@@ -509,145 +453,6 @@ fn require_inbound_field(config: &Value, field: &str) -> Result<String, String> 
 /// hex-encoded lowercase. Same scheme used for the GET handshake
 /// (where `payload = echostr`) and POST verify (where `payload =
 /// <Encrypt>` field from the body).
-fn wecom_signature(token: &str, timestamp: &str, nonce: &str, payload: &str) -> String {
-    use sha1::{Digest, Sha1};
-    let mut parts = [token, timestamp, nonce, payload];
-    parts.sort();
-    let joined = parts.concat();
-    let digest = Sha1::digest(joined.as_bytes());
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(40);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
-/// Compare two byte slices in constant time so a mismatched
-/// signature doesn't leak prefix-length info via timing. Stdlib has
-/// no constant-time eq; this 4-line version is the hot-path-cheap
-/// equivalent everyone copy-pastes.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-/// Find `<Tag>...</Tag>` in `xml` and return the inner content,
-/// stripping a `<![CDATA[...]]>` wrapper if present. Hand-rolled
-/// because the inbound XML shape is rigid (5 message kinds, all
-/// flat) — pulling in `quick-xml` for this would be way more
-/// complexity than the parsing demands.
-///
-/// Returns `None` for missing or empty tags. Doesn't handle
-/// nesting — WeCom's inbound XML never does.
-fn extract_tag(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = xml.find(&open)? + open.len();
-    let end = xml[start..].find(&close)? + start;
-    let raw = &xml[start..end];
-    let stripped = raw
-        .strip_prefix("<![CDATA[")
-        .and_then(|s| s.strip_suffix("]]>"))
-        .unwrap_or(raw);
-    Some(stripped.to_string())
-}
-
-/// AES-256-CBC decrypt the WeCom callback payload + extract the
-/// real plaintext. WeCom's encryption envelope:
-/// ```text
-/// base64-decoded ciphertext = AES-256-CBC encrypted bytes
-///   key = base64-decode(EncodingAESKey + "=")  // 32 bytes
-///   iv  = key[..16]                            // first 16 bytes of key
-/// plaintext = random_16 || msg_len_be_u32 || msg || receive_id
-/// ```
-/// We extract `msg`, validate `receive_id == corp_id`, and return
-/// `msg`. PKCS#7 padding is stripped from the tail of the ciphertext
-/// before slicing.
-fn decrypt_aes_payload(
-    encoding_aes_key: &str,
-    ciphertext_b64: &str,
-    expected_corp_id: &str,
-) -> Result<String, String> {
-    use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
-    use base64::Engine;
-    type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
-
-    // EncodingAESKey is 43 chars of base64 — append `=` to make it
-    // a valid 44-char padded base64 → 32 bytes.
-    let aes_key = base64::engine::general_purpose::STANDARD
-        .decode(format!("{encoding_aes_key}="))
-        .map_err(|e| format!("encoding_aes_key not valid base64: {e}"))?;
-    if aes_key.len() != 32 {
-        return Err(format!(
-            "encoding_aes_key decoded to {} bytes; expected 32",
-            aes_key.len()
-        ));
-    }
-    let iv = &aes_key[..16];
-
-    let ciphertext = base64::engine::general_purpose::STANDARD
-        .decode(ciphertext_b64.trim())
-        .map_err(|e| format!("ciphertext not valid base64: {e}"))?;
-    if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
-        return Err(format!(
-            "ciphertext length {} is not a multiple of 16",
-            ciphertext.len()
-        ));
-    }
-
-    let mut buf = ciphertext.clone();
-    let cipher = Aes256CbcDec::new_from_slices(&aes_key, iv)
-        .map_err(|e| format!("AES init failed: {e}"))?;
-    cipher
-        .decrypt_padded_mut::<NoPadding>(&mut buf)
-        .map_err(|e| format!("AES decrypt failed: {e}"))?;
-
-    // Strip WeCom's custom PKCS#7-style padding. The last byte
-    // tells you how many trailing bytes are padding; valid range
-    // 1..=32. Anything else means key/iv/payload corruption.
-    let pad = *buf.last().ok_or("decrypted buffer is empty")? as usize;
-    if pad == 0 || pad > 32 || pad > buf.len() {
-        return Err(format!("invalid padding length: {pad}"));
-    }
-    let stripped_len = buf.len() - pad;
-    let plain = &buf[..stripped_len];
-
-    // Layout: `random_16 || msg_len_4_be || msg || receive_id`
-    if plain.len() < 16 + 4 {
-        return Err(format!("plaintext too short: {} bytes", plain.len()));
-    }
-    let msg_len = u32::from_be_bytes(plain[16..20].try_into().unwrap()) as usize;
-    if 16 + 4 + msg_len > plain.len() {
-        return Err(format!(
-            "msg_len {} exceeds plaintext length {}",
-            msg_len,
-            plain.len() - 20
-        ));
-    }
-    let msg_bytes = &plain[20..20 + msg_len];
-    let receive_id = &plain[20 + msg_len..];
-    let receive_id = std::str::from_utf8(receive_id)
-        .map_err(|e| format!("receive_id is not utf-8: {e}"))?;
-
-    if receive_id != expected_corp_id {
-        return Err(format!(
-            "receive_id mismatch: expected {expected_corp_id}, got {receive_id}"
-        ));
-    }
-    let msg = std::str::from_utf8(msg_bytes)
-        .map_err(|e| format!("msg is not utf-8: {e}"))?;
-    Ok(msg.to_string())
-}
-
-/// Parse decrypted inbound XML into a normalised
-/// [`ChannelInboundEvent`]. WeCom's 5 inbound message types we
-/// actually care about (text, image, voice, event/subscribe,
-/// event/unsubscribe). Anything else folds into `ChannelInboundKind
-/// ::Event(...)` so the caller still sees the message even if we
 /// don't have a dedicated branch.
 fn parse_inbound_xml(xml: &str) -> Result<ChannelInboundEvent, String> {
     let msg_type = extract_tag(xml, "MsgType")
@@ -848,100 +653,6 @@ async fn send_once(
     SendOutcome::sent()
 }
 
-/// Return a token from the cache, fetching one when missing /
-/// expired / `force_refresh = true`.
-pub(crate) async fn ensure_token(
-    corp_id: &str,
-    corp_secret: &str,
-    force_refresh: bool,
-) -> Result<String, SendOutcome> {
-    if !force_refresh {
-        if let Some(t) = token_cache().get(corp_id) {
-            return Ok(t);
-        }
-    }
-    fetch_token(corp_id, corp_secret).await
-}
-
-#[derive(Debug, Deserialize)]
-struct GetTokenReply {
-    errcode: i64,
-    #[serde(default)]
-    errmsg: String,
-    #[serde(default)]
-    access_token: String,
-    #[serde(default)]
-    expires_in: u64,
-}
-
-/// Fetch a fresh access_token. Cache populated on success.
-async fn fetch_token(corp_id: &str, corp_secret: &str) -> Result<String, SendOutcome> {
-    let url = format!(
-        "{WECOM_API_BASE}/cgi-bin/gettoken?corpid={}&corpsecret={}",
-        urlencoding_minimal(corp_id),
-        urlencoding_minimal(corp_secret),
-    );
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return Err(SendOutcome::fail_retryable(format!(
-                "HTTP client init: {e}"
-            )))
-        }
-    };
-    let resp = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return Err(SendOutcome::fail_retryable(format!(
-                "gettoken transport: {e}"
-            )))
-        }
-    };
-    let status = resp.status();
-    let raw = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            return Err(SendOutcome::Failed {
-                message: format!("gettoken reply unreadable: {e}"),
-                code: Some("wecom_app:gettoken_reply_unreadable".into()),
-                retryable: false,
-            });
-        }
-    };
-    if !status.is_success() {
-        return Err(SendOutcome::Failed {
-            message: format!("gettoken HTTP {}: {raw}", status.as_u16()),
-            code: Some(format!("wecom_app:gettoken_http_{}", status.as_u16())),
-            retryable: status.is_server_error(),
-        });
-    }
-    let parsed: GetTokenReply = match serde_json::from_str(&raw) {
-        Ok(p) => p,
-        Err(e) => {
-            return Err(SendOutcome::Failed {
-                message: format!("gettoken parse: {e}: {raw}"),
-                code: Some("wecom_app:gettoken_reply_parse".into()),
-                retryable: false,
-            });
-        }
-    };
-    if parsed.errcode != 0 || parsed.access_token.is_empty() {
-        return Err(SendOutcome::Failed {
-            message: format!(
-                "gettoken errcode {}: {}",
-                parsed.errcode, parsed.errmsg
-            ),
-            code: Some(format!("wecom_app:gettoken_errcode_{}", parsed.errcode)),
-            retryable: false,
-        });
-    }
-    token_cache().set(corp_id, parsed.access_token.clone(), parsed.expires_in);
-    Ok(parsed.access_token)
-}
-
 #[derive(Debug, Deserialize)]
 struct WeComReply {
     errcode: i64,
@@ -953,7 +664,7 @@ struct WeComReply {
 /// secret can contain `+` / `/` / `=` from base64 in some configs
 /// (rare but documented), so we treat it like the DingTalk sign:
 /// percent-encode anything not in the unreserved set.
-fn urlencoding_minimal(s: &str) -> String {
+pub(super) fn urlencoding_minimal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -966,260 +677,6 @@ fn urlencoding_minimal(s: &str) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// OAuth2 免登 (snsapi_base) — terminal-user identity verification.
-//
-// WeCom's snsapi_base scope returns a `userid` after a silent in-client
-// authorisation. We use it for "click here to verify who you are" links
-// the bot can post into a chat, or for the `/v1/channels/:id/oauth/start`
-// + `/oauth/callback` redirect pair.
-//
-// State is HMAC-SHA1 signed against the instance's `token` field — same
-// secret the inbound verify uses — so we don't need a server-side state
-// store. The signed payload carries `instance_id`, an expiry timestamp,
-// and a random nonce. Verification checks the signature, parses the
-// payload, validates the instance binding + expiry, all in constant time.
-//
-// Reference: https://developer.work.weixin.qq.com/document/path/91022
-//   ?appid=<corp_id> & redirect_uri=<urlencoded> & response_type=code
-//   & scope=snsapi_base | snsapi_privateinfo & agentid=<agent_id>
-//   & state=<our_csrf_state> #wechat_redirect
-// ---------------------------------------------------------------------------
-
-/// `snsapi_base` returns just the `userid` silently — no popup in the
-/// WeCom client when the user is already logged in. `snsapi_privateinfo`
-/// additionally surfaces name / avatar / mobile via a `user_ticket`, but
-/// it triggers a confirmation prompt and requires extra app permissions.
-/// v1 ships only `Base` — it's the minimum that proves identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OAuthScope {
-    Base,
-}
-
-impl OAuthScope {
-    fn as_wire(self) -> &'static str {
-        match self {
-            Self::Base => "snsapi_base",
-        }
-    }
-}
-
-/// Build the WeCom OAuth2 authorize URL. `redirect_uri` is treated as
-/// opaque and URL-encoded verbatim — the operator is responsible for
-/// whitelisting its domain in the WeCom admin's "可信域名".
-///
-/// `#wechat_redirect` is mandatory per WeCom's docs; without it the
-/// authorize page renders blank inside the WeCom client.
-pub(crate) fn oauth_authorize_url(
-    corp_id: &str,
-    agent_id: u64,
-    redirect_uri: &str,
-    state: &str,
-    scope: OAuthScope,
-) -> String {
-    format!(
-        "https://open.weixin.qq.com/connect/oauth2/authorize\
-         ?appid={appid}\
-         &redirect_uri={redirect}\
-         &response_type=code\
-         &scope={scope}\
-         &state={state}\
-         &agentid={agentid}#wechat_redirect",
-        appid = urlencoding_minimal(corp_id),
-        redirect = urlencoding_minimal(redirect_uri),
-        scope = scope.as_wire(),
-        state = urlencoding_minimal(state),
-        agentid = agent_id,
-    )
-}
-
-/// Decoded state payload after signature verification. The fields are
-/// the contract between `make_oauth_state` and `verify_oauth_state` —
-/// keep them additive-only or version the payload.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub(crate) struct OAuthStateClaims {
-    /// Channel-instance id this state belongs to. The callback route
-    /// uses this to cross-check the `:id` path parameter.
-    pub(crate) instance_id: String,
-    /// Unix seconds after which the state is invalid. Typically now +
-    /// 10 minutes — long enough for a slow tap, short enough that a
-    /// stolen state ages out before being useful.
-    pub(crate) exp: u64,
-    /// 16-byte hex random — guards against replay of the same state
-    /// (combined with `exp`) and makes the signed blob look opaque.
-    pub(crate) nonce: String,
-    /// Optional caller-supplied opaque field. Often a Jarvis session
-    /// id, a `next=` URL hint, or a pairing token — the callback
-    /// surfaces this verbatim so the originator can correlate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) ctx: Option<String>,
-}
-
-/// Sign a fresh state token. The `token` argument is the same value
-/// configured on the `ChannelInstance` for inbound verify (`config.token`
-/// — operator-chosen, kept secret) so we don't need a dedicated
-/// signing key.
-pub(crate) fn make_oauth_state(
-    instance_id: &str,
-    instance_token: &str,
-    ttl_secs: u64,
-    ctx: Option<&str>,
-    nonce_hex: &str,
-    now_unix: u64,
-) -> Result<String, String> {
-    use base64::Engine;
-    if instance_token.is_empty() {
-        return Err("instance token is empty — cannot sign OAuth state".to_string());
-    }
-    let claims = OAuthStateClaims {
-        instance_id: instance_id.to_string(),
-        exp: now_unix.saturating_add(ttl_secs),
-        nonce: nonce_hex.to_string(),
-        ctx: ctx.map(str::to_string),
-    };
-    let json = serde_json::to_vec(&claims).map_err(|e| format!("state encode: {e}"))?;
-    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json);
-    let sig = oauth_state_sig(&b64, instance_token);
-    Ok(format!("{b64}.{sig}"))
-}
-
-/// Verify + decode a state token. Returns the claims (CSRF passed and
-/// not expired) or an operator-readable error.
-///
-/// Step order matters:
-/// 1. Split on `.`  (cheap, doesn't leak anything)
-/// 2. Recompute sig + constant-time compare — catches tampering early
-/// 3. Decode payload, parse JSON
-/// 4. Cross-check `instance_id` against the route's `:id`
-/// 5. Check expiry against the caller-supplied `now_unix`
-pub(crate) fn verify_oauth_state(
-    state: &str,
-    expected_instance: &str,
-    instance_token: &str,
-    now_unix: u64,
-) -> Result<OAuthStateClaims, String> {
-    use base64::Engine;
-    let (b64, sig) = state.split_once('.').ok_or("state missing signature")?;
-    if b64.is_empty() || sig.is_empty() {
-        return Err("state malformed".to_string());
-    }
-    let expected_sig = oauth_state_sig(b64, instance_token);
-    if !constant_time_eq(sig.as_bytes(), expected_sig.as_bytes()) {
-        return Err("state signature mismatch".to_string());
-    }
-    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(b64)
-        .map_err(|e| format!("state base64: {e}"))?;
-    let claims: OAuthStateClaims =
-        serde_json::from_slice(&raw).map_err(|e| format!("state json: {e}"))?;
-    if claims.instance_id != expected_instance {
-        return Err("state instance_id mismatch".to_string());
-    }
-    if claims.exp < now_unix {
-        return Err("state expired".to_string());
-    }
-    Ok(claims)
-}
-
-/// HMAC-SHA1 of the state payload keyed by the instance token. Output
-/// is the 40-char lowercase hex digest. WeCom signatures elsewhere in
-/// this file are plain `sha1(concat)` — we use HMAC here because the
-/// token is a true secret (operator-chosen) and HMAC is the standard
-/// CSRF-token construction; plain SHA1 of `token + payload` is
-/// vulnerable to length-extension on hypothetical inputs we don't
-/// fully control.
-fn oauth_state_sig(payload_b64: &str, instance_token: &str) -> String {
-    use hmac::{Hmac, Mac};
-    use sha1::Sha1;
-    type HmacSha1 = Hmac<Sha1>;
-    let mut mac =
-        HmacSha1::new_from_slice(instance_token.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(payload_b64.as_bytes());
-    let bytes = mac.finalize().into_bytes();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(40);
-    for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
-/// Exchange the `code` returned by WeCom for the user's `userid` via
-/// `cgi-bin/auth/getuserinfo`. The `access_token` argument is the
-/// app-level access_token from [`ensure_token`].
-///
-/// WeCom returns `{errcode:0, errmsg:"ok", userid:"..."}` on success.
-/// `external_userid` (for non-corp users) and `user_ticket` (only with
-/// `snsapi_privateinfo` scope) are surfaced when present — callers
-/// that only need `userid` ignore them.
-pub(crate) async fn exchange_code_for_userid(
-    access_token: &str,
-    code: &str,
-) -> Result<OAuthUserInfo, String> {
-    let url = format!(
-        "{WECOM_API_BASE}/cgi-bin/auth/getuserinfo?access_token={}&code={}",
-        urlencoding_minimal(access_token),
-        urlencoding_minimal(code),
-    );
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("getuserinfo http: {e}"))?;
-    let parsed: GetUserInfoReply = resp
-        .json()
-        .await
-        .map_err(|e| format!("getuserinfo json: {e}"))?;
-    if parsed.errcode != 0 {
-        return Err(format!(
-            "wecom getuserinfo failed: errcode={} errmsg={}",
-            parsed.errcode, parsed.errmsg
-        ));
-    }
-    // A corp member returns `userid`; a non-corp visitor returns
-    // `openid` + `external_userid` instead. v1 only supports corp
-    // members — surface the visitor case as a clear error rather than
-    // silently dropping them.
-    let userid = parsed
-        .userid
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "wecom oauth: not a corp member (no userid)".to_string())?;
-    Ok(OAuthUserInfo {
-        userid,
-        external_userid: parsed.external_userid.filter(|s| !s.is_empty()),
-        user_ticket: parsed.user_ticket.filter(|s| !s.is_empty()),
-    })
-}
-
-/// Subset of the `getuserinfo` reply we care about. The other fields
-/// (`openid`, `device_id`) we ignore — see WeCom's docs if a future
-/// feature needs them.
-#[derive(Debug, Deserialize)]
-struct GetUserInfoReply {
-    errcode: i64,
-    #[serde(default)]
-    errmsg: String,
-    #[serde(default)]
-    userid: Option<String>,
-    #[serde(default)]
-    external_userid: Option<String>,
-    #[serde(default)]
-    user_ticket: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OAuthUserInfo {
-    pub(crate) userid: String,
-    /// Set when the authenticator is a non-corp visitor. v1 routes
-    /// reject these; recording the field anyway so future "external
-    /// contact" features can pick it up without a wire change.
-    pub(crate) external_userid: Option<String>,
-    /// Set only with `snsapi_privateinfo` scope. Used to call
-    /// `cgi-bin/auth/getuserdetail` for name / mobile. `None` for
-    /// snsapi_base.
-    pub(crate) user_ticket: Option<String>,
-}
 
 /// Same UTF-8-safe truncation pattern as the other adapters. Kept
 /// inline rather than extracted — each kind's max-bytes is platform
@@ -1238,7 +695,42 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel_adapter::ChannelAdapter;
+    use crate::channel_adapter::{ChannelAdapter, ChannelInboundHandler};
+    use std::collections::HashMap;
+
+    /// Mirror of `crypto::tests::synth_encrypt` — duplicated here
+    /// because integration-shape tests (handler_post_round_trip)
+    /// live in mod.rs but need to fabricate ciphertext, and
+    /// `#[cfg(test)]` items inside a sibling submodule's `mod tests`
+    /// aren't reachable from this module. Keep them in sync — the
+    /// unit tests in crypto.rs cover the round-trip semantics.
+    fn synth_encrypt(msg: &str, corp_id: &str, key: &[u8; 32]) -> String {
+        use aes::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
+        use base64::Engine;
+        type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+
+        let iv = &key[..16];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0u8; 16]);
+        payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        payload.extend_from_slice(msg.as_bytes());
+        payload.extend_from_slice(corp_id.as_bytes());
+        let pad_len = 32 - (payload.len() % 32);
+        payload.extend_from_slice(&vec![pad_len as u8; pad_len]);
+        let mut buf = payload.clone();
+        let cipher = Aes256CbcEnc::new_from_slices(key, iv).unwrap();
+        let n = cipher
+            .encrypt_padded_mut::<NoPadding>(&mut buf, payload.len())
+            .unwrap()
+            .len();
+        base64::engine::general_purpose::STANDARD.encode(&buf[..n])
+    }
+
+    fn synth_aes_key_b64(key: &[u8; 32]) -> String {
+        use base64::Engine;
+        let full = base64::engine::general_purpose::STANDARD.encode(key);
+        full.chars().take(43).collect()
+    }
 
     fn full_config() -> Value {
         json!({
@@ -1399,333 +891,6 @@ mod tests {
         assert_eq!(out, "你");
     }
 
-    // ----------------------- OAuth2 helpers --------------------------
-
-    #[test]
-    fn oauth_authorize_url_has_required_params_and_hash() {
-        let url = oauth_authorize_url(
-            "ww-corp",
-            1_000_002,
-            "https://abc.example/v1/channels/xyz/oauth/callback",
-            "state-token-abc",
-            OAuthScope::Base,
-        );
-        // All of WeCom's required parameters present.
-        assert!(url.contains("appid=ww-corp"));
-        assert!(url.contains(
-            "redirect_uri=https%3A%2F%2Fabc.example%2Fv1%2Fchannels%2Fxyz%2Foauth%2Fcallback"
-        ));
-        assert!(url.contains("response_type=code"));
-        assert!(url.contains("scope=snsapi_base"));
-        assert!(url.contains("state=state-token-abc"));
-        assert!(url.contains("agentid=1000002"));
-        // The `#wechat_redirect` fragment is mandatory — without it
-        // WeCom client renders blank.
-        assert!(url.ends_with("#wechat_redirect"));
-        // No accidental newlines / whitespace from the format string.
-        assert!(!url.contains(' '));
-        assert!(!url.contains('\n'));
-    }
-
-    #[test]
-    fn oauth_state_round_trip_decodes_claims() {
-        let state = make_oauth_state(
-            "inst-1",
-            "token-secret",
-            600,
-            Some("session=abc"),
-            "deadbeefcafebabe",
-            1_700_000_000,
-        )
-        .expect("sign ok");
-        let claims = verify_oauth_state(&state, "inst-1", "token-secret", 1_700_000_100)
-            .expect("verify ok");
-        assert_eq!(claims.instance_id, "inst-1");
-        assert_eq!(claims.exp, 1_700_000_600);
-        assert_eq!(claims.nonce, "deadbeefcafebabe");
-        assert_eq!(claims.ctx.as_deref(), Some("session=abc"));
-    }
-
-    #[test]
-    fn oauth_state_rejects_tampered_payload() {
-        let state = make_oauth_state(
-            "inst-1",
-            "token-secret",
-            600,
-            None,
-            "nonce123",
-            1_700_000_000,
-        )
-        .unwrap();
-        // Flip a payload byte (but keep the signature) → signature
-        // mismatch.
-        let (payload, sig) = state.split_once('.').unwrap();
-        let mut bad_payload = payload.to_string();
-        let last = bad_payload.pop().unwrap();
-        // Replace last char with something different.
-        bad_payload.push(if last == 'A' { 'B' } else { 'A' });
-        let tampered = format!("{bad_payload}.{sig}");
-        let err = verify_oauth_state(&tampered, "inst-1", "token-secret", 1_700_000_100)
-            .expect_err("must reject");
-        assert!(err.contains("signature"));
-    }
-
-    #[test]
-    fn oauth_state_rejects_wrong_instance_id() {
-        let state = make_oauth_state(
-            "inst-A",
-            "token-secret",
-            600,
-            None,
-            "nonce123",
-            1_700_000_000,
-        )
-        .unwrap();
-        let err = verify_oauth_state(&state, "inst-B", "token-secret", 1_700_000_100)
-            .expect_err("must reject");
-        assert!(err.contains("instance_id"));
-    }
-
-    #[test]
-    fn oauth_state_rejects_expired() {
-        let state = make_oauth_state(
-            "inst-1",
-            "token-secret",
-            60,
-            None,
-            "nonce123",
-            1_700_000_000,
-        )
-        .unwrap();
-        // 70 seconds later — exp = 1_700_000_060, now = 1_700_000_070.
-        let err = verify_oauth_state(&state, "inst-1", "token-secret", 1_700_000_070)
-            .expect_err("must reject");
-        assert!(err.contains("expired"));
-    }
-
-    #[test]
-    fn oauth_state_rejects_missing_signature() {
-        // No period at all.
-        let err = verify_oauth_state("aGVsbG8", "inst-1", "token-secret", 1_700_000_000)
-            .expect_err("must reject");
-        assert!(err.contains("missing signature"));
-        // Empty signature segment.
-        let err = verify_oauth_state("aGVsbG8.", "inst-1", "token-secret", 1_700_000_000)
-            .expect_err("must reject");
-        assert!(err.contains("malformed"));
-    }
-
-    #[test]
-    fn oauth_state_refuses_empty_token() {
-        let err = make_oauth_state("inst-1", "", 600, None, "nonce", 1_700_000_000)
-            .expect_err("must reject");
-        assert!(err.contains("token"));
-    }
-
-    #[test]
-    fn oauth_state_sig_differs_per_token_value() {
-        // Two distinct tokens MUST produce distinct signatures over
-        // the same payload, otherwise the CSRF gate is decorative.
-        let s1 = oauth_state_sig("payload", "token-A");
-        let s2 = oauth_state_sig("payload", "token-B");
-        assert_ne!(s1, s2);
-        // And the same input is deterministic.
-        assert_eq!(s1, oauth_state_sig("payload", "token-A"));
-    }
-
-    // ----------------------- token cache ----------------------------
-    //
-    // All four cache tests touch the same process-level
-    // `token_cache()` singleton. Cargo runs tests in parallel by
-    // default, so we serialise just this group with a local mutex —
-    // simpler than dragging `serial_test` into the workspace deps
-    // and the cost is negligible (4 tests, each <2 ms).
-
-    fn cache_test_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
-
-    #[test]
-    fn token_cache_stores_and_returns_within_ttl() {
-        let _g = cache_test_lock().lock().unwrap();
-        reset_token_cache();
-        let cache = token_cache();
-        cache.set("corp-A", "tok-1".into(), 7200);
-        assert_eq!(cache.get("corp-A"), Some("tok-1".into()));
-    }
-
-    #[test]
-    fn token_cache_treats_short_ttl_as_expired_via_lead() {
-        let _g = cache_test_lock().lock().unwrap();
-        reset_token_cache();
-        let cache = token_cache();
-        cache.set("corp-B", "tok-2".into(), 30); // shorter than 300s lead
-        // Cache stores expires_at = now() + 0s (saturating sub),
-        // already in the past by the time `get` runs.
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert_eq!(cache.get("corp-B"), None);
-    }
-
-    #[test]
-    fn token_cache_invalidate_drops_entry() {
-        let _g = cache_test_lock().lock().unwrap();
-        reset_token_cache();
-        let cache = token_cache();
-        cache.set("corp-C", "tok-3".into(), 7200);
-        cache.invalidate("corp-C");
-        assert_eq!(cache.get("corp-C"), None);
-    }
-
-    #[test]
-    fn token_cache_keys_by_corp_id() {
-        let _g = cache_test_lock().lock().unwrap();
-        reset_token_cache();
-        let cache = token_cache();
-        cache.set("corp-D", "tok-D".into(), 7200);
-        cache.set("corp-E", "tok-E".into(), 7200);
-        assert_eq!(cache.get("corp-D").as_deref(), Some("tok-D"));
-        assert_eq!(cache.get("corp-E").as_deref(), Some("tok-E"));
-    }
-
-    // ----------------------- inbound (C.2) --------------------------
-
-    use crate::channel_adapter::ChannelInboundHandler;
-    use harness_channel::ChannelInboundKind;
-
-    #[test]
-    fn extract_tag_handles_plain_and_cdata() {
-        let xml = "<root><A>plain</A><B><![CDATA[in cdata]]></B></root>";
-        assert_eq!(extract_tag(xml, "A").as_deref(), Some("plain"));
-        assert_eq!(extract_tag(xml, "B").as_deref(), Some("in cdata"));
-        assert_eq!(extract_tag(xml, "Missing"), None);
-    }
-
-    #[test]
-    fn signature_is_lowercase_hex_and_matches_spec_example() {
-        // Sort + concat + sha1. Spot-check a known case computed
-        // off-line: `(token=ABC, ts=1, nonce=N, payload=PL)`.
-        // Sort → ["1","ABC","N","PL"] → concat → "1ABCNPL"
-        // sha1 of that string is deterministic; just check it's
-        // 40 lowercase hex chars and changes when an input changes.
-        let s1 = wecom_signature("ABC", "1", "N", "PL");
-        assert_eq!(s1.len(), 40);
-        assert!(s1.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-        let s2 = wecom_signature("ABC", "2", "N", "PL");
-        assert_ne!(s1, s2);
-        // Reordering identical inputs yields the same signature
-        // (sort makes parameter order irrelevant — that's the
-        // protocol).
-        let s_same = wecom_signature("PL", "ABC", "1", "N");
-        assert_eq!(s_same, s1);
-    }
-
-    #[test]
-    fn constant_time_eq_is_correct_for_basics() {
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"abcd"));
-        assert!(constant_time_eq(b"", b""));
-    }
-
-    /// Build a plaintext that the WeCom AES envelope wraps, then
-    /// encrypt it ourselves and round-trip through
-    /// `decrypt_aes_payload`. We don't depend on a known WeCom
-    /// fixture; instead we use the same `aes` + `cbc` crates the
-    /// production decrypt does, on a synthetic key, and assert the
-    /// shape comes back out cleanly.
-    fn synth_encrypt(msg: &str, corp_id: &str, key: &[u8; 32]) -> String {
-        use aes::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
-        use base64::Engine;
-        type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-
-        let iv = &key[..16];
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&[0u8; 16]); // random_16
-        payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
-        payload.extend_from_slice(msg.as_bytes());
-        payload.extend_from_slice(corp_id.as_bytes());
-        // Pad to 32 (PKCS#7 amounts to (32 - len%32) % 32 minimum 1).
-        let pad_len = 32 - (payload.len() % 32);
-        payload.extend_from_slice(&vec![pad_len as u8; pad_len]);
-        // Pre-allocate the buffer for `encrypt_padded_mut`.
-        let mut buf = payload.clone();
-        let cipher = Aes256CbcEnc::new_from_slices(key, iv).unwrap();
-        let n = cipher
-            .encrypt_padded_mut::<NoPadding>(&mut buf, payload.len())
-            .unwrap()
-            .len();
-        base64::engine::general_purpose::STANDARD.encode(&buf[..n])
-    }
-
-    fn synth_aes_key_b64(key: &[u8; 32]) -> String {
-        use base64::Engine;
-        // EncodingAESKey = first 43 chars of base64(key). The
-        // production decoder appends `=` itself.
-        let full = base64::engine::general_purpose::STANDARD.encode(key);
-        full.chars().take(43).collect()
-    }
-
-    #[test]
-    fn decrypt_round_trip_extracts_msg_and_validates_corpid() {
-        let key = [7u8; 32];
-        let aes_key_b64 = synth_aes_key_b64(&key);
-        let cipher = synth_encrypt("hello world", "ww-good-corp", &key);
-        let plain = decrypt_aes_payload(&aes_key_b64, &cipher, "ww-good-corp").unwrap();
-        assert_eq!(plain, "hello world");
-    }
-
-    #[test]
-    fn decrypt_rejects_wrong_corp_id() {
-        let key = [7u8; 32];
-        let aes_key_b64 = synth_aes_key_b64(&key);
-        let cipher = synth_encrypt("hi", "ww-actual", &key);
-        let err = decrypt_aes_payload(&aes_key_b64, &cipher, "ww-different").unwrap_err();
-        assert!(err.contains("receive_id mismatch"), "got: {err}");
-    }
-
-    #[test]
-    fn decrypt_rejects_invalid_base64() {
-        // Use a valid AES key first (so we reach the ciphertext
-        // decode), then feed garbage that base64 can't parse.
-        let key = [11u8; 32];
-        let aes_key_b64 = synth_aes_key_b64(&key);
-        let err = decrypt_aes_payload(&aes_key_b64, "@@@not-base64@@@", "ww").unwrap_err();
-        assert!(err.contains("ciphertext not valid base64"), "got: {err}");
-    }
-
-    #[test]
-    fn decrypt_rejects_short_aes_key() {
-        // EncodingAESKey of 30 chars decodes to ~22 bytes, not 32.
-        let err = decrypt_aes_payload(&"a".repeat(30), "AAAA", "ww").unwrap_err();
-        assert!(err.contains("expected 32") || err.contains("not valid base64"));
-    }
-
-    #[test]
-    fn decrypt_rejects_truncated_plaintext() {
-        // A ciphertext that decrypts to fewer than 20 bytes (the
-        // header alone) should be rejected.
-        use aes::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
-        use base64::Engine;
-        type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-        let key = [9u8; 32];
-        let iv = &key[..16];
-        // 16 bytes total: just one block padded with PKCS#7. After
-        // strip we'd have <20 bytes, triggering the length check.
-        let payload = b"123456789012345"; // 15 bytes; pad to 16 with 1 byte of pad
-        let mut padded = payload.to_vec();
-        padded.push(1u8); // 1 byte of pad
-        let mut buf = padded.clone();
-        let cipher = Aes256CbcEnc::new_from_slices(&key, iv).unwrap();
-        let n = cipher
-            .encrypt_padded_mut::<NoPadding>(&mut buf, padded.len())
-            .unwrap()
-            .len();
-        let cipher_b64 = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-        let err =
-            decrypt_aes_payload(&synth_aes_key_b64(&key), &cipher_b64, "ww").unwrap_err();
-        assert!(err.contains("plaintext too short"), "got: {err}");
-    }
 
     #[test]
     fn parse_inbound_xml_text_message() {

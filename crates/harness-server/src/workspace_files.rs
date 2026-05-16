@@ -32,6 +32,7 @@ use serde_json::json;
 use tokio::fs;
 
 use crate::state::AppState;
+use crate::state_layers::WorkspaceLayer;
 
 /// Hard cap on a single file read. Anything bigger gets truncated
 /// (with a sentinel) so the client doesn't OOM rendering a huge
@@ -101,7 +102,7 @@ fn server_error(msg: impl std::fmt::Display) -> Response {
 /// so this module doesn't reach into a sibling module's privates.
 /// Keeps the security policy explicit at each entry point.
 #[allow(clippy::result_large_err)]
-fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<PathBuf, Response> {
+fn resolve_workspace(ws: &WorkspaceLayer, override_root: Option<&str>) -> Result<PathBuf, Response> {
     if let Some(raw) = override_root {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -120,7 +121,7 @@ fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<Pa
         }
         return Ok(canonical);
     }
-    state.workspace_root.clone().ok_or_else(|| {
+    ws.root.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "workspace root not configured" })),
@@ -156,8 +157,8 @@ fn safe_relative(rel: &str) -> Result<&str, &'static str> {
 // GET /v1/workspace/list
 // ----------------------------------------------------------------------
 
-async fn list_dir(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Response {
-    let root = match resolve_workspace(&state, q.root.as_deref()) {
+async fn list_dir(State(ws): State<WorkspaceLayer>, Query(q): Query<ListQuery>) -> Response {
+    let root = match resolve_workspace(&ws, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -256,8 +257,8 @@ async fn list_dir(State(state): State<AppState>, Query(q): Query<ListQuery>) -> 
 // GET /v1/workspace/read
 // ----------------------------------------------------------------------
 
-async fn read_file(State(state): State<AppState>, Query(q): Query<ReadQuery>) -> Response {
-    let root = match resolve_workspace(&state, q.root.as_deref()) {
+async fn read_file(State(ws): State<WorkspaceLayer>, Query(q): Query<ReadQuery>) -> Response {
+    let root = match resolve_workspace(&ws, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };

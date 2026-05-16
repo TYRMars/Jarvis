@@ -58,7 +58,9 @@ mod state;
 pub mod state_layers;
 mod subagent_runs;
 mod subagent_runs_routes;
+mod memory_sync_routes;
 mod subagents_routes;
+mod tasks_routes;
 mod todo_binder;
 mod todos_routes;
 mod ui;
@@ -80,7 +82,7 @@ pub use requirements_routes::sweep_orphan_requirements_on_startup;
 pub use route_policy::{ModelRoutePolicy, ModelTarget, RouteSlot};
 pub use routes::router;
 pub use subagent_runs::{SubAgentRunRecord, SubAgentRunRegistry, SubAgentRunStatus};
-pub use state::{AppState, ServerInfo, TelemetryStatus};
+pub use state::{AppState, MemoryRuntime, ServerInfo, TelemetryStatus};
 
 // Re-export so binaries can construct stores / modes without depending
 // on harness-core directly when they only need the permission types.

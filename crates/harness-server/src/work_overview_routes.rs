@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 use tracing::error;
 
 use crate::state::AppState;
+use crate::state_layers::ProjectLayer;
 
 /// Default time window when neither `since` nor `window_days` is set.
 const DEFAULT_WINDOW_DAYS: i64 = 7;
@@ -103,8 +104,8 @@ fn resolve_window(q: &OverviewQuery) -> Result<ResolvedWindow, Response> {
 // --------------------------- Helpers -------------------------------------
 
 #[allow(clippy::result_large_err)]
-fn require_run_store(state: &AppState) -> Result<Arc<dyn RequirementRunStore>, Response> {
-    state.requirement_runs.clone().ok_or_else(|| {
+fn require_run_store(project: &ProjectLayer) -> Result<Arc<dyn RequirementRunStore>, Response> {
+    project.requirement_runs.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "requirement run store not configured" })),
@@ -146,12 +147,12 @@ fn normalise_command(cmd: &str) -> String {
 
 // --------------------------- Overview handler ----------------------------
 
-async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQuery>) -> Response {
+async fn get_overview(State(project): State<ProjectLayer>, Query(q): Query<OverviewQuery>) -> Response {
     let window = match resolve_window(&q) {
         Ok(w) => w,
         Err(resp) => return resp,
     };
-    let runs_store = match require_run_store(&state) {
+    let runs_store = match require_run_store(&project) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -165,7 +166,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
     };
     let truncated = runs.len() as u32 >= RUN_SCAN_LIMIT;
 
-    let projects: Option<Vec<Project>> = match state.projects.as_ref() {
+    let projects: Option<Vec<Project>> = match project.projects.as_ref() {
         Some(s) => match s.list(false, 500).await {
             Ok(rows) => Some(rows),
             Err(e) => return internal_error(e),
@@ -176,7 +177,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
         }
     };
 
-    let requirements: Option<Vec<Requirement>> = match (state.requirements.as_ref(), &projects) {
+    let requirements: Option<Vec<Requirement>> = match (project.requirements.as_ref(), &projects) {
         (Some(req_store), Some(projs)) => {
             let mut all = Vec::new();
             for p in projs {
@@ -409,7 +410,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
 
     // ---- blocked_requirements ------------------------------------------
     let (blocked_requirements, blocked_truncated) = match (
-        state.activities.as_ref(),
+        project.activities.as_ref(),
         requirements.as_ref(),
         projects.as_ref(),
     ) {
@@ -473,7 +474,7 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
             (Some(blocked), truncated)
         }
         _ => {
-            if state.activities.is_none() {
+            if project.activities.is_none() {
                 missing_stores.push("activities");
             }
             (None, false)
@@ -506,12 +507,12 @@ async fn get_overview(State(state): State<AppState>, Query(q): Query<OverviewQue
 
 // --------------------------- Quality handler -----------------------------
 
-async fn get_quality(State(state): State<AppState>, Query(q): Query<OverviewQuery>) -> Response {
+async fn get_quality(State(project): State<ProjectLayer>, Query(q): Query<OverviewQuery>) -> Response {
     let window = match resolve_window(&q) {
         Ok(w) => w,
         Err(resp) => return resp,
     };
-    let runs_store = match require_run_store(&state) {
+    let runs_store = match require_run_store(&project) {
         Ok(r) => r,
         Err(resp) => return resp,
     };

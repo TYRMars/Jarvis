@@ -33,6 +33,22 @@ export interface ApprovalSlice {
   /// every component (Settings tab, future header chip) sees the
   /// same source of truth. Empty until the user toggles one.
   activeSkills: string[];
+  /// Most-recent mode change, with its source ("tool" when the
+  /// model self-switched via `enter_plan_mode`, "user" when the
+  /// operator clicked, "plan_accepted" after AcceptPlan, etc.).
+  /// `<ModeChangedToast>` watches this and auto-clears after a
+  /// few seconds — only the source != "user" path produces a
+  /// visible toast (an operator click shouldn't toast back at
+  /// themselves). `null` between events.
+  recentModeChange: { mode: PermissionMode; via: string; at: number } | null;
+  /// Skills the server predicts WILL auto-activate via the M3.3
+  /// path-match rule on the *next* user turn, given the files the
+  /// agent touched in the previous turn. Refreshed by the
+  /// `skill_auto_activated_for_next_turn` WS frame at end-of-turn;
+  /// cleared (server-side recomputes) at the next user message.
+  /// Lets the Composer chip warn the user "if you send now, X will
+  /// auto-activate" before they actually type.
+  autoActivatedNextTurnSkills: string[];
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pushApprovalRequest: (id: string, name: string, args: any) => void;
@@ -53,6 +69,10 @@ export interface ApprovalSlice {
   bumpPermissionRulesVersion: () => void;
   setProposedPlan: (plan: string | null) => void;
   setActiveSkills: (names: string[]) => void;
+  setAutoActivatedNextTurnSkills: (names: string[]) => void;
+  setRecentModeChange: (
+    change: { mode: PermissionMode; via: string; at: number } | null,
+  ) => void;
 }
 
 export const createApprovalSlice: StateCreator<FullState, [], [], ApprovalSlice> = (set) => ({
@@ -61,6 +81,8 @@ export const createApprovalSlice: StateCreator<FullState, [], [], ApprovalSlice>
   permissionRulesVersion: 0,
   proposedPlan: null,
   activeSkills: [],
+  autoActivatedNextTurnSkills: [],
+  recentModeChange: null,
 
   pushApprovalRequest: (id, name, args) => {
     set((s) => {
@@ -121,4 +143,9 @@ export const createApprovalSlice: StateCreator<FullState, [], [], ApprovalSlice>
     const unique = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
     set({ activeSkills: unique });
   },
+  setAutoActivatedNextTurnSkills: (names) => {
+    const unique = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+    set({ autoActivatedNextTurnSkills: unique });
+  },
+  setRecentModeChange: (change) => set({ recentModeChange: change }),
 });

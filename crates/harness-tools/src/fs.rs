@@ -20,11 +20,20 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, BoxError> {
 /// Read a UTF-8 file under the tool root.
 pub struct FsReadTool {
     root: PathBuf,
+    max_bytes: Option<usize>,
 }
 
 impl FsReadTool {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            max_bytes: None,
+        }
+    }
+
+    pub fn with_max_bytes(mut self, n: usize) -> Self {
+        self.max_bytes = Some(n);
+        self
     }
 }
 
@@ -36,7 +45,8 @@ impl Tool for FsReadTool {
 
     fn description(&self) -> &str {
         "Read a UTF-8 text file located under the tool's root directory. \
-         `path` is relative; `..` and absolute paths are rejected."
+         `path` is relative; `..` and absolute paths are rejected. \
+         Files larger than the configured byte limit are truncated."
     }
 
     fn parameters(&self) -> Value {
@@ -66,6 +76,18 @@ impl Tool for FsReadTool {
         let rel = arg_str(&args, "path")?;
         let abs = resolve_under(&root, rel)?;
         let contents = fs::read_to_string(&abs).await?;
+        harness_core::note_working_file_relative_to(&abs, Some(&root));
+        if let Some(max) = self.max_bytes {
+            if contents.len() > max {
+                let mut idx = max;
+                while idx > 0 && !contents.is_char_boundary(idx) {
+                    idx -= 1;
+                }
+                let mut out = contents[..idx].to_string();
+                out.push_str(&format!("\n\n[... truncated at {} bytes ...]", max));
+                return Ok(out);
+            }
+        }
         Ok(contents)
     }
 }
@@ -121,6 +143,7 @@ impl Tool for FsListTool {
         let root = harness_core::active_workspace_or(&self.root);
         let rel = args.get("path").and_then(Value::as_str).unwrap_or(".");
         let abs = resolve_under(&root, rel)?;
+        harness_core::note_working_file_relative_to(&abs, Some(&root));
         let mut rd = fs::read_dir(&abs).await?;
 
         let mut entries = Vec::new();
@@ -198,6 +221,7 @@ impl Tool for FsWriteTool {
         }
         let bytes = content.len();
         fs::write(&abs, content).await?;
+        harness_core::note_working_file_relative_to(&abs, Some(&root));
         Ok(format!("wrote {bytes} bytes to {}", abs.display()))
     }
 }
@@ -292,6 +316,7 @@ impl Tool for FsEditTool {
         };
 
         fs::write(&abs, &updated).await?;
+        harness_core::note_working_file_relative_to(&abs, Some(&root));
         let replaced = if replace_all { count } else { 1 };
         Ok(format!(
             "edited {}: replaced {replaced} occurrence(s)",
@@ -304,6 +329,57 @@ impl Tool for FsEditTool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn fs_tools_record_into_working_context() {
+        use harness_core::{with_working_context, working_context_snapshot};
+        let dir = tempdir().unwrap();
+        let write = FsWriteTool::new(dir.path());
+        let read = FsReadTool::new(dir.path());
+        let edit = FsEditTool::new(dir.path());
+        let list = FsListTool::new(dir.path());
+
+        // Pre-create the nested dir so `list` targets a non-root path
+        // — `list(".")` resolves to the workspace root which strips to
+        // an empty path and gets dropped, which is intentional.
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+
+        with_working_context(async {
+            write
+                .invoke(json!({ "path": "sub/a.txt", "content": "hello" }))
+                .await
+                .unwrap();
+            read.invoke(json!({ "path": "sub/a.txt" })).await.unwrap();
+            edit.invoke(json!({
+                "path": "sub/a.txt",
+                "old_string": "hello",
+                "new_string": "world"
+            }))
+            .await
+            .unwrap();
+            list.invoke(json!({ "path": "sub" })).await.unwrap();
+
+            let snap = working_context_snapshot().expect("scope is active");
+            let paths: Vec<_> = snap
+                .recent_files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            // `sub/a.txt` appears once (deduped across write/read/edit);
+            // `sub` appears once (from list). Order: list newest → sub
+            // at head, sub/a.txt next.
+            assert!(
+                paths.iter().any(|p| p.ends_with("sub/a.txt")
+                    || p.ends_with("sub\\a.txt")),
+                "expected sub/a.txt recorded, got: {paths:?}"
+            );
+            assert!(
+                paths.iter().any(|p| p == "sub"),
+                "expected sub recorded, got: {paths:?}"
+            );
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn read_write_roundtrip() {
@@ -320,6 +396,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, "world");
+    }
+
+    #[tokio::test]
+    async fn read_truncates_large_files() {
+        let dir = tempdir().unwrap();
+        let write = FsWriteTool::new(dir.path());
+        let read = FsReadTool::new(dir.path()).with_max_bytes(10);
+
+        let long = "a".repeat(100);
+        write
+            .invoke(json!({ "path": "big.txt", "content": long }))
+            .await
+            .unwrap();
+        let got = read.invoke(json!({ "path": "big.txt" })).await.unwrap();
+        assert!(got.starts_with("aaaaaaaaaa"), "should keep first 10 bytes");
+        assert!(
+            got.contains("[... truncated at 10 bytes ...]"),
+            "should contain truncation marker, got: {got}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_truncates_at_char_boundary() {
+        let dir = tempdir().unwrap();
+        let write = FsWriteTool::new(dir.path());
+        let read = FsReadTool::new(dir.path()).with_max_bytes(5);
+
+        // "hello世界" — '世' starts at byte 5, so truncation must back up to byte 5.
+        write
+            .invoke(json!({ "path": "utf8.txt", "content": "hello世界" }))
+            .await
+            .unwrap();
+        let got = read.invoke(json!({ "path": "utf8.txt" })).await.unwrap();
+        assert_eq!(got, "hello\n\n[... truncated at 5 bytes ...]");
     }
 
     #[tokio::test]

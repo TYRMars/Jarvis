@@ -21,6 +21,16 @@ export const lifecycleFrameHandlers: Record<string, (ev: any) => void> = {
     // for the WorkOverview UsagePanel).
     recordUsageDaily(ev);
   },
+  tasks_snapshot: (ev) => {
+    // P7: server pushes a fresh BackgroundTasksPanel snapshot at
+    // every turn boundary so the panel can drop its tight 3s poll
+    // and rely on push for most updates. The frontend keeps a
+    // longer-interval safety poll for the panel's first-open case.
+    const items: unknown = ev?.items;
+    appStore
+      .getState()
+      .setBackgroundTasksSnapshot(Array.isArray(items) ? (items as unknown[]) : []);
+  },
   forked: (ev) => {
     appStore.getState().applyForked(ev.user_ordinal);
   },

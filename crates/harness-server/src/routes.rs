@@ -83,6 +83,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::agent_profiles_routes::router())
         .merge(crate::subagents_routes::router())
         .merge(crate::subagent_runs_routes::router())
+        .merge(crate::tasks_routes::router())
+        .merge(crate::memory_sync_routes::router())
         .merge(crate::diagnostics_routes::router())
         .merge(crate::auto_mode_routes::router())
         .merge(crate::channels_routes::router())
@@ -2020,6 +2022,7 @@ async fn begin_user_turn(
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
     active_skills: &[String],
+    recent_touched_files: &[String],
     socket_workspace: &Option<std::path::PathBuf>,
     hitl_tx: &mpsc::Sender<PendingHitl>,
 ) -> bool {
@@ -2042,7 +2045,12 @@ async fn begin_user_turn(
     let hitl = hitl_tx.clone();
     let active_mode = *mode_handle.read().await;
     let skills_catalog = state.skills.as_ref().cloned();
-    let skills_snapshot = merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
+    let skills_snapshot = merged_skills_for_turn(
+        skills_catalog.as_ref(),
+        active_skills,
+        &content,
+        recent_touched_files,
+    );
     let workspace_for_turn = socket_workspace.clone();
     let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
         cfg.approver = Some(approver);
@@ -2183,6 +2191,7 @@ fn merged_skills_for_turn(
     catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
     manual_active: &[String],
     user_content: &str,
+    recent_paths: &[String],
 ) -> Vec<String> {
     let mut merged: Vec<String> = manual_active.to_vec();
     let Some(cat_arc) = catalog else {
@@ -2198,7 +2207,96 @@ fn merged_skills_for_turn(
             merged.push(n);
         }
     }
+    // M3.3: file-path auto-activation. Skills with a non-empty
+    // `paths` glob list that hit any of the agent's recently-
+    // touched files this socket get added on top of the keyword
+    // matches. Capped at AUTO_SKILL_TOP_K so a single edit can't
+    // pile on indefinitely.
+    if !recent_paths.is_empty() {
+        let path_picks = harness_skill::pick_path_match_skills(
+            &guard,
+            recent_paths,
+            AUTO_SKILL_TOP_K,
+            &merged,
+        );
+        for n in path_picks {
+            if !merged.iter().any(|m| m == &n) {
+                merged.push(n);
+            }
+        }
+    }
     merged
+}
+
+/// FIFO push that dedupes and caps. Used to maintain the per-WS
+/// session's "recently-touched files" list that feeds M3.3 skill
+/// path-based auto-activation. Bounded so a long session can't
+/// grow the list unbounded; older entries fall off as new ones
+/// land. The dedupe-and-move-to-front policy keeps the most-
+/// recent file at the head.
+const RECENT_TOUCHED_FILES_CAP: usize = 32;
+
+/// Push a fresh `tasks_snapshot` frame down `ws_tx`. Fan-out
+/// helper for the BackgroundTasksPanel's WS-push path (P7): the
+/// frontend listens for these and replaces its local task list,
+/// so it doesn't need to poll `/v1/tasks` on a tight interval.
+async fn push_tasks_snapshot(
+    ws_tx: &mut SplitSink<WebSocket, WsMessage>,
+    state: &AppState,
+) {
+    let items = crate::tasks_routes::collect_tasks(state).await;
+    let _ = ws_tx
+        .send(WsMessage::Text(
+            json!({
+                "type": "tasks_snapshot",
+                "items": items,
+                "generated_at": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+            })
+            .to_string(),
+        ))
+        .await;
+}
+
+/// Compute which skills would auto-activate via the M3.3
+/// path-match rule on the next user turn, given `manual_active`
+/// (the currently-selected skills the user already sees) and
+/// `recent_touched_files`. Returns just the names, deduped against
+/// the manual set. Used to power the Composer's "next turn
+/// auto-activated" preview chip.
+fn predict_skill_auto_activation(
+    catalog: Option<&Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
+    manual_active: &[String],
+    recent_touched_files: &[String],
+) -> Vec<String> {
+    let Some(cat_arc) = catalog else {
+        return Vec::new();
+    };
+    let Ok(guard) = cat_arc.read() else {
+        return Vec::new();
+    };
+    harness_skill::pick_path_match_skills(
+        &guard,
+        recent_touched_files,
+        AUTO_SKILL_TOP_K,
+        manual_active,
+    )
+}
+
+fn push_recent_touched_file(files: &mut Vec<String>, path: &str) {
+    if path.is_empty() {
+        return;
+    }
+    let owned = path.to_string();
+    if let Some(pos) = files.iter().position(|p| p == &owned) {
+        files.remove(pos);
+    }
+    files.insert(0, owned);
+    while files.len() > RECENT_TOUCHED_FILES_CAP {
+        files.pop();
+    }
 }
 
 fn compose_with_skills(
@@ -2338,6 +2436,13 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // system prompt. Order is insertion order so the model sees
     // them in the same order the user activated them.
     let mut active_skills: Vec<String> = Vec::new();
+    // M3.3: workspace-relative paths the agent has touched in this
+    // socket's lifetime. Sniffed from `ToolStart` events for fs.*
+    // tools below; consulted by `merged_skills_for_turn` so a
+    // skill with `paths: ["**/*.rs"]` auto-activates after the
+    // agent reads/edits a `.rs` file. Bounded so a long session
+    // can't grow this unbounded.
+    let mut recent_touched_files: Vec<String> = Vec::new();
     // Per-socket workspace override. `None` means "use the binary's
     // startup workspace" (the historical behaviour). When `Some`,
     // the path is installed as a `crate::workspace::with_session_workspace`
@@ -2409,6 +2514,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     &mut sticky_provider,
                     &mut sticky_model,
                     &mut active_skills,
+                    &recent_touched_files,
                     &mut socket_workspace,
                     &hitl_tx,
                 )
@@ -2684,6 +2790,56 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 // the client. The client never sees it; the persisted
                 // history never stores it.
                 let mut ev_to_send = ev;
+                // Tool-initiated mode change (M2.3 `enter_plan_mode`).
+                // Flip the per-socket mode handle so the next turn's
+                // approver / tool_filter see the new mode. The
+                // current turn finishes under the old mode — that's
+                // intentional, see [`mode_signal`] doc.
+                // M3.3 skill auto-activation: track every fs.* path
+                // the agent touches so the next turn's
+                // `merged_skills_for_turn` can pick up skills whose
+                // `paths` glob hits the recent set. Bounded FIFO so a
+                // long session doesn't accumulate forever; sniffed at
+                // ToolStart rather than ToolEnd because Start lands
+                // first and successful starts are followed by a body
+                // event anyway — we don't gate on success because the
+                // glob only cares "did the agent intend to touch X".
+                if let AgentEvent::ToolStart { name, arguments, .. } = &ev_to_send {
+                    if matches!(
+                        name.as_str(),
+                        "fs.read" | "fs.list" | "fs.write" | "fs.edit"
+                    ) {
+                        if let Some(p) = arguments.get("path").and_then(|v| v.as_str()) {
+                            push_recent_touched_file(&mut recent_touched_files, p);
+                        }
+                    } else if name == "fs.patch" {
+                        if let Some(diff) = arguments.get("diff").and_then(|v| v.as_str()) {
+                            for line in diff.lines() {
+                                if let Some(rest) = line.strip_prefix("+++ b/") {
+                                    push_recent_touched_file(&mut recent_touched_files, rest);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let AgentEvent::ModeChanged { mode } = &ev_to_send {
+                    let new_mode = *mode;
+                    *mode_handle.write().await = new_mode;
+                    // Mirror via the existing `permission_mode` UI
+                    // frame so banners / mode badges update in step
+                    // with the change, same shape as the `SetMode`
+                    // / `AcceptPlan` paths.
+                    let _ = ws_tx
+                        .send(WsMessage::Text(
+                            json!({
+                                "type": "permission_mode",
+                                "mode": new_mode,
+                                "via": "tool",
+                            })
+                            .to_string(),
+                        ))
+                        .await;
+                }
                 if let AgentEvent::Done { conversation, .. } = &mut ev_to_send {
                     if let Some(prepared) = last_injection.as_ref() {
                         *conversation = strip_turn_injections(conversation.clone(), prepared);
@@ -2717,6 +2873,31 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     // stopped so nothing is waiting on them anyway.
                     pending.clear();
                     pending_hitl.clear();
+                    // M3.3 UX patch: after a turn ends, predict which
+                    // skills *would* auto-activate next turn given
+                    // the files the agent touched. The Composer shows
+                    // a chip ("auto-activated next turn: foo") so the
+                    // user can see in advance — and decide whether to
+                    // proceed or pivot. Empty payload still emitted
+                    // so the Composer can clear any stale chip.
+                    let preview = predict_skill_auto_activation(
+                        state.skills.as_ref(),
+                        &active_skills,
+                        &recent_touched_files,
+                    );
+                    let _ = ws_tx
+                        .send(WsMessage::Text(
+                            json!({
+                                "type": "skill_auto_activated_for_next_turn",
+                                "skills": preview,
+                            })
+                            .to_string(),
+                        ))
+                        .await;
+                    // P7: push the BackgroundTasksPanel's task list
+                    // at the natural state-change moment (turn just
+                    // finished) so the panel can drop its 3s poll.
+                    push_tasks_snapshot(&mut ws_tx, &state).await;
                 }
             }
             // ---- tailed run → server ----
@@ -2814,6 +2995,7 @@ async fn handle_client_frame(
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
     active_skills: &mut Vec<String>,
+    recent_touched_files: &[String],
     socket_workspace: &mut Option<std::path::PathBuf>,
     hitl_tx: &mpsc::Sender<PendingHitl>,
 ) -> bool {
@@ -3136,6 +3318,7 @@ async fn handle_client_frame(
                 sticky_provider,
                 sticky_model,
                 active_skills,
+                recent_touched_files,
                 socket_workspace,
                 hitl_tx,
             )
@@ -3165,6 +3348,7 @@ async fn handle_client_frame(
                 sticky_provider,
                 sticky_model,
                 active_skills,
+                recent_touched_files,
                 socket_workspace,
                 hitl_tx,
             )
@@ -3570,7 +3754,12 @@ async fn handle_client_frame(
             let active_mode = *mode_handle.read().await;
             let skills_catalog = state.skills.as_ref().cloned();
             let skills_snapshot =
-                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &content);
+                merged_skills_for_turn(
+                    skills_catalog.as_ref(),
+                    active_skills,
+                    &content,
+                    recent_touched_files,
+                );
             let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
@@ -3759,7 +3948,12 @@ async fn handle_client_frame(
             let active_mode = *mode_handle.read().await;
             let skills_catalog = state.skills.as_ref().cloned();
             let skills_snapshot =
-                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, proceed_message);
+                merged_skills_for_turn(
+                    skills_catalog.as_ref(),
+                    active_skills,
+                    proceed_message,
+                    recent_touched_files,
+                );
             let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
@@ -3881,7 +4075,12 @@ async fn handle_client_frame(
             let active_mode = *mode_handle.read().await;
             let skills_catalog = state.skills.as_ref().cloned();
             let skills_snapshot =
-                merged_skills_for_turn(skills_catalog.as_ref(), active_skills, &feedback);
+                merged_skills_for_turn(
+                    skills_catalog.as_ref(),
+                    active_skills,
+                    &feedback,
+                    recent_touched_files,
+                );
             let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
