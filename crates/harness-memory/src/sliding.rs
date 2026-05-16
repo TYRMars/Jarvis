@@ -135,7 +135,25 @@ fn compact(
             out.push(messages[i].clone());
         }
     }
+    // Append the agent's working-context snapshot (recent files +
+    // current plan). Empty snapshots render `None` and contribute
+    // nothing. Outside an agent run (e.g. memory unit tests without
+    // `with_working_context`) the snapshot is also `None`, so this
+    // is a no-op in tests that don't opt in.
+    append_working_context(&mut out);
     out
+}
+
+/// Append the current `WorkingContext` snapshot as a trailing
+/// `System` message. No-op when no snapshot is installed or the
+/// snapshot has nothing worth rendering. Pulled out so the same
+/// behaviour lives in `SummarizingMemory` without copy/paste.
+pub(crate) fn append_working_context(out: &mut Vec<Message>) {
+    if let Some(wc) = harness_core::working_context_snapshot() {
+        if let Some(body) = wc.render() {
+            out.push(Message::system(body));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -474,6 +492,67 @@ mod tests {
         fn estimate_text(&self, t: &str) -> usize {
             t.chars().count() / 2
         }
+    }
+
+    #[tokio::test]
+    async fn appends_working_context_block_when_active() {
+        use harness_core::{
+            note_working_file, note_working_plan, with_working_context, PlanItem, PlanStatus,
+        };
+        let msgs = vec![system("sys"), user("hi"), assistant("hello")];
+        with_working_context(async {
+            note_working_file("src/lib.rs");
+            note_working_plan(vec![PlanItem {
+                id: "1".into(),
+                title: "do thing".into(),
+                status: PlanStatus::InProgress,
+                note: None,
+            }]);
+            let mem = SlidingWindowMemory::new(10_000);
+            let out = mem.compact(&msgs).await.unwrap();
+            // Last message should be the working-context block.
+            let last = out.last().unwrap();
+            match last {
+                Message::System { content, .. } => {
+                    assert!(
+                        content.starts_with("=== working context ==="),
+                        "expected working-context block at tail, got: {content}"
+                    );
+                    assert!(content.contains("src/lib.rs"));
+                    assert!(content.contains("do thing"));
+                }
+                _ => panic!("expected trailing System message, got {last:?}"),
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn no_block_when_working_context_inactive() {
+        // No `with_working_context` scope: snapshot returns None and
+        // the trailing block is skipped entirely.
+        let msgs = vec![system("sys"), user("hi"), assistant("hello")];
+        let mem = SlidingWindowMemory::new(10_000);
+        let out = mem.compact(&msgs).await.unwrap();
+        let has_block = out.iter().any(
+            |m| matches!(m, Message::System { content, .. } if content.starts_with("=== working context ===")),
+        );
+        assert!(!has_block, "should not inject without a working-context scope");
+    }
+
+    #[tokio::test]
+    async fn no_block_when_snapshot_is_empty() {
+        use harness_core::with_working_context;
+        let msgs = vec![system("sys"), user("hi"), assistant("hello")];
+        with_working_context(async {
+            let mem = SlidingWindowMemory::new(10_000);
+            let out = mem.compact(&msgs).await.unwrap();
+            let has_block = out.iter().any(
+                |m| matches!(m, Message::System { content, .. } if content.starts_with("=== working context ===")),
+            );
+            assert!(!has_block, "empty context should not inject a block");
+        })
+        .await;
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, type NavigateFunction } from "react-router-dom";
 import { useAppStore } from "../../../store/appStore";
 import { t } from "../../../utils/i18n";
 import { resumeConversation } from "../../../services/conversations";
@@ -61,6 +61,33 @@ interface OptimizationMetric {
   detail: string;
   tone: Tone;
   hint: string[];
+}
+
+export interface HealthCenterState {
+  // Inputs (passthrough for child sections that still need them)
+  overview: WorkOverview | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  refreshDiagnostics: () => Promise<void>;
+  // Tone + labels
+  tone: Tone;
+  toneLabel: string;
+  summary: string;
+  unavailable: boolean;
+  // Derived stats
+  qualityStats: QualitySignal;
+  optimizationScore: number;
+  optimizationMetrics: OptimizationMetric[];
+  direction: HarnessDirectionSnapshot | null;
+  signals: HealthSignal[];
+  // Auto-mode runtime
+  autoMode: AutoModeStatus | null;
+  autoPending: boolean;
+  autoError: string | null;
+  toggleAutoMode: () => Promise<void>;
+  // Navigation helper for action buttons
+  navigate: NavigateFunction;
 }
 
 function formatPercent(v: number | null): string {
@@ -192,15 +219,21 @@ function topIssue(issues: Issue[]): Issue | null {
   return issues[0] ?? null;
 }
 
-export function HealthCenter({
-  overview,
-  quality,
-  overviewUnavailable,
-  qualityUnavailable,
-  loading,
-  error,
-  onRefresh,
-}: Props) {
+// Owns all data fetches + derivations for the health center. Called
+// once in `WorkOverviewPage`; the returned state is fanned out to
+// both `HealthCenterCompact` (top of page) and `HealthCenterDetails`
+// (the "Quality" tab) so we don't double-poll the auto-mode endpoint
+// or re-derive the optimization grid twice per render.
+export function useHealthCenterState(props: Props): HealthCenterState {
+  const {
+    overview,
+    quality,
+    overviewUnavailable,
+    qualityUnavailable,
+    loading,
+    error,
+    onRefresh,
+  } = props;
   const [orphans, setOrphans] = useState<OrphanWorktree[]>([]);
   const [stuck, setStuck] = useState<StuckRun[]>([]);
   const [autoMode, setAutoMode] = useState<AutoModeStatus | null>(null);
@@ -381,11 +414,11 @@ export function HealthCenter({
     },
   ];
 
-  const openConversation = (id: string) => {
+  const openConversation = useCallback((id: string) => {
     void resumeConversation(id);
-  };
+  }, []);
 
-  const toggleAutoMode = async () => {
+  const toggleAutoMode = useCallback(async () => {
     if (!autoMode?.configured || autoPending) return;
     setAutoPending(true);
     setAutoError(null);
@@ -397,7 +430,7 @@ export function HealthCenter({
     } finally {
       setAutoPending(false);
     }
-  };
+  }, [autoMode, autoPending]);
 
   const signals: HealthSignal[] = [];
   const failures = overview?.recent_failures ?? [];
@@ -485,16 +518,72 @@ export function HealthCenter({
     });
   }
 
+  return {
+    overview,
+    loading,
+    error,
+    onRefresh,
+    refreshDiagnostics,
+    tone,
+    toneLabel: healthLabel(tone),
+    summary: healthSummary(tone, overview, qualityStats, issues, unavailable),
+    unavailable,
+    qualityStats,
+    optimizationScore,
+    optimizationMetrics,
+    direction,
+    signals,
+    autoMode,
+    autoPending,
+    autoError,
+    toggleAutoMode,
+    navigate,
+  };
+}
+
+interface CompactProps {
+  state: HealthCenterState;
+  /// Triggered when the user clicks "view all" under a truncated
+  /// signals list. The page wires this to switch into the Quality tab
+  /// where the full list lives.
+  onExpandSignals?: () => void;
+}
+
+// Top-of-page strip: status pill + summary + KpiStrip +
+// AgentRuntimeStrip + top-3 Next Actions. Always visible.
+export function HealthCenterCompact({ state, onExpandSignals }: CompactProps) {
+  const {
+    tone,
+    toneLabel,
+    summary,
+    error,
+    autoError,
+    loading,
+    onRefresh,
+    refreshDiagnostics,
+    autoMode,
+    autoPending,
+    toggleAutoMode,
+    overview,
+    navigate,
+    signals,
+  } = state;
+  const visibleSignals = signals.slice(0, 3);
+  const hasMore = signals.length > visibleSignals.length;
+
   return (
-    <section className={"health-center health-center-" + tone} aria-label={t("healthCenterTitle")}>
+    <section
+      className={"health-center health-center-compact health-center-" + tone}
+      aria-label={t("healthCenterTitle")}
+    >
       <header className="health-center-head">
         <div className="health-center-title-block">
           <span className={"health-center-state tone-" + tone}>
             <span className="health-center-state-dot" aria-hidden="true" />
-            {healthLabel(tone)}
+            {toneLabel}
           </span>
           <h3>{t("healthCenterTitle")}</h3>
-          <p>{healthSummary(tone, overview, qualityStats, issues, unavailable)}</p>
+          <p>{summary}</p>
           {(error || autoError) && (
             <p className="health-center-error">
               {error
@@ -536,6 +625,60 @@ export function HealthCenter({
 
       <AgentRuntimeStrip status={autoMode} />
 
+      <div className="health-center-body">
+        <div className="health-center-signals">
+          <div className="health-center-section-label">
+            {t("healthCenterNextActions")}
+            {hasMore && onExpandSignals && (
+              <button
+                type="button"
+                className="health-center-section-link"
+                onClick={onExpandSignals}
+                title={t("healthCenterSignalsViewAllHint")}
+              >
+                {t("healthCenterSignalsViewAll", signals.length)}
+              </button>
+            )}
+          </div>
+          <ul className="health-signal-list">
+            {visibleSignals.map((signal) => (
+              <li
+                key={signal.label + signal.value + signal.detail}
+                className={"health-signal tone-" + signal.tone}
+              >
+                <span className="health-signal-label">{signal.label}</span>
+                <span className="health-signal-value tabular-nums">{signal.value}</span>
+                <span className="health-signal-detail" title={signal.detail}>
+                  {signal.detail}
+                </span>
+                {signal.action && (
+                  <button type="button" onClick={signal.action.onClick}>
+                    {signal.action.label}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+interface DetailsProps {
+  state: HealthCenterState;
+}
+
+// Quality-tab body: optimization grid + Direction components + the
+// full (untruncated) Next Actions list. Reuses the same derived
+// state — no extra fetches.
+export function HealthCenterDetails({ state }: DetailsProps) {
+  const { tone, optimizationMetrics, direction, signals } = state;
+  return (
+    <section
+      className={"health-center health-center-details health-center-" + tone}
+      aria-label={t("harnessEvolutionTitle")}
+    >
       <div className="health-optimization">
         <div className="health-center-section-label">
           <span className="harness-metric-label-with-hint">
@@ -594,8 +737,11 @@ export function HealthCenter({
         <div className="health-center-signals">
           <div className="health-center-section-label">{t("healthCenterNextActions")}</div>
           <ul className="health-signal-list">
-            {signals.slice(0, 5).map((signal) => (
-              <li key={signal.label + signal.value + signal.detail} className={"health-signal tone-" + signal.tone}>
+            {signals.map((signal) => (
+              <li
+                key={signal.label + signal.value + signal.detail}
+                className={"health-signal tone-" + signal.tone}
+              >
                 <span className="health-signal-label">{signal.label}</span>
                 <span className="health-signal-value tabular-nums">{signal.value}</span>
                 <span className="health-signal-detail" title={signal.detail}>
@@ -612,6 +758,19 @@ export function HealthCenter({
         </div>
       </div>
     </section>
+  );
+}
+
+// Back-compat composite — renders compact + details inline. Not used
+// by the redesigned overview page; kept so any other call sites
+// (tests, embedded views) keep working without code changes.
+export function HealthCenter(props: Props) {
+  const state = useHealthCenterState(props);
+  return (
+    <>
+      <HealthCenterCompact state={state} />
+      <HealthCenterDetails state={state} />
+    </>
   );
 }
 

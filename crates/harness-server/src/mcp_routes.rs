@@ -23,6 +23,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::state::AppState;
+use crate::state_layers::McpLayer;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -36,8 +37,8 @@ pub fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_mcp(state: &AppState) -> Result<Arc<McpManager>, Response> {
-    state.mcp.clone().ok_or_else(|| {
+fn require_mcp(mcp: &McpLayer) -> Result<Arc<McpManager>, Response> {
+    mcp.manager.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "mcp manager not configured" })),
@@ -46,8 +47,8 @@ fn require_mcp(state: &AppState) -> Result<Arc<McpManager>, Response> {
     })
 }
 
-async fn list(State(state): State<AppState>) -> Response {
-    let mcp = match require_mcp(&state) {
+async fn list(State(mcp): State<McpLayer>) -> Response {
+    let mcp = match require_mcp(&mcp) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -55,8 +56,8 @@ async fn list(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(json!({ "servers": servers }))).into_response()
 }
 
-async fn get_one(State(state): State<AppState>, Path(prefix): Path<String>) -> Response {
-    let mcp = match require_mcp(&state) {
+async fn get_one(State(mcp): State<McpLayer>, Path(prefix): Path<String>) -> Response {
+    let mcp = match require_mcp(&mcp) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -70,8 +71,8 @@ async fn get_one(State(state): State<AppState>, Path(prefix): Path<String>) -> R
     }
 }
 
-async fn add(State(state): State<AppState>, Json(cfg): Json<McpClientConfig>) -> Response {
-    let mcp = match require_mcp(&state) {
+async fn add(State(mcp): State<McpLayer>, Json(cfg): Json<McpClientConfig>) -> Response {
+    let mcp = match require_mcp(&mcp) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -94,11 +95,11 @@ async fn add(State(state): State<AppState>, Json(cfg): Json<McpClientConfig>) ->
 }
 
 async fn replace(
-    State(state): State<AppState>,
+    State(mcp): State<McpLayer>,
     Path(prefix): Path<String>,
     Json(mut cfg): Json<McpClientConfig>,
 ) -> Response {
-    let mcp = match require_mcp(&state) {
+    let mcp = match require_mcp(&mcp) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -127,8 +128,8 @@ async fn replace(
     }
 }
 
-async fn remove(State(state): State<AppState>, Path(prefix): Path<String>) -> Response {
-    let mcp = match require_mcp(&state) {
+async fn remove(State(mcp): State<McpLayer>, Path(prefix): Path<String>) -> Response {
+    let mcp = match require_mcp(&mcp) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -147,8 +148,8 @@ async fn remove(State(state): State<AppState>, Path(prefix): Path<String>) -> Re
     }
 }
 
-async fn health(State(state): State<AppState>, Path(prefix): Path<String>) -> Response {
-    let mcp = match require_mcp(&state) {
+async fn health(State(mcp): State<McpLayer>, Path(prefix): Path<String>) -> Response {
+    let mcp = match require_mcp(&mcp) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -178,8 +179,8 @@ async fn health(State(state): State<AppState>, Path(prefix): Path<String>) -> Re
 /// server stalls or its child process crashed and the slot fell
 /// to `Unhealthy` / `Stopped`. Idempotent: hitting an already-
 /// running server is just a quick teardown + reconnect.
-async fn reload(State(state): State<AppState>, Path(prefix): Path<String>) -> Response {
-    let mcp = match require_mcp(&state) {
+async fn reload(State(mcp): State<McpLayer>, Path(prefix): Path<String>) -> Response {
+    let mcp = match require_mcp(&mcp) {
         Ok(m) => m,
         Err(r) => return r,
     };

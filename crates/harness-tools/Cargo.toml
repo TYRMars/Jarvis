@@ -22,6 +22,7 @@ chrono.workspace = true
 regex.workspace = true
 ignore.workspace = true
 diffy.workspace = true
+blake3.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

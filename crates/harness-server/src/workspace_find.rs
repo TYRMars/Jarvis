@@ -32,6 +32,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::state::AppState;
+use crate::state_layers::ConversationLayer;
 
 /// Maximum depth (relative to a search root) the walker explores.
 /// 2 catches `~/Documents/GitHub/<repo>` (depth 1 from the root)
@@ -83,7 +84,7 @@ struct FindQuery {
     name: String,
 }
 
-async fn find_workspace(State(state): State<AppState>, Query(q): Query<FindQuery>) -> Response {
+async fn find_workspace(State(conv): State<ConversationLayer>, Query(q): Query<FindQuery>) -> Response {
     let needle = q.name.trim();
     if needle.is_empty() {
         return bad_request("name parameter is required");
@@ -130,7 +131,7 @@ async fn find_workspace(State(state): State<AppState>, Query(q): Query<FindQuery
     // opened are by definition canonical, so they rank highest.
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
-    if let Some(ws) = state.workspaces.as_ref() {
+    if let Some(ws) = conv.workspaces.as_ref() {
         for entry in ws.list_recent() {
             if basename_eq(&entry.path, needle) && seen.insert(entry.path.clone()) {
                 out.push(entry.path);

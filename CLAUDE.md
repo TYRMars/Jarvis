@@ -1062,3 +1062,12 @@ are usually marketing / human-PR docs, not agent guidance.
   `complete` and emits a single `Finish` chunk.
 - **Tool naming collisions** are silent — if you register two tools with the same
   `name()`, the second wins. Prefer unique, namespaced names (`fs.read`, `http.fetch`).
+- **Wire-shape types are codegen'd to TypeScript.** Rust types crossing the SPA
+  boundary (REST replies, WS frames) use `#[derive(ts_rs::TS)]` so the frontend
+  imports a generated `.ts` instead of hand-maintaining a duplicate. Annotations
+  live on the type in its owning domain crate (`harness-channel`,
+  `harness-project`, `harness-observability` — never `harness-core`).
+  Regenerate with `make ts-codegen` after changing an annotated type; the
+  output under `apps/jarvis-web/src/types/generated/` is committed to git so
+  the SPA-only build doesn't need a Rust toolchain. See
+  `docs/conventions/rust-ts-codegen.md`.

@@ -40,12 +40,15 @@
 //! endpoints so internal rows never leak into client conversation
 //! lists.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use harness_core::{
     cache_breakpoint_indices, default_estimator, BoxError, ChatRequest, Conversation,
-    ConversationStore, Error as CoreError, LlmProvider, Memory, Message, TokenEstimator,
+    ConversationStore, Error as CoreError, LlmProvider, Memory, MemoryStatsProvider, Message,
+    TokenEstimator,
 };
 use tracing::{debug, warn};
 
@@ -82,6 +85,18 @@ const SUMMARY_RESERVE_TOKENS: usize = 256;
 /// Cap on how many tokens the summarisation call is allowed to emit.
 const DEFAULT_SUMMARY_MAX_TOKENS: u32 = 400;
 
+/// Consecutive summary-call failures that flip the circuit breaker
+/// to "open". While open, [`SummarizingMemory::compact`] skips the
+/// LLM entirely and falls through to the existing placeholder note
+/// path, so a wedged summariser stops burning quota.
+const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
+
+/// How long the circuit stays open before the next request is
+/// allowed through. Aggressively short — most "real" outages
+/// (provider 5xx storm, quota hit) clear within seconds, and we
+/// want to recover quickly when the upstream comes back.
+const CIRCUIT_OPEN_DURATION: Duration = Duration::from_secs(60);
+
 /// Optional resolver consulted before each summarisation call. When
 /// it returns `Some((llm, model))`, that pair overrides the
 /// constructor-time `(llm, model)` for this call only — useful when
@@ -93,6 +108,72 @@ const DEFAULT_SUMMARY_MAX_TOKENS: u32 = 400;
 /// resolver is a closure provided by the composition root which
 /// holds the policy + provider registry.
 pub type LlmRouteResolver = dyn Fn() -> Option<(Arc<dyn LlmProvider>, String)> + Send + Sync;
+
+/// Process-wide counters for [`SummarizingMemory`]'s compaction
+/// path. Updated lock-free on the hot path, snapshotted to JSON via
+/// [`MemoryStatsProvider`] for the
+/// `GET /v1/diagnostics/memory` endpoint.
+///
+/// Counters are monotonic since process start — there's no "reset"
+/// API on purpose. Operators tuning `JARVIS_MEMORY_TOKENS` care
+/// about ratios (cache hit rate, LLM failure rate, how often PTL
+/// kicks in) which work fine with running totals.
+#[derive(Debug, Default)]
+pub struct CompactionCounters {
+    /// Total `compact()` calls — incremented every entry regardless
+    /// of whether any turns were dropped.
+    pub compactions_total: AtomicU64,
+    /// Calls that actually had something to summarise (i.e.
+    /// `dropped_msgs` was non-empty). The complement of this and
+    /// `compactions_total` is the "fits in budget, no work" path.
+    pub summary_required: AtomicU64,
+    /// In-memory single-slot cache hits.
+    pub cache_hits_memory: AtomicU64,
+    /// Persistent `ConversationStore` cache hits.
+    pub cache_hits_store: AtomicU64,
+    /// Times the LLM was actually called for a summary.
+    pub llm_calls: AtomicU64,
+    /// Times the LLM call returned `Err` (after the internal
+    /// transport retry).
+    pub llm_failures: AtomicU64,
+    /// Times the circuit breaker was found open and the LLM call
+    /// was skipped.
+    pub circuit_skips: AtomicU64,
+    /// Times the circuit breaker tripped (failure-threshold hit).
+    pub circuit_opens: AtomicU64,
+    /// Times the PTL fallback round 1 (drop 20%) was executed.
+    pub ptl_round_one: AtomicU64,
+    /// Times the PTL fallback round 2 (hard-prune to latest turn)
+    /// was executed.
+    pub ptl_round_two: AtomicU64,
+}
+
+impl CompactionCounters {
+    fn inc(&self, c: &AtomicU64) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+    fn load(c: &AtomicU64) -> u64 {
+        c.load(Ordering::Relaxed)
+    }
+}
+
+impl MemoryStatsProvider for CompactionCounters {
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "backend": "summarizing",
+            "compactions_total": Self::load(&self.compactions_total),
+            "summary_required": Self::load(&self.summary_required),
+            "cache_hits_memory": Self::load(&self.cache_hits_memory),
+            "cache_hits_store": Self::load(&self.cache_hits_store),
+            "llm_calls": Self::load(&self.llm_calls),
+            "llm_failures": Self::load(&self.llm_failures),
+            "circuit_skips": Self::load(&self.circuit_skips),
+            "circuit_opens": Self::load(&self.circuit_opens),
+            "ptl_round_one": Self::load(&self.ptl_round_one),
+            "ptl_round_two": Self::load(&self.ptl_round_two),
+        })
+    }
+}
 
 /// Compact a conversation by summarising the oldest turns.
 pub struct SummarizingMemory {
@@ -110,6 +191,22 @@ pub struct SummarizingMemory {
     /// Optional `(llm, model)` override resolved on every
     /// summarisation call. See [`LlmRouteResolver`].
     route_resolver: Option<Arc<LlmRouteResolver>>,
+    /// Consecutive summariser failures (cache hits don't count —
+    /// `summarise` returns `Ok` early on hit). Reset to zero on the
+    /// first success after a streak.
+    failure_streak: Arc<Mutex<u32>>,
+    /// When `Some(t)`, every `compact` call skips the LLM until
+    /// `Instant::now() >= t` and falls through to the existing
+    /// placeholder-note path. Reset to `None` when the deadline is
+    /// reached and the next call walks past
+    /// [`SummarizingMemory::circuit_open`].
+    circuit_until: Arc<Mutex<Option<Instant>>>,
+    /// Telemetry counters surfaced via
+    /// [`SummarizingMemory::counters`]. Composition roots clone the
+    /// `Arc` once and stash it on `AppState` so the diagnostics
+    /// endpoint can read snapshots without taking a reference back
+    /// into the memory backend.
+    counters: Arc<CompactionCounters>,
 }
 
 struct CachedSummary {
@@ -129,7 +226,23 @@ impl SummarizingMemory {
             persistence: None,
             estimator: default_estimator(),
             route_resolver: None,
+            failure_streak: Arc::new(Mutex::new(0)),
+            circuit_until: Arc::new(Mutex::new(None)),
+            counters: Arc::new(CompactionCounters::default()),
         }
+    }
+
+    /// Clone-able handle to the telemetry counters. Composition
+    /// roots typically stash this on `AppState` so the diagnostics
+    /// surface can read snapshots:
+    ///
+    /// ```ignore
+    /// let mem = SummarizingMemory::new(llm, model, max_tokens);
+    /// let counters = mem.counters();
+    /// state.memory_stats = Some(counters as Arc<dyn MemoryStatsProvider>);
+    /// ```
+    pub fn counters(&self) -> Arc<CompactionCounters> {
+        self.counters.clone()
     }
 
     /// Install a per-call route override. The resolver fires before
@@ -174,6 +287,7 @@ impl SummarizingMemory {
 #[async_trait]
 impl Memory for SummarizingMemory {
     async fn compact(&self, messages: &[Message]) -> Result<Vec<Message>, BoxError> {
+        self.counters.inc(&self.counters.compactions_total);
         let (system_idxs, turns) = split_into_turns(messages);
 
         let estimator = self.estimator.as_ref();
@@ -233,15 +347,36 @@ impl Memory for SummarizingMemory {
         // `SlidingWindowMemory`'s "[N earlier turn(s) omitted ...]"
         // so the model still sees a clear gap marker. The error is
         // logged so it's not invisible.
+        //
+        // Circuit breaker: if the upstream summariser has failed
+        // CIRCUIT_FAILURE_THRESHOLD times in a row, we treat the
+        // circuit as "open" and skip the LLM entirely for
+        // CIRCUIT_OPEN_DURATION. A long, slowly-degrading provider
+        // would otherwise burn quota on every compaction. The
+        // circuit auto-resets on time-out, so we recover without
+        // operator intervention.
         let summary = if dropped_msgs.is_empty() {
             None
         } else {
-            match self.summarise(&dropped_msgs).await {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    warn!(error = %e, dropped = dropped_count,
-                          "summary failed; falling back to placeholder note");
-                    None
+            self.counters.inc(&self.counters.summary_required);
+            if self.circuit_open() {
+                self.counters.inc(&self.counters.circuit_skips);
+                debug!(dropped = dropped_count,
+                       "summary circuit open; skipping LLM call");
+                None
+            } else {
+                match self.summarise(&dropped_msgs).await {
+                    Ok(s) => {
+                        self.record_summary_success();
+                        Some(s)
+                    }
+                    Err(e) => {
+                        self.counters.inc(&self.counters.llm_failures);
+                        self.record_summary_failure();
+                        warn!(error = %e, dropped = dropped_count,
+                              "summary failed; falling back to placeholder note");
+                        None
+                    }
                 }
             }
         };
@@ -268,16 +403,97 @@ impl Memory for SummarizingMemory {
                 out.push(messages[i].clone());
             }
         }
+        // Append the agent's working-context snapshot. Same helper
+        // as `SlidingWindowMemory` so the two backends produce the
+        // same trailing block.
+        crate::sliding::append_working_context(&mut out);
+        // PTL safety net: if the summary itself ran long or the
+        // working-context block tipped us over, drop oldest turns
+        // until the estimate fits. Never returns `Err` — the entire
+        // point is to absorb pathological cases without bringing the
+        // user's turn down.
+        let (pruned, outcome) = enforce_token_budget(out, self.max_tokens, estimator);
+        out = pruned;
+        match outcome {
+            PtlOutcome::None => {}
+            PtlOutcome::RoundOne => self.counters.inc(&self.counters.ptl_round_one),
+            PtlOutcome::RoundTwo => {
+                self.counters.inc(&self.counters.ptl_round_one);
+                self.counters.inc(&self.counters.ptl_round_two);
+            }
+        }
         Ok(out)
     }
 }
 
 impl SummarizingMemory {
+    /// Whether the failure-streak has flipped the circuit open. Has
+    /// the side-effect of clearing the latch when the deadline has
+    /// passed, so the next call may try the LLM again.
+    fn circuit_open(&self) -> bool {
+        let mut guard = self
+            .circuit_until
+            .lock()
+            .expect("circuit_until mutex poisoned");
+        match *guard {
+            Some(t) if Instant::now() < t => true,
+            Some(_) => {
+                // Deadline reached — re-arm both pieces of state so
+                // a single failure post-cooldown doesn't immediately
+                // re-trip the breaker.
+                *guard = None;
+                drop(guard);
+                *self
+                    .failure_streak
+                    .lock()
+                    .expect("failure_streak mutex poisoned") = 0;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Reset the failure-streak on any non-cache LLM success.
+    fn record_summary_success(&self) {
+        let mut streak = self
+            .failure_streak
+            .lock()
+            .expect("failure_streak mutex poisoned");
+        if *streak > 0 {
+            debug!(prior_streak = *streak, "summary success — resetting streak");
+        }
+        *streak = 0;
+    }
+
+    /// Increment the failure-streak; trip the breaker once the
+    /// threshold is reached.
+    fn record_summary_failure(&self) {
+        let mut streak = self
+            .failure_streak
+            .lock()
+            .expect("failure_streak mutex poisoned");
+        *streak += 1;
+        if *streak >= CIRCUIT_FAILURE_THRESHOLD {
+            *self
+                .circuit_until
+                .lock()
+                .expect("circuit_until mutex poisoned") =
+                Some(Instant::now() + CIRCUIT_OPEN_DURATION);
+            self.counters.inc(&self.counters.circuit_opens);
+            warn!(
+                streak = *streak,
+                cooldown_secs = CIRCUIT_OPEN_DURATION.as_secs(),
+                "summary circuit opened — skipping LLM for cooldown",
+            );
+        }
+    }
+
     async fn summarise(&self, dropped: &[Message]) -> Result<String, BoxError> {
         let fp = fingerprint(dropped);
 
         // Tier 1: in-memory single-slot cache.
         if let Some(text) = self.cache_lookup(&fp) {
+            self.counters.inc(&self.counters.cache_hits_memory);
             debug!(fingerprint = %fp, "summary cache hit (memory)");
             return Ok(text);
         }
@@ -287,6 +503,7 @@ impl SummarizingMemory {
             match store.load(&persist_key(&fp)).await {
                 Ok(Some(conv)) => {
                     if let Some(text) = extract_summary(&conv) {
+                        self.counters.inc(&self.counters.cache_hits_store);
                         debug!(fingerprint = %fp, "summary cache hit (store)");
                         self.cache_set(&fp, &text);
                         return Ok(text);
@@ -336,6 +553,11 @@ impl SummarizingMemory {
             parallel_tool_calls: None,
         };
 
+        // Mark that we're actually going to the LLM. Counted once
+        // per `summarise()` even when the inner retry runs — that's
+        // intentional, the second attempt isn't a "fresh call" to
+        // the operator, it's the same logical attempt that retried.
+        self.counters.inc(&self.counters.llm_calls);
         // One retry on transient transport errors — the summariser
         // shares a connection pool with the foreground agent and
         // sometimes hits a half-closed keep-alive on first send.
@@ -565,6 +787,111 @@ fn render_for_summary(messages: &[Message]) -> String {
 
 fn compact_args(v: &serde_json::Value) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Which (if any) PTL round fired in [`enforce_token_budget`].
+/// Returned alongside the pruned vector so the caller can
+/// increment the right counters without re-running heuristics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtlOutcome {
+    /// Already under budget — no pruning needed.
+    None,
+    /// Round-1 drop (oldest 20% of non-latest turns) was enough.
+    RoundOne,
+    /// Round-1 wasn't enough; round-2 hard-prune to latest turn
+    /// only ran. Both rounds are credited to the caller.
+    RoundTwo,
+}
+
+/// Best-effort enforcement: if the compacted output still exceeds
+/// `max_tokens`, drop turns from the oldest end (preserving the
+/// leading System prefix, the optional trailing working-context
+/// block, and the most recent turn). Two rounds — first 20% of
+/// non-latest turns, then everything except the latest turn — both
+/// followed by a stable marker. Never errors; returns the original
+/// vector untouched when no pruning is required.
+fn enforce_token_budget(
+    out: Vec<Message>,
+    max_tokens: usize,
+    est: &dyn TokenEstimator,
+) -> (Vec<Message>, PtlOutcome) {
+    if max_tokens == 0 || est.estimate_messages(&out) <= max_tokens {
+        return (out, PtlOutcome::None);
+    }
+
+    // Region 1: leading contiguous System messages (kept verbatim,
+    // including any compaction summary we just inserted).
+    let prefix_end = out
+        .iter()
+        .take_while(|m| matches!(m, Message::System { .. }))
+        .count();
+
+    // Region 3 (trailing): the working-context block, if present.
+    // Recognise it by header so we don't accidentally count a
+    // user-emitted System reply.
+    let trailing = matches!(
+        out.last(),
+        Some(Message::System { content, .. }) if content.starts_with("=== working context ===")
+    ) as usize;
+
+    // Region 2: body messages where the conversation turns live.
+    let body_start = prefix_end;
+    let body_end = out.len().saturating_sub(trailing);
+    if body_end <= body_start {
+        return (out, PtlOutcome::None);
+    }
+
+    let turn_starts: Vec<usize> = (body_start..body_end)
+        .filter(|&i| matches!(out[i], Message::User { .. }))
+        .collect();
+
+    if turn_starts.len() <= 1 {
+        // Only the latest turn is droppable, but the spec keeps it.
+        // Nothing we can safely prune.
+        return (out, PtlOutcome::None);
+    }
+
+    // Round 1: drop the oldest 20% of non-latest turns (round up).
+    let droppable_turns = turn_starts.len() - 1;
+    let mut drop_n = droppable_turns.div_ceil(5).max(1); // 20% rounded up, min 1
+    if drop_n >= droppable_turns {
+        drop_n = droppable_turns; // never include the latest turn
+    }
+    let cut_at = turn_starts[drop_n];
+
+    let mut pruned: Vec<Message> = Vec::with_capacity(out.len());
+    pruned.extend_from_slice(&out[..prefix_end]);
+    pruned.push(ptl_marker_message(drop_n));
+    pruned.extend_from_slice(&out[cut_at..body_end]);
+    pruned.extend_from_slice(&out[body_end..]); // trailing working context
+
+    if est.estimate_messages(&pruned) <= max_tokens {
+        return (pruned, PtlOutcome::RoundOne);
+    }
+
+    // Round 2: hard-prune to the latest turn only. Even this may
+    // not be enough if the latest turn alone is oversized — but the
+    // spec says preserve the latest turn rather than send nothing.
+    // Over-budget is preferable to truncating the turn the user is
+    // actively interacting with.
+    let last_turn_start = *turn_starts.last().unwrap_or(&body_start);
+    let dropped_turns_total = turn_starts.len() - 1;
+    let mut hard: Vec<Message> = Vec::with_capacity(out.len());
+    hard.extend_from_slice(&out[..prefix_end]);
+    hard.push(ptl_marker_message(dropped_turns_total));
+    hard.extend_from_slice(&out[last_turn_start..body_end]);
+    hard.extend_from_slice(&out[body_end..]);
+    (hard, PtlOutcome::RoundTwo)
+}
+
+/// Marker inserted by [`enforce_token_budget`] so the model knows a
+/// gap exists. The count is part of the text because the caller
+/// asked us to maintain a hard token cap, and that matters more
+/// than the marker being byte-stable across drop counts.
+fn ptl_marker_message(dropped: usize) -> Message {
+    Message::system(format!(
+        "[{dropped} earlier turn(s) truncated to fit token budget]"
+    ))
 }
 
 #[cfg(test)]
@@ -992,6 +1319,276 @@ mod tests {
         assert!(out2.iter().any(
             |m| matches!(m, Message::System { content, .. } if content.contains("FIRST RUN SUMMARY"))
         ));
+    }
+
+    // --- M1.2: circuit breaker + PTL fallback ---
+
+    /// Counts every LLM call regardless of outcome — used by
+    /// circuit-breaker tests to assert "no more LLM calls were
+    /// made after the breaker tripped".
+    struct CountingFailingLlmCb {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl LlmProvider for CountingFailingLlmCb {
+        async fn complete(&self, _req: ChatRequest) -> CoreResult<ChatResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // Non-transport error so the inner retry doesn't double-count.
+            Err(CoreError::Provider("status 500: server".into()))
+        }
+        async fn complete_stream(&self, _req: ChatRequest) -> CoreResult<LlmStream> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_trips_after_three_failures() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(CountingFailingLlmCb {
+            calls: calls.clone(),
+        });
+        let mem = SummarizingMemory::new(llm, "test-model", 64);
+
+        // Each compact call needs a *different* dropped prefix so the
+        // in-memory cache doesn't short-circuit and skip the LLM.
+        for i in 0..5 {
+            let msgs = vec![
+                system("sys"),
+                user(&format!("old-{i}")),
+                assistant("old reply"),
+                user("recent"),
+                assistant("recent reply"),
+            ];
+            let _ = mem.compact(&msgs).await.unwrap();
+        }
+
+        // 3 attempts trip the breaker; the next 2 are circuit-skipped.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "expected exactly 3 LLM attempts before circuit opened",
+        );
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_resets_on_successful_summary() {
+        // FlakyLlm with succeeds_after=1 yields: fail, success, success, ...
+        // The first compact's transport-error retry inside `summarise`
+        // burns 2 LLM calls but ends in Ok — `record_summary_success`
+        // resets the streak.
+        let llm = Arc::new(FlakyLlm {
+            succeeds_after: 1,
+            calls: AtomicUsize::new(0),
+        });
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 64);
+
+        let msgs = vec![
+            system("sys"),
+            user("old-a"),
+            assistant("old reply"),
+            user("recent"),
+            assistant("recent reply"),
+        ];
+        let _ = mem.compact(&msgs).await.unwrap();
+        assert_eq!(llm.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ptl_drops_oldest_turns_when_summary_pushes_over_budget() {
+        // Budget large enough that `select_recent_turns` keeps all
+        // four turns, but small enough that appending the oversized
+        // summary forces PTL to drop oldest turns.
+        // 300 = small enough that visible budget (300 - sys - 256
+        // reserve = ~40 tokens) drops oldest turns and triggers
+        // summarisation; but body still keeps >=2 turns so PTL has
+        // something to prune.
+        let llm = FakeLlm::new("X".repeat(2000));
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 300);
+
+        let msgs = vec![
+            system("sys"),
+            user("turn 1"),
+            assistant("reply 1 with some longer text"),
+            user("turn 2"),
+            assistant("reply 2 with some longer text"),
+            user("turn 3"),
+            assistant("reply 3 with some longer text"),
+            user("turn 4 most recent"),
+            assistant("reply 4"),
+        ];
+        let out = mem.compact(&msgs).await.unwrap();
+
+        assert!(
+            out.iter().any(|m| matches!(m,
+                Message::User { content, .. } if content == "turn 4 most recent"
+            )),
+            "latest turn must survive PTL"
+        );
+        assert!(
+            out.iter().any(|m| matches!(m,
+                Message::System { content, .. } if content.contains("truncated to fit token budget")
+            )),
+            "expected PTL marker in: {out:?}"
+        );
+        // Oldest turn must be gone (PTL second round hard-prunes
+        // because round-1's 20% wasn't enough).
+        assert!(
+            !out.iter().any(|m| matches!(m,
+                Message::User { content, .. } if content == "turn 1"
+            )),
+            "oldest turn should have been dropped, got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ptl_noop_when_already_under_budget() {
+        let llm = FakeLlm::new("short");
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 10_000);
+
+        let msgs = vec![
+            system("sys"),
+            user("hi"),
+            assistant("hello"),
+            user("how are you"),
+            assistant("good"),
+        ];
+        let out = mem.compact(&msgs).await.unwrap();
+        assert!(
+            !out.iter().any(|m| matches!(m,
+                Message::System { content, .. } if content.contains("truncated to fit token budget")
+            )),
+            "PTL marker should not appear under-budget; out: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn counters_track_compactions_llm_and_cache_paths() {
+        let llm = FakeLlm::new("SUMMARY");
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 256);
+        let counters = mem.counters();
+
+        // Under-budget: no summary required, no LLM call.
+        let small = vec![system("sys"), user("hi"), assistant("hello")];
+        let _ = mem.compact(&small).await.unwrap();
+
+        // Over-budget run 1: summary required, LLM call, cache miss.
+        let big = vec![
+            system("sys"),
+            user("turn 1"),
+            assistant("reply 1"),
+            user("turn 2"),
+            assistant("reply 2"),
+            user("turn 3 most recent"),
+            assistant("reply 3"),
+        ];
+        let _ = mem.compact(&big).await.unwrap();
+
+        // Run 2 with the same dropped prefix → in-memory cache hit.
+        let _ = mem.compact(&big).await.unwrap();
+
+        assert_eq!(
+            counters.compactions_total.load(Ordering::Relaxed),
+            3,
+            "every compact() counted"
+        );
+        assert_eq!(
+            counters.summary_required.load(Ordering::Relaxed),
+            2,
+            "only the over-budget runs needed a summary"
+        );
+        assert_eq!(
+            counters.llm_calls.load(Ordering::Relaxed),
+            1,
+            "second over-budget run hit the cache, no extra LLM call"
+        );
+        assert_eq!(
+            counters.cache_hits_memory.load(Ordering::Relaxed),
+            1,
+            "second over-budget run was an in-memory cache hit"
+        );
+        assert_eq!(counters.llm_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.circuit_opens.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn counters_track_circuit_opens_and_skips() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(CountingFailingLlmCb {
+            calls: calls.clone(),
+        });
+        let mem = SummarizingMemory::new(llm, "test-model", 64);
+        let counters = mem.counters();
+
+        for i in 0..5 {
+            let msgs = vec![
+                system("sys"),
+                user(&format!("old-{i}")),
+                assistant("old reply"),
+                user("recent"),
+                assistant("recent reply"),
+            ];
+            let _ = mem.compact(&msgs).await.unwrap();
+        }
+        // 3 attempts trip the breaker; the next 2 are circuit-skipped.
+        assert_eq!(counters.llm_calls.load(Ordering::Relaxed), 3);
+        assert_eq!(counters.llm_failures.load(Ordering::Relaxed), 3);
+        assert_eq!(counters.circuit_opens.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.circuit_skips.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn counters_track_ptl_rounds() {
+        let llm = FakeLlm::new("X".repeat(2000));
+        let mem = SummarizingMemory::new(llm, "test-model", 300);
+        let counters = mem.counters();
+        let msgs = vec![
+            system("sys"),
+            user("turn 1"),
+            assistant("reply 1 with some longer text"),
+            user("turn 2"),
+            assistant("reply 2 with some longer text"),
+            user("turn 3"),
+            assistant("reply 3 with some longer text"),
+            user("turn 4 most recent"),
+            assistant("reply 4"),
+        ];
+        let _ = mem.compact(&msgs).await.unwrap();
+        // Either round-one alone or both rounds fired — both counted.
+        assert!(counters.ptl_round_one.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[tokio::test]
+    async fn enforce_token_budget_keeps_trailing_working_context_block() {
+        // Direct test of the helper: build a small conversation,
+        // append a working-context block, set a tight budget. The
+        // trailing System block must survive the prune.
+        use harness_core::CharRatioEstimator;
+        let est = CharRatioEstimator;
+        let msgs = vec![
+            system("sys"),
+            user("turn 1 something long enough"),
+            assistant("reply 1 also reasonably long here"),
+            user("turn 2 another long user message"),
+            assistant("reply 2 with extra padding text"),
+            user("turn 3 most recent here"),
+            assistant("reply 3 short"),
+            // Trailing working-context block (the marker pattern
+            // `enforce_token_budget` recognises).
+            system("=== working context ===\nrecent files:\n- src/lib.rs\n"),
+        ];
+        let (pruned, _outcome) = enforce_token_budget(msgs.clone(), 50, &est);
+        // Working-context block must remain at the tail.
+        assert!(
+            matches!(pruned.last(), Some(Message::System { content, .. }) if content.starts_with("=== working context ===")),
+            "trailing working-context block was lost"
+        );
+        // The latest turn must remain.
+        assert!(
+            pruned.iter().any(|m| matches!(m,
+                Message::User { content, .. } if content == "turn 3 most recent here"
+            )),
+            "latest user turn must remain"
+        );
     }
 
     #[tokio::test]

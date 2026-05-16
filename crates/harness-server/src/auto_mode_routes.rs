@@ -25,13 +25,14 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::state::AppState;
+use crate::state_layers::AutoModeLayer;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new().route("/v1/auto-mode", get(get_auto_mode).post(set_auto_mode))
 }
 
-async fn get_auto_mode(State(state): State<AppState>) -> Response {
-    let runtime = state.auto_mode_runtime.as_ref();
+async fn get_auto_mode(State(auto): State<AutoModeLayer>) -> Response {
+    let runtime = auto.runtime.as_ref();
     let mut body = Map::new();
     let configured = runtime.is_some();
     let enabled = runtime.map(|r| r.is_enabled()).unwrap_or(false);
@@ -62,7 +63,7 @@ async fn get_auto_mode(State(state): State<AppState>) -> Response {
             rt.last_tick_at().map(Value::from).unwrap_or(Value::Null),
         );
     }
-    if let Some(cfg) = state.auto_mode_config.as_ref() {
+    if let Some(cfg) = auto.config.as_ref() {
         body.insert("mode".into(), Value::from(cfg.mode.as_wire()));
         body.insert("tick_seconds".into(), Value::from(cfg.tick_seconds));
         body.insert(
@@ -113,8 +114,8 @@ struct SetBody {
     max_retries: Option<usize>,
 }
 
-async fn set_auto_mode(State(state): State<AppState>, Json(body): Json<SetBody>) -> Response {
-    let Some(runtime) = state.auto_mode_runtime.as_ref() else {
+async fn set_auto_mode(State(auto): State<AutoModeLayer>, Json(body): Json<SetBody>) -> Response {
+    let Some(runtime) = auto.runtime.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "auto-mode runtime not configured" })),
@@ -135,7 +136,7 @@ async fn set_auto_mode(State(state): State<AppState>, Json(body): Json<SetBody>)
     let mut response = serde_json::Map::new();
     response.insert("configured".into(), Value::Bool(true));
     response.insert("enabled".into(), Value::Bool(runtime.is_enabled()));
-    if let Some(cfg) = state.auto_mode_config.as_ref() {
+    if let Some(cfg) = auto.config.as_ref() {
         response.insert(
             "effective_max_retries".into(),
             Value::from(runtime.effective_max_retries(cfg)),

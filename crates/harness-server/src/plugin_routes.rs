@@ -24,6 +24,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::state::AppState;
+use crate::state_layers::PluginsLayer;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -34,8 +35,8 @@ pub fn router() -> Router<AppState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_manager(state: &AppState) -> Result<Arc<PluginManager>, Response> {
-    state.plugins.clone().ok_or_else(|| {
+fn require_manager(plugins: &PluginsLayer) -> Result<Arc<PluginManager>, Response> {
+    plugins.manager.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "plugin manager not configured" })),
@@ -44,8 +45,8 @@ fn require_manager(state: &AppState) -> Result<Arc<PluginManager>, Response> {
     })
 }
 
-async fn list(State(state): State<AppState>) -> Response {
-    let mgr = match require_manager(&state) {
+async fn list(State(plugins): State<PluginsLayer>) -> Response {
+    let mgr = match require_manager(&plugins) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -53,8 +54,8 @@ async fn list(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(json!({ "plugins": entries }))).into_response()
 }
 
-async fn get_one(State(state): State<AppState>, Path(name): Path<String>) -> Response {
-    let mgr = match require_manager(&state) {
+async fn get_one(State(plugins): State<PluginsLayer>, Path(name): Path<String>) -> Response {
+    let mgr = match require_manager(&plugins) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -76,8 +77,8 @@ enum InstallRequest {
     // Reserved for future flavours: Git { url, ref?: String }.
 }
 
-async fn install(State(state): State<AppState>, Json(req): Json<InstallRequest>) -> Response {
-    let mgr = match require_manager(&state) {
+async fn install(State(plugins): State<PluginsLayer>, Json(req): Json<InstallRequest>) -> Response {
+    let mgr = match require_manager(&plugins) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -89,8 +90,8 @@ async fn install(State(state): State<AppState>, Json(req): Json<InstallRequest>)
     }
 }
 
-async fn remove(State(state): State<AppState>, Path(name): Path<String>) -> Response {
-    let mgr = match require_manager(&state) {
+async fn remove(State(plugins): State<PluginsLayer>, Path(name): Path<String>) -> Response {
+    let mgr = match require_manager(&plugins) {
         Ok(m) => m,
         Err(r) => return r,
     };
@@ -104,11 +105,13 @@ async fn remove(State(state): State<AppState>, Path(name): Path<String>) -> Resp
     }
 }
 
-async fn marketplace(State(_state): State<AppState>) -> Response {
+async fn marketplace() -> Response {
     // Hard-coded built-in list. Each entry points at a path that
     // ships in-repo (under `examples/plugins/`) so a clean clone
     // can install one with a single click. Phase 4 swaps this for
-    // a remote JSON index.
+    // a remote JSON index, at which point this handler would grow
+    // a state extractor (HTTP client / cached fetch). For now,
+    // pure function.
     let entries: Vec<Value> = vec![
         json!({
             "name": "code-review-pack",

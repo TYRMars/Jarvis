@@ -14,6 +14,7 @@
 //! needed for the next message)`.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// User-driven enabled/disabled/unconfigured state. Distinct from
 /// "did the last send succeed" — that's surfaced via per-instance
@@ -21,8 +22,9 @@ use serde::{Deserialize, Serialize};
 /// validator detects required fields are missing (so the UI can show
 /// a "继续配置" CTA without the user having to remember which fields
 /// they skipped).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum ChannelInstanceStatus {
     #[default]
     Enabled,
@@ -58,7 +60,8 @@ impl ChannelInstanceStatus {
 /// schema without baking variant-specific fields into the trait
 /// surface. The current kinds and their schemas live next to the
 /// `kind`-specific senders in `harness-server`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub struct ChannelInstance {
     /// Stable UUID. Frontend keys list rows by this.
     pub id: String,
@@ -74,6 +77,7 @@ pub struct ChannelInstance {
     /// Kind-specific config payload. May embed `${env:NAME}` template
     /// strings — resolved at send-time, never at store-time, so a
     /// rotated env var takes effect immediately.
+    #[ts(type = "Record<string, unknown>")]
     pub config: serde_json::Value,
     /// RFC-3339 timestamp set on insert.
     pub created_at: String,

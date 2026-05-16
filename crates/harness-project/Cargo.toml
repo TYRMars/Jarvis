@@ -17,4 +17,5 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+ts-rs.workspace = true
 uuid.workspace = true

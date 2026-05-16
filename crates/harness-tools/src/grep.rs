@@ -114,6 +114,10 @@ impl Tool for CodeGrepTool {
             .get("pattern")
             .and_then(Value::as_str)
             .ok_or_else(|| -> BoxError { "missing `pattern` argument".into() })?;
+        // Record into WorkingContext: prefix with `grep ` so the
+        // post-compaction reinjection block distinguishes search
+        // patterns from shell commands at a glance.
+        harness_core::note_working_command(format!("grep {pattern}"));
 
         let case_insensitive = args
             .get("case_insensitive")

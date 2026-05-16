@@ -36,6 +36,7 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 
 use crate::state::AppState;
+use crate::state_layers::WorkspaceLayer;
 
 /// Default base branch when the client doesn't pin one. Most of our
 /// codebases use `main`; a future enhancement could probe
@@ -183,7 +184,7 @@ fn safe_relative_path(path: &str) -> Result<&str, &'static str> {
 /// be absolute, NUL/newline-free, and resolve via `canonicalize` to an
 /// existing directory; anything else returns `400`.
 #[allow(clippy::result_large_err)]
-fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<PathBuf, Response> {
+fn resolve_workspace(ws: &WorkspaceLayer, override_root: Option<&str>) -> Result<PathBuf, Response> {
     if let Some(raw) = override_root {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -202,7 +203,7 @@ fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<Pa
         }
         return Ok(canonical);
     }
-    state.workspace_root.clone().ok_or_else(|| {
+    ws.root.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "workspace root not configured" })),
@@ -272,8 +273,8 @@ async fn base_exists(root: &std::path::Path, base: &str) -> bool {
 // GET /v1/workspace/diff
 // ----------------------------------------------------------------------
 
-async fn get_workspace_diff(State(state): State<AppState>, Query(q): Query<DiffQuery>) -> Response {
-    let root = match resolve_workspace(&state, q.root.as_deref()) {
+async fn get_workspace_diff(State(ws): State<WorkspaceLayer>, Query(q): Query<DiffQuery>) -> Response {
+    let root = match resolve_workspace(&ws, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -552,10 +553,10 @@ async fn uncommitted_summary(root: &std::path::Path) -> Value {
 // ----------------------------------------------------------------------
 
 async fn get_workspace_diff_file(
-    State(state): State<AppState>,
+    State(ws): State<WorkspaceLayer>,
     Query(q): Query<FileDiffQuery>,
 ) -> Response {
-    let root = match resolve_workspace(&state, q.root.as_deref()) {
+    let root = match resolve_workspace(&ws, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -634,10 +635,10 @@ struct CommitBody {
 }
 
 async fn post_workspace_commit(
-    State(state): State<AppState>,
+    State(ws): State<WorkspaceLayer>,
     Json(body): Json<CommitBody>,
 ) -> Response {
-    let root = match resolve_workspace(&state, body.root.as_deref()) {
+    let root = match resolve_workspace(&ws, body.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -738,8 +739,8 @@ async fn post_workspace_commit(
 // GET /v1/workspace/pr/preview
 // ----------------------------------------------------------------------
 
-async fn get_pr_preview(State(state): State<AppState>, Query(q): Query<DiffQuery>) -> Response {
-    let root = match resolve_workspace(&state, q.root.as_deref()) {
+async fn get_pr_preview(State(ws): State<WorkspaceLayer>, Query(q): Query<DiffQuery>) -> Response {
+    let root = match resolve_workspace(&ws, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -877,8 +878,8 @@ fn default_true() -> bool {
     true
 }
 
-async fn post_create_pr(State(state): State<AppState>, Json(body): Json<CreatePrBody>) -> Response {
-    let root = match resolve_workspace(&state, body.root.as_deref()) {
+async fn post_create_pr(State(ws): State<WorkspaceLayer>, Json(body): Json<CreatePrBody>) -> Response {
+    let root = match resolve_workspace(&ws, body.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };

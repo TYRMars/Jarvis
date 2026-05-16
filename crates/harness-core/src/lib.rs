@@ -15,16 +15,19 @@ pub mod hitl;
 pub mod llm;
 pub mod memory;
 pub mod message;
+pub mod mode_signal;
 pub mod permission;
 pub mod plan;
 pub mod progress;
 pub mod redact;
 pub mod store;
 pub mod subagent;
+pub mod system_prompt;
 pub mod tenant;
 pub mod todo;
 pub mod tool;
 pub mod tool_metadata;
+pub mod working_context;
 pub mod workspace;
 
 // `activity` / `comment` / `doc` / `label` / `project` / `project_memory`
@@ -52,9 +55,12 @@ pub use hitl::{
 pub use llm::{ChatRequest, ChatResponse, FinishReason, LlmChunk, LlmProvider, LlmStream, Usage};
 pub use memory::{
     cache_breakpoint_indices, default_estimator, estimate_tokens, estimate_total_tokens,
-    CharRatioEstimator, JsonAwareEstimator, Memory, TokenEstimator,
+    CharRatioEstimator, JsonAwareEstimator, Memory, MemoryStatsProvider, TokenEstimator,
 };
 pub use message::{CacheHint, Message, ToolCall};
+pub use mode_signal::{
+    emit as emit_mode_signal, is_active as mode_signal_active, with_mode_signal,
+};
 // `observability` module + all its types (Eval* / Observed* /
 // Metric* / Dashboard* / TimeWindow / *Store / *Filter) moved to
 // the `harness-observability` crate. Import via
@@ -77,6 +83,7 @@ pub use subagent::{
     active_sender as subagent_active_sender, emit as emit_subagent, is_active as subagent_active,
     with_subagent, SubAgentEvent, SubAgentFrame,
 };
+pub use system_prompt::{SystemPromptBuilder, SystemPromptSlot};
 /// Tenant (multi-tenant isolation boundary) value types and store trait.
 ///
 /// **Important distinction:** [`Tenant`](crate::tenant::Tenant) is a
@@ -85,9 +92,16 @@ pub use subagent::{
 /// directory concept lives in [`workspace`](crate::workspace).
 pub use tenant::{Tenant, TenantSettings, TenantStore};
 pub use todo::{TodoEvent, TodoItem, TodoPriority, TodoStatus};
-pub use tool::{Tool, ToolCategory, ToolRegistry, ToolSpec};
+pub use tool::{all_calls_concurrency_safe, Tool, ToolCategory, ToolRegistry, ToolSpec};
 pub use tool_metadata::{
     derive_pack, derive_risk, ToolMetadata, ToolPackCategory, ToolRisk, ToolSource,
+};
+pub use working_context::{
+    is_active as working_context_active, note_command as note_working_command,
+    note_file as note_working_file,
+    note_file_relative_to as note_working_file_relative_to, note_plan as note_working_plan,
+    snapshot as working_context_snapshot, with_working_context, with_working_context_capped,
+    WorkingContext, DEFAULT_RECENT_COMMANDS_CAP, DEFAULT_RECENT_FILES_CAP,
 };
 pub use workspace::{
     active_workspace, active_workspace_or, canonicalize_workspace, with_session_workspace,

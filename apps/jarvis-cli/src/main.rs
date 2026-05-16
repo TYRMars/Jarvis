@@ -73,6 +73,31 @@ pub struct Args {
     #[arg(long)]
     pub no_git_read: bool,
 
+    /// Enable the agent-maintained `memory.{list,read,write,delete}`
+    /// tools (M3.1). Off by default — opt in when you want the CLI
+    /// session to persist notes under `<workspace>/.jarvis/memory/`
+    /// and inject MEMORY.md into the system prompt at startup.
+    /// `memory.write` / `memory.delete` are approval-gated.
+    #[arg(long)]
+    pub enable_memory: bool,
+
+    /// Enable the P10 git-sync tools (`memory.sync`,
+    /// `memory.sync_status`). The memory dir must be a git working
+    /// tree with a configured remote; the tools wrap
+    /// `git pull --rebase && git push` so notes propagate between
+    /// machines / teammates. Off by default — only useful once
+    /// you've actually set up a remote.
+    #[arg(long)]
+    pub enable_memory_sync: bool,
+
+    /// Enable the `enter_plan_mode` tool so the model can volunteer
+    /// to switch into Plan Mode before risky changes. Default: on
+    /// (the CLI's `fs.edit` is on by default, so coding-mode
+    /// criteria are met). Pass `--no-enter-plan-mode` to disable
+    /// and keep Plan-Mode entry strictly operator-driven.
+    #[arg(long, action = clap::ArgAction::SetTrue, default_value_t = false)]
+    pub no_enter_plan_mode: bool,
+
     /// Pipe mode: read the prompt from `--prompt` (or stdin if
     /// omitted), run one turn with `AlwaysDeny` so no tool that
     /// needs a human can fire, print the final assistant text,

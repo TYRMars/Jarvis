@@ -321,6 +321,31 @@ pub struct AppState {
     /// that case so callers can distinguish "not configured" from
     /// "really broken".
     pub subagent_runs: Option<Arc<crate::subagent_runs::SubAgentRunRegistry>>,
+    /// P8: optional handle to the active memory backend's
+    /// telemetry counters. Surfaced via
+    /// `GET /v1/diagnostics/memory` so operators tuning
+    /// `JARVIS_MEMORY_TOKENS` can see compact_count / cache hits /
+    /// circuit-open / PTL frequency without restarting. `None`
+    /// when the memory backend has no stats (sliding window) or
+    /// the binary didn't wire it. The endpoint returns 503.
+    pub memory_stats: Option<Arc<dyn harness_core::MemoryStatsProvider>>,
+    /// P14: memory metadata for the Settings → Memory Sync panel.
+    /// `None` when the agent-maintained memory tools aren't
+    /// enabled — the REST endpoints return 503 in that case so
+    /// the panel can render an "off, enable in config" hint
+    /// instead of pretending to have a state.
+    pub memory_runtime: Option<MemoryRuntime>,
+}
+
+/// Snapshot of the memory + sync configuration the binary
+/// resolved at startup. Cloned cheaply (PathBuf + enum) onto
+/// every AppState clone; the actual `MemoryRoots` instances the
+/// memory tools see are rebuilt per request from these fields.
+#[derive(Debug, Clone)]
+pub struct MemoryRuntime {
+    pub workspace_root: PathBuf,
+    pub user_root: Option<PathBuf>,
+    pub backend: harness_tools::MemorySyncBackend,
 }
 
 impl AppState {
@@ -369,6 +394,8 @@ impl AppState {
             chat_runs: crate::chat_runs::ChatRunRegistry::new(),
             route_policy: Arc::new(RwLock::new(ModelRoutePolicy::default())),
             subagent_runs: None,
+            memory_stats: None,
+            memory_runtime: None,
         }
     }
 
@@ -422,6 +449,8 @@ impl AppState {
             chat_runs: crate::chat_runs::ChatRunRegistry::new(),
             route_policy: Arc::new(RwLock::new(ModelRoutePolicy::default())),
             subagent_runs: None,
+            memory_stats: None,
+            memory_runtime: None,
         }
     }
 
@@ -736,6 +765,29 @@ impl AppState {
         runs: Arc<crate::subagent_runs::SubAgentRunRegistry>,
     ) -> Self {
         self.subagent_runs = Some(runs);
+        self
+    }
+
+    /// Install a memory-stats handle so
+    /// `GET /v1/diagnostics/memory` returns the active backend's
+    /// counters. Composition root passes
+    /// `SummarizingMemory::counters()` cast to
+    /// `Arc<dyn MemoryStatsProvider>` here.
+    pub fn with_memory_stats(
+        mut self,
+        provider: Arc<dyn harness_core::MemoryStatsProvider>,
+    ) -> Self {
+        self.memory_stats = Some(provider);
+        self
+    }
+
+    /// Install memory + sync runtime metadata. Only the binary
+    /// composition root has the full picture (which backend the
+    /// operator picked, where the user_root resolves to), so this
+    /// has to be a setter rather than something AppState
+    /// reconstructs.
+    pub fn with_memory_runtime(mut self, rt: MemoryRuntime) -> Self {
+        self.memory_runtime = Some(rt);
         self
     }
 

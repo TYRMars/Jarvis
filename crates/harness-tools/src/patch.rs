@@ -209,6 +209,9 @@ impl Tool for FsPatchTool {
                         .map_err(|e| -> BoxError { format!("delete `{}`: {e}", w.rel).into() })?;
                 }
             }
+            // Note every touched path so post-compaction reinjection
+            // can remind the agent which files it just changed.
+            harness_core::note_working_file_relative_to(&w.abs, Some(&root));
         }
 
         // Build the human-readable summary.

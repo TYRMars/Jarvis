@@ -91,6 +91,22 @@ pub struct SkillManifest {
     /// Free-form version string. Display-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// File-path globs that auto-activate this skill when the agent
+    /// touches a matching file in the current session (M3.3). Empty
+    /// / absent disables the path-based trigger. Pattern semantics:
+    ///
+    /// - `*` matches any run of non-`/` characters within one path
+    ///   segment.
+    /// - `**` matches across segments (including zero).
+    /// - `?` matches one non-`/` character.
+    /// - everything else is literal.
+    ///
+    /// Example: `["**/*.tsx", "Cargo.toml"]` triggers when the
+    /// agent edits any `.tsx` anywhere in the workspace or the
+    /// root `Cargo.toml`. Matching is case-sensitive and runs
+    /// against the workspace-relative path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 /// Outcome of parsing a SKILL.md text: structured manifest + the

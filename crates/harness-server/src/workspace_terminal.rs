@@ -44,6 +44,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::state::AppState;
+use crate::state_layers::WorkspaceLayer;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -57,8 +58,8 @@ pub(crate) fn router() -> Router<AppState> {
 /// network error. `available: false` only if no workspace root
 /// resolves; the actual PTY spawn errors are surfaced through the
 /// open WS as a closing frame with a reason byte.
-async fn status(State(state): State<AppState>) -> Response {
-    let available = state.workspace_root.is_some();
+async fn status(State(workspace): State<WorkspaceLayer>) -> Response {
+    let available = workspace.root.is_some();
     Json(json!({
         "available": available,
         "shell": pick_shell(),
@@ -83,7 +84,10 @@ fn bad_request(msg: &str) -> Response {
 }
 
 #[allow(clippy::result_large_err)]
-fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<PathBuf, Response> {
+fn resolve_workspace(
+    workspace: &WorkspaceLayer,
+    override_root: Option<&str>,
+) -> Result<PathBuf, Response> {
     if let Some(raw) = override_root {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -102,7 +106,7 @@ fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<Pa
         }
         return Ok(canonical);
     }
-    state.workspace_root.clone().ok_or_else(|| {
+    workspace.root.clone().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "workspace root not configured" })),
@@ -113,10 +117,10 @@ fn resolve_workspace(state: &AppState, override_root: Option<&str>) -> Result<Pa
 
 async fn terminal_ws(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>,
+    State(workspace): State<WorkspaceLayer>,
     Query(q): Query<TerminalQuery>,
 ) -> Response {
-    let root = match resolve_workspace(&state, q.root.as_deref()) {
+    let root = match resolve_workspace(&workspace, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };

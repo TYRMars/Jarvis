@@ -37,7 +37,8 @@ use crate::requirement_run::VerificationPlan;
 /// The wire shape matches the JSON serialisation of this struct.
 /// Renderers should treat unknown statuses as
 /// [`RequirementStatus::Backlog`] for forward compat.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub struct Requirement {
     /// Stable identifier (UUID v4 string). Server-allocated on
     /// `POST /v1/projects/:id/requirements` so clients can't pick
@@ -127,8 +128,9 @@ pub struct Requirement {
 /// snake_case (`"backlog"` / `"in_progress"` / `"review"` / `"done"`)
 /// to match the wire shape the Web UI already produces and consumes
 /// (see `apps/jarvis-web/src/types/frames.ts`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum RequirementStatus {
     /// Not yet picked up.
     Backlog,
@@ -146,7 +148,8 @@ pub enum RequirementStatus {
 /// free-form chat plan: every item has a kind, status, optional
 /// command, dependencies, and evidence so automation can decide what
 /// to run next and humans can audit what happened later.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub struct RequirementTodo {
     /// Stable item id (UUID v4).
     pub id: String,
@@ -194,8 +197,9 @@ impl RequirementTodo {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum RequirementTodoKind {
     Work,
     Check,
@@ -230,8 +234,9 @@ impl RequirementTodoKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum RequirementTodoStatus {
     Pending,
     Running,
@@ -266,8 +271,9 @@ impl RequirementTodoStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum RequirementTodoCreator {
     Human,
     Agent,
@@ -294,7 +300,8 @@ impl RequirementTodoCreator {
 }
 
 /// Latest proof attached to a [`RequirementTodo`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub struct RequirementTodoEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
@@ -343,8 +350,9 @@ impl RequirementStatus {
 /// `"proposed_by_scan"`). Older requirement rows on disk that
 /// don't carry the field deserialise as [`TriageState::Approved`]
 /// — i.e. v0 behaviour is preserved when no triage gate was set.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum TriageState {
     /// User has approved the work. The auto executor may pick it
     /// up subject to the usual `assignee_id` / `depends_on` /
@@ -405,8 +413,9 @@ impl TriageState {
 /// machinery is wired in. Until that machinery lands, the field is
 /// inert (no caller checks it), so the default is forward-looking
 /// without changing today's flow.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum AcceptancePolicy {
     /// Default. Once the work agent flips the requirement to
     /// `Review`, the auto loop dispatches a reviewer subagent that

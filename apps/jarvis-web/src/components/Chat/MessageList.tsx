@@ -3,7 +3,17 @@
 // scroll-to-bottom strategy lives in `useStickToBottom` — see that
 // file's header for why a naive "scroll on every render" effect
 // doesn't work with the async XMarkdown subtree.
+//
+// MessageList is also the "view transformer" layer: before
+// rendering, it groups consecutive assistant iterations whose tool
+// calls are *all* read-only and whose visible content is empty
+// into a single `<CollapsedToolGroup>` card. This keeps a long
+// investigation loop (read → grep → read → grep → … before the
+// real edit) from drowning the transcript. The fold threshold is
+// `MIN_GROUP_SIZE` — small enough to be useful, large enough that
+// brief lookups don't get hidden behind an extra click.
 
+import { useMemo } from "react";
 import { useAppStore } from "../../store/appStore";
 import { useStickToBottom } from "../../hooks/useStickToBottom";
 import { UserBubble } from "./UserBubble";
@@ -11,20 +21,100 @@ import { AssistantBubble } from "./AssistantBubble";
 import { AgentLoadingFooter } from "./AgentLoadingFooter";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { EmptyConvoHint } from "./EmptyConvoHint";
+import { CollapsedToolGroup } from "./CollapsedToolGroup";
 import { MarkdownView } from "./MarkdownView";
+import { isReadOnlyTool } from "./toolStepSummary";
 import { t } from "../../utils/i18n";
+import type { UiMessage, ToolBlockEntry } from "../../store/types";
+
+const MIN_GROUP_SIZE = 3;
+
+type AssistantMsg = Extract<UiMessage, { kind: "assistant" }>;
+
+type Group =
+  | { kind: "single"; message: UiMessage }
+  | { kind: "folded"; messages: AssistantMsg[] };
+
+/// True when this assistant message qualifies for folding: it has
+/// at least one tool call, every tool call is a known read-only
+/// tool, and its visible body content is empty (whitespace-only is
+/// treated as empty). Reasoning is allowed — it lives inside a
+/// collapsed disclosure either way.
+///
+/// Exported for testing — see [`groupForFolding`].
+export function isFoldable(
+  m: UiMessage,
+  toolBlocks: Record<string, ToolBlockEntry>,
+): m is AssistantMsg {
+  if (m.kind !== "assistant") return false;
+  if (m.toolCallIds.length === 0) return false;
+  if (m.content.trim().length > 0) return false;
+  for (const id of m.toolCallIds) {
+    const b = toolBlocks[id];
+    // Missing block = can't classify safely → don't fold.
+    if (!b) return false;
+    if (!isReadOnlyTool(b.name)) return false;
+  }
+  return true;
+}
+
+/// Walk `messages` once, batching runs of foldable assistant
+/// iterations of length >= MIN_GROUP_SIZE into a `folded` group;
+/// everything else stays as its own `single` entry. Runs shorter
+/// than the threshold pass through unchanged so brief reads still
+/// render inline.
+///
+/// Exported for testing — the rest of the SPA should never need to
+/// call this directly. The classifier `isFoldable` is exposed
+/// alongside for the same reason.
+export function groupForFolding(
+  messages: UiMessage[],
+  toolBlocks: Record<string, ToolBlockEntry>,
+): Group[] {
+  const out: Group[] = [];
+  let buf: AssistantMsg[] = [];
+  const flushBuf = () => {
+    if (buf.length >= MIN_GROUP_SIZE) {
+      out.push({ kind: "folded", messages: buf });
+    } else {
+      for (const m of buf) out.push({ kind: "single", message: m });
+    }
+    buf = [];
+  };
+  for (const m of messages) {
+    if (isFoldable(m, toolBlocks)) {
+      buf.push(m);
+    } else {
+      flushBuf();
+      out.push({ kind: "single", message: m });
+    }
+  }
+  flushBuf();
+  return out;
+}
 
 export function MessageList() {
   const messages = useAppStore((s) => s.messages);
+  const toolBlocks = useAppStore((s) => s.toolBlocks);
   const activeId = useAppStore((s) => s.activeId);
   const emptyHint = useAppStore((s) => s.emptyHintIdShort);
   const { ref } = useStickToBottom<HTMLElement>({ activeId });
+
+  const groups = useMemo(
+    () => groupForFolding(messages, toolBlocks),
+    [messages, toolBlocks],
+  );
 
   return (
     <section id="messages" aria-live="polite" ref={ref}>
       {messages.length === 0 && !emptyHint && <WelcomeScreen />}
       {messages.length === 0 && emptyHint && <EmptyConvoHint idShort={emptyHint} />}
-      {messages.map((m, i) => {
+      {groups.map((g, gi) => {
+        if (g.kind === "folded") {
+          const head = g.messages[0];
+          return <CollapsedToolGroup key={`grp-${head.uid}`} messages={g.messages} />;
+        }
+        const m = g.message;
         if (m.kind === "user") {
           return (
             <UserBubble
@@ -45,8 +135,16 @@ export function MessageList() {
           // tool-call attribution but render them stacked under one
           // avatar + name header so the user doesn't see "Jarvis,
           // Jarvis, Jarvis" repeating down the page.
-          const prev = messages[i - 1];
-          const continuation = prev != null && prev.kind === "assistant";
+          //
+          // Continuation here is computed against the prior *group*,
+          // not the prior raw message: a folded read-only run
+          // immediately followed by a final reply still wants the
+          // reply to read as a continuation of the same Jarvis turn.
+          const prev = groups[gi - 1];
+          const continuation =
+            prev != null &&
+            (prev.kind === "folded" ||
+              (prev.kind === "single" && prev.message.kind === "assistant"));
           return (
             <AssistantBubble
               key={m.uid}

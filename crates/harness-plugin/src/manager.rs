@@ -599,6 +599,7 @@ mod tests {
                 activation: harness_skill::SkillActivation::Both,
                 keywords: vec![],
                 version: None,
+                paths: vec![],
             },
             body: "x".into(),
             path: PathBuf::from("/dev/null"),

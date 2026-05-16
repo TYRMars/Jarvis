@@ -12,6 +12,7 @@ import { AskTextCard } from "./Chat/AskTextCard";
 import { ApprovalCard } from "./Approvals/ApprovalCard";
 import { BypassBanner } from "./Approvals/BypassBanner";
 import { ModeBadge } from "./Approvals/ModeBadge";
+import { ModeChangedToast } from "./Approvals/ModeChangedToast";
 import { PlanModeBanner } from "./Approvals/PlanModeBanner";
 import { PlanProposedCard } from "./Approvals/PlanProposedCard";
 import { ModelMenu } from "./ModelMenu/ModelMenu";
@@ -19,6 +20,7 @@ import { UsageBadge } from "./UsageBadge";
 import { ComposerShoulder } from "./ComposerShoulder";
 import { ComposerProjectRail } from "./Composer/ComposerProjectRail";
 import { OpenSidebarButton, WorkspacePanelMenu } from "./Workspace/WorkspaceToggles";
+import { BackgroundTasksButton } from "./BackgroundTasks/BackgroundTasksButton";
 import { pickedRouting } from "../services/socket";
 import { slashCommands } from "../services/slash_commands";
 import { useAppStore } from "../store/appStore";
@@ -48,6 +50,7 @@ export function AppChatPane() {
           <ChatHeader />
         </div>
         <div className="header-actions">
+          <BackgroundTasksButton />
           <WorkspacePanelMenu />
         </div>
       </header>
@@ -56,6 +59,7 @@ export function AppChatPane() {
       <BypassBanner />
       <PlanModeBanner />
       <FallbackBanner />
+      <ModeChangedToast />
 
       <MessageList />
 

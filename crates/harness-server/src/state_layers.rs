@@ -212,6 +212,99 @@ impl FromRef<AppState> for WorkspaceLayer {
     }
 }
 
+/// Runtime MCP manager slice. The manager owns spawned external
+/// MCP processes and the tools they project into the shared
+/// `ToolRegistry`. Consumed by `mcp_routes.rs` (the `/v1/mcp/*`
+/// runtime add / remove / health probes).
+#[derive(Clone)]
+pub struct McpLayer {
+    pub manager: Option<Arc<harness_mcp::McpManager>>,
+}
+
+impl FromRef<AppState> for McpLayer {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            manager: s.mcp.clone(),
+        }
+    }
+}
+
+/// Plugin manager slice. The manager owns installed plugin
+/// processes / their skill + MCP registrations. Consumed by
+/// `plugin_routes.rs` (install / uninstall / list).
+#[derive(Clone)]
+pub struct PluginsLayer {
+    pub manager: Option<Arc<harness_plugin::PluginManager>>,
+}
+
+impl FromRef<AppState> for PluginsLayer {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            manager: s.plugins.clone(),
+        }
+    }
+}
+
+/// SubAgent runs registry — the in-process ledger of recent
+/// SubAgent invocations the WS handler appends frames to.
+/// Consumed by `subagent_runs_routes.rs` (the `/v1/subagents/runs*`
+/// surface).
+#[derive(Clone)]
+pub struct SubAgentRunsLayer {
+    pub registry: Option<Arc<crate::subagent_runs::SubAgentRunRegistry>>,
+}
+
+impl FromRef<AppState> for SubAgentRunsLayer {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            registry: s.subagent_runs.clone(),
+        }
+    }
+}
+
+/// Skill-catalogue slice — the in-memory parsed catalogue + the
+/// user-writable root that online skill-market installs land in.
+/// Consumed by `market_routes.rs` (install / uninstall) and a
+/// couple of read-only browse endpoints. The catalogue itself is
+/// `Arc<RwLock<…>>` so concurrent reads don't block writes.
+#[derive(Clone)]
+pub struct SkillsLayer {
+    pub catalog: Option<Arc<std::sync::RwLock<harness_skill::SkillCatalog>>>,
+    pub user_dir: Option<std::path::PathBuf>,
+}
+
+impl FromRef<AppState> for SkillsLayer {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            catalog: s.skills.clone(),
+            user_dir: s.user_skills_dir.clone(),
+        }
+    }
+}
+
+/// Auto-mode slice — the runtime claim ledger + the per-tick
+/// config the picker reads. Consumed only by
+/// `auto_mode_routes.rs`; nothing else should touch these because
+/// they're a control plane, not a data store.
+///
+/// Both are `Option` — auto mode is opt-in via
+/// `JARVIS_WORK_MODE=auto` and the binary leaves them `None` for
+/// off / unconfigured deployments. Handlers return 503 then.
+#[derive(Clone)]
+pub struct AutoModeLayer {
+    pub runtime: Option<crate::auto_mode::AutoModeRuntime>,
+    pub config: Option<Arc<crate::auto_mode::AutoModeConfig>>,
+}
+
+impl FromRef<AppState> for AutoModeLayer {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            runtime: s.auto_mode_runtime.clone(),
+            config: s.auto_mode_config.clone(),
+        }
+    }
+}
+
 /// TODO-board slice. Tiny — the store plus the "prepend recent
 /// TODOs to the agent's system prompt?" flag the agent loop reads
 /// at build time. Consumed by `todos_routes.rs` plus the agent
