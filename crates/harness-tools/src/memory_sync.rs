@@ -720,7 +720,21 @@ impl Tool for MemorySyncSetupTool {
         }
 
         must_git!(&["add", "-A"]);
-        must_git!(&["commit", "-q", "-m", "init: jarvis memory"]);
+        // Seed-commit author identity is supplied inline so the call
+        // works on machines without a global `user.email` / `user.name`
+        // configured (fresh dev boxes, CI runners). The overrides only
+        // apply to this single command — subsequent commits in the repo
+        // use whatever the operator has configured locally.
+        must_git!(&[
+            "-c",
+            "user.email=jarvis@local",
+            "-c",
+            "user.name=Jarvis",
+            "commit",
+            "-q",
+            "-m",
+            "init: jarvis memory",
+        ]);
         report.insert("initialized".into(), json!(true));
 
         if push {
