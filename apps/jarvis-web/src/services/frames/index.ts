@@ -15,6 +15,7 @@ import { hitlFrameHandlers } from "./hitlFrames";
 import { lifecycleFrameHandlers } from "./lifecycleFrames";
 import { domainFrameHandlers } from "./domainFrames";
 import { fallbackFrameHandlers } from "./fallbackFrames";
+import { memoryFrameHandlers } from "./memoryFrames";
 
 export const frameHandlers: Map<string, (ev: any) => void> = new Map(
   Object.entries({
@@ -26,6 +27,7 @@ export const frameHandlers: Map<string, (ev: any) => void> = new Map(
     ...hitlFrameHandlers,
     ...lifecycleFrameHandlers,
     ...fallbackFrameHandlers,
+    ...memoryFrameHandlers,
     ...domainFrameHandlers,
   }),
 );

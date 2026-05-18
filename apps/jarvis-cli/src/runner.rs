@@ -579,6 +579,35 @@ async fn run_one_turn(
                             println!("    {marker} {}", item.title);
                         }
                     }
+                    AgentEvent::MemoryCompacted { info } => {
+                        // NoOp emits every iteration and would drown
+                        // out the rest of the stream; the diagnostics
+                        // panel still picks it up via the counter
+                        // snapshot, so we suppress it in the inline
+                        // CLI feed and only render when work happened.
+                        if !matches!(info.source, harness_core::CompactionSource::NoOp) {
+                            if delta_open { println!(); delta_open = false; }
+                            let label = match info.source {
+                                harness_core::CompactionSource::WindowDropped => "window pruned",
+                                harness_core::CompactionSource::CacheMemory => "summary cache hit",
+                                harness_core::CompactionSource::CacheStore => "summary cache hit (store)",
+                                harness_core::CompactionSource::FreshLlm => "fresh summary",
+                                harness_core::CompactionSource::PtlRoundOne => "fallback prune (round 1)",
+                                harness_core::CompactionSource::PtlRoundTwo => "fallback prune (round 2)",
+                                harness_core::CompactionSource::SummaryUnavailable => "summary unavailable",
+                                harness_core::CompactionSource::NoOp => "no-op",
+                            };
+                            println!(
+                                "{} {} {}",
+                                dim("⊟"),
+                                dim(&format!("compacted: {label}")),
+                                dim(&format!(
+                                    "({} turn(s) dropped, ~{} input tokens)",
+                                    info.turns_dropped, info.model_input_tokens_est
+                                )),
+                            );
+                        }
+                    }
                     AgentEvent::Usage { .. } => {
                         // Surfaced via /policy / future usage badge;
                         // skip the noise inline.

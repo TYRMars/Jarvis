@@ -2125,7 +2125,7 @@ fn build_memory(
     // reflects what the model actually counts. Cheap to ask once per
     // memory backend; the estimator is `Arc`-shared internally.
     let estimator = llm.estimator();
-    let mut stats: Option<Arc<dyn harness_core::MemoryStatsProvider>> = None;
+    let stats: Option<Arc<dyn harness_core::MemoryStatsProvider>>;
     let mem: Arc<dyn Memory> = match mode.as_str() {
         "summary" => {
             let summary_model = pick_string_opt("JARVIS_MEMORY_MODEL", cfg.memory.model.as_deref())
@@ -2160,7 +2160,12 @@ fn build_memory(
         }
         "window" => {
             info!(memory_tokens = budget, "sliding-window memory enabled");
-            Arc::new(SlidingWindowMemory::new(budget).with_estimator(estimator))
+            let sw = SlidingWindowMemory::new(budget).with_estimator(estimator);
+            // Expose the lightweight (compactions_total / window_dropped)
+            // counters so `/v1/diagnostics/memory` returns something other
+            // than 503 on the default `mode=window` deployment.
+            stats = Some(sw.counters() as Arc<dyn harness_core::MemoryStatsProvider>);
+            Arc::new(sw)
         }
         other => {
             anyhow::bail!("memory.mode=`{other}` is not recognised; use `window` or `summary`");

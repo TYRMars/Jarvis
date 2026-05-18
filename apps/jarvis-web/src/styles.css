@@ -23547,3 +23547,95 @@ select.settings-input {
   gap: 8px;
   margin-top: 4px;
 }
+
+/* ========== Compaction marker — inline transcript card emitted
+ * by `AgentEvent::MemoryCompacted`. Designed to read as a quiet,
+ * non-message-like rail so users skim past it; the disclosure
+ * opens detailed counters for operators investigating. ========== */
+.compaction-marker {
+  margin: 8px 0;
+  padding: 0;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+}
+
+.compaction-marker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 10px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-12);
+  text-align: left;
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.compaction-marker-row:hover {
+  background: var(--tool-header-hover);
+  color: var(--text);
+}
+
+.compaction-marker-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.compaction-marker-summary {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compaction-marker-source {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-size: var(--fs-11);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-soft);
+}
+
+.compaction-marker[data-tone="warn"] {
+  border-color: rgba(210, 150, 60, 0.5);
+}
+
+.compaction-marker[data-tone="warn"] .compaction-marker-source {
+  color: rgba(210, 150, 60, 1);
+  border-color: rgba(210, 150, 60, 0.5);
+  background: rgba(210, 150, 60, 0.08);
+}
+
+.compaction-marker-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 4px 18px;
+  padding: 0 10px 8px;
+  margin: 0;
+  font-size: var(--fs-11);
+}
+
+.compaction-marker-detail > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.compaction-marker-detail dt {
+  color: var(--text-muted);
+}
+
+.compaction-marker-detail dd {
+  margin: 0;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}

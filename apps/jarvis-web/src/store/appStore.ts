@@ -24,6 +24,7 @@ import { createCoreSlice, type CoreSlice } from "./slices/coreSlice";
 import { createFallbackSlice, type FallbackSlice } from "./slices/fallbackSlice";
 import { createHitlSlice, type HitlSlice } from "./slices/hitlSlice";
 import { createLifecycleSlice, type LifecycleSlice } from "./slices/lifecycleSlice";
+import { createMemorySlice, type MemorySlice } from "./slices/memorySlice";
 import { createPlanSlice, type PlanSlice } from "./slices/planSlice";
 import { createSubAgentSlice, type SubAgentSlice } from "./slices/subAgentSlice";
 import { createToolSlice, type ToolSlice } from "./slices/toolSlice";
@@ -40,6 +41,7 @@ export type FullState = ChatSlice
   & SubAgentSlice
   & LifecycleSlice
   & FallbackSlice
+  & MemorySlice
   & CoreSlice;
 
 export const useAppStore = create<FullState>()((...a) => ({
@@ -51,6 +53,7 @@ export const useAppStore = create<FullState>()((...a) => ({
   ...createSubAgentSlice(...a),
   ...createLifecycleSlice(...a),
   ...createFallbackSlice(...a),
+  ...createMemorySlice(...a),
   ...createCoreSlice(...a),
 }));
 
