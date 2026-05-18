@@ -14,21 +14,61 @@
 //! if it alone exceeds the budget — sending no recent context would be
 //! strictly worse than slightly overrunning.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_core::{
-    cache_breakpoint_indices, default_estimator, BoxError, Memory, Message, TokenEstimator,
+    cache_breakpoint_indices, default_estimator, emit_memory_compaction, BoxError, CompactionInfo,
+    CompactionSource, Memory, MemoryStatsProvider, Message, TokenEstimator,
 };
 use tracing::debug;
 
 use crate::turns::{select_recent_turns, select_recent_turns_with_breakpoint, split_into_turns};
+
+/// Lightweight telemetry surface for [`SlidingWindowMemory`].
+///
+/// `SummarizingMemory` ships a richer 10-counter struct (cache
+/// hits, circuit breaker, PTL), but the sliding backend has neither
+/// LLM nor cache — it just drops oldest turns. The counters track
+/// what *can* happen here so operators on the default `mode=window`
+/// deployment see something other than "not configured" in the
+/// Memory diagnostics panel.
+#[derive(Debug, Default)]
+pub struct SlidingCounters {
+    /// Total `compact()` calls. Same semantic as
+    /// `CompactionCounters::compactions_total` so the diagnostics
+    /// panel can use the same column unconditionally.
+    pub compactions_total: AtomicU64,
+    /// Calls that dropped at least one turn (`turns_dropped > 0`).
+    pub window_dropped: AtomicU64,
+}
+
+impl SlidingCounters {
+    fn inc(c: &AtomicU64) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+    fn load(c: &AtomicU64) -> u64 {
+        c.load(Ordering::Relaxed)
+    }
+}
+
+impl MemoryStatsProvider for SlidingCounters {
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "backend": "sliding",
+            "compactions_total": Self::load(&self.compactions_total),
+            "window_dropped": Self::load(&self.window_dropped),
+        })
+    }
+}
 
 /// Drop oldest turns until the estimated token count fits `max_tokens`.
 pub struct SlidingWindowMemory {
     max_tokens: usize,
     insert_marker: bool,
     estimator: Arc<dyn TokenEstimator>,
+    counters: Arc<SlidingCounters>,
 }
 
 impl SlidingWindowMemory {
@@ -37,6 +77,7 @@ impl SlidingWindowMemory {
             max_tokens,
             insert_marker: true,
             estimator: default_estimator(),
+            counters: Arc::new(SlidingCounters::default()),
         }
     }
 
@@ -56,17 +97,30 @@ impl SlidingWindowMemory {
         self.estimator = estimator;
         self
     }
+
+    /// Clone-able handle to the telemetry counters. Composition
+    /// roots stash this on `AppState::memory_stats` so the
+    /// `GET /v1/diagnostics/memory` endpoint can render a snapshot
+    /// even on the default `mode=window` backend.
+    pub fn counters(&self) -> Arc<SlidingCounters> {
+        self.counters.clone()
+    }
 }
 
 #[async_trait]
 impl Memory for SlidingWindowMemory {
     async fn compact(&self, messages: &[Message]) -> Result<Vec<Message>, BoxError> {
-        Ok(compact(
+        SlidingCounters::inc(&self.counters.compactions_total);
+        let (out, dropped) = compact(
             messages,
             self.max_tokens,
             self.insert_marker,
             self.estimator.as_ref(),
-        ))
+        );
+        if dropped > 0 {
+            SlidingCounters::inc(&self.counters.window_dropped);
+        }
+        Ok(out)
     }
 }
 
@@ -75,7 +129,7 @@ fn compact(
     max_tokens: usize,
     insert_marker: bool,
     estimator: &dyn TokenEstimator,
-) -> Vec<Message> {
+) -> (Vec<Message>, usize) {
     let (system_idxs, turns) = split_into_turns(messages);
 
     let system_tokens: usize = system_idxs
@@ -106,10 +160,11 @@ fn compact(
         })
     };
 
-    let dropped_turns = turns.len() - kept.len();
+    let kept_len = kept.len();
+    let dropped_turns = turns.len() - kept_len;
     debug!(
         total_turns = turns.len(),
-        kept_turns = kept.len(),
+        kept_turns = kept_len,
         dropped_turns,
         "compact (sliding)",
     );
@@ -140,8 +195,29 @@ fn compact(
     // nothing. Outside an agent run (e.g. memory unit tests without
     // `with_working_context`) the snapshot is also `None`, so this
     // is a no-op in tests that don't opt in.
+    let len_before_wc = out.len();
     append_working_context(&mut out);
-    out
+    let working_context_chars = match out.get(len_before_wc) {
+        Some(Message::System { content, .. }) if content.starts_with("=== working context ===") => {
+            Some(content.chars().count())
+        }
+        _ => None,
+    };
+
+    emit_memory_compaction(CompactionInfo {
+        source: if dropped_turns > 0 {
+            CompactionSource::WindowDropped
+        } else {
+            CompactionSource::NoOp
+        },
+        turns_kept: kept_len,
+        turns_dropped: dropped_turns,
+        summary_chars: None,
+        working_context_chars,
+        model_input_tokens_est: estimator.estimate_messages(&out),
+    });
+
+    (out, dropped_turns)
 }
 
 /// Append the current `WorkingContext` snapshot as a trailing
@@ -194,7 +270,7 @@ mod tests {
     #[test]
     fn under_budget_returns_everything() {
         let msgs = vec![system("you are jarvis"), user("hi"), assistant("hello")];
-        let out = compact(&msgs, 10_000, true, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, 10_000, true, &CharRatioEstimator);
         assert_eq!(out.len(), msgs.len());
     }
 
@@ -213,7 +289,7 @@ mod tests {
         let budget = tokens(&msgs[0..1])
             + tokens(&msgs[3..5]) // turn 2
             + tokens(&msgs[5..7]); // turn 3
-        let out = compact(&msgs, budget, true, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, budget, true, &CharRatioEstimator);
 
         // System + marker + turn 2 + turn 3
         assert!(out
@@ -237,7 +313,7 @@ mod tests {
     fn always_keeps_latest_turn_even_if_oversized() {
         let big = "x".repeat(10_000);
         let msgs = vec![system("sys"), user(&big), assistant(&big)];
-        let out = compact(&msgs, 10, true, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, 10, true, &CharRatioEstimator);
         assert!(out
             .iter()
             .any(|m| matches!(m, Message::User { content, .. } if content.starts_with("xxxx"))));
@@ -256,7 +332,7 @@ mod tests {
         ];
         // Budget that only fits the recent turn (5 messages from index 3..7).
         let budget = tokens(&msgs[0..1]) + tokens(&msgs[3..7]);
-        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, budget, false, &CharRatioEstimator);
 
         // The Tool reply must be in there together with the Assistant
         // tool-call that produced it — both kept or both dropped.
@@ -284,7 +360,7 @@ mod tests {
             user("c"),
             assistant("d"),
         ];
-        let out = compact(&msgs, 10_000, true, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, 10_000, true, &CharRatioEstimator);
         assert!(!out
             .iter()
             .any(|m| matches!(m, Message::System { content, .. } if content.contains("omitted"))));
@@ -300,7 +376,7 @@ mod tests {
             assistant("reply 2"),
         ];
         let budget = tokens(&msgs[0..1]) + tokens(&msgs[3..5]);
-        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, budget, false, &CharRatioEstimator);
         assert!(!out
             .iter()
             .any(|m| matches!(m, Message::System { content, .. } if content.contains("omitted"))));
@@ -330,8 +406,8 @@ mod tests {
             assistant("r"),
         ];
         let budget = tokens(&drops_one[0..1]) + tokens(&drops_one[3..5]);
-        let out1 = compact(&drops_one, budget, true, &CharRatioEstimator);
-        let out2 = compact(&drops_three, budget, true, &CharRatioEstimator);
+        let (out1, _) = compact(&drops_one, budget, true, &CharRatioEstimator);
+        let (out2, _) = compact(&drops_three, budget, true, &CharRatioEstimator);
 
         let marker1 = out1
             .iter()
@@ -369,7 +445,7 @@ mod tests {
             assistant("a3"),
         ];
         let budget = tokens(&msgs[0..1]) + tokens(&msgs[3..7]);
-        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, budget, false, &CharRatioEstimator);
 
         // Find indices of the user messages we kept.
         let positions: Vec<&str> = out
@@ -404,7 +480,7 @@ mod tests {
         ];
         // Budget that fits sys + only TWO of the four turns at once.
         let budget = tokens(&msgs[0..1]) + tokens(&msgs[1..3]) + tokens(&msgs[7..9]);
-        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, budget, false, &CharRatioEstimator);
 
         // Turn 1 (cached prefix) survives even though it's the oldest.
         assert!(
@@ -443,7 +519,7 @@ mod tests {
             assistant("done"),
         ];
         let budget = tokens(&msgs[0..1]) + tokens(&msgs[3..7]);
-        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, budget, false, &CharRatioEstimator);
 
         let has_call = out
             .iter()
@@ -474,7 +550,7 @@ mod tests {
         ];
         // Budget too tight to fit the cached prefix.
         let budget = 50;
-        let out = compact(&msgs, budget, false, &CharRatioEstimator);
+        let (out, _) = compact(&msgs, budget, false, &CharRatioEstimator);
         // Recent turn should still be there.
         assert!(out
             .iter()
@@ -553,6 +629,83 @@ mod tests {
             assert!(!has_block, "empty context should not inject a block");
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn counters_track_compactions_and_window_drops() {
+        use harness_core::MemoryStatsProvider;
+        // Tight budget — sized so the second conversation must drop.
+        let big = vec![
+            system("sys"),
+            user("turn 1 long enough for the estimator"),
+            assistant("reply 1 also reasonably long here"),
+            user("turn 2 another long user message"),
+            assistant("reply 2 with extra padding text"),
+            user("turn 3 most recent here"),
+            assistant("reply 3 short"),
+        ];
+        let budget = tokens(&big[0..1]) + tokens(&big[5..7]); // sys + last turn
+        let mem = SlidingWindowMemory::new(budget);
+        let counters = mem.counters();
+        // First run: tiny conversation, fits → no drops.
+        let small = vec![system("sys"), user("hi"), assistant("hello")];
+        let _ = mem.compact(&small).await.unwrap();
+        // Second run: must drop earlier turns to fit `budget`.
+        let _ = mem.compact(&big).await.unwrap();
+        assert_eq!(counters.compactions_total.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            counters.window_dropped.load(Ordering::Relaxed),
+            1,
+            "the second call should have window-dropped",
+        );
+        let snap = counters.snapshot();
+        assert_eq!(snap["backend"], "sliding");
+        assert_eq!(snap["compactions_total"], 2);
+        assert_eq!(snap["window_dropped"], 1);
+    }
+
+    #[tokio::test]
+    async fn emits_window_dropped_event_when_turns_pruned() {
+        use harness_core::{with_compaction_channel, CompactionSource};
+        use tokio::sync::mpsc;
+        let msgs = vec![
+            system("sys"),
+            user("turn 1 user"),
+            assistant("turn 1 reply"),
+            user("turn 2 user"),
+            assistant("turn 2 reply"),
+            user("turn 3 user"),
+            assistant("turn 3 reply"),
+        ];
+        let budget = tokens(&msgs[0..1]) + tokens(&msgs[3..5]) + tokens(&msgs[5..7]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        with_compaction_channel(tx, async {
+            let mem = SlidingWindowMemory::new(budget);
+            let _ = mem.compact(&msgs).await.unwrap();
+        })
+        .await;
+        let info = rx.try_recv().expect("expected an emitted CompactionInfo");
+        assert_eq!(info.source, CompactionSource::WindowDropped);
+        assert!(info.turns_dropped >= 1, "expected at least one turn dropped");
+        assert!(info.turns_kept >= 1, "should keep recency invariant");
+        assert!(info.summary_chars.is_none());
+        assert!(info.model_input_tokens_est > 0);
+    }
+
+    #[tokio::test]
+    async fn emits_no_op_event_when_under_budget() {
+        use harness_core::{with_compaction_channel, CompactionSource};
+        use tokio::sync::mpsc;
+        let msgs = vec![system("sys"), user("hi"), assistant("hello")];
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        with_compaction_channel(tx, async {
+            let mem = SlidingWindowMemory::new(10_000);
+            let _ = mem.compact(&msgs).await.unwrap();
+        })
+        .await;
+        let info = rx.try_recv().expect("expected an emitted CompactionInfo");
+        assert_eq!(info.source, CompactionSource::NoOp);
+        assert_eq!(info.turns_dropped, 0);
     }
 
     #[tokio::test]

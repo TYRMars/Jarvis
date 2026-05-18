@@ -12,10 +12,12 @@ import { t } from "../../../utils/i18n";
 import type { RequirementRun } from "../../../types/frames";
 import {
   cleanupOrphanWorktrees,
+  getMemoryStats,
   listFailedRuns,
   listOrphanWorktrees,
   listStuckRuns,
   type CleanupReport,
+  type MemoryStats,
   type OrphanWorktree,
   type StuckRun,
 } from "../../../services/diagnostics";
@@ -54,6 +56,8 @@ export function DiagnosticsSection({ embedded }: { embedded?: boolean } = {}) {
   const [orphans, setOrphans] = useState<OrphanWorktree[] | null>(null);
   const [stuck, setStuck] = useState<StuckRun[] | null>(null);
   const [failed, setFailed] = useState<RequirementRun[] | null>(null);
+  const [memory, setMemory] = useState<MemoryStats | null>(null);
+  const [memoryUnavailable, setMemoryUnavailable] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<CleanupReport | null>(null);
@@ -78,6 +82,14 @@ export function DiagnosticsSection({ embedded }: { embedded?: boolean } = {}) {
       setStuck(stuckRows);
       const failedRows = await listFailedRuns();
       setFailed(failedRows);
+      const mem = await getMemoryStats();
+      if (mem === null) {
+        setMemoryUnavailable(true);
+        setMemory(null);
+      } else {
+        setMemoryUnavailable(false);
+        setMemory(mem);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -87,6 +99,14 @@ export function DiagnosticsSection({ embedded }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     void refresh();
+    // Memory counters move continuously while the agent runs —
+    // poll every 10s so operators see the rates update without
+    // mashing the refresh button. The other diagnostics blocks
+    // are cheap enough to recompute on the same tick.
+    const id = window.setInterval(() => {
+      void refresh();
+    }, 10_000);
+    return () => window.clearInterval(id);
   }, []);
 
   const cleanup = async () => {
@@ -212,6 +232,103 @@ export function DiagnosticsSection({ embedded }: { embedded?: boolean } = {}) {
           ))}
         </ul>
       )}
+
+      <h3 className="settings-diagnostics-subhead">
+        {tx("diagnosticsMemoryHeading", "Memory")}
+      </h3>
+      <MemoryPanel stats={memory} unavailable={memoryUnavailable} />
     </Section>
+  );
+}
+
+function MemoryPanel({
+  stats,
+  unavailable,
+}: {
+  stats: MemoryStats | null;
+  unavailable: boolean;
+}) {
+  if (unavailable || !stats) {
+    return (
+      <p className="settings-diagnostics-empty">
+        {tx(
+          "diagnosticsMemoryUnavailable",
+          "Memory stats provider not configured (set JARVIS_MEMORY_TOKENS).",
+        )}
+      </p>
+    );
+  }
+  // Both backends fill backend + compactions_total. Everything
+  // else is summarizing-only; skip the row when undefined so the
+  // sliding deployment doesn't render misleading "0 / 0".
+  const num = (v: number | undefined) => (typeof v === "number" ? v : 0);
+  const hitsMem = stats.cache_hits_memory;
+  const hitsStore = stats.cache_hits_store;
+  const needSummary = stats.summary_required;
+  const hasSummarizingFields =
+    hitsMem !== undefined ||
+    hitsStore !== undefined ||
+    needSummary !== undefined ||
+    stats.llm_calls !== undefined;
+  const hitsCombined =
+    hitsMem !== undefined || hitsStore !== undefined
+      ? num(hitsMem) + num(hitsStore)
+      : null;
+  const hitRate =
+    hitsCombined !== null && needSummary !== undefined && needSummary > 0
+      ? (hitsCombined / needSummary) * 100
+      : null;
+  const failureRate =
+    stats.llm_calls !== undefined && stats.llm_calls > 0
+      ? (num(stats.llm_failures) / stats.llm_calls) * 100
+      : null;
+  const fmtPct = (v: number | null) =>
+    v === null ? "—" : `${v.toFixed(0)}%`;
+  return (
+    <ul className="settings-diagnostics-list" role="list">
+      <li className="settings-diagnostics-row">
+        <code className="settings-diagnostics-path">backend</code>
+        <span className="settings-diagnostics-meta">{stats.backend}</span>
+      </li>
+      <li className="settings-diagnostics-row">
+        <code className="settings-diagnostics-path">compactions</code>
+        <span className="settings-diagnostics-meta">
+          {num(stats.compactions_total)} total
+          {hasSummarizingFields
+            ? ` · ${num(needSummary)} needed summary`
+            : stats.window_dropped !== undefined
+              ? ` · ${stats.window_dropped} window-dropped`
+              : null}
+        </span>
+      </li>
+      {hasSummarizingFields ? (
+        <>
+          <li className="settings-diagnostics-row">
+            <code className="settings-diagnostics-path">cache hit rate</code>
+            <span className="settings-diagnostics-meta">
+              {fmtPct(hitRate)} ({num(hitsMem)} mem + {num(hitsStore)} store)
+            </span>
+          </li>
+          <li className="settings-diagnostics-row">
+            <code className="settings-diagnostics-path">llm</code>
+            <span className="settings-diagnostics-meta">
+              {num(stats.llm_calls)} calls · {fmtPct(failureRate)} failure rate
+            </span>
+          </li>
+          <li className="settings-diagnostics-row">
+            <code className="settings-diagnostics-path">circuit</code>
+            <span className="settings-diagnostics-meta">
+              {num(stats.circuit_opens)} opens / {num(stats.circuit_skips)} skips
+            </span>
+          </li>
+          <li className="settings-diagnostics-row">
+            <code className="settings-diagnostics-path">PTL fallback</code>
+            <span className="settings-diagnostics-meta">
+              round1 {num(stats.ptl_round_one)} / round2 {num(stats.ptl_round_two)}
+            </span>
+          </li>
+        </>
+      ) : null}
+    </ul>
   );
 }

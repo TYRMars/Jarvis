@@ -98,6 +98,44 @@ export async function listRecentRuns(limit = 50): Promise<RequirementRun[] | nul
   return body.items;
 }
 
+// ---- Memory / compaction counters (M1.2 + P8) ----
+
+/// Snapshot returned by GET /v1/diagnostics/memory. All numeric
+/// fields are monotonic counters since process start; consumers
+/// compute ratios (cache hit rate, failure rate) over deltas if
+/// they want windowed metrics.
+///
+/// `backend` is the only required field. `"summarizing"` ships the
+/// full counter set; `"sliding"` only fills `compactions_total` +
+/// `window_dropped` and leaves the LLM/cache/PTL fields undefined.
+/// Future backends may add more labels — treat unknown values as
+/// "render what's present, hide what's missing".
+export interface MemoryStats {
+  backend: string;
+  compactions_total?: number;
+  /// `sliding` backend only — calls that dropped ≥1 turn.
+  window_dropped?: number;
+  /// Summarizing-backend fields. All undefined under `sliding`.
+  summary_required?: number;
+  cache_hits_memory?: number;
+  cache_hits_store?: number;
+  llm_calls?: number;
+  llm_failures?: number;
+  circuit_skips?: number;
+  circuit_opens?: number;
+  ptl_round_one?: number;
+  ptl_round_two?: number;
+}
+
+/// 503 = no memory stats provider configured (e.g. the binary is
+/// running with `SlidingWindowMemory` or memory was disabled).
+export async function getMemoryStats(): Promise<MemoryStats | null> {
+  const r = await fetch(apiUrl("/v1/diagnostics/memory"));
+  if (r.status === 503) return null;
+  if (!r.ok) throw new Error(`memory stats: ${r.status}`);
+  return (await r.json()) as MemoryStats;
+}
+
 /// Fetch a single run by id. Used by the auto-mode dashboard's
 /// run-detail drawer. Returns `null` on 404 / 503 / network error
 /// so the drawer can render a friendly empty state.

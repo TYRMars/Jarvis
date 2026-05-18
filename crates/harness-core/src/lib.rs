@@ -14,6 +14,7 @@ pub mod fallback_event;
 pub mod hitl;
 pub mod llm;
 pub mod memory;
+pub mod memory_event;
 pub mod message;
 pub mod mode_signal;
 pub mod permission;
@@ -56,6 +57,10 @@ pub use llm::{ChatRequest, ChatResponse, FinishReason, LlmChunk, LlmProvider, Ll
 pub use memory::{
     cache_breakpoint_indices, default_estimator, estimate_tokens, estimate_total_tokens,
     CharRatioEstimator, JsonAwareEstimator, Memory, MemoryStatsProvider, TokenEstimator,
+};
+pub use memory_event::{
+    emit as emit_memory_compaction, is_active as memory_compaction_active,
+    with_compaction_channel, CompactionInfo, CompactionSource,
 };
 pub use message::{CacheHint, Message, ToolCall};
 pub use mode_signal::{

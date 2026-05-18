@@ -46,9 +46,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use harness_core::{
-    cache_breakpoint_indices, default_estimator, BoxError, ChatRequest, Conversation,
-    ConversationStore, Error as CoreError, LlmProvider, Memory, MemoryStatsProvider, Message,
-    TokenEstimator,
+    cache_breakpoint_indices, default_estimator, emit_memory_compaction, BoxError, ChatRequest,
+    CompactionInfo, CompactionSource, Conversation, ConversationStore, Error as CoreError,
+    LlmProvider, Memory, MemoryStatsProvider, Message, TokenEstimator,
 };
 use tracing::{debug, warn};
 
@@ -355,49 +355,55 @@ impl Memory for SummarizingMemory {
         // would otherwise burn quota on every compaction. The
         // circuit auto-resets on time-out, so we recover without
         // operator intervention.
-        let summary = if dropped_msgs.is_empty() {
-            None
+        let (summary, summary_source) = if dropped_msgs.is_empty() {
+            (None, None)
         } else {
             self.counters.inc(&self.counters.summary_required);
             if self.circuit_open() {
                 self.counters.inc(&self.counters.circuit_skips);
                 debug!(dropped = dropped_count,
                        "summary circuit open; skipping LLM call");
-                None
+                (None, None)
             } else {
                 match self.summarise(&dropped_msgs).await {
-                    Ok(s) => {
+                    Ok((s, src)) => {
                         self.record_summary_success();
-                        Some(s)
+                        (Some(s), Some(src))
                     }
                     Err(e) => {
                         self.counters.inc(&self.counters.llm_failures);
                         self.record_summary_failure();
                         warn!(error = %e, dropped = dropped_count,
                               "summary failed; falling back to placeholder note");
-                        None
+                        (None, None)
                     }
                 }
             }
         };
 
+        let kept_turn_count = kept.len();
         let mut out: Vec<Message> =
             Vec::with_capacity(system_idxs.len() + kept.iter().map(|t| t.len()).sum::<usize>() + 1);
         for &i in &system_idxs {
             out.push(messages[i].clone());
         }
-        if let Some(s) = summary {
+        let summary_chars: Option<usize> = if let Some(s) = summary {
+            let chars = s.chars().count();
             out.push(Message::system(format!(
                 "Earlier conversation summary ({dropped_count} turn(s) compressed):\n{s}"
             )));
-        } else if dropped_count > 0 {
-            // Surfacing the gap explicitly is better than silent
-            // truncation; keeps the model from getting confused
-            // about why the conversation seems to start mid-thought.
-            out.push(Message::system(format!(
-                "[{dropped_count} earlier turn(s) omitted — summary unavailable]"
-            )));
-        }
+            Some(chars)
+        } else {
+            if dropped_count > 0 {
+                // Surfacing the gap explicitly is better than silent
+                // truncation; keeps the model from getting confused
+                // about why the conversation seems to start mid-thought.
+                out.push(Message::system(format!(
+                    "[{dropped_count} earlier turn(s) omitted — summary unavailable]"
+                )));
+            }
+            None
+        };
         for turn in kept {
             for &i in turn {
                 out.push(messages[i].clone());
@@ -406,7 +412,16 @@ impl Memory for SummarizingMemory {
         // Append the agent's working-context snapshot. Same helper
         // as `SlidingWindowMemory` so the two backends produce the
         // same trailing block.
+        let len_before_wc = out.len();
         crate::sliding::append_working_context(&mut out);
+        let working_context_chars = match out.get(len_before_wc) {
+            Some(Message::System { content, .. })
+                if content.starts_with("=== working context ===") =>
+            {
+                Some(content.chars().count())
+            }
+            _ => None,
+        };
         // PTL safety net: if the summary itself ran long or the
         // working-context block tipped us over, drop oldest turns
         // until the estimate fits. Never returns `Err` — the entire
@@ -422,6 +437,33 @@ impl Memory for SummarizingMemory {
                 self.counters.inc(&self.counters.ptl_round_two);
             }
         }
+
+        // Decide the canonical source for the emitted event. PTL
+        // outcomes win because they represent a budget escape hatch
+        // *after* whatever the summariser produced — the user wants
+        // to know the safety net fired. Otherwise the summariser's
+        // self-reported source (cache memory / store / fresh LLM)
+        // wins. When dropped > 0 but summary is None (circuit open
+        // or LLM error), we surface SummaryUnavailable so the UI
+        // can show a degraded-state marker. No drops + no summary =
+        // NoOp.
+        let source = match outcome {
+            PtlOutcome::RoundTwo => CompactionSource::PtlRoundTwo,
+            PtlOutcome::RoundOne => CompactionSource::PtlRoundOne,
+            PtlOutcome::None => match (summary_source, dropped_count) {
+                (Some(src), _) => src,
+                (None, n) if n > 0 => CompactionSource::SummaryUnavailable,
+                _ => CompactionSource::NoOp,
+            },
+        };
+        emit_memory_compaction(CompactionInfo {
+            source,
+            turns_kept: kept_turn_count,
+            turns_dropped: dropped_count,
+            summary_chars,
+            working_context_chars,
+            model_input_tokens_est: estimator.estimate_messages(&out),
+        });
         Ok(out)
     }
 }
@@ -488,14 +530,14 @@ impl SummarizingMemory {
         }
     }
 
-    async fn summarise(&self, dropped: &[Message]) -> Result<String, BoxError> {
+    async fn summarise(&self, dropped: &[Message]) -> Result<(String, CompactionSource), BoxError> {
         let fp = fingerprint(dropped);
 
         // Tier 1: in-memory single-slot cache.
         if let Some(text) = self.cache_lookup(&fp) {
             self.counters.inc(&self.counters.cache_hits_memory);
             debug!(fingerprint = %fp, "summary cache hit (memory)");
-            return Ok(text);
+            return Ok((text, CompactionSource::CacheMemory));
         }
 
         // Tier 2: durable store, when configured.
@@ -506,7 +548,7 @@ impl SummarizingMemory {
                         self.counters.inc(&self.counters.cache_hits_store);
                         debug!(fingerprint = %fp, "summary cache hit (store)");
                         self.cache_set(&fp, &text);
-                        return Ok(text);
+                        return Ok((text, CompactionSource::CacheStore));
                     } else {
                         warn!(
                             fingerprint = %fp,
@@ -625,7 +667,7 @@ impl SummarizingMemory {
                 warn!(error = %e, fingerprint = %fp, "summary store save failed");
             }
         }
-        Ok(text)
+        Ok((text, CompactionSource::FreshLlm))
     }
 
     fn cache_lookup(&self, fingerprint: &str) -> Option<String> {
@@ -1534,6 +1576,108 @@ mod tests {
         assert_eq!(counters.llm_failures.load(Ordering::Relaxed), 3);
         assert_eq!(counters.circuit_opens.load(Ordering::Relaxed), 1);
         assert_eq!(counters.circuit_skips.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn events_emit_fresh_then_cache_memory() {
+        use harness_core::{with_compaction_channel, CompactionSource};
+        let llm = FakeLlm::new("ALPHA AND BETA HAPPENED");
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 256);
+        let msgs = vec![
+            system("sys"),
+            user("turn 1"),
+            assistant("reply 1"),
+            user("turn 2"),
+            assistant("reply 2"),
+            user("turn 3 most recent"),
+            assistant("reply 3"),
+        ];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        with_compaction_channel(tx, async {
+            // Fresh: LLM gets called and emits FreshLlm.
+            let _ = mem.compact(&msgs).await.unwrap();
+            // Same dropped prefix: in-memory cache hits, emits CacheMemory.
+            let _ = mem.compact(&msgs).await.unwrap();
+        })
+        .await;
+        let first = rx.try_recv().expect("first compaction event");
+        let second = rx.try_recv().expect("second compaction event");
+        assert_eq!(first.source, CompactionSource::FreshLlm);
+        assert_eq!(second.source, CompactionSource::CacheMemory);
+        assert!(first.summary_chars.is_some());
+        assert!(second.summary_chars.is_some());
+        assert!(first.turns_dropped >= 1);
+    }
+
+    #[tokio::test]
+    async fn events_emit_summary_unavailable_when_circuit_open() {
+        use harness_core::{with_compaction_channel, CompactionSource};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = Arc::new(CountingFailingLlmCb {
+            calls: calls.clone(),
+        });
+        let mem = SummarizingMemory::new(llm, "test-model", 64);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        with_compaction_channel(tx, async {
+            // Trip the breaker (3 consecutive failures), then run one
+            // more — the next call should see the circuit open and
+            // fall through with `SummaryUnavailable`.
+            for i in 0..5 {
+                let msgs = vec![
+                    system("sys"),
+                    user(&format!("old-{i}")),
+                    assistant("old reply"),
+                    user("recent"),
+                    assistant("recent reply"),
+                ];
+                let _ = mem.compact(&msgs).await.unwrap();
+            }
+        })
+        .await;
+        // Collect everything emitted. There should be at least one
+        // SummaryUnavailable event in the trailing two iterations.
+        let mut sources = Vec::new();
+        while let Ok(info) = rx.try_recv() {
+            sources.push(info.source);
+        }
+        assert!(
+            sources
+                .iter()
+                .any(|s| matches!(s, CompactionSource::SummaryUnavailable)),
+            "expected SummaryUnavailable in the emitted sources, got: {sources:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn events_emit_ptl_when_summary_overruns_budget() {
+        use harness_core::{with_compaction_channel, CompactionSource};
+        let llm = FakeLlm::new("X".repeat(2000));
+        let mem = SummarizingMemory::new(llm, "test-model", 300);
+        let msgs = vec![
+            system("sys"),
+            user("turn 1"),
+            assistant("reply 1 with some longer text"),
+            user("turn 2"),
+            assistant("reply 2 with some longer text"),
+            user("turn 3"),
+            assistant("reply 3 with some longer text"),
+            user("turn 4 most recent"),
+            assistant("reply 4"),
+        ];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        with_compaction_channel(tx, async {
+            let _ = mem.compact(&msgs).await.unwrap();
+        })
+        .await;
+        let info = rx.try_recv().expect("expected compaction event");
+        assert!(
+            matches!(
+                info.source,
+                CompactionSource::PtlRoundOne | CompactionSource::PtlRoundTwo
+            ),
+            "PTL fallback should be the source when summary overruns; got {:?}",
+            info.source
+        );
     }
 
     #[tokio::test]

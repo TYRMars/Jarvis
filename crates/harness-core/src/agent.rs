@@ -269,6 +269,18 @@ pub enum AgentEvent {
     /// [`crate::plan::emit`]. UIs typically render this as a
     /// checklist that updates in place.
     PlanUpdate { items: Vec<crate::plan::PlanItem> },
+    /// The memory backend ran a compaction round before the next
+    /// LLM iteration. Carries the [`CompactionInfo`] describing
+    /// what happened (cache hit, fresh summary, fallback prune,
+    /// no-op) and a few quick metrics (`turns_dropped`,
+    /// `summary_chars`, `model_input_tokens_est`). UIs typically
+    /// render an inline marker in the chat transcript when
+    /// `source != NoOp`. Emitted by memory backends via
+    /// [`crate::memory_event::emit`] and forwarded by the agent
+    /// loop after each `build_request` call.
+    MemoryCompacted {
+        info: crate::memory_event::CompactionInfo,
+    },
     /// One frame from a running subagent. Emitted while a
     /// `subagent.<name>` tool is executing — the subagent itself
     /// publishes via [`crate::subagent::emit`] and the agent loop
@@ -581,7 +593,22 @@ impl Agent {
             );
 
             for iter in 1..=agent.config.max_iterations {
-                let req = match agent.build_request(&conversation).await {
+                // Scope a per-iteration compaction-info channel around
+                // `build_request`. Memory backends emit one record per
+                // `compact()` call via `crate::memory_event::emit`;
+                // drained immediately after build_request returns so
+                // events land in the stream before the next LLM call.
+                let (mem_tx, mut mem_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<crate::memory_event::CompactionInfo>();
+                let build_result = crate::memory_event::with_compaction_channel(
+                    mem_tx,
+                    agent.build_request(&conversation),
+                )
+                .await;
+                while let Ok(info) = mem_rx.try_recv() {
+                    yield AgentEvent::MemoryCompacted { info };
+                }
+                let req = match build_result {
                     Ok(r) => r,
                     Err(e) => {
                         yield AgentEvent::Error { message: e.to_string() };
@@ -1992,6 +2019,56 @@ mod tests {
         let conv = Conversation::new();
         let req = futures::executor::block_on(agent.build_request(&conv)).unwrap();
         assert_eq!(req.parallel_tool_calls, None);
+    }
+
+    /// Stub Memory that emits a `CompactionInfo` per `compact()`
+    /// call. Used to confirm the agent's per-iteration channel scope
+    /// + drain delivers the event downstream.
+    struct EmittingMemory {
+        source: crate::memory_event::CompactionSource,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Memory for EmittingMemory {
+        async fn compact(
+            &self,
+            messages: &[Message],
+        ) -> std::result::Result<Vec<Message>, BoxError> {
+            crate::memory_event::emit(crate::memory_event::CompactionInfo {
+                source: self.source,
+                turns_kept: messages.len(),
+                turns_dropped: 0,
+                summary_chars: Some(42),
+                working_context_chars: None,
+                model_input_tokens_est: 100,
+            });
+            Ok(messages.to_vec())
+        }
+    }
+
+    #[tokio::test]
+    async fn run_stream_emits_memory_compacted_when_compactor_fires() {
+        use crate::memory_event::CompactionSource;
+        use futures::StreamExt;
+
+        let cfg = AgentConfig::new("test-model")
+            .with_memory(Arc::new(EmittingMemory {
+                source: CompactionSource::CacheMemory,
+            }) as Arc<dyn crate::Memory>);
+        let agent = Arc::new(Agent::new(ScriptedLlm::new("noop") as _, cfg));
+        let mut stream = agent.run_stream(Conversation::new());
+        let mut got: Vec<CompactionSource> = vec![];
+        while let Some(ev) = stream.next().await {
+            match ev {
+                AgentEvent::MemoryCompacted { info } => got.push(info.source),
+                AgentEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+        assert!(
+            got.iter().any(|s| matches!(s, CompactionSource::CacheMemory)),
+            "expected at least one CacheMemory event, got: {got:?}",
+        );
     }
 
     #[test]
