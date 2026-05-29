@@ -188,29 +188,95 @@ impl Tool for FsPatchTool {
             }
         }
 
-        // Phase 2: commit to disk. Order doesn't matter functionally
-        // — each path is independent — but we keep input order for
-        // a predictable summary.
+        // Phase 2: commit to disk. The contract is "atomic per call",
+        // so before touching anything we snapshot each target's prior
+        // state, then roll every committed entry back if any write or
+        // delete fails mid-batch (permission, ENOSPC, read-only path,
+        // …). Order doesn't matter functionally — each path is
+        // independent — but we keep input order for a predictable
+        // summary.
+        let mut snapshots: Vec<Option<String>> = Vec::with_capacity(planned.len());
         for w in &planned {
-            match w.kind {
-                ChangeKind::Created | ChangeKind::Modified => {
-                    if let Some(parent) = w.abs.parent() {
-                        fs::create_dir_all(parent).await.map_err(|e| -> BoxError {
-                            format!("mkdir for `{}`: {e}", w.rel).into()
+            // `None` means the file did not exist before this call;
+            // `Some(content)` is its prior content to restore on rollback.
+            let prior = fs::read_to_string(&w.abs).await.ok();
+            snapshots.push(prior);
+        }
+
+        let mut committed = 0usize;
+        let mut commit_err: Option<BoxError> = None;
+        for w in &planned {
+            let step: Result<(), BoxError> = async {
+                match w.kind {
+                    ChangeKind::Created | ChangeKind::Modified => {
+                        if let Some(parent) = w.abs.parent() {
+                            fs::create_dir_all(parent).await.map_err(|e| -> BoxError {
+                                format!("mkdir for `{}`: {e}", w.rel).into()
+                            })?;
+                        }
+                        fs::write(&w.abs, w.new_text.as_deref().unwrap_or(""))
+                            .await
+                            .map_err(|e| -> BoxError {
+                                format!("write `{}`: {e}", w.rel).into()
+                            })?;
+                    }
+                    ChangeKind::Deleted => {
+                        fs::remove_file(&w.abs).await.map_err(|e| -> BoxError {
+                            format!("delete `{}`: {e}", w.rel).into()
                         })?;
                     }
-                    fs::write(&w.abs, w.new_text.as_deref().unwrap_or(""))
-                        .await
-                        .map_err(|e| -> BoxError { format!("write `{}`: {e}", w.rel).into() })?;
                 }
-                ChangeKind::Deleted => {
-                    fs::remove_file(&w.abs)
-                        .await
-                        .map_err(|e| -> BoxError { format!("delete `{}`: {e}", w.rel).into() })?;
+                Ok(())
+            }
+            .await;
+
+            if let Err(e) = step {
+                commit_err = Some(e);
+                break;
+            }
+            committed += 1;
+        }
+
+        if let Some(e) = commit_err {
+            // Roll back every entry we already committed, restoring its
+            // snapshot. Best-effort: collect restore failures so the
+            // returned error names both the original fault and any
+            // file we couldn't fully revert.
+            let mut restore_errs: Vec<String> = Vec::new();
+            for (w, prior) in planned[..committed].iter().zip(snapshots.iter()) {
+                let restore: Result<(), std::io::Error> = match prior {
+                    Some(content) => {
+                        if let Some(parent) = w.abs.parent() {
+                            let _ = fs::create_dir_all(parent).await;
+                        }
+                        fs::write(&w.abs, content).await
+                    }
+                    None => match fs::remove_file(&w.abs).await {
+                        Ok(()) => Ok(()),
+                        // Already gone is fine.
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(e) => Err(e),
+                    },
+                };
+                if let Err(re) = restore {
+                    restore_errs.push(format!("{}: {re}", w.rel));
                 }
             }
-            // Note every touched path so post-compaction reinjection
-            // can remind the agent which files it just changed.
+            return Err(if restore_errs.is_empty() {
+                format!("{e} (rolled back all changes; working tree unchanged)").into()
+            } else {
+                format!(
+                    "{e} (rollback incomplete — could not restore: {})",
+                    restore_errs.join(", ")
+                )
+                .into()
+            });
+        }
+
+        // All writes succeeded — note every touched path so
+        // post-compaction reinjection can remind the agent which files
+        // it just changed.
+        for w in &planned {
             harness_core::note_working_file_relative_to(&w.abs, Some(&root));
         }
 
@@ -532,6 +598,43 @@ diff --git a/b.txt b/b.txt
             "alpha\n",
             "atomicity violated"
         );
+    }
+
+    #[tokio::test]
+    async fn phase_two_io_failure_rolls_back_committed_writes() {
+        // Phase 1 (parse/apply) succeeds for both files; the disk-commit
+        // phase writes `a.txt` successfully, then fails creating
+        // `blocker/x.txt` because `blocker` is an existing regular file
+        // (so `create_dir_all` errors). The earlier write to `a.txt`
+        // must be rolled back to honour the "atomic per call" contract.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.path().join("blocker"), "i am a file\n").unwrap();
+        let tool = FsPatchTool::new(dir.path());
+        let diff = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-alpha
++ALPHA
+diff --git a/blocker/x.txt b/blocker/x.txt
+--- /dev/null
++++ b/blocker/x.txt
+@@ -0,0 +1 @@
++nope
+";
+        let err = tool.invoke(json!({ "diff": diff })).await.unwrap_err();
+        assert!(err.to_string().contains("rolled back"), "got: {err}");
+        // a.txt must be restored to its pre-call content.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\n",
+            "phase-2 atomicity violated: committed write not rolled back"
+        );
+        // The blocker file is untouched and the nested write didn't land.
+        assert!(dir.path().join("blocker").is_file());
+        assert!(!dir.path().join("blocker/x.txt").exists());
     }
 
     #[tokio::test]

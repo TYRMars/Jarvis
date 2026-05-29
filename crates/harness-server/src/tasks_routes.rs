@@ -122,8 +122,11 @@ pub(crate) async fn collect_tasks(state: &AppState) -> Vec<TaskEntry> {
             // Compose a concise label: "<name>: <task-head>" with
             // the task truncated so the panel row stays readable.
             let task_head = r.task.as_deref().unwrap_or("");
-            let task_short = if task_head.len() > 48 {
-                format!("{}…", &task_head[..47])
+            // Truncate by char count, not byte index — a raw byte slice
+            // panics when byte 47 splits a multibyte char (CJK, emoji),
+            // and this runs inside the WS turn-terminal handler.
+            let task_short = if task_head.chars().count() > 48 {
+                format!("{}…", task_head.chars().take(47).collect::<String>())
             } else {
                 task_head.to_string()
             };
@@ -303,6 +306,41 @@ mod tests {
         assert_eq!(items[0]["kind"], "chat_run");
         assert_eq!(items[0]["id"], "conv-123");
         assert_eq!(items[0]["status"], "running");
+    }
+
+    #[tokio::test]
+    async fn multibyte_task_name_does_not_panic() {
+        // Regression: the task label was truncated with a raw byte
+        // slice, which panics when byte 47 splits a multibyte char.
+        // The task text is LLM/agent-supplied, so a long CJK task name
+        // must not crash GET /v1/tasks (and, transitively, the WS).
+        use crate::subagent_runs::SubAgentRunRegistry;
+        use harness_core::subagent::{SubAgentEvent, SubAgentFrame};
+
+        let runs = SubAgentRunRegistry::new();
+        // 60 CJK chars = 180 bytes; byte index 47 lands mid-character.
+        let task = "验证代码变更并运行测试套件确保一切正常工作完成质量检查任务".repeat(2);
+        assert!(task.len() > 48 && !task.is_char_boundary(47));
+        runs.record_frame(
+            Some("conv-cjk"),
+            &SubAgentFrame {
+                subagent_id: "sub-1".into(),
+                subagent_name: "review".into(),
+                event: SubAgentEvent::Started {
+                    task: task.clone(),
+                    model: None,
+                },
+            },
+        );
+        let state = mk_state().with_subagent_runs(runs);
+        let resp = list_tasks(State(state)).await.into_response();
+        let body = read_json(resp).await;
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "expected the subagent run, got: {items:?}");
+        assert_eq!(items[0]["kind"], "subagent_run");
+        // Label is truncated to 47 chars + ellipsis, on a char boundary.
+        let label = items[0]["label"].as_str().unwrap();
+        assert!(label.ends_with('…'), "expected ellipsis, got: {label}");
     }
 
     #[tokio::test]

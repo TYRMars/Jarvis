@@ -607,11 +607,10 @@ impl Tool for MemorySyncSetupTool {
         if remote_url.is_empty() {
             return Err("`remote_url` must not be empty".into());
         }
-        // Refuse anything that looks like a flag — the URL goes
-        // verbatim into `git remote add`.
-        if remote_url.starts_with('-') {
-            return Err(format!("invalid remote_url `{remote_url}`").into());
-        }
+        // Refuse anything that looks like a flag or uses a
+        // command-executing transport (ext::/fd::) — the URL goes
+        // verbatim into `git remote add` and is later pushed to.
+        crate::memory_include::validate_git_url(remote_url)?;
         let scope = args
             .get("scope")
             .and_then(Value::as_str)
@@ -1126,7 +1125,21 @@ mod tests {
             .invoke(json!({"remote_url": "--upload-pack=evil"}))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("invalid remote_url"));
+        assert!(err.to_string().contains("start with '-'"));
+    }
+
+    #[tokio::test]
+    async fn sync_setup_rejects_command_executing_transport() {
+        // git's `ext::` remote-helper transport runs arbitrary
+        // commands; the validator must refuse it before `git remote
+        // add` ever sees it.
+        let user = tempdir().unwrap();
+        let tool = MemorySyncSetupTool::new(user_only(user.path()));
+        let err = tool
+            .invoke(json!({"remote_url": "ext::sh -c id"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("remote-helper transport"));
     }
 
     #[tokio::test]
