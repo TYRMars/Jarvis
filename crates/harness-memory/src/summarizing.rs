@@ -387,26 +387,56 @@ impl Memory for SummarizingMemory {
         for &i in &system_idxs {
             out.push(messages[i].clone());
         }
-        let summary_chars: Option<usize> = if let Some(s) = summary {
-            let chars = s.chars().count();
-            out.push(Message::system(format!(
+
+        // The summary stands in for the dropped turns and must occupy
+        // *their* chronological position. On the cache-breakpoint path
+        // the kept set can be non-contiguous (cached prefix + recent
+        // tail with a hole in the middle); inserting the summary right
+        // after the leading systems would invert chronology, presenting
+        // the summarised middle as if it preceded the cached prefix.
+        //
+        // Instead we walk turns in original order: kept turns are
+        // emitted in place, and the summary/placeholder is emitted once,
+        // at the position of the first dropped turn — i.e. after any
+        // cached-prefix turns and before the recent tail.
+        let summary_msg: Option<Message> = if let Some(s) = &summary {
+            Some(Message::system(format!(
                 "Earlier conversation summary ({dropped_count} turn(s) compressed):\n{s}"
-            )));
-            Some(chars)
+            )))
+        } else if dropped_count > 0 {
+            // Surfacing the gap explicitly is better than silent
+            // truncation; keeps the model from getting confused
+            // about why the conversation seems to start mid-thought.
+            Some(Message::system(format!(
+                "[{dropped_count} earlier turn(s) omitted — summary unavailable]"
+            )))
         } else {
-            if dropped_count > 0 {
-                // Surfacing the gap explicitly is better than silent
-                // truncation; keeps the model from getting confused
-                // about why the conversation seems to start mid-thought.
-                out.push(Message::system(format!(
-                    "[{dropped_count} earlier turn(s) omitted — summary unavailable]"
-                )));
-            }
             None
         };
-        for turn in kept {
-            for &i in turn {
-                out.push(messages[i].clone());
+        let summary_chars: Option<usize> = summary.as_ref().map(|s| s.chars().count());
+
+        let mut summary_emitted = false;
+        for turn in &turns {
+            let is_kept = kept.iter().any(|k| std::ptr::eq(*k, turn));
+            if is_kept {
+                for &i in turn {
+                    out.push(messages[i].clone());
+                }
+            } else if !summary_emitted {
+                // First dropped turn — drop the summary in here.
+                if let Some(msg) = &summary_msg {
+                    out.push(msg.clone());
+                }
+                summary_emitted = true;
+            }
+            // Subsequent dropped turns are simply skipped — they're
+            // already represented by the single summary message.
+        }
+        // Edge case: every turn was dropped (no kept turns), so the
+        // loop never emitted the summary. Append it now.
+        if !summary_emitted {
+            if let Some(msg) = &summary_msg {
+                out.push(msg.clone());
             }
         }
         // Append the agent's working-context snapshot. Same helper
@@ -1008,6 +1038,54 @@ mod tests {
         let out = mem.compact(&msgs).await.unwrap();
         assert_eq!(out.len(), msgs.len());
         assert_eq!(llm.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn breakpoint_summary_sits_between_cached_prefix_and_recent_tail() {
+        // Regression for the chronology-inversion bug: on the cache
+        // breakpoint path the kept set is non-contiguous (cached prefix
+        // + recent tail with a dropped hole). The summary of the hole
+        // must land *between* them, not before the cached prefix.
+        let llm = FakeLlm::new("MIDDLE_SUMMARY");
+        let mem = SummarizingMemory::new(llm.clone(), "test-model", 400);
+
+        let big = "lorem ipsum dolor sit amet ".repeat(80); // ~2160 chars
+        let msgs = vec![
+            system("sys"),
+            user("cached q1"),
+            // Cache breakpoint on the assistant reply of the first turn.
+            assistant("cached a1").with_cache(harness_core::CacheHint::Ephemeral),
+            user(&format!("middle q2 {big}")),
+            assistant(&format!("middle a2 {big}")),
+            user(&format!("middle q3 {big}")),
+            assistant(&format!("middle a3 {big}")),
+            user("recent q4"),
+            assistant("recent a4"),
+        ];
+        let out = mem.compact(&msgs).await.unwrap();
+
+        let pos = |needle: &str| {
+            out.iter().position(|m| match m {
+                Message::System { content, .. } | Message::User { content, .. } => {
+                    content.contains(needle)
+                }
+                Message::Assistant { content, .. } => {
+                    content.as_deref().is_some_and(|c| c.contains(needle))
+                }
+                _ => false,
+            })
+        };
+
+        let cached = pos("cached a1").expect("cached prefix kept");
+        let summary = pos("MIDDLE_SUMMARY").expect("summary inserted");
+        let recent = pos("recent q4").expect("recent tail kept");
+        assert!(
+            cached < summary && summary < recent,
+            "summary must sit between cached prefix and recent tail; \
+             got cached={cached} summary={summary} recent={recent}: {out:#?}"
+        );
+        // The dropped middle turns must be gone.
+        assert!(pos("middle q2").is_none(), "middle turn should be dropped");
     }
 
     #[tokio::test]

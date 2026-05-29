@@ -40,6 +40,62 @@ use tokio::process::Command;
 
 const GIT_TIMEOUT_MS: u64 = 60_000;
 
+/// Protocols git is permitted to use when cloning an include URL.
+/// Exported into the child process as `GIT_ALLOW_PROTOCOL` so git's
+/// `ext::` / `fd::` transports (which execute arbitrary commands and
+/// are honoured by default for a directly-invoked clone) can never
+/// fire from attacker-controlled memory content.
+const GIT_ALLOW_PROTOCOL: &str = "https:ssh:git:file";
+
+/// Reject git URLs that could lead to command execution or option
+/// smuggling before they ever reach `git clone`.
+///
+/// Three distinct dangers:
+/// - git's *remote-helper transports* (`ext::`, `fd::`, and any
+///   `<transport>::<address>` form) run arbitrary commands. These are
+///   distinguished by a `name::` prefix, which we reject outright.
+/// - a leading `-` would be parsed by git as an option, not a URL.
+/// - embedded NUL / newline bytes.
+///
+/// Everything else is allowed: ordinary `https://` / `ssh://` /
+/// `git://` / `file://` URLs, the scp-like `git@host:path` shorthand,
+/// and plain local filesystem paths (which git clones over the safe
+/// local transport). Defence in depth: `git_clone` also passes `--`
+/// and `run_git` exports `GIT_ALLOW_PROTOCOL`.
+pub fn validate_git_url(url: &str) -> Result<(), BoxError> {
+    let u = url.trim();
+    if u.is_empty() {
+        return Err("git include URL is empty".into());
+    }
+    if u.starts_with('-') {
+        return Err(format!("git include URL must not start with '-': {u}").into());
+    }
+    if u.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
+        return Err("git include URL contains control characters".into());
+    }
+    // Detect git's remote-helper transport syntax `<transport>::<addr>`
+    // (e.g. `ext::sh -c id`, `fd::17/foo`). The transport name sits at
+    // the very start, contains no '/', and is followed by `::`. A real
+    // scheme uses `://` (single colon + slashes), so `https://…` and an
+    // IPv6 literal like `ssh://[::1]/r` never match (their text before
+    // the first `::` contains a '/').
+    if let Some(p) = u.find("::") {
+        let prefix = &u[..p];
+        let looks_like_transport = !prefix.is_empty()
+            && !prefix.contains('/')
+            && prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+        if looks_like_transport {
+            return Err(format!(
+                "git include URL uses a remote-helper transport (command execution risk): {u}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// One parsed `<!-- jarvis-include: ... -->` line. Stays
 /// closer to the wire format than to the on-disk path so the
 /// caller can dedup / display the original directive verbatim.
@@ -84,6 +140,12 @@ impl IncludeDirective {
                 }
                 _ => (rest.to_string(), None),
             };
+            // Reject command-executing transports (ext::/fd::) and
+            // option-smuggling URLs at parse time so a malicious
+            // directive never even reaches the cache/clone path.
+            if validate_git_url(&url).is_err() {
+                return None;
+            }
             return Some(IncludeDirective::GitUrl { url, branch });
         }
         Some(IncludeDirective::LocalPath(trimmed.to_string()))
@@ -287,11 +349,17 @@ fn directive_slug(url: &str, branch: Option<&str>) -> String {
 }
 
 async fn git_clone(url: &str, branch: Option<&str>, dest: &Path) -> Result<(), BoxError> {
+    // Defence in depth: parse_target already rejects dangerous URLs,
+    // but re-validate here so any future caller of git_clone is
+    // covered too.
+    validate_git_url(url)?;
     let mut args: Vec<&str> = vec!["clone", "--depth", "1"];
     if let Some(b) = branch {
         args.push("--branch");
         args.push(b);
     }
+    // `--` ensures the URL is never parsed as an option.
+    args.push("--");
     args.push(url);
     let dest_str = dest.to_string_lossy().to_string();
     args.push(&dest_str);
@@ -414,6 +482,10 @@ pub async fn refresh_git_cache(
 async fn run_git(args: &[&str]) -> Result<(bool, String, String), BoxError> {
     let mut cmd = Command::new("git");
     cmd.args(args)
+        // Belt-and-suspenders against git's command-executing
+        // transports (ext::/fd::): even if a bad URL slipped through
+        // validation, git refuses any protocol not listed here.
+        .env("GIT_ALLOW_PROTOCOL", GIT_ALLOW_PROTOCOL)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -483,6 +555,35 @@ mod tests {
     #[test]
     fn empty_target_returns_none() {
         assert!(IncludeDirective::parse_target("   ").is_none());
+    }
+
+    #[test]
+    fn validate_git_url_allows_normal_forms() {
+        for ok in [
+            "https://github.com/me/repo.git",
+            "ssh://git@github.com/me/repo.git",
+            "git://host/r.git",
+            "file:///srv/git/r.git",
+            "git@github.com:me/repo.git",
+            "/tmp/local/bare/repo",
+            "./relative/repo",
+            "ssh://git@[::1]:22/r.git", // IPv6 literal must not trip the `::` check
+        ] {
+            assert!(validate_git_url(ok).is_ok(), "expected ok: {ok}");
+        }
+    }
+
+    #[test]
+    fn validate_git_url_rejects_command_executing_transports() {
+        for bad in ["ext::sh -c id", "fd::17/foo", "-upload-pack=evil", "--foo"] {
+            assert!(validate_git_url(bad).is_err(), "expected err: {bad}");
+        }
+    }
+
+    #[test]
+    fn parse_target_drops_command_executing_git_transport() {
+        // The dangerous directive must not even parse into a GitUrl.
+        assert!(IncludeDirective::parse_target("git+ext::sh -c id").is_none());
     }
 
     #[test]
