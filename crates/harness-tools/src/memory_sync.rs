@@ -126,6 +126,13 @@ async fn run_git(
     cmd.arg("-C")
         .arg(cwd)
         .args(args)
+        // Defence in depth against git's command-executing transports
+        // (`ext::` / `fd::`). `sync_setup` validates the `remote_url`
+        // up front, but `sync`'s push/pull operate on an already-stored
+        // `remote.origin.url` that never re-passes validation — so pin
+        // the allowed protocol set on every git invocation. Mirrors
+        // `memory_include::run_git`.
+        .env("GIT_ALLOW_PROTOCOL", crate::memory_include::GIT_ALLOW_PROTOCOL)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1140,6 +1147,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("remote-helper transport"));
+    }
+
+    #[tokio::test]
+    async fn run_git_refuses_ext_transport_configured_out_of_band() {
+        // Defence in depth: `sync_setup` validates `remote_url`, but
+        // `sync`'s push/pull act on an already-stored
+        // `remote.origin.url`. Configure an `ext::` transport directly
+        // (bypassing the validator, as an out-of-band edit would) and
+        // assert `run_git` refuses to execute the smuggled command —
+        // proving `GIT_ALLOW_PROTOCOL` is pinned on every invocation.
+        if StdCommand::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        git_init(dir.path());
+        fs::write(dir.path().join("MEMORY.md"), "- seed\n")
+            .await
+            .unwrap();
+        commit_all(dir.path(), "seed").await;
+
+        // A marker file the smuggled command would create if git
+        // honoured the `ext::` transport.
+        let pwned = dir.path().join("PWNED");
+        let payload = format!("ext::sh -c touch{}{}", " ", pwned.display());
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["remote", "add", "origin"])
+            .arg(&payload)
+            .status()
+            .unwrap();
+
+        // Pushing to the malicious remote must fail on the blocked
+        // protocol rather than run the command.
+        let (ok, _out, err) =
+            run_git(dir.path(), &["push", "origin", "main"], 10_000)
+                .await
+                .unwrap();
+        assert!(!ok, "push to an ext:: remote must not succeed");
+        assert!(
+            !pwned.exists(),
+            "ext:: transport executed the smuggled command (GIT_ALLOW_PROTOCOL not enforced); stderr: {err}"
+        );
     }
 
     #[tokio::test]
