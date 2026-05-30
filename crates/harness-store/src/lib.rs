@@ -140,6 +140,21 @@ pub struct StoreBundle {
     pub channel_instances: Arc<dyn ChannelInstanceStore>,
 }
 
+/// In-memory `TenantStore` fallback for the SQL backends.
+///
+/// There's no SQL `TenantStore` impl yet (only JSON-file and SQLite),
+/// so the Postgres / MySQL arms fall back to in-memory — tenant rows
+/// won't survive restarts under those deployments until a SQL impl
+/// lands. Mirrors the channel-store fallback used in the same arms.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+fn ephemeral_tenants(backend: &str) -> Arc<dyn TenantStore> {
+    tracing::warn!(
+        backend,
+        "no SQL TenantStore impl yet; tenants fall back to in-memory and won't survive restarts"
+    );
+    Arc::new(MemoryTenantStore::new()) as Arc<dyn TenantStore>
+}
+
 /// Open both stores for a given database URL. The scheme selects the
 /// backend (see [module docs](crate)).
 ///
