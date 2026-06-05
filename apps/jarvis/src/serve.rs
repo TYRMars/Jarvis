@@ -1420,6 +1420,14 @@ fn builtins_config_with_workspace(
             .and_then(|s| s.parse().ok())
             .or(cfg.tools.shell_timeout_ms)
             .unwrap_or(defaults.shell_default_timeout_ms),
+        http_max_bytes: std::env::var("JARVIS_HTTP_MAX_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(defaults.http_max_bytes),
+        fs_max_bytes: std::env::var("JARVIS_FS_MAX_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(defaults.fs_max_bytes),
         shell_sandbox: pick_shell_sandbox(cfg),
         shell_limits: pick_shell_limits(),
         ..defaults
