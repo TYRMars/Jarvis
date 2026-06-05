@@ -138,12 +138,19 @@ pub fn run(explicit: Option<&Path>) -> Result<()> {
     println!();
 
     // ---- approval ----
-    match pick_string_opt("JARVIS_APPROVAL_MODE", cfg.approval.mode.as_deref()) {
-        Some(mode) => println!("Approval:       {mode} (WS clients can override interactively)"),
-        None => println!(
-            "Approval:       not configured \
-             (gated tools run unconditionally unless WS overrides)"
-        ),
+    // serve.rs::build_approver honors the PREFERRED JARVIS_PERMISSION_MODE
+    // (ask/accept-edits/plan/auto/bypass) first, so report it when set; fall
+    // back to the deprecated JARVIS_APPROVAL_MODE / cfg.approval.mode otherwise.
+    if let Ok(m) = std::env::var("JARVIS_PERMISSION_MODE") {
+        println!("Permission:     {m} (WS clients can override interactively)");
+    } else {
+        match pick_string_opt("JARVIS_APPROVAL_MODE", cfg.approval.mode.as_deref()) {
+            Some(mode) => println!("Approval:       {mode} (WS clients can override interactively)"),
+            None => println!(
+                "Approval:       not configured \
+                 (gated tools run unconditionally unless WS overrides)"
+            ),
+        }
     }
     println!();
 
