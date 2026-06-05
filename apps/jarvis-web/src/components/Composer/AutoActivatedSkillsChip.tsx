@@ -12,6 +12,7 @@
 // into.
 
 import { useAppStore } from "../../store/appStore";
+import { t } from "../../utils/i18n";
 
 export function AutoActivatedSkillsChip() {
   const skills = useAppStore((s) => s.autoActivatedNextTurnSkills);
@@ -19,11 +20,11 @@ export function AutoActivatedSkillsChip() {
   return (
     <div className="composer-auto-skills" role="status" aria-live="polite">
       <span className="composer-auto-skills-label">
-        Auto-activated for next turn:
+        {t("composerAutoSkillsLabel")}
       </span>
       <ul className="composer-auto-skills-list">
         {skills.map((name) => (
-          <li key={name} className="composer-auto-skills-pill" title={`Skill: ${name}`}>
+          <li key={name} className="composer-auto-skills-pill" title={t("composerAutoSkillsTooltip", name)}>
             {name}
           </li>
         ))}

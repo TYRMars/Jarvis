@@ -142,7 +142,7 @@ export function ProjectMemoryPanel({
             <TextField
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="topic.md"
+              placeholder={t("projDetailMemoryFilePlaceholder")}
               aria-label={t("projectMemoryNewFile")}
             />
             <Button size="sm" onClick={onCreate} disabled={busy || !newName.trim()}>

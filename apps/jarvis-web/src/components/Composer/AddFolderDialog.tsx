@@ -96,7 +96,7 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
     e.preventDefault();
     const trimmed = path.trim();
     if (!trimmed) {
-      setError("Path is required");
+      setError(t("composerAddFolderPathRequired"));
       return;
     }
     setBusy(true);
@@ -108,7 +108,7 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
       // Reject duplicates client-side so the user sees "already added"
       // instead of the silent server-side dedupe.
       if ((project.workspaces ?? []).some((w) => samePath(w.path, canonical))) {
-        setError("That folder is already in this project");
+        setError(t("composerAddFolderDuplicate"));
         setBusy(false);
         return;
       }
@@ -126,7 +126,7 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
         onAdded(stored);
         onClose();
       } else {
-        setError("Failed to update project");
+        setError(t("composerAddFolderUpdateFailed"));
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -144,17 +144,17 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
         onSubmit={(e) => void submit(e)}
       >
         <div className="add-folder-modal-header">
-          <strong>Add folder to {project.name}</strong>
+          <strong>{t("composerAddFolderTitle", project.name)}</strong>
         </div>
         <label className="add-folder-modal-field">
-          <span>Path</span>
+          <span>{t("composerAddFolderPathLabel")}</span>
           <div className="add-folder-modal-path-row">
             <input
               ref={inputRef}
               type="text"
               value={path}
               onChange={(e) => setPath(e.target.value)}
-              placeholder="/absolute/path/to/repo or ~/code/proj"
+              placeholder={t("composerAddFolderPathPlaceholder")}
               autoComplete="off"
               spellCheck={false}
               disabled={busy}
@@ -195,12 +195,12 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
           </div>
         )}
         <label className="add-folder-modal-field">
-          <span>Display name (optional)</span>
+          <span>{t("composerAddFolderNameLabel")}</span>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="defaults to folder name"
+            placeholder={t("composerAddFolderNamePlaceholder")}
             autoComplete="off"
             disabled={busy}
           />
@@ -213,7 +213,7 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
             onClick={onClose}
             disabled={busy}
           >
-            Cancel
+            {t("cancel")}
           </button>
           <button
             type="submit"
@@ -221,7 +221,7 @@ export function AddFolderDialog({ project, open, onClose, onAdded }: Props) {
             data-primary="true"
             disabled={busy || !path.trim()}
           >
-            {busy ? "Adding…" : "Add"}
+            {busy ? t("composerAddFolderAdding") : t("composerAddFolderAdd")}
           </button>
         </div>
       </form>

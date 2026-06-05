@@ -369,6 +369,11 @@ struct UpdateBody {
     /// Omit to leave as-is; pass `[]` to clear.
     #[serde(default)]
     label_ids: Option<Vec<String>>,
+    /// Bind / unbind a declarative workflow. Three-state semantics:
+    /// omit ⇒ leave as-is, `null` ⇒ clear the binding, string ⇒ bind to
+    /// that `WorkflowDefinition` id.
+    #[serde(default, deserialize_with = "deserialize_optional_workflow")]
+    workflow_id: OptionalWorkflow,
 }
 
 /// Three-state value for `verification_plan` in PATCH —
@@ -389,6 +394,28 @@ where
     Ok(match opt {
         Some(p) => OptionalPlan::Set(p),
         None => OptionalPlan::Clear,
+    })
+}
+
+/// Three-state value for `workflow_id` in PATCH — same shape as
+/// [`OptionalPlan`] but for the workflow binding string.
+#[derive(Debug, Default)]
+enum OptionalWorkflow {
+    #[default]
+    Missing,
+    Clear,
+    Set(String),
+}
+
+fn deserialize_optional_workflow<'de, D>(de: D) -> Result<OptionalWorkflow, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(de)?;
+    Ok(match opt {
+        Some(s) if !s.trim().is_empty() => OptionalWorkflow::Set(s.trim().to_string()),
+        // `null` or `""` both clear the binding.
+        _ => OptionalWorkflow::Clear,
     })
 }
 
@@ -456,6 +483,11 @@ async fn update_requirement(
             .into_iter()
             .filter(|id| !id.trim().is_empty())
             .collect();
+    }
+    match body.workflow_id {
+        OptionalWorkflow::Missing => {}
+        OptionalWorkflow::Clear => item.workflow_id = None,
+        OptionalWorkflow::Set(id) => item.workflow_id = Some(id),
     }
     item.touch();
     match store.upsert(&item).await {

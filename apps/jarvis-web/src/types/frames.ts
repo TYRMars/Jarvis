@@ -401,6 +401,10 @@ export interface Requirement {
    *  the requirement and can represent CI/CD commands, manual review
    *  gates, or workflow steps. */
   todos?: RequirementTodo[];
+  /** Optional declarative WorkflowDefinition id bound to this card.
+   *  When set, executing the requirement runs the multi-step recipe
+   *  instead of a single agent turn. Absent / null = single-agent. */
+  workflow_id?: string | null;
   created_at: string;
   updated_at: string;
 }

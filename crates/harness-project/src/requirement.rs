@@ -111,6 +111,15 @@ pub struct Requirement {
     /// deserialise as an empty `Vec`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub label_ids: Vec<String>,
+    /// Optional [`WorkflowDefinition`](harness_workflow) bound to this
+    /// requirement. When set, executing the requirement (manually or via
+    /// the auto loop) runs the multi-step workflow recipe instead of a
+    /// single undifferentiated agent turn. `None` = the legacy
+    /// single-agent run. Older JSON rows without the field deserialise
+    /// as `None`. The id is a soft reference — no storage-layer FK — so
+    /// deleting a workflow simply makes the binding a no-op at run time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
     /// Legacy internal field retained for older storage rows. Jarvis
     /// now owns both progression and completion by evaluating the
     /// execution checklist, so this is omitted from the public wire
@@ -480,6 +489,7 @@ impl Requirement {
             triage_state: TriageState::Approved,
             depends_on: Vec::new(),
             label_ids: Vec::new(),
+            workflow_id: None,
             acceptance_policy: AcceptancePolicy::Subagent,
             created_at: now.clone(),
             updated_at: now,
@@ -844,6 +854,37 @@ mod tests {
         );
         let back: Requirement = serde_json::from_value(json).unwrap();
         assert_eq!(back.acceptance_policy, AcceptancePolicy::Subagent);
+    }
+
+    #[test]
+    fn legacy_json_without_workflow_id_defaults_to_none() {
+        let raw = serde_json::json!({
+            "id": "r1",
+            "project_id": "p1",
+            "title": "Old row",
+            "status": "backlog",
+            "conversation_ids": [],
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z"
+        });
+        let r: Requirement = serde_json::from_value(raw).unwrap();
+        assert!(r.workflow_id.is_none());
+    }
+
+    #[test]
+    fn workflow_id_skipped_on_wire_when_none() {
+        let r = Requirement::new("p1", "x");
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(json.get("workflow_id").is_none(), "got: {json}");
+    }
+
+    #[test]
+    fn workflow_id_round_trips_when_set() {
+        let mut r = Requirement::new("p1", "x");
+        r.workflow_id = Some("wf-123".into());
+        let json = serde_json::to_string(&r).unwrap();
+        let back: Requirement = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.workflow_id.as_deref(), Some("wf-123"));
     }
 
     #[test]

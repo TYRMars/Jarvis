@@ -239,7 +239,7 @@ export function ThroughputChart({ overview }: Props) {
                       input (touch with long-press, screen readers
                       announcing the SVG). */}
                   <title>
-                    {`${b.date}: ${b.total} runs`}
+                    {t("workOvBBarRunsTitle", b.date, b.total)}
                   </title>
                 </g>
               );

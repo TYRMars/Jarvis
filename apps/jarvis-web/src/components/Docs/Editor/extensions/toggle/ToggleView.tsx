@@ -4,6 +4,7 @@
 // the content when `data-open="false"`.
 
 import { NodeViewContent, NodeViewWrapper, type NodeViewProps } from "@tiptap/react";
+import { t } from "../../../../../utils/i18n";
 
 export function ToggleView({ node, updateAttributes }: NodeViewProps) {
   const open = Boolean(node.attrs["open"]);
@@ -18,7 +19,7 @@ export function ToggleView({ node, updateAttributes }: NodeViewProps) {
         contentEditable={false}
         className="toggle-chevron"
         aria-expanded={open}
-        aria-label={open ? "折叠" : "展开"}
+        aria-label={open ? t("docsEdCollapse") : t("docsEdExpand")}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => updateAttributes({ open: !open })}
       >

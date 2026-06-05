@@ -125,7 +125,7 @@ export function ComposerShoulder() {
           type="button"
           className="shoulder-crumb"
           onClick={() => void refreshWorkspaceDiff(base)}
-          title={`${branch} → ${base}\nclick to refresh`}
+          title={t("chatTopShoulderCrumbTooltip", branch, base)}
         >
           <BranchIcon />
           <span className="shoulder-crumb-base">{base}</span>

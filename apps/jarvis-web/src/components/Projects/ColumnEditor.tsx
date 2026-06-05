@@ -186,7 +186,7 @@ export function ColumnEditor({ project, onClose }: Props) {
       // work and can adjust + retry.
       const updated = await updateProject(project.id, { columns: wire });
       if (!updated) {
-        setError("save failed — see notification");
+        setError(t("projBoardColEditorSaveFailed"));
         return;
       }
       onClose();
@@ -249,7 +249,7 @@ export function ColumnEditor({ project, onClose }: Props) {
                 type="text"
                 value={r.label}
                 onChange={(e) => setLabel(r.key, e.target.value)}
-                placeholder="Backlog"
+                placeholder={t("projBoardColEditorLabelPlaceholder")}
                 autoFocus={idx === rows.length - 1 && r.label === ""}
               />
             </label>
@@ -260,7 +260,7 @@ export function ColumnEditor({ project, onClose }: Props) {
                 type="text"
                 value={r.id}
                 onChange={(e) => setId(r.key, e.target.value)}
-                placeholder="backlog"
+                placeholder={t("projBoardColEditorIdPlaceholder")}
                 spellCheck={false}
               />
             </label>

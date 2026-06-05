@@ -21,6 +21,7 @@ import {
   type SwitchWorkspaceResult,
 } from "../../services/projects";
 import { folderNameFromPath } from "./resourceSelection";
+import { t } from "../../utils/i18n";
 
 interface Props {
   projectId: string;
@@ -166,19 +167,19 @@ export function BranchPopover({
             setHighlight(0);
           }}
           onKeyDown={onInputKey}
-          placeholder="Search branches…"
+          placeholder={t("composerBranchSearchPlaceholder")}
           disabled={busy}
         />
       </div>
       <div className="branch-popover-list">
         {data === null && error === null ? (
-          <div className="branch-popover-empty">Loading…</div>
+          <div className="branch-popover-empty">{t("composerBranchLoading")}</div>
         ) : null}
         {data !== null && filtered.length === 0 ? (
           <div className="branch-popover-empty">
             {data.branches.length === 0
-              ? "Not a git repo"
-              : "No matching branches"}
+              ? t("composerBranchNotGitRepo")
+              : t("composerBranchNoMatches")}
           </div>
         ) : null}
         {filtered.map((b, i) => {
@@ -197,7 +198,7 @@ export function BranchPopover({
               title={b.name}
             >
               <span className="branch-popover-row-name">
-                {b.is_remote ? <span className="branch-popover-remote-prefix">remote</span> : null}
+                {b.is_remote ? <span className="branch-popover-remote-prefix">{t("composerBranchRemote")}</span> : null}
                 {b.name}
               </span>
               {isCurrent ? <span className="branch-popover-check" aria-hidden="true">✓</span> : null}
@@ -205,7 +206,7 @@ export function BranchPopover({
           );
         })}
       </div>
-      <div className="branch-popover-mode" role="radiogroup" aria-label="Switch mode">
+      <div className="branch-popover-mode" role="radiogroup" aria-label={t("composerBranchSwitchMode")}>
         <button
           type="button"
           role="radio"
@@ -214,9 +215,9 @@ export function BranchPopover({
           data-active={mode === "worktree" ? "true" : undefined}
           onClick={() => setMode("worktree")}
           disabled={busy}
-          title="Mint a fresh worktree (safe — leaves the main checkout untouched)"
+          title={t("composerBranchWorktreeTip")}
         >
-          worktree
+          {t("composerBranchModeWorktree")}
         </button>
         <button
           type="button"
@@ -226,25 +227,23 @@ export function BranchPopover({
           data-active={mode === "checkout" ? "true" : undefined}
           onClick={() => setMode("checkout")}
           disabled={busy}
-          title="git checkout in the workspace itself (refuses if dirty)"
+          title={t("composerBranchCheckoutTip")}
         >
-          checkout
+          {t("composerBranchModeCheckout")}
         </button>
       </div>
       {error ? <div className="branch-popover-error">{error}</div> : null}
       {dirtyConfirm ? (
         <div className="branch-popover-dirty">
           <p>
-            Workspace has {dirtyConfirm.files.length} uncommitted change
-            {dirtyConfirm.files.length === 1 ? "" : "s"}. Force checkout
-            anyway? Local edits will be overwritten by branch contents.
+            {t("composerBranchDirtyWarn", dirtyConfirm.files.length)}
           </p>
           <ul className="branch-popover-dirty-files">
             {dirtyConfirm.files.slice(0, 6).map((f) => (
               <li key={f}>{f}</li>
             ))}
             {dirtyConfirm.files.length > 6 ? (
-              <li>… and {dirtyConfirm.files.length - 6} more</li>
+              <li>{t("composerBranchDirtyMore", dirtyConfirm.files.length - 6)}</li>
             ) : null}
           </ul>
           <div className="branch-popover-dirty-actions">
@@ -254,7 +253,7 @@ export function BranchPopover({
               onClick={() => setDirtyConfirm(null)}
               disabled={busy}
             >
-              Cancel
+              {t("cancel")}
             </button>
             <button
               type="button"
@@ -263,7 +262,7 @@ export function BranchPopover({
               onClick={() => void apply(dirtyConfirm.branch, true)}
               disabled={busy}
             >
-              Force checkout
+              {t("composerBranchForceCheckout")}
             </button>
           </div>
         </div>

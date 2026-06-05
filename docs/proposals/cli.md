@@ -3,6 +3,9 @@
 **Status:** Adopted (v1.0 — steps 1-6 landed in `apps/jarvis-cli`; TUI mode remains a follow-up proposal)
 **Touches:** new `apps/jarvis-cli` binary, no library changes (reuses
 `harness-core` / `harness-llm` / `harness-tools` / `harness-memory`).
+**See also:** [conventions/cli-server-capability-gap.md](../conventions/cli-server-capability-gap.md)
+— why the CLI deliberately lacks the server's run registry / multi-session /
+reconnect machinery, and what that means for contributors.
 
 ## Motivation
 

@@ -7,6 +7,7 @@
 
 import type { Editor } from "@tiptap/react";
 import type { ReactNode } from "react";
+import { t } from "../../../../../utils/i18n";
 
 export interface SlashCandidate {
   /** Stable identifier — used for `key=` and tests. */
@@ -45,8 +46,8 @@ export function filterCandidates(
 export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   {
     id: "h1",
-    title: "Heading 1",
-    description: "大标题",
+    title: t("docsEdSlashH1"),
+    description: t("docsEdSlashH1Desc"),
     keywords: ["h1", "heading", "title", "大标题"],
     icon: "H1",
     command: ({ editor, range }) => {
@@ -55,8 +56,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "h2",
-    title: "Heading 2",
-    description: "二级标题",
+    title: t("docsEdSlashH2"),
+    description: t("docsEdSlashH2Desc"),
     keywords: ["h2", "heading", "subtitle"],
     icon: "H2",
     command: ({ editor, range }) => {
@@ -65,8 +66,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "h3",
-    title: "Heading 3",
-    description: "三级标题",
+    title: t("docsEdSlashH3"),
+    description: t("docsEdSlashH3Desc"),
     keywords: ["h3", "heading"],
     icon: "H3",
     command: ({ editor, range }) => {
@@ -75,8 +76,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "bullet",
-    title: "Bulleted List",
-    description: "项目符号列表",
+    title: t("docsEdSlashBullet"),
+    description: t("docsEdSlashBulletDesc"),
     keywords: ["ul", "list", "bullet", "无序"],
     icon: "•",
     command: ({ editor, range }) => {
@@ -85,8 +86,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "ordered",
-    title: "Numbered List",
-    description: "有序列表",
+    title: t("docsEdSlashOrdered"),
+    description: t("docsEdSlashOrderedDesc"),
     keywords: ["ol", "ordered", "list", "number", "有序"],
     icon: "1.",
     command: ({ editor, range }) => {
@@ -95,8 +96,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "task",
-    title: "Task List",
-    description: "可勾选的待办",
+    title: t("docsEdSlashTask"),
+    description: t("docsEdSlashTaskDesc"),
     keywords: ["todo", "task", "checkbox", "checklist", "任务"],
     icon: "☐",
     command: ({ editor, range }) => {
@@ -105,8 +106,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "quote",
-    title: "Quote",
-    description: "引用块",
+    title: t("docsEdSlashQuote"),
+    description: t("docsEdSlashQuoteDesc"),
     keywords: ["quote", "blockquote", "引用"],
     icon: "❞",
     command: ({ editor, range }) => {
@@ -115,8 +116,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "code",
-    title: "Code Block",
-    description: "代码块",
+    title: t("docsEdSlashCode"),
+    description: t("docsEdSlashCodeDesc"),
     keywords: ["code", "pre", "代码"],
     icon: "</>",
     command: ({ editor, range }) => {
@@ -125,8 +126,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "divider",
-    title: "Divider",
-    description: "分隔线",
+    title: t("docsEdSlashDivider"),
+    description: t("docsEdSlashDividerDesc"),
     keywords: ["hr", "divider", "rule", "分隔"],
     icon: "—",
     command: ({ editor, range }) => {
@@ -135,8 +136,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "image",
-    title: "Image",
-    description: "插入图片",
+    title: t("docsEdSlashImage"),
+    description: t("docsEdSlashImageDesc"),
     keywords: ["image", "img", "photo", "picture", "图片"],
     icon: "🖼",
     command: ({ editor, range }) => {
@@ -153,8 +154,8 @@ export const STANDARD_CANDIDATES: readonly SlashCandidate[] = [
   },
   {
     id: "table",
-    title: "Table",
-    description: "3x3 表格",
+    title: t("docsEdSlashTable"),
+    description: t("docsEdSlashTableDesc"),
     keywords: ["table", "grid", "表格"],
     icon: "▦",
     command: ({ editor, range }) => {

@@ -1178,6 +1178,44 @@ async fn drive_one_with_prompt(
     timeout_ms: u64,
     workflow_prompt: Option<String>,
 ) -> Result<(), String> {
+    // A requirement bound to a declarative workflow runs the multi-step
+    // recipe instead of a single agent turn. The bound workflow must
+    // still exist in the store; otherwise we fall through to the normal
+    // single-agent path (the binding is a soft reference).
+    if let (Some(wf_id), Some(wf_store)) = (
+        requirement.workflow_id.as_deref(),
+        state.workflows.as_ref(),
+    ) {
+        match wf_store.get(wf_id).await {
+            Ok(Some(def)) => {
+                info!(
+                    requirement_id = %requirement.id,
+                    workflow_id = %wf_id,
+                    "auto mode: running bound workflow"
+                );
+                return crate::workflow_runtime::drive_workflow(
+                    state,
+                    &def,
+                    Some(requirement),
+                    workspace_override,
+                    timeout_ms,
+                )
+                .await
+                .map(|_| ());
+            }
+            Ok(None) => {
+                warn!(
+                    requirement_id = %requirement.id,
+                    workflow_id = %wf_id,
+                    "auto mode: bound workflow not found; falling back to single-agent run"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, workflow_id = %wf_id, "auto mode: load bound workflow failed");
+            }
+        }
+    }
+
     let req_store = state
         .requirements
         .clone()
@@ -1342,6 +1380,7 @@ async fn drive_one_with_prompt(
         .await;
         advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
         capture_failure_memory(state, &requirement, &run).await;
+        capture_failure_learning_memory(state, &requirement, &run).await;
         record_activity(
             state,
             &requirement.id,
@@ -1499,6 +1538,7 @@ async fn drive_one_with_prompt(
     }
     advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
     capture_failure_memory(state, &requirement, &run).await;
+    capture_failure_learning_memory(state, &requirement, &run).await;
     record_activity(
         state,
         &requirement.id,
@@ -1872,7 +1912,7 @@ fn truncate_one_line(s: &str, cap: usize) -> String {
     }
 }
 
-async fn record_activity(
+pub(crate) async fn record_activity(
     state: &AppState,
     requirement_id: &str,
     kind: ActivityKind,
@@ -2004,6 +2044,67 @@ async fn capture_failure_memory(state: &AppState, requirement: &Requirement, run
 /// to remember why this run blew up. The string is truncated to
 /// [`ProjectMemory::BODY_CAP`] inside `ProjectMemory::new`, so we
 /// can be slightly verbose here without budgeting carefully.
+/// Phase 1 self-improving-agent — sibling of
+/// [`capture_failure_memory`]. Writes a `MemoryItem` row through the
+/// new row-based [`harness_learning::MemoryStore`] when a
+/// `RequirementRun` lands in `Failed`. Different store from the
+/// existing `ProjectMemoryStore` path: this one lives under
+/// `<data-dir>/jarvis/memories/` and is shaped by the
+/// self-improving-agent spec (scope / kind / source / pinned / etc.)
+/// instead of the older file-based [`harness_project::ProjectMemory`].
+///
+/// Both fire together by design — Phase 2 will unify the two stores;
+/// until then operators see the same failure recorded in both
+/// surfaces, which is fine because they're consumed by different
+/// product paths (the older one feeds the next run's system prompt,
+/// the new one will feed the cross-project Memory UI + reviewer
+/// fork). No-op when the new store isn't configured.
+async fn capture_failure_learning_memory(
+    state: &AppState,
+    requirement: &Requirement,
+    run: &RequirementRun,
+) {
+    let Some(store) = state.learning_memory.as_ref() else {
+        return;
+    };
+    if run.status != RequirementRunStatus::Failed {
+        return;
+    }
+    let body = render_failure_memory_body(run);
+    let mut item = harness_learning::MemoryItem::new(
+        harness_learning::MemoryScope::project(requirement.project_id.clone()),
+        harness_learning::MemoryKind::Gotcha,
+        format!("Run failed: {}", requirement.title),
+        body,
+    )
+    .with_source(harness_learning::MemorySource::Run {
+        run_id: run.id.clone(),
+    });
+    // Tag with the requirement id so the future Memory UI can offer
+    // "show all gotchas for this requirement" without a separate
+    // index.
+    item = item.with_tag(format!("requirement:{}", requirement.id));
+    // Lower confidence than user-typed rows — these are auto-derived
+    // signals; the reviewer fork may consolidate them later.
+    item.confidence = 0.7;
+    match store.upsert(item).await {
+        Ok(saved) => {
+            debug!(
+                run_id = %run.id,
+                memory_id = %saved.id,
+                project_id = %requirement.project_id,
+                "auto mode: failure captured into learning memory store"
+            );
+        }
+        Err(e) => warn!(
+            run_id = %run.id,
+            project_id = %requirement.project_id,
+            error = %e,
+            "auto mode: learning memory capture failed"
+        ),
+    }
+}
+
 fn render_failure_memory_body(run: &RequirementRun) -> String {
     let mut body = String::new();
     if let Some(err) = run
@@ -2048,7 +2149,7 @@ mod tests {
     use harness_core::{AgentConfig, AgentProfile, ChatRequest, ChatResponse, Error, FinishReason, LlmProvider, Message};
 use harness_project::{Project, ProjectWorkspace, Requirement, RequirementStatus, RequirementTodo, RequirementTodoCreator, VerificationPlan};
     use harness_store::{
-        MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore,
+        MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore, MemoryMemoryStore,
         MemoryProjectMemoryStore, MemoryProjectStore, MemoryRequirementRunStore,
         MemoryRequirementStore,
     };
@@ -3716,6 +3817,94 @@ Do {{ requirement.title }} in {{ issue.state }}.
             n, 1,
             "consecutive counter should ignore failures before the latest success"
         );
+    }
+
+    // Phase 1 self-improving-agent — sibling of the test below
+    // (`failed_run_captures_project_memory_with_provenance`). Verifies
+    // the new row-based `MemoryStore` write path independent of the
+    // older `ProjectMemoryStore` one.
+
+    fn synth_failed_run(req_id: &str, run_id: &str, error: &str) -> RequirementRun {
+        // `RequirementRun::new(req_id, conversation_id)` auto-allocates
+        // a UUID for `run.id`; we override here so the test can assert
+        // the exact provenance round-trips through `MemorySource::Run`.
+        let mut run = RequirementRun::new(req_id, "conv-fixture");
+        run.id = run_id.to_string();
+        run.status = RequirementRunStatus::Failed;
+        run.error = Some(error.into());
+        run.started_at = chrono::Utc::now().to_rfc3339();
+        run.finished_at = Some(run.started_at.clone());
+        run
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_writes_gotcha_with_run_source() {
+        let state = base_state_with_canned_llm("ignored").with_user_memory_store(Arc::new(
+            MemoryMemoryStore::new(),
+        ));
+        let mut req = Requirement::new("proj-1", "Title goes here");
+        req.id = "req-fixture".into();
+        let run = synth_failed_run(&req.id, "run-fixture", "tests panicked");
+
+        capture_failure_learning_memory(&state, &req, &run).await;
+
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "exactly one gotcha per failed run");
+        let m = &rows[0];
+        assert_eq!(m.kind, harness_learning::MemoryKind::Gotcha);
+        match &m.scope {
+            harness_learning::MemoryScope::Project { project_id } => {
+                assert_eq!(project_id, "proj-1");
+            }
+            other => panic!("expected Project scope, got {other:?}"),
+        }
+        match &m.source {
+            harness_learning::MemorySource::Run { run_id } => {
+                assert_eq!(run_id, "run-fixture");
+            }
+            other => panic!("expected Run source, got {other:?}"),
+        }
+        assert!(m.title.contains("Title goes here"));
+        assert!(m.body.contains("tests panicked"));
+        assert!(m.tags.iter().any(|t| t == "requirement:req-fixture"));
+        assert!((m.confidence - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_skips_non_failed_runs() {
+        let state = base_state_with_canned_llm("ignored").with_user_memory_store(Arc::new(
+            MemoryMemoryStore::new(),
+        ));
+        let req = Requirement::new("proj-x", "ok one");
+        let mut run = synth_failed_run(&req.id, "rid", "unused");
+        run.status = RequirementRunStatus::Completed;
+        capture_failure_learning_memory(&state, &req, &run).await;
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "completed runs must not write a gotcha");
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_no_op_when_store_missing() {
+        // Don't wire a learning_memory store at all — function must
+        // return silently without panicking.
+        let state = base_state_with_canned_llm("ignored");
+        assert!(state.learning_memory.is_none());
+        let req = Requirement::new("proj-y", "no store");
+        let run = synth_failed_run(&req.id, "r1", "boom");
+        capture_failure_learning_memory(&state, &req, &run).await;
+        // No assertion possible; not panicking is the test.
     }
 
     #[tokio::test]

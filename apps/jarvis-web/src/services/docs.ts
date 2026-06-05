@@ -117,7 +117,7 @@ export async function loadDocProjects(workspace?: string): Promise<void> {
   }
 }
 
-export async function loadDocDraft(projectId: string): Promise<void> {
+export async function loadDocDraft(projectId: string): Promise<DocDraft | null> {
   try {
     const r = await fetch(
       apiUrl(`/v1/doc-projects/${encodeURIComponent(projectId)}/draft`),
@@ -125,15 +125,18 @@ export async function loadDocDraft(projectId: string): Promise<void> {
     if (r.status === 503 || r.status === 404) {
       draftByProject.set(projectId, null);
       notify();
-      return;
+      return null;
     }
     if (!r.ok) throw new Error(`doc draft fetch: ${r.status}`);
     const body = await r.json();
-    draftByProject.set(projectId, body && body.id ? (body as DocDraft) : null);
+    const draft = body && body.id ? (body as DocDraft) : null;
+    draftByProject.set(projectId, draft);
     notify();
+    return draft;
   } catch (e) {
     console.warn("doc draft fetch failed", e);
     notify();
+    return draftByProject.get(projectId) ?? null;
   }
 }
 

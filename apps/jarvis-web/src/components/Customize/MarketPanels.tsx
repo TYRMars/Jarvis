@@ -11,11 +11,11 @@ import {
 import { sendFrame } from "../../services/socket";
 import { appStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
-
-function tx(key: string, fallback: string): string {
-  const v = t(key);
-  return v === key ? fallback : v;
-}
+import {
+  createWorkflow,
+  type CreateWorkflowInput,
+  type WorkflowStep,
+} from "../../services/workflows";
 
 type MarketState<T> =
   | { kind: "loading" }
@@ -90,14 +90,14 @@ export function SkillMarketPanel({ onInstalled }: { onInstalled?: () => void }) 
   };
 
   return (
-    <div className="market-panel" aria-label={tx("marketSkillTitle", "Online Skill market")}>
+    <div className="market-panel" aria-label={t("marketSkillTitle")}>
       <MarketHeader
-        title={tx("marketSkillTitle", "Online Skill market")}
-        hint={tx("marketSkillHint", "Search open-source Skills and install them into this workspace.")}
+        title={t("marketSkillTitle")}
+        hint={t("custMktSkillHint")}
         query={query}
         setQuery={setQuery}
         onSubmit={submit}
-        placeholder={tx("marketSkillSearchPlaceholder", "Search pnpm, docs, git…")}
+        placeholder={t("custMktSkillSearchPlaceholder")}
       />
       {renderSkillMarket(state, installing, (entry) => { void install(entry); })}
       <MarketLoadMore
@@ -175,14 +175,14 @@ export function McpMarketPanel({ onInstalled }: { onInstalled?: () => void }) {
   };
 
   return (
-    <div className="market-panel" aria-label={tx("marketMcpTitle", "Online MCP market")}>
+    <div className="market-panel" aria-label={t("marketMcpTitle")}>
       <MarketHeader
-        title={tx("marketMcpTitle", "Online MCP market")}
-        hint={tx("marketMcpHint", "Search the official MCP registry and add stdio servers directly.")}
+        title={t("marketMcpTitle")}
+        hint={t("custMktMcpHint")}
         query={query}
         setQuery={setQuery}
         onSubmit={submit}
-        placeholder={tx("marketMcpSearchPlaceholder", "Search filesystem, git, browser…")}
+        placeholder={t("custMktMcpSearchPlaceholder")}
       />
       {renderMcpMarket(state, installing, (entry) => { void install(entry); })}
       <MarketLoadMore
@@ -242,7 +242,7 @@ function MarketLoadMore({
         onClick={onLoadMore}
         disabled={loading}
       >
-        {loading ? tx("marketLoadingMore", "Loading…") : tx("marketLoadMore", "Load more")}
+        {loading ? t("custMktLoadingMore") : t("custMktLoadMore")}
       </button>
     </div>
   );
@@ -278,7 +278,7 @@ function MarketHeader({
           placeholder={placeholder}
         />
         <button type="submit" className="settings-btn">
-          {tx("marketSearchBtn", "Search")}
+          {t("marketSearchBtn")}
         </button>
       </form>
     </div>
@@ -295,7 +295,7 @@ function renderSkillMarket(
     return <div className="settings-form-error">{t("marketLoadFailed", state.message)}</div>;
   }
   if (state.entries.length === 0) {
-    return <div className="market-empty">{tx("marketEmpty", "No matching entries.")}</div>;
+    return <div className="market-empty">{t("marketEmpty")}</div>;
   }
   return (
     <ul className="market-list">
@@ -306,7 +306,7 @@ function renderSkillMarket(
             <div className="market-item-main">
               <div className="market-item-title">
                 <span className="mono">{entry.name}</span>
-                {entry.isOfficial && <span className="market-tag">{tx("marketOfficial", "Official")}</span>}
+                {entry.isOfficial && <span className="market-tag">{t("marketOfficial")}</span>}
               </div>
               <div className="market-item-desc">{entry.installHint}</div>
               <div className="market-tags">
@@ -320,7 +320,7 @@ function renderSkillMarket(
               onClick={() => onInstall(entry)}
               disabled={installing !== null}
             >
-              {installing === key ? tx("marketInstalling", "Installing…") : tx("marketInstallBtn", "Install")}
+              {installing === key ? t("marketInstalling") : t("marketInstallBtn")}
             </button>
           </li>
         );
@@ -339,7 +339,7 @@ function renderMcpMarket(
     return <div className="settings-form-error">{t("marketLoadFailed", state.message)}</div>;
   }
   if (state.entries.length === 0) {
-    return <div className="market-empty">{tx("marketEmpty", "No matching entries.")}</div>;
+    return <div className="market-empty">{t("marketEmpty")}</div>;
   }
   return (
     <ul className="market-list">
@@ -362,14 +362,14 @@ function McpMarketItem({
   const cfg = useMemo(() => mcpConfigFromMarketEntry(entry), [entry]);
   const hasRemoteOnly = !cfg && entry.remotes.length > 0;
   const disabledReason = hasRemoteOnly
-    ? tx("marketMcpRemoteOnly", "HTTP remote, not supported by this runtime yet")
-    : tx("marketMcpNeedsEnv", "Needs manual command or environment variables");
+    ? t("custMktMcpRemoteOnly")
+    : t("custMktMcpNeedsEnv");
   return (
     <li className="market-item">
       <div className="market-item-main">
         <div className="market-item-title">
           <span className="mono">{entry.title || entry.name}</span>
-          {entry.isLatest && <span className="market-tag">{tx("marketLatest", "Latest")}</span>}
+          {entry.isLatest && <span className="market-tag">{t("marketLatest")}</span>}
         </div>
         <div className="market-item-desc">{entry.description || entry.name}</div>
         <div className="market-tags">
@@ -391,7 +391,7 @@ function McpMarketItem({
         disabled={installing !== null || cfg == null}
         title={cfg == null ? disabledReason : undefined}
       >
-        {installing === entry.name ? tx("marketAdding", "Adding…") : tx("marketAddBtn", "Add")}
+        {installing === entry.name ? t("custMktAdding") : t("marketAddBtn")}
       </button>
     </li>
   );
@@ -402,4 +402,200 @@ function activateSkill(name: string) {
   const current = appStore.getState().activeSkills;
   const next = Array.from(new Set([...current, name]));
   appStore.getState().setActiveSkills?.(next);
+}
+
+// ---------- Workflow templates market ------------------------------
+// Workflows are user-authored (no remote registry), so the market tab
+// offers curated starter recipes. "Add" creates the definition via the
+// workflow store; users then customize it under Manage and bind it to a
+// requirement.
+
+function agentStep(
+  name: string,
+  prompt: string,
+  outputKey: string | null = null,
+): WorkflowStep {
+  return {
+    id: "",
+    name,
+    kind: { type: "agent", prompt, subagent: null, model: null, output_key: outputKey },
+  };
+}
+
+function phaseStep(name: string, title: string, steps: WorkflowStep[]): WorkflowStep {
+  return { id: "", name, kind: { type: "phase", title, steps } };
+}
+
+function parallelStep(name: string, steps: WorkflowStep[]): WorkflowStep {
+  return { id: "", name, kind: { type: "parallel", steps, join: "all_required" } };
+}
+
+interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  build: () => CreateWorkflowInput;
+}
+
+const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
+  {
+    id: "i18n-audit",
+    name: "中英文 i18n 排查与修复",
+    description:
+      "Per-page audit: inventory strings → parallel hardcoded/parity/untranslated lenses → fix both i18n blocks → verify tsc/lint/test. Bind one per page.",
+    build: () => ({
+      name: "i18n 中英文排查与修复",
+      description:
+        "Per-page Chinese/English audit-and-fix recipe (jarvis-web). Bind to a requirement per page. Strings live in apps/jarvis-web/src/utils/i18n.ts (en + zh blocks); t() falls back en->raw-key.",
+      steps: [
+        agentStep(
+          "Inventory page strings",
+          "List every user-facing string the target page renders (JSX text + label/placeholder/title/aria-label + toasts/empty states + data-i18n* markup), with file:line and whether it goes through t()/data-i18n. Read only.",
+          "inventory",
+        ),
+        phaseStep("Audit", "Audit", [
+          parallelStep("Audit lenses", [
+            agentStep(
+              "Hardcoded-string lens",
+              "From the inventory below, list every hardcoded user-facing string not behind t()/data-i18n (English or Chinese), with file:line and a proposed namespaced key.\n\n{{ outputs.inventory }}",
+              "hardcoded",
+            ),
+            agentStep(
+              "Parity-key lens",
+              "For every t('key') the page uses, check apps/jarvis-web/src/utils/i18n.ts has it in BOTH the en and zh blocks with matching arity. Report the gaps.\n\n{{ outputs.inventory }}",
+              "missing_keys",
+            ),
+            agentStep(
+              "Untranslated-zh lens",
+              "Flag i18n keys this page uses whose zh value is still English (e.g. models:\"Models\"), with a suggested Chinese translation.\n\n{{ outputs.inventory }}",
+              "untranslated",
+            ),
+          ]),
+        ]),
+        phaseStep("Fix", "Fix", [
+          agentStep(
+            "Apply i18n fixes",
+            "Extract each hardcoded string to a namespaced t() key, add it to BOTH the en and zh blocks of utils/i18n.ts with matching arity and real Chinese, and translate untranslated zh values. Requires fs.edit.\n\nHardcoded: {{ outputs.hardcoded }}\nParity gaps: {{ outputs.missing_keys }}\nUntranslated: {{ outputs.untranslated }}",
+            "changes",
+          ),
+        ]),
+        phaseStep("Verify", "Verify", [
+          agentStep(
+            "Verify build + parity",
+            "From apps/jarvis-web run npx tsc -b, npm run lint, npm run test; confirm no hardcoded strings remain and every key exists in both locales. Requires shell.exec. Report PASS or the exact errors.\n\n{{ outputs.changes }}",
+          ),
+        ]),
+      ],
+    }),
+  },
+  {
+    id: "spec-to-done",
+    name: "需求实现：方案 → 实现 → 验证",
+    description:
+      "Research the requirement, implement the change, then verify (build + tests). A solid default for coding requirements.",
+    build: () => ({
+      name: "方案 → 实现 → 验证",
+      description: "Research -> implement -> verify recipe for a coding requirement.",
+      steps: [
+        agentStep(
+          "Research & plan",
+          "Investigate the codebase for this requirement and produce a concrete implementation plan listing the files to change.",
+          "plan",
+        ),
+        agentStep(
+          "Implement",
+          "Implement the change following this plan; keep edits minimal and idiomatic. Requires fs.edit.\n\n{{ outputs.plan }}",
+          "changes",
+        ),
+        agentStep(
+          "Verify",
+          "Build and run the relevant tests; report pass/fail with evidence. Requires shell.exec.\n\n{{ outputs.changes }}",
+        ),
+      ],
+    }),
+  },
+  {
+    id: "code-review",
+    name: "代码评审",
+    description:
+      "Summarize the current diff, review it for bugs and simplifications, then write up findings by severity.",
+    build: () => ({
+      name: "代码评审",
+      description: "Summarize -> review -> report recipe for the current diff.",
+      steps: [
+        agentStep(
+          "Summarize diff",
+          "Summarize the current git diff: what changed and why, grouped by area.",
+          "summary",
+        ),
+        agentStep(
+          "Review",
+          "Review the diff for correctness bugs and reuse/simplification opportunities; cite file:line.\n\n{{ outputs.summary }}",
+          "findings",
+        ),
+        agentStep(
+          "Write report",
+          "Write a concise review report from these findings, ordered by severity.\n\n{{ outputs.findings }}",
+        ),
+      ],
+    }),
+  },
+];
+
+export function WorkflowMarketPanel({ onInstalled }: { onInstalled?: () => void }) {
+  const [adding, setAdding] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const add = async (tpl: WorkflowTemplate) => {
+    setAdding(tpl.id);
+    setMessage(null);
+    setError(null);
+    try {
+      const def = await createWorkflow(tpl.build());
+      onInstalled?.();
+      setMessage(t("marketWorkflowAdded", def.name));
+    } catch (e: unknown) {
+      setError(t("custMktWorkflowAddFailed") + String(e));
+    } finally {
+      setAdding(null);
+    }
+  };
+
+  return (
+    <div className="market-panel" aria-label={t("marketWorkflowTitle")}>
+      <div className="market-head">
+        <div className="market-title-block">
+          <div className="market-title">{t("marketWorkflowTitle")}</div>
+          <div className="market-hint">
+            {t("custMktWorkflowHint")}
+          </div>
+        </div>
+      </div>
+      <ul className="market-list">
+        {WORKFLOW_TEMPLATES.map((tpl) => (
+          <li key={tpl.id} className="market-item">
+            <div className="market-item-main">
+              <div className="market-item-title">
+                <span>{tpl.name}</span>
+              </div>
+              <div className="market-item-desc">{tpl.description}</div>
+            </div>
+            <button
+              type="button"
+              className="settings-btn"
+              onClick={() => {
+                void add(tpl);
+              }}
+              disabled={adding !== null}
+            >
+              {adding === tpl.id ? t("custMktAdding") : t("marketAddBtn")}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {message && <div className="settings-form-success">{message}</div>}
+      {error && <div className="settings-form-error">{error}</div>}
+    </div>
+  );
 }

@@ -9,7 +9,12 @@ import { recordUsage } from "../usage";
 import { recordUsageDaily } from "../usageCumulator";
 import { applyRouting } from "../socket";
 import { setInFlight, showError, showTransientStatus } from "../status";
-import { refreshConvoList, clearSessionRoute } from "../conversations";
+import {
+  refreshConvoList,
+  clearSessionRoute,
+  forceReloadActiveConversation,
+} from "../conversations";
+import { clientLastSeq, invalidateConversationSeq } from "../chatRuns";
 
 const NOT_FOUND_RE = /^conversation `([^`]+)` not found$/;
 
@@ -103,6 +108,13 @@ export const lifecycleFrameHandlers: Record<string, (ev: any) => void> = {
   },
   skill_activated: (ev) => skillUpdated(ev),
   skill_deactivated: (ev) => skillUpdated(ev),
+  tail_replay_start: (ev) => onTailReplayStart(ev),
+  tail_replay_done: () => {
+    // Pure marker: snapshot replay just finished, the WS is now in
+    // live-tail mode. No store work needed — the per-event handlers
+    // have already updated state as the snapshot drained.
+  },
+  resume_error: (ev) => onResumeError(ev),
 };
 
 function skillUpdated(ev: any): void {
@@ -218,4 +230,44 @@ function defaultProjectWorkspace(
 ): string | null {
   if (!projectId) return null;
   return store.projectsById?.[projectId]?.workspaces?.[0]?.path ?? null;
+}
+
+/// `tail_replay_start` precedes the snapshot of buffered frames the
+/// server is about to replay on a Resume. It carries the server's
+/// current `first_seq` / `latest_seq` window so the client can
+/// detect whether events the client thought it had seen (cached in
+/// `lastSeqByConversation`) have been silently evicted from the
+/// ring. The active-conversation invariant: by the time this frame
+/// arrives, the client has already sent `Resume {id}` and so the
+/// id we care about is `activeId`.
+///
+/// Gap rule: if the server's oldest retained seq is greater than
+/// `clientLastSeq + 1`, at least one event is missing. Force a
+/// REST history reload and drop the seq cursor so subsequent
+/// REST poll catch-ups don't filter against a stale anchor.
+function onTailReplayStart(ev: any): void {
+  const firstSeq = typeof ev?.first_seq === "number" ? ev.first_seq : undefined;
+  if (firstSeq === undefined) return;
+  const id = appStore.getState().activeId;
+  if (!id) return;
+  const cursor = clientLastSeq(id);
+  if (firstSeq > cursor + 1) {
+    invalidateConversationSeq(id);
+    void forceReloadActiveConversation();
+  }
+}
+
+/// `resume_error` fires when the server can't serve the requested
+/// `after_seq` because the events have been evicted from the ring
+/// buffer. Reason is `"evicted"` in v1. Fall back to a full REST
+/// history reload — there's nothing useful the in-flight tail can
+/// stream us once we've lost the prefix.
+function onResumeError(ev: any): void {
+  const reason = typeof ev?.reason === "string" ? ev.reason : "unknown";
+  showTransientStatus(`resume gap (${reason})`, "warn");
+  const id = appStore.getState().activeId;
+  if (id) {
+    invalidateConversationSeq(id);
+    void forceReloadActiveConversation();
+  }
 }

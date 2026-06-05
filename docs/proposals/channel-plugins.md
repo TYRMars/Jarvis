@@ -1,8 +1,8 @@
 # Channel adapter plugins (Feishu / DingTalk / WeCom / …)
 
-**Status:** Proposed (Phase 1 in flight — manifest + binding store + proposal)
+**Status:** Adopted partial — Phase 1 landed (`harness-channel` crate: manifest + `ChannelBindingStore` + `ChannelAdapter` per-kind impls for wecom_webhook / feishu_bot / dingtalk_bot / wecom_app + inbound callback routes + `channel.send` tool). Phase 2+ in progress.
 **Owner:** harness-server / harness-plugin
-**Last updated:** 2026-05-09
+**Last updated:** 2026-05-22
 
 ## Why
 

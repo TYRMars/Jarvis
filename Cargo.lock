@@ -2002,6 +2002,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-automation"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "harness-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
 name = "harness-channel"
 version = "0.2.0"
 dependencies = [
@@ -2048,6 +2061,17 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "harness-learning"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2158,6 +2182,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-router"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "harness-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "harness-server"
 version = "0.2.0"
 dependencies = [
@@ -2169,9 +2203,11 @@ dependencies = [
  "cbc",
  "chrono",
  "futures",
+ "harness-automation",
  "harness-channel",
  "harness-cloud",
  "harness-core",
+ "harness-learning",
  "harness-llm",
  "harness-mcp",
  "harness-observability",
@@ -2181,6 +2217,7 @@ dependencies = [
  "harness-skill",
  "harness-store",
  "harness-tools",
+ "harness-workflow",
  "hmac",
  "include_dir",
  "portable-pty",
@@ -2222,10 +2259,13 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "harness-automation",
  "harness-channel",
  "harness-core",
+ "harness-learning",
  "harness-observability",
  "harness-project",
+ "harness-workflow",
  "serde",
  "serde_json",
  "sqlx",
@@ -2259,6 +2299,7 @@ dependencies = [
  "diffy",
  "harness-channel",
  "harness-core",
+ "harness-learning",
  "harness-observability",
  "harness-project",
  "harness-requirement",
@@ -2272,6 +2313,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "harness-workflow"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "harness-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -2780,12 +2835,14 @@ dependencies = [
  "dialoguer",
  "harness-channel",
  "harness-core",
+ "harness-learning",
  "harness-llm",
  "harness-mcp",
  "harness-memory",
  "harness-observability",
  "harness-plugin",
  "harness-project",
+ "harness-router",
  "harness-server",
  "harness-skill",
  "harness-store",

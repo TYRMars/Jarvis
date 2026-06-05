@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiUrl } from "../../../services/api";
 import { Section } from "./Section";
 import { MemoryIncludesPanel } from "./MemoryIncludesPanel";
+import { t } from "../../../utils/i18n";
 
 interface SyncStatus {
   backend: "none" | "git" | "icloud";
@@ -109,7 +110,7 @@ export function MemorySyncSection({ embedded }: Props = {}) {
         }
         setActionResult({
           ok: true,
-          message: extractMessage(parsed) || "ok",
+          message: extractMessage(parsed) || t("setSecBSyncOk"),
           raw: parsed,
         });
         await fetchStatus();
@@ -126,29 +127,29 @@ export function MemorySyncSection({ embedded }: Props = {}) {
     <>
       {unavailable && (
         <div className="memory-sync-empty">
-          Memory tools aren't enabled on this server. Set{" "}
-          <code>JARVIS_ENABLE_MEMORY=1</code> (or{" "}
-          <code>[agent].enable_memory = true</code> in config) and restart.
+          {t("setSecBSyncUnavailablePrefix")}{" "}
+          <code>JARVIS_ENABLE_MEMORY=1</code> {t("setSecBSyncUnavailableOr")}{" "}
+          <code>[agent].enable_memory = true</code> {t("setSecBSyncUnavailableSuffix")}
         </div>
       )}
       {error && (
         <div className="memory-sync-error" role="alert">
-          Failed to load status: {error}
+          {t("setSecBSyncLoadFailed")} {error}
         </div>
       )}
       {!unavailable && status && (
         <>
           <div className="memory-sync-row">
-            <span className="memory-sync-label">Backend</span>
+            <span className="memory-sync-label">{t("setSecBSyncBackend")}</span>
             <BackendBadge backend={status.backend} />
           </div>
           <div className="memory-sync-row">
-            <span className="memory-sync-label">User root</span>
-            <code>{status.user_root ?? "(unconfigured)"}</code>
+            <span className="memory-sync-label">{t("setSecBSyncUserRoot")}</span>
+            <code>{status.user_root ?? t("setSecBUnconfigured")}</code>
           </div>
           <div className="memory-sync-row">
-            <span className="memory-sync-label">Workspace root</span>
-            <code>{status.workspace_root ?? "(unconfigured)"}</code>
+            <span className="memory-sync-label">{t("setSecBSyncWorkspaceRoot")}</span>
+            <code>{status.workspace_root ?? t("setSecBUnconfigured")}</code>
           </div>
 
           {status.backend === "git" && status.user_scope && (
@@ -170,9 +171,8 @@ export function MemorySyncSection({ embedded }: Props = {}) {
           {status.backend === "icloud" && (
             <div className="memory-sync-icloud">
               <p>
-                iCloud Drive syncs at the OS level — no manual push/pull needed.
-                Use the button below to create the <code>Jarvis</code> folder
-                inside iCloud Drive if it doesn't exist yet.
+                {t("setSecBSyncIcloudHintPrefix")} <code>Jarvis</code>{" "}
+                {t("setSecBSyncIcloudHintSuffix")}
               </p>
               <button
                 type="button"
@@ -180,18 +180,18 @@ export function MemorySyncSection({ embedded }: Props = {}) {
                 disabled={actionBusy}
                 onClick={() => doAction("/v1/memory/sync_setup_icloud")}
               >
-                {actionBusy ? "Setting up…" : "Set up iCloud folder"}
+                {actionBusy ? t("setSecBSettingUp") : t("setSecBSyncIcloudSetup")}
               </button>
             </div>
           )}
 
           {status.backend === "none" && (
             <div className="memory-sync-off">
-              Sync backend is set to <strong>none</strong>. Memory tools work
-              locally but nothing leaves this machine.
+              {t("setSecBSyncOffPrefix")} <strong>{t("setSecBSyncNone")}</strong>.{" "}
+              {t("setSecBSyncOffBody")}
               <br />
-              Set <code>JARVIS_MEMORY_SYNC_BACKEND=git</code> (or{" "}
-              <code>=icloud</code> on macOS) and restart to enable.
+              {t("setSecBSyncOffSet")} <code>JARVIS_MEMORY_SYNC_BACKEND=git</code> ({t("setSecBSyncOffOr")}{" "}
+              <code>=icloud</code> {t("setSecBSyncOffMacos")}
             </div>
           )}
 
@@ -210,7 +210,7 @@ export function MemorySyncSection({ embedded }: Props = {}) {
               disabled={loading}
               onClick={() => void fetchStatus()}
             >
-              {loading ? "Refreshing…" : "Refresh"}
+              {loading ? t("setSecBRefreshing") : t("setSecBRefresh")}
             </button>
           </div>
 
@@ -260,11 +260,11 @@ function GitDetails({
   if (!scope.is_git_repo) {
     return (
       <div className="memory-sync-setup">
-        <p>Memory dir is not a git repo yet. Connect it to a remote:</p>
+        <p>{t("setSecBSyncNotRepo")}</p>
         <div className="memory-sync-form">
           <input
             type="text"
-            placeholder="git@github.com:me/jarvis-memory.git"
+            placeholder={t("setSecBSyncRemotePlaceholder")}
             value={remoteUrl}
             onChange={(e) => onRemoteUrlChange(e.target.value)}
             disabled={busy}
@@ -276,11 +276,11 @@ function GitDetails({
             onClick={onSetup}
             disabled={busy || !remoteUrl.trim()}
           >
-            {busy ? "Setting up…" : "Set up & push"}
+            {busy ? t("setSecBSettingUp") : t("setSecBSyncSetupPush")}
           </button>
         </div>
         <details>
-          <summary>Setup hint</summary>
+          <summary>{t("setSecBSyncSetupHint")}</summary>
           <pre>{scope.setup_hint ?? "—"}</pre>
         </details>
       </div>
@@ -289,24 +289,24 @@ function GitDetails({
   return (
     <div className="memory-sync-git">
       <div className="memory-sync-row">
-        <span className="memory-sync-label">Branch</span>
+        <span className="memory-sync-label">{t("setSecBSyncBranch")}</span>
         <code>{scope.branch ?? "—"}</code>
       </div>
       <div className="memory-sync-row">
-        <span className="memory-sync-label">Remote</span>
-        <code>{scope.remote_url ?? "(none — set one with git remote add origin)"}</code>
+        <span className="memory-sync-label">{t("setSecBSyncRemote")}</span>
+        <code>{scope.remote_url ?? t("setSecBSyncRemoteNone")}</code>
       </div>
       <div className="memory-sync-row">
-        <span className="memory-sync-label">HEAD</span>
+        <span className="memory-sync-label">{t("setSecBSyncHead")}</span>
         <code>{scope.head?.slice(0, 12) ?? "—"}</code>
       </div>
       <div className="memory-sync-row">
-        <span className="memory-sync-label">Dirty</span>
-        <code>{scope.dirty ? "yes" : "no"}</code>
+        <span className="memory-sync-label">{t("setSecBSyncDirty")}</span>
+        <code>{scope.dirty ? t("setSecBSyncYes") : t("setSecBSyncNo")}</code>
       </div>
       {scope.status && scope.status.trim() && (
         <details>
-          <summary>git status</summary>
+          <summary>{t("setSecBSyncGitStatus")}</summary>
           <pre>{scope.status}</pre>
         </details>
       )}
@@ -316,14 +316,14 @@ function GitDetails({
         onClick={onSync}
         disabled={busy}
       >
-        {busy ? "Syncing…" : "Sync now"}
+        {busy ? t("setSecBSyncing") : t("setSecBSyncNow")}
       </button>
     </div>
   );
 }
 
 function BackendBadge({ backend }: { backend: SyncStatus["backend"] }) {
-  const label = backend === "icloud" ? "iCloud" : backend === "git" ? "Git" : "None";
+  const label = backend === "icloud" ? "iCloud" : backend === "git" ? "Git" : t("setSecBSyncNoneBadge");
   return <span className={`memory-sync-badge backend-${backend}`}>{label}</span>;
 }
 
@@ -335,12 +335,12 @@ function extractMessage(parsed: unknown): string | null {
     if (typeof obj.hint === "string") return obj.hint;
     if (obj.push && typeof obj.push === "object") {
       const push = obj.push as Record<string, unknown>;
-      if (push.ok === true) return "Synced successfully.";
+      if (push.ok === true) return t("setSecBSyncSucceeded");
       if (push.ok === false && typeof push.stderr === "string") {
-        return `Push failed: ${push.stderr.slice(0, 240)}`;
+        return t("setSecBSyncPushFailed", push.stderr.slice(0, 240));
       }
     }
-    if (typeof obj.path === "string") return `Set up at ${obj.path}`;
+    if (typeof obj.path === "string") return t("setSecBSyncSetupAt", obj.path);
   }
   return null;
 }

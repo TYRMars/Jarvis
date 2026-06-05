@@ -74,11 +74,15 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::market_routes::router())
         .merge(crate::mcp_routes::router())
         .merge(crate::observability_routes::router())
+        .merge(crate::learning_routes::router())
+        .merge(crate::memory_routes::router())
         .merge(crate::skill_routes::router())
         .merge(crate::plugin_routes::router())
         .merge(crate::workspaces_routes::router())
         .merge(crate::todos_routes::router())
         .merge(crate::requirements_routes::router())
+        .merge(crate::automation_routes::router())
+        .merge(crate::workflow_routes::router())
         .merge(crate::roadmap_routes::router())
         .merge(crate::agent_profiles_routes::router())
         .merge(crate::subagents_routes::router())
@@ -1594,6 +1598,15 @@ enum WsClientMessage {
         model: Option<String>,
         #[serde(default)]
         provider: Option<String>,
+        /// When the client has previously observed events for this
+        /// conversation (via `seq` stamping on the wire), it can
+        /// pass its high-water mark here so the server only replays
+        /// events with `seq > after_seq`. Omitting or `0` means
+        /// "replay everything in the ring buffer". The server may
+        /// respond with a `resume_error: evicted` frame when the
+        /// requested cursor is older than the oldest retained seq.
+        #[serde(default)]
+        after_seq: Option<u64>,
     },
     /// Start a fresh persisted conversation. If `id` is omitted, the
     /// server allocates a UUID and reports it back. Optional
@@ -1808,10 +1821,19 @@ fn leading_system_count(messages: &[Message]) -> usize {
         .count()
 }
 
+/// Payload pushed through the owner WS event channel. The
+/// `Option<u64>` is the per-conversation `seq` assigned by
+/// `ChatRunRegistry::event` when the run is persisted; `None` for
+/// non-persisted free chats (no ring buffer, no replay). The WS
+/// receiver stamps the seq onto the serialized JSON before sending
+/// so the wire format on the owner socket matches what tail
+/// subscribers see.
+pub(crate) type OwnerWsEvent = (Option<u64>, AgentEvent);
+
 struct DetachedTurn {
     agent: Arc<harness_core::Agent>,
     conversation: Conversation,
-    event_tx: mpsc::Sender<AgentEvent>,
+    event_tx: mpsc::Sender<OwnerWsEvent>,
     chat_runs: Arc<crate::chat_runs::ChatRunRegistry>,
     subagent_runs: Option<Arc<crate::subagent_runs::SubAgentRunRegistry>>,
     observability: Option<Arc<dyn ObservabilityStore>>,
@@ -1909,13 +1931,13 @@ fn spawn_detached_turn(turn: DetachedTurn) -> tokio::task::JoinHandle<()> {
                         }
                         _ => {}
                     }
-                    chat_runs.event(persisted_id.as_deref(), &ev_to_send);
+                    let seq = chat_runs.event(persisted_id.as_deref(), &ev_to_send);
                     if let (Some(reg), AgentEvent::SubAgentEvent { frame }) =
                         (subagent_runs.as_ref(), &ev_to_send)
                     {
                         reg.record_frame(persisted_id.as_deref(), frame);
                     }
-                    let _ = event_tx.send(ev_to_send).await;
+                    let _ = event_tx.send((seq, ev_to_send)).await;
                     if is_terminal {
                         break;
                     }
@@ -2017,7 +2039,7 @@ async fn begin_user_turn(
     persisted_id: &mut Option<String>,
     persisted_project_id: &mut Option<String>,
     last_injection: &mut Option<TurnInjection>,
-    event_rx: &mut Option<mpsc::Receiver<AgentEvent>>,
+    event_rx: &mut Option<mpsc::Receiver<OwnerWsEvent>>,
     current_task: &mut Option<tokio::task::JoinHandle<()>>,
     sticky_provider: &mut Option<String>,
     sticky_model: &mut Option<String>,
@@ -2051,12 +2073,34 @@ async fn begin_user_turn(
         &content,
         recent_touched_files,
     );
+    // Phase 0 self-improving-agent — emit `Used` events for every
+    // skill whose body actually lands in this turn's system prompt.
+    // Fire-and-forget: never block the agent on disk I/O.
+    crate::learning_emit::spawn_record(
+        state.learning_skill_usage.clone(),
+        crate::learning_emit::build_used_events(
+            skills_catalog.as_ref(),
+            &skills_snapshot,
+            crate::learning_emit::workspace_scope(socket_workspace.as_deref()),
+            persisted_id.clone(),
+        ),
+    );
+    // Phase 1 — fetch user memories before building the agent so the
+    // closure below can apply them synchronously. The fetcher
+    // degrades to an empty Vec when the store is None / unreachable.
+    let user_memories =
+        crate::learning_emit::fetch_user_memories_for_prompt(state.learning_memory.as_ref())
+            .await;
     let workspace_for_turn = socket_workspace.clone();
     let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
         cfg.approver = Some(approver);
         cfg.hitl_tx = Some(hitl);
         if matches!(active_mode, harness_core::PermissionMode::Plan) {
             cfg.tool_filter = Some(plan_mode_tool_filter());
+        }
+        if let Some(prompt) = compose_with_user_memory(cfg.system_prompt.as_deref(), &user_memories)
+        {
+            cfg.system_prompt = Some(prompt);
         }
         if let Some(prompt) = compose_with_skills(
             cfg.system_prompt.as_deref(),
@@ -2123,7 +2167,7 @@ async fn begin_user_turn(
         soul_injected_at,
     };
     *last_injection = Some(injection.clone());
-    let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, new_rx) = mpsc::channel::<OwnerWsEvent>(64);
     *event_rx = Some(new_rx);
     if let Some(id) = persisted_id.as_deref() {
         if !state.chat_runs.try_start(id) {
@@ -2213,12 +2257,8 @@ fn merged_skills_for_turn(
     // matches. Capped at AUTO_SKILL_TOP_K so a single edit can't
     // pile on indefinitely.
     if !recent_paths.is_empty() {
-        let path_picks = harness_skill::pick_path_match_skills(
-            &guard,
-            recent_paths,
-            AUTO_SKILL_TOP_K,
-            &merged,
-        );
+        let path_picks =
+            harness_skill::pick_path_match_skills(&guard, recent_paths, AUTO_SKILL_TOP_K, &merged);
         for n in path_picks {
             if !merged.iter().any(|m| m == &n) {
                 merged.push(n);
@@ -2240,10 +2280,7 @@ const RECENT_TOUCHED_FILES_CAP: usize = 32;
 /// helper for the BackgroundTasksPanel's WS-push path (P7): the
 /// frontend listens for these and replaces its local task list,
 /// so it doesn't need to poll `/v1/tasks` on a tight interval.
-async fn push_tasks_snapshot(
-    ws_tx: &mut SplitSink<WebSocket, WsMessage>,
-    state: &AppState,
-) {
+async fn push_tasks_snapshot(ws_tx: &mut SplitSink<WebSocket, WsMessage>, state: &AppState) {
     let items = crate::tasks_routes::collect_tasks(state).await;
     let _ = ws_tx
         .send(WsMessage::Text(
@@ -2297,6 +2334,53 @@ fn push_recent_touched_file(files: &mut Vec<String>, path: &str) {
     while files.len() > RECENT_TOUCHED_FILES_CAP {
         files.pop();
     }
+}
+
+/// Self-improving-agent Phase 1 — prepend a `=== user memory ===` block
+/// onto the system prompt template. Each row renders as
+/// `[<kind>] <title>: <body>`; rows arrive pinned-first / recent-first
+/// from the store and the caller has already applied the byte cap via
+/// [`crate::learning_emit::fetch_user_memories_for_prompt`].
+///
+/// Returns `None` when there's nothing to inject so callers can
+/// short-circuit and leave the existing prompt untouched.
+fn compose_with_user_memory(
+    template: Option<&str>,
+    memories: &[harness_learning::MemoryItem],
+) -> Option<String> {
+    if memories.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::with_capacity(memories.len() + 2);
+    lines.push("=== user memory ===".to_string());
+    for m in memories {
+        if m.title.trim().is_empty() && m.body.trim().is_empty() {
+            continue;
+        }
+        let kind = match m.kind {
+            harness_learning::MemoryKind::Preference => "preference",
+            harness_learning::MemoryKind::Fact => "fact",
+            harness_learning::MemoryKind::Lesson => "lesson",
+            harness_learning::MemoryKind::Gotcha => "gotcha",
+            harness_learning::MemoryKind::Convention => "convention",
+        };
+        let title = m.title.trim();
+        let body = m.body.trim();
+        if body.is_empty() {
+            lines.push(format!("[{kind}] {title}"));
+        } else {
+            lines.push(format!("[{kind}] {title}: {body}"));
+        }
+    }
+    if lines.len() <= 1 {
+        return None; // header only, nothing useful
+    }
+    lines.push("=== /user memory ===".to_string());
+    let prefix = lines.join("\n");
+    Some(match template {
+        Some(t) if !t.is_empty() => format!("{prefix}\n\n{t}"),
+        _ => prefix,
+    })
 }
 
 fn compose_with_skills(
@@ -2397,6 +2481,12 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // itself, so the WS bridge stays unfiltered.
     let mut comments_changed_rx = state.comments.as_ref().map(|s| s.subscribe());
     let mut labels_changed_rx = state.labels.as_ref().map(|s| s.subscribe());
+    // Phase 1 self-improving-agent — broadcast fan-out from the
+    // `GuardedMemoryStore` wrapper. Same `Sender` the wrapper
+    // publishes on at the composition root; here we subscribe and
+    // forward each `MemoryEvent` to the client as a JSON frame so the
+    // Memories panel doesn't have to poll `/v1/memories`.
+    let mut memory_changed_rx = state.memory_events.as_ref().map(|tx| tx.subscribe());
     let (hitl_tx, mut pending_hitl_rx) = mpsc::channel::<PendingHitl>(8);
 
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -2410,10 +2500,16 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     // State carried from binder.materialise → terminal Done so the
     // strip step removes the right injected message.
     let mut last_injection: Option<TurnInjection> = None;
+    // Per-socket fallback for non-persisted (free-chat) turns where
+    // there is no `chat_runs` entry to anchor approvals against.
+    // Persisted turns route through `state.chat_runs.register_pending_approval`
+    // (and `take_pending_approval`) so a disconnect → reconnect on
+    // another tab can take over the approval prompt mid-turn — see
+    // the `WsClientMessage::Approve` / `Deny` arms below.
     let mut pending: HashMap<String, oneshot::Sender<ApprovalDecision>> = HashMap::new();
     let mut pending_hitl: HashMap<String, oneshot::Sender<HitlResponse>> = HashMap::new();
     // `Some` while a turn is in flight; `None` between turns.
-    let mut event_rx: Option<mpsc::Receiver<AgentEvent>> = None;
+    let mut event_rx: Option<mpsc::Receiver<OwnerWsEvent>> = None;
     // Handle to the spawned agent task so `Interrupt` can abort it
     // mid-stream. Stays in lockstep with `event_rx`.
     let mut current_task: Option<tokio::task::JoinHandle<()>> = None;
@@ -2471,7 +2567,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
         let event_fut = async {
             match event_rx.as_mut() {
                 Some(rx) => rx.recv().await,
-                None => std::future::pending::<Option<AgentEvent>>().await,
+                None => std::future::pending::<Option<OwnerWsEvent>>().await,
             }
         };
         // Same dormant pattern for the tail receiver. `recv()` returns
@@ -2526,10 +2622,20 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
             // ---- approver → server ----
             // The agent has yielded `ApprovalRequest` already; the
             // matching `PendingApproval` arrives here a moment later.
-            // We just stash the responder so the client's reply can
-            // route back.
+            // Stash the responder so the client's reply can route
+            // back: persisted conversations go through the
+            // `ChatRunRegistry` (survives reconnect), free chat
+            // falls back to the per-socket map.
             Some(p) = pending_rx.recv() => {
-                pending.insert(p.request.tool_call_id.clone(), p.responder);
+                if let Some(convo) = persisted_id.as_deref() {
+                    state.chat_runs.register_pending_approval(
+                        convo,
+                        p.request,
+                        p.responder,
+                    );
+                } else {
+                    pending.insert(p.request.tool_call_id.clone(), p.responder);
+                }
             }
             // ---- permission rules changed ----
             // Fan a single short event out so connected clients can
@@ -2754,6 +2860,24 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 };
                 let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
             }
+            // ---- long-term memory store mutated (Phase 1 self-improving-agent) ----
+            // Source: `harness_store::GuardedMemoryStore`. Wire shape
+            // is `{type: "memory_upserted", item}` / `{type: "memory_deleted", id}`.
+            // The Web UI Memories panel listens for these to refresh
+            // without a polling round-trip.
+            Ok(ev) = async {
+                match memory_changed_rx.as_mut() {
+                    Some(rx) => rx.recv().await.map_err(|_| ()),
+                    None => std::future::pending::<Result<harness_learning::MemoryEvent, ()>>().await,
+                }
+            } => {
+                // The enum is `#[serde(tag = "type")]` with snake_case
+                // variant names → serialising the event directly
+                // gives us the exact wire shape we want.
+                if let Ok(payload) = serde_json::to_string(&ev) {
+                    let _ = ws_tx.send(WsMessage::Text(payload)).await;
+                }
+            }
             // ---- native HITL tool → server ----
             Some(p) = pending_hitl_rx.recv() => {
                 let id = p.request.id.clone();
@@ -2772,7 +2896,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
             }
             // ---- agent → server ----
             ev = event_fut => {
-                let Some(ev) = ev else {
+                let Some((event_seq, ev)) = ev else {
                     // Sender dropped → turn is fully drained.
                     event_rx = None;
                     pending.clear();
@@ -2857,10 +2981,25 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         conv.messages.pop();
                     }
                 }
-                let payload = serde_json::to_string(&ev_to_send).unwrap_or_else(|e| {
-                    json!({ "type": "error", "message": format!("serialize: {e}") })
-                        .to_string()
-                });
+                // Serialize then stamp the `seq` the ring buffer
+                // assigned to this frame (same seq the tail
+                // subscribers see in `ChatRunEventRecord`). Lets
+                // the client track its high-water mark so a
+                // disconnect → `Resume { after_seq }` only replays
+                // events it actually missed.
+                let payload = match serde_json::to_value(&ev_to_send) {
+                    Ok(mut v) => {
+                        if let (Some(seq), Some(obj)) = (event_seq, v.as_object_mut()) {
+                            obj.insert("seq".to_string(), json!(seq));
+                        }
+                        v.to_string()
+                    }
+                    Err(e) => json!({
+                        "type": "error",
+                        "message": format!("serialize: {e}")
+                    })
+                    .to_string(),
+                };
                 if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
                     return;
                 }
@@ -2909,11 +3048,19 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
             Some(tail_result) = tail_fut => {
                 match tail_result {
                     Ok(record) => {
-                        let frame = record.frame;
+                        let seq = record.seq;
+                        let mut frame = record.frame;
                         let frame_type = frame
                             .get("type")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
+                        // Stamp the ring-buffer seq onto the frame
+                        // before sending so a tail subscriber's
+                        // wire payload looks identical to what the
+                        // owner socket would have sent.
+                        if let Some(obj) = frame.as_object_mut() {
+                            obj.insert("seq".to_string(), json!(seq));
+                        }
                         let payload = frame.to_string();
                         if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
                             return;
@@ -2989,7 +3136,7 @@ async fn handle_client_frame(
     last_injection: &mut Option<TurnInjection>,
     pending: &mut HashMap<String, oneshot::Sender<ApprovalDecision>>,
     pending_hitl: &mut HashMap<String, oneshot::Sender<HitlResponse>>,
-    event_rx: &mut Option<mpsc::Receiver<AgentEvent>>,
+    event_rx: &mut Option<mpsc::Receiver<OwnerWsEvent>>,
     current_task: &mut Option<tokio::task::JoinHandle<()>>,
     tail_rx: &mut Option<broadcast::Receiver<crate::chat_runs::ChatRunEventRecord>>,
     sticky_provider: &mut Option<String>,
@@ -3028,11 +3175,20 @@ async fn handle_client_frame(
 
     match client_msg {
         WsClientMessage::Approve { tool_call_id } => {
-            if let Some(responder) = pending.remove(&tool_call_id) {
+            // Persisted conversations store the oneshot in the
+            // registry so a reconnect can take it over; fall back
+            // to the per-socket map for free chat (no registry
+            // entry exists for non-persisted turns).
+            let responder = persisted_id
+                .as_deref()
+                .and_then(|convo| state.chat_runs.take_pending_approval(convo, &tool_call_id))
+                .or_else(|| pending.remove(&tool_call_id));
+            if let Some(responder) = responder {
                 let _ = responder.send(ApprovalDecision::Approve);
             } else {
-                // Benign race: client clicked twice, or the turn ended
-                // before the click reached us. Silently log instead of
+                // Benign race: client clicked twice, the turn
+                // ended before the click reached us, or the slot
+                // was drained on terminal. Silently log instead of
                 // surfacing as a banner — the user already saw the
                 // outcome of the original decision.
                 warn!(%tool_call_id, "approve frame for unknown id (already resolved or stale)");
@@ -3042,7 +3198,11 @@ async fn handle_client_frame(
             tool_call_id,
             reason,
         } => {
-            if let Some(responder) = pending.remove(&tool_call_id) {
+            let responder = persisted_id
+                .as_deref()
+                .and_then(|convo| state.chat_runs.take_pending_approval(convo, &tool_call_id))
+                .or_else(|| pending.remove(&tool_call_id));
+            if let Some(responder) = responder {
                 let _ = responder.send(ApprovalDecision::Deny { reason });
             } else {
                 warn!(%tool_call_id, "deny frame for unknown id (already resolved or stale)");
@@ -3403,6 +3563,7 @@ async fn handle_client_frame(
             id,
             model,
             provider,
+            after_seq,
         } => {
             if provider.is_some() {
                 *sticky_provider = provider;
@@ -3516,28 +3677,94 @@ async fn handle_client_frame(
                     // snapshot. Replay first so wire order matches
                     // what the original socket would have seen.
                     if live_tail {
-                        if let Some((snapshot, rx)) = state.chat_runs.subscribe(&id, 0) {
-                            let _ = ws_tx
-                                .send(WsMessage::Text(
-                                    json!({
-                                        "type": "tail_replay_start",
-                                        "count": snapshot.len(),
-                                    })
-                                    .to_string(),
-                                ))
-                                .await;
-                            for record in snapshot {
-                                let payload = record.frame.to_string();
-                                if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
-                                    return false;
+                        let cursor = after_seq.unwrap_or(0);
+                        match state.chat_runs.subscribe(&id, cursor) {
+                            Some(Ok((snapshot, rx, window))) => {
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({
+                                            "type": "tail_replay_start",
+                                            "count": snapshot.len(),
+                                            "first_seq": window.first_seq,
+                                            "latest_seq": window.latest_seq,
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                                for record in snapshot {
+                                    let seq = record.seq;
+                                    let mut frame = record.frame;
+                                    if let Some(obj) = frame.as_object_mut() {
+                                        obj.insert("seq".to_string(), json!(seq));
+                                    }
+                                    let payload = frame.to_string();
+                                    if ws_tx.send(WsMessage::Text(payload)).await.is_err() {
+                                        return false;
+                                    }
                                 }
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({ "type": "tail_replay_done" }).to_string(),
+                                    ))
+                                    .await;
+                                *tail_rx = Some(rx);
                             }
-                            let _ = ws_tx
-                                .send(WsMessage::Text(
-                                    json!({ "type": "tail_replay_done" }).to_string(),
-                                ))
-                                .await;
-                            *tail_rx = Some(rx);
+                            // Resume with after=0 on a buffer that
+                            // has already evicted seq 1: the run is
+                            // still live but the early frames are
+                            // gone. Tell the client so it can do a
+                            // full reload via the persisted history
+                            // endpoint instead of silently missing
+                            // events.
+                            Some(Err(crate::chat_runs::ResumeError::Evicted {
+                                first_available_seq,
+                            })) => {
+                                let _ = ws_tx
+                                    .send(WsMessage::Text(
+                                        json!({
+                                            "type": "resume_error",
+                                            "reason": "evicted",
+                                            "first_available_seq": first_available_seq,
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                            }
+                            // No buffered state at all (race with
+                            // terminal cleanup, or registry was
+                            // wiped). Silent fallthrough — the
+                            // resumed REST history is already on the
+                            // wire and the next user message will
+                            // start a fresh turn.
+                            None => {}
+                        }
+                        // Re-prompt the reconnecting client for any
+                        // approvals the agent is still blocked on.
+                        // The original socket's `pending` map (or a
+                        // prior tab) may have dropped, but the
+                        // oneshot lives in the registry under M4 so
+                        // this socket can route the verdict back.
+                        // Send AFTER the tail snapshot so the ApprovalRequest
+                        // frame appears in chronological order
+                        // before the explicit `approval_pending`
+                        // re-prompt the UI uses to know the slot is
+                        // still alive.
+                        let pending_replays = state.chat_runs.list_pending_approvals(&id);
+                        for req in pending_replays {
+                            let frame = json!({
+                                "type": "approval_pending",
+                                "id": req.tool_call_id,
+                                "name": req.tool_name,
+                                "arguments": req.arguments,
+                                "category": req.category,
+                            });
+                            if ws_tx
+                                .send(WsMessage::Text(frame.to_string()))
+                                .await
+                                .is_err()
+                            {
+                                return false;
+                            }
                         }
                     }
                 }
@@ -3753,19 +3980,35 @@ async fn handle_client_frame(
             let hitl = hitl_tx.clone();
             let active_mode = *mode_handle.read().await;
             let skills_catalog = state.skills.as_ref().cloned();
-            let skills_snapshot =
-                merged_skills_for_turn(
+            let skills_snapshot = merged_skills_for_turn(
+                skills_catalog.as_ref(),
+                active_skills,
+                &content,
+                recent_touched_files,
+            );
+            crate::learning_emit::spawn_record(
+                state.learning_skill_usage.clone(),
+                crate::learning_emit::build_used_events(
                     skills_catalog.as_ref(),
-                    active_skills,
-                    &content,
-                    recent_touched_files,
-                );
+                    &skills_snapshot,
+                    crate::learning_emit::workspace_scope(socket_workspace.as_deref()),
+                    persisted_id.clone(),
+                ),
+            );
+            let user_memories =
+                crate::learning_emit::fetch_user_memories_for_prompt(state.learning_memory.as_ref())
+                    .await;
             let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) =
+                    compose_with_user_memory(cfg.system_prompt.as_deref(), &user_memories)
+                {
+                    cfg.system_prompt = Some(prompt);
                 }
                 if let Some(prompt) = compose_with_skills(
                     cfg.system_prompt.as_deref(),
@@ -3847,7 +4090,7 @@ async fn handle_client_frame(
                 soul_injected_at,
             };
             *last_injection = Some(injection.clone());
-            let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
+            let (event_tx, new_rx) = mpsc::channel::<OwnerWsEvent>(64);
             *event_rx = Some(new_rx);
             if let Some(id) = persisted_id.as_deref() {
                 if !state.chat_runs.try_start(id) {
@@ -3947,19 +4190,35 @@ async fn handle_client_frame(
             let hitl = hitl_tx.clone();
             let active_mode = *mode_handle.read().await;
             let skills_catalog = state.skills.as_ref().cloned();
-            let skills_snapshot =
-                merged_skills_for_turn(
+            let skills_snapshot = merged_skills_for_turn(
+                skills_catalog.as_ref(),
+                active_skills,
+                proceed_message,
+                recent_touched_files,
+            );
+            crate::learning_emit::spawn_record(
+                state.learning_skill_usage.clone(),
+                crate::learning_emit::build_used_events(
                     skills_catalog.as_ref(),
-                    active_skills,
-                    proceed_message,
-                    recent_touched_files,
-                );
+                    &skills_snapshot,
+                    crate::learning_emit::workspace_scope(socket_workspace.as_deref()),
+                    persisted_id.clone(),
+                ),
+            );
+            let user_memories =
+                crate::learning_emit::fetch_user_memories_for_prompt(state.learning_memory.as_ref())
+                    .await;
             let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) =
+                    compose_with_user_memory(cfg.system_prompt.as_deref(), &user_memories)
+                {
+                    cfg.system_prompt = Some(prompt);
                 }
                 if let Some(prompt) = compose_with_skills(
                     cfg.system_prompt.as_deref(),
@@ -4016,7 +4275,7 @@ async fn handle_client_frame(
                 soul_injected_at: None,
             };
             *last_injection = Some(injection.clone());
-            let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
+            let (event_tx, new_rx) = mpsc::channel::<OwnerWsEvent>(64);
             *event_rx = Some(new_rx);
             if let Some(id) = persisted_id.as_deref() {
                 if !state.chat_runs.try_start(id) {
@@ -4074,19 +4333,35 @@ async fn handle_client_frame(
             // honoured even if the user just toggled it.
             let active_mode = *mode_handle.read().await;
             let skills_catalog = state.skills.as_ref().cloned();
-            let skills_snapshot =
-                merged_skills_for_turn(
+            let skills_snapshot = merged_skills_for_turn(
+                skills_catalog.as_ref(),
+                active_skills,
+                &feedback,
+                recent_touched_files,
+            );
+            crate::learning_emit::spawn_record(
+                state.learning_skill_usage.clone(),
+                crate::learning_emit::build_used_events(
                     skills_catalog.as_ref(),
-                    active_skills,
-                    &feedback,
-                    recent_touched_files,
-                );
+                    &skills_snapshot,
+                    crate::learning_emit::workspace_scope(socket_workspace.as_deref()),
+                    persisted_id.clone(),
+                ),
+            );
+            let user_memories =
+                crate::learning_emit::fetch_user_memories_for_prompt(state.learning_memory.as_ref())
+                    .await;
             let workspace_for_turn = socket_workspace.clone();
             let agent = match state.build_agent_with(provider_pick, model_pick, |cfg| {
                 cfg.approver = Some(approver);
                 cfg.hitl_tx = Some(hitl);
                 if matches!(active_mode, harness_core::PermissionMode::Plan) {
                     cfg.tool_filter = Some(plan_mode_tool_filter());
+                }
+                if let Some(prompt) =
+                    compose_with_user_memory(cfg.system_prompt.as_deref(), &user_memories)
+                {
+                    cfg.system_prompt = Some(prompt);
                 }
                 if let Some(prompt) = compose_with_skills(
                     cfg.system_prompt.as_deref(),
@@ -4143,7 +4418,7 @@ async fn handle_client_frame(
                 soul_injected_at: None,
             };
             *last_injection = Some(injection.clone());
-            let (event_tx, new_rx) = mpsc::channel::<AgentEvent>(64);
+            let (event_tx, new_rx) = mpsc::channel::<OwnerWsEvent>(64);
             *event_rx = Some(new_rx);
             if let Some(id) = persisted_id.as_deref() {
                 if !state.chat_runs.try_start(id) {
@@ -4193,6 +4468,18 @@ async fn handle_client_frame(
             if !active_skills.iter().any(|n| n == &name) {
                 active_skills.push(name.clone());
             }
+            // Phase 0 self-improving-agent — explicit user activation
+            // is the strongest "Used" signal we have. Emit before the
+            // ack so the event lands even if the WS closes mid-write.
+            crate::learning_emit::spawn_record(
+                state.learning_skill_usage.clone(),
+                crate::learning_emit::build_used_events(
+                    state.skills.as_ref(),
+                    std::slice::from_ref(&name),
+                    crate::learning_emit::workspace_scope(socket_workspace.as_deref()),
+                    persisted_id.clone(),
+                ),
+            );
             let _ = ws_tx
                 .send(WsMessage::Text(
                     json!({
@@ -4469,7 +4756,7 @@ mod model_catalog_tests {
     use crate::router as full_router;
     use crate::state::AppState;
     use async_trait::async_trait;
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use harness_core::{
         Agent, AgentConfig, ChatRequest, ChatResponse, FinishReason, LlmProvider, Message,
@@ -4664,7 +4951,7 @@ mod tools_catalog_tests {
     use crate::router as full_router;
     use crate::state::AppState;
     use async_trait::async_trait;
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use harness_core::{
         Agent, AgentConfig, ChatRequest, ChatResponse, FinishReason, LlmProvider, Message,
@@ -4946,7 +5233,7 @@ mod routing_tests {
     use crate::router as full_router;
     use crate::state::AppState;
     use async_trait::async_trait;
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use harness_core::{
         Agent, AgentConfig, ChatRequest, ChatResponse, FinishReason, LlmProvider, Message,
@@ -5153,5 +5440,48 @@ mod routing_tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(state.route_policy.read().unwrap().review.is_none());
+    }
+}
+
+#[cfg(test)]
+mod compose_user_memory_tests {
+    use super::compose_with_user_memory;
+    use harness_learning::{MemoryItem, MemoryKind, MemoryScope};
+
+    fn item(kind: MemoryKind, title: &str, body: &str) -> MemoryItem {
+        MemoryItem::new(MemoryScope::User, kind, title, body)
+    }
+
+    #[test]
+    fn empty_memories_returns_none() {
+        assert!(compose_with_user_memory(Some("base"), &[]).is_none());
+    }
+
+    #[test]
+    fn renders_block_then_template() {
+        let mems = vec![
+            item(MemoryKind::Preference, "Be terse", "max 3 sentences"),
+            item(MemoryKind::Fact, "Reply lang", "zh-CN"),
+        ];
+        let out = compose_with_user_memory(Some("you are jarvis"), &mems).unwrap();
+        assert!(out.starts_with("=== user memory ==="));
+        assert!(out.contains("[preference] Be terse: max 3 sentences"));
+        assert!(out.contains("[fact] Reply lang: zh-CN"));
+        assert!(out.contains("=== /user memory ==="));
+        assert!(out.ends_with("you are jarvis"));
+    }
+
+    #[test]
+    fn empty_body_renders_title_only() {
+        let mems = vec![item(MemoryKind::Convention, "Use pnpm", "")];
+        let out = compose_with_user_memory(None, &mems).unwrap();
+        assert!(out.contains("[convention] Use pnpm"));
+        assert!(!out.contains(": "), "no colon when body is empty");
+    }
+
+    #[test]
+    fn all_blank_returns_none() {
+        let mems = vec![item(MemoryKind::Fact, "   ", "   ")];
+        assert!(compose_with_user_memory(None, &mems).is_none());
     }
 }

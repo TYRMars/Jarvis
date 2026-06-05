@@ -223,7 +223,7 @@ function renderOrphans(state: Loadable<OrphanWorktree[] | null>) {
         <li key={o.path}>
           <code className="diagnostics-path">{o.path}</code>
           <span className="text-soft">
-            {fmtBytes(o.size_bytes)} · {o.modified_at} · run{" "}
+            {fmtBytes(o.size_bytes)} · {o.modified_at} · {t("autoModeRunLabel")}{" "}
             <code>{o.run_id.slice(0, 8)}</code>
           </span>
         </li>
@@ -253,7 +253,9 @@ function renderStuck(state: Loadable<StuckRun[] | null>) {
               fmtDuration(r.age_seconds),
             )}
           </span>
-          <span className="text-soft">started {r.started_at}</span>
+          <span className="text-soft">
+            {t("autoModeStartedLabel")} {r.started_at}
+          </span>
         </li>
       ))}
     </ul>
@@ -275,8 +277,8 @@ function renderFailed(state: Loadable<RequirementRun[] | null>) {
         <li key={r.id}>
           <code>{r.id.slice(0, 8)}</code>
           <span className="text-soft">
-            req <code>{r.requirement_id.slice(0, 8)}</code> · finished{" "}
-            {r.finished_at ?? "?"}
+            {t("autoModeReqLabel")} <code>{r.requirement_id.slice(0, 8)}</code> ·{" "}
+            {t("autoModeFinishedLabel")} {r.finished_at ?? "?"}
           </span>
           {r.error && (
             <span className="diagnostics-error-line">

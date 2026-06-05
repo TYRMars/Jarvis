@@ -12,6 +12,7 @@
 // view its detail (stub for now; the detail drawer is a follow-up).
 
 import { useEffect, useState } from "react";
+import { t } from "../../../utils/i18n";
 import {
   cancelSubAgentRun,
   fetchSubAgentRuns,
@@ -105,12 +106,12 @@ export function SubAgentRunsRail() {
   return (
     <section
       className="subagent-runs-rail"
-      aria-label="Parallel SubAgent runs"
+      aria-label={t("workOvBParallelRunsAria")}
     >
       <header className="subagent-runs-rail-head">
-        <h3>Parallel runs</h3>
+        <h3>{t("workOvBParallelRunsTitle")}</h3>
         <p className="muted small">
-          Active and recent SubAgent invocations. Polls every 5 seconds.
+          {t("workOvBParallelRunsDesc")}
         </p>
       </header>
       {error && (
@@ -150,7 +151,7 @@ export function SubAgentRunsRail() {
               )}
               <div className="subagent-runs-rail-meta">
                 <span className="muted small">
-                  {r.tool_call_count} tool calls · {elapsed}
+                  {t("workOvBToolCallsCount", r.tool_call_count)} · {elapsed}
                 </span>
                 {r.status === "running" && (
                   <button
@@ -158,7 +159,7 @@ export function SubAgentRunsRail() {
                     className="subagent-runs-rail-cancel"
                     onClick={() => void onCancel(r.id)}
                   >
-                    Cancel
+                    {t("cancel")}
                   </button>
                 )}
               </div>

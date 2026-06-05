@@ -10,7 +10,14 @@ import { Row, Section } from "./Section";
 import { Button, Modal } from "../../ui";
 import { useAppStore } from "../../../store/appStore";
 import { sendFrame } from "../../../services/socket";
-import { listSkills, type SkillSummary } from "../../../services/skills";
+import {
+  archiveSkill,
+  fetchSkillLifecycle,
+  listSkills,
+  restoreSkill,
+  type SkillLifecycle,
+  type SkillSummary,
+} from "../../../services/skills";
 import { t } from "../../../utils/i18n";
 
 function tx(key: string, fallback: string): string {
@@ -88,6 +95,7 @@ export function SkillsSection({
                 onToggle={toggle}
               />
             </div>
+            <SkillLifecyclePanel name={opened.name} />
             <SkillBody name={opened.name} />
           </div>
         ) : null}
@@ -195,6 +203,90 @@ function filterSkills(skills: SkillSummary[], query: string): SkillSummary[] {
       ...s.allowed_tools,
     ].join(" ").toLowerCase().includes(q),
   );
+}
+
+// Phase 2 self-improving-agent — lifecycle status + archive/restore.
+// The server seeds an Active row on first fetch; archived skills are
+// hidden from the agent's catalog (see harness-server skill filtering)
+// but stay restorable. Hidden entirely when the lifecycle store isn't
+// configured (fetch returns null).
+function SkillLifecyclePanel({ name }: { name: string }) {
+  const [lc, setLc] = useState<SkillLifecycle | null | undefined>(undefined);
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLc(undefined);
+    setErr(null);
+    fetchSkillLifecycle(name)
+      .then((row) => !cancelled && setLc(row))
+      .catch((e) => !cancelled && setErr(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
+
+  // Lifecycle store not configured, or still loading → render nothing.
+  if (lc === undefined || lc === null) return null;
+
+  const archived = lc.state === "archived";
+  const act = async (fn: () => Promise<SkillLifecycle>) => {
+    setPending(true);
+    setErr(null);
+    try {
+      setLc(await fn());
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="settings-skill-lifecycle">
+      <span className={`skill-state-badge skill-state-${lc.state}`}>
+        {stateLabel(lc.state)}
+      </span>
+      <span className="skill-creator-badge">{lc.created_by}</span>
+      {lc.absorbed_into ? (
+        <span className="skill-absorbed-note">
+          {tx("skillsAbsorbedInto", "absorbed into")} {lc.absorbed_into}
+        </span>
+      ) : null}
+      {archived ? (
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={pending}
+          onClick={() => void act(() => restoreSkill(name))}
+        >
+          {tx("skillsRestore", "Restore")}
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={pending}
+          onClick={() => void act(() => archiveSkill(name))}
+        >
+          {tx("skillsArchive", "Archive")}
+        </Button>
+      )}
+      {err && <span className="settings-value error">{err}</span>}
+    </div>
+  );
+}
+
+function stateLabel(state: SkillLifecycle["state"]): string {
+  switch (state) {
+    case "active":
+      return tx("skillsStateActive", "Active");
+    case "stale":
+      return tx("skillsStateStale", "Stale");
+    case "archived":
+      return tx("skillsStateArchived", "Archived");
+  }
 }
 
 function SkillBody({ name }: { name: string }) {

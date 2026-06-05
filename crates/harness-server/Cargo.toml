@@ -7,9 +7,11 @@ rust-version.workspace = true
 description = "Axum HTTP facade exposing the agent harness behind an OpenAI-compatible chat-completions API."
 
 [dependencies]
+harness-automation.workspace = true
 harness-channel.workspace = true
 harness-cloud.workspace = true
 harness-core.workspace = true
+harness-learning.workspace = true
 harness-observability.workspace = true
 harness-project.workspace = true
 harness-llm.workspace = true
@@ -19,6 +21,7 @@ harness-requirement.workspace = true
 harness-skill.workspace = true
 harness-store.workspace = true
 harness-tools.workspace = true
+harness-workflow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true

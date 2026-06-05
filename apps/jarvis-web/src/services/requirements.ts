@@ -237,6 +237,9 @@ export interface UpdateRequirementInput {
   /// Phase 3.8 — replace the label-id list. Order is preserved.
   /// Omit to leave as-is; pass `[]` to clear all chips.
   label_ids?: string[];
+  /// Bind / unbind a declarative workflow. Omit to leave as-is; pass a
+  /// definition id to bind, or `null` / `""` to clear the binding.
+  workflow_id?: string | null;
 }
 
 /// Patch a Requirement. Optimistic — applies immediately to cache,
@@ -259,6 +262,9 @@ export function updateRequirement(
       ? { conversation_ids: patch.conversation_ids }
       : {}),
     ...(patch.label_ids !== undefined ? { label_ids: patch.label_ids } : {}),
+    ...(patch.workflow_id !== undefined
+      ? { workflow_id: patch.workflow_id }
+      : {}),
     updated_at: new Date().toISOString(),
   };
   upsertLocal(next);

@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { apiUrl } from "../../services/api";
 import { useAppStore } from "../../store/appStore";
+import { t } from "../../utils/i18n";
 
 // Safety-net poll: the server pushes `tasks_snapshot` frames at
 // every turn boundary (P7), so under normal use the panel gets
@@ -95,13 +96,13 @@ export function BackgroundTasksPanel({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <div className="bg-tasks-panel" role="dialog" aria-label="Background tasks">
+    <div className="bg-tasks-panel" role="dialog" aria-label={t("sideBarBackgroundTasks")}>
       <header className="bg-tasks-header">
-        <h2>Background tasks</h2>
+        <h2>{t("sideBarBackgroundTasks")}</h2>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close"
+          aria-label={t("sideBarClose")}
           className="bg-tasks-close"
         >
           ×
@@ -110,25 +111,25 @@ export function BackgroundTasksPanel({ open, onClose }: Props) {
       <div className="bg-tasks-body">
         {error && (
           <div className="bg-tasks-error" role="alert">
-            Failed to load: {error}
+            {t("sideBarTasksLoadFailed", error)}
           </div>
         )}
         {!error && tasks.length === 0 && !loading && (
-          <div className="bg-tasks-empty">No active work right now.</div>
+          <div className="bg-tasks-empty">{t("sideBarTasksEmpty")}</div>
         )}
         {tasks.length > 0 && (
           <ul className="bg-tasks-list">
-            {tasks.map((t) => (
+            {tasks.map((task) => (
               <li
-                key={`${t.kind}-${t.id}`}
+                key={`${task.kind}-${task.id}`}
                 className="bg-tasks-row"
-                data-kind={t.kind}
-                data-status={t.status}
+                data-kind={task.kind}
+                data-status={task.status}
               >
-                <span className="bg-tasks-kind">{kindLabel(t.kind)}</span>
-                <span className="bg-tasks-label">{t.label}</span>
-                <span className="bg-tasks-status">{t.status}</span>
-                <span className="bg-tasks-age">{relativeAge(t.started_at)}</span>
+                <span className="bg-tasks-kind">{kindLabel(task.kind)}</span>
+                <span className="bg-tasks-label">{task.label}</span>
+                <span className="bg-tasks-status">{task.status}</span>
+                <span className="bg-tasks-age">{relativeAge(task.started_at)}</span>
               </li>
             ))}
           </ul>
@@ -141,13 +142,13 @@ export function BackgroundTasksPanel({ open, onClose }: Props) {
 function kindLabel(k: TaskKind): string {
   switch (k) {
     case "chat_run":
-      return "Chat";
+      return t("sideBarTaskKindChat");
     case "subagent_run":
-      return "SubAgent";
+      return t("sideBarTaskKindSubagent");
     case "requirement_run":
-      return "Requirement";
+      return t("sideBarTaskKindRequirement");
     case "mcp_server":
-      return "MCP";
+      return t("sideBarTaskKindMcp");
     default:
       return k;
   }
@@ -155,11 +156,11 @@ function kindLabel(k: TaskKind): string {
 
 function relativeAge(startedAt: number): string {
   const dt = Math.max(0, Date.now() - startedAt);
-  if (dt < 1000) return "just now";
+  if (dt < 1000) return t("sideBarTaskAgeJustNow");
   const sec = Math.floor(dt / 1000);
-  if (sec < 60) return `${sec}s`;
+  if (sec < 60) return t("sideBarTaskAgeSeconds", sec);
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m`;
+  if (min < 60) return t("sideBarTaskAgeMinutes", min);
   const hr = Math.floor(min / 60);
-  return `${hr}h`;
+  return t("sideBarTaskAgeHours", hr);
 }
