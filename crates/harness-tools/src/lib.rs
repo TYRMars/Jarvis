@@ -20,6 +20,7 @@ pub mod echo;
 pub mod enter_plan_mode;
 pub mod exit_plan;
 pub mod fs;
+pub mod fs_find;
 pub mod git;
 pub mod grep;
 pub mod harness_health;
@@ -53,6 +54,7 @@ pub use echo::EchoTool;
 pub use enter_plan_mode::EnterPlanModeTool;
 pub use exit_plan::ExitPlanTool;
 pub use fs::{FsEditTool, FsListTool, FsReadTool, FsWriteTool};
+pub use fs_find::FsFindTool;
 pub use git::{
     GitAddTool, GitCommitTool, GitDiffTool, GitLogTool, GitMergeTool, GitShowTool, GitStatusTool,
 };
@@ -291,6 +293,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     registry.register(FsReadTool::new(root.clone()).with_max_bytes(cfg.fs_max_bytes));
     registry.register(FsListTool::new(root.clone()));
     registry.register(CodeGrepTool::new(root.clone()));
+    registry.register(FsFindTool::new(root.clone()));
     registry.register(WorkspaceContextTool::new(root.clone()));
     registry.register(ProjectChecksTool::new(root.clone()));
     registry.register(TriageScanTool::new(root.clone()));
