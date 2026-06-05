@@ -25,6 +25,7 @@ pub mod git;
 pub mod grep;
 pub mod harness_health;
 pub mod http;
+pub mod learning_memory;
 pub mod memory;
 pub mod memory_icloud;
 pub mod memory_include;
@@ -91,6 +92,7 @@ pub use workspace::WorkspaceContextTool;
 
 use harness_channel::ChannelDispatcher;
 use harness_core::{TodoStore, ToolRegistry};
+use harness_learning::MemoryStore as LearningMemoryStore;
 use harness_project::{ActivityStore, DocStore, ProjectStore, RequirementStore};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -244,6 +246,13 @@ pub struct BuiltinsConfig {
     /// backwards compatibility, but the explicit env /
     /// `[agent].memory_sync_backend` config wins.
     pub memory_sync_backend: MemorySyncBackend,
+    /// Backing store for the **row-based** long-term Memory surface
+    /// from `docs/proposals/self-improving-agent.zh-CN.md` Phase 1.
+    /// When `Some(_)`, the four `learning.memory.*` tools register.
+    /// Distinct from [`Self::enable_memory`] (which is the file-based
+    /// MEMORY.md primitive from M3.1) — different concept, different
+    /// data shape, deliberately namespaced. Both can coexist.
+    pub user_memory_store: Option<Arc<dyn LearningMemoryStore>>,
 }
 
 impl Default for BuiltinsConfig {
@@ -274,6 +283,7 @@ impl Default for BuiltinsConfig {
             memory_user_root: None,
             enable_memory_sync: false,
             memory_sync_backend: MemorySyncBackend::None,
+            user_memory_store: None,
         }
     }
 }
@@ -388,6 +398,19 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     }
     if let Some(dispatcher) = cfg.channel_dispatcher {
         registry.register(crate::channel::ChannelSendTool::new(dispatcher));
+    }
+    // Phase 1 self-improving-agent — row-based user memory tools.
+    // Independent of `enable_memory` (which gates the file-based
+    // M3.1 `memory.*` family). Both can coexist.
+    if let Some(store) = cfg.user_memory_store {
+        use crate::learning_memory::{
+            LearningMemoryAddTool, LearningMemoryDeleteTool, LearningMemoryListTool,
+            LearningMemoryUpdateTool,
+        };
+        registry.register(LearningMemoryListTool::new(store.clone()));
+        registry.register(LearningMemoryAddTool::new(store.clone()));
+        registry.register(LearningMemoryUpdateTool::new(store.clone()));
+        registry.register(LearningMemoryDeleteTool::new(store));
     }
     if let Some(store) = cfg.todo_store {
         registry.register(TodoListTool::new(store.clone(), root.clone()));

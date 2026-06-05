@@ -6,7 +6,8 @@
 
 use harness_core::{Conversation, Message};
 use harness_observability::{EvalBaseline, EvalFilter, ObservabilityFilter, ObservedOutcome, ObservedRun, ObservedRunKind};
-use harness_store::{connect, connect_evals, connect_observability, StoreError};
+use harness_store::{connect, connect_evals, connect_observability, connect_workflows, StoreError};
+use harness_workflow::{WorkflowDefinition, WorkflowRun, WorkflowStep, WorkflowStepKind};
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
@@ -135,6 +136,65 @@ async fn connect_json_eval_backend() {
         store.load_baseline("baseline-connect").await.unwrap(),
         Some(baseline)
     );
+}
+
+#[tokio::test]
+async fn connect_json_workflow_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("json:{}", dir.path().join("data").display());
+
+    // Definition survives a reopen.
+    let mut def = WorkflowDefinition::new("ship");
+    def.steps = vec![WorkflowStep::new(
+        "research",
+        WorkflowStepKind::Agent {
+            prompt: "look around".into(),
+            subagent: None,
+            model: None,
+            output_key: Some("notes".into()),
+        },
+    )];
+    {
+        let store = connect_workflows(&url).await.unwrap();
+        store.upsert(&def).await.unwrap();
+        // A run bound to a requirement.
+        let mut run = WorkflowRun::new(def.id.clone(), Some("req-1".into()));
+        run.finish(harness_workflow::WorkflowRunStatus::Succeeded);
+        store.upsert_run(&run).await.unwrap();
+    }
+
+    let store = connect_workflows(&url).await.unwrap();
+    let loaded = store.get(&def.id).await.unwrap().unwrap();
+    assert_eq!(loaded, def);
+    assert_eq!(store.list().await.unwrap().len(), 1);
+
+    // Run filters.
+    assert_eq!(
+        store.list_runs(Some(&def.id), None).await.unwrap().len(),
+        1
+    );
+    assert_eq!(
+        store.list_runs(None, Some("req-1")).await.unwrap().len(),
+        1
+    );
+    assert!(store
+        .list_runs(None, Some("req-other"))
+        .await
+        .unwrap()
+        .is_empty());
+
+    assert!(store.delete(&def.id).await.unwrap());
+    assert!(store.get(&def.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn connect_workflows_falls_back_to_memory_for_non_json() {
+    // Non-json scheme returns a usable (in-memory) store rather than
+    // erroring, so the feature works under any DB backend.
+    let store = connect_workflows("sqlite::memory:").await.unwrap();
+    let def = WorkflowDefinition::new("ephemeral");
+    store.upsert(&def).await.unwrap();
+    assert_eq!(store.list().await.unwrap().len(), 1);
 }
 
 #[tokio::test]

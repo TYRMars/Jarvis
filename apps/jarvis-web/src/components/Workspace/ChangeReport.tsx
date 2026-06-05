@@ -178,7 +178,7 @@ export function ChangeReport() {
                 title={c.command}
               >
                 <span className={`change-report-kind kind-${c.kind}`}>{c.kind}</span>
-                <code className="change-report-cmd">{c.command || "(empty)"}</code>
+                <code className="change-report-cmd">{c.command || t("wkSpaceEmptyCommand")}</code>
               </li>
             ))}
           </ul>

@@ -24,11 +24,6 @@ import {
   type SubAgentRun,
 } from "./types";
 
-function tx(key: string, fallback: string): string {
-  const v = t(key);
-  return v === key ? fallback : v;
-}
-
 // ---- Static "completed" runs ----------------------------------------
 
 const NOW = Date.now();
@@ -243,12 +238,9 @@ export function SubAgentDemoPage() {
   return (
     <main id="subagent-demo" className="subagent-demo-page">
       <header className="subagent-demo-head">
-        <h1>{tx("subagentDemoTitle", "SubAgent UI preview")}</h1>
+        <h1>{t("subagentDemoTitle")}</h1>
         <p className="text-soft">
-          {tx(
-            "subagentDemoSubtitle",
-            "Static prototype rendered with mocked frames — once the backend lands, the same components consume real WS events.",
-          )}
+          {t("subagentDemoSubtitle")}
         </p>
         <div className="subagent-demo-actions">
           <button
@@ -256,25 +248,19 @@ export function SubAgentDemoPage() {
             className="settings-btn"
             onClick={() => setReplayKey((k) => k + 1)}
           >
-            {tx("subagentDemoReplay", "Replay live run")}
+            {t("subagentDemoReplay")}
           </button>
         </div>
       </header>
 
       <div className="subagent-demo-grid">
         <section className="subagent-demo-stream">
-          <h2>{tx("subagentDemoStreamTitle", "Inline cards (in main agent stream)")}</h2>
+          <h2>{t("subagentDemoStreamTitle")}</h2>
           <p className="subagent-demo-mock-msg">
-            {tx(
-              "subagentDemoUserMsg",
-              "User: refactor fs.patch's split logic and verify with tests.",
-            )}
+            {t("subagentDemoUserMsg")}
           </p>
           <p className="subagent-demo-assistant-msg">
-            {tx(
-              "subagentDemoAssistantMsg",
-              "Assistant: I'll delegate to a coding subagent. While that runs I'll have the reviewer check the kanban work in parallel.",
-            )}
+            {t("subagentDemoAssistantMsg")}
           </p>
 
           <SubAgentCard run={liveRun} />
@@ -282,15 +268,12 @@ export function SubAgentDemoPage() {
           <SubAgentCard run={READ_DOC_RUN} />
 
           <p className="subagent-demo-assistant-msg">
-            {tx(
-              "subagentDemoFinalMsg",
-              "Assistant: review passed; the docs reader confirmed the existing helper. Coding subagent is still running — I'll show you the diff once it returns.",
-            )}
+            {t("subagentDemoFinalMsg")}
           </p>
         </section>
 
         <section className="subagent-demo-rail">
-          <h2>{tx("subagentDemoRailTitle", "Side-panel (workspace rail)")}</h2>
+          <h2>{t("subagentDemoRailTitle")}</h2>
           <SubAgentRail runs={allRuns} />
         </section>
       </div>

@@ -1,0 +1,13 @@
+{
+  "name": "jarvis-control",
+  "version": "0.1.0",
+  "description": "Drive a running Jarvis server from Claude Code: list Projects/Requirements, start runs, approve/reject triage, dispatch reviewer subagents, and auto-generate one Skill per Jarvis Project so /jarvis-<slug> commands route to the right project.",
+  "author": "Jarvis Project",
+  "license": "MIT",
+  "homepage": "https://github.com/zhangjianan/Jarvis",
+  "skills": [
+    "skills/jarvis-projects",
+    "skills/jarvis-runs",
+    "skills/jarvis-project-sync"
+  ]
+}

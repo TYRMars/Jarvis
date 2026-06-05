@@ -9,6 +9,7 @@ description = "Built-in `Tool` implementations: echo, time, http.fetch, fs.{read
 [dependencies]
 harness-channel.workspace = true
 harness-core.workspace = true
+harness-learning.workspace = true
 harness-observability.workspace = true
 harness-project.workspace = true
 harness-requirement.workspace = true

@@ -18,12 +18,14 @@ import { OpenSidebarButton } from "../Workspace/WorkspaceToggles";
 import { EmptyState } from "../shared/EmptyState";
 import { t } from "../../utils/i18n";
 import { sendFrame } from "../../services/socket";
+import { useDocScope } from "../../services/docScope";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 import { DocOutline } from "./DocOutline";
 import { BlockEditor, createMockUploadAdapter } from "./Editor";
 import { SaveStatePill, type SaveState } from "./SaveStatePill";
 import { TagInput } from "./TagInput";
 import { useAutosave } from "./useAutosave";
+import { applyDocFilter } from "./useDocFilter";
 
 // Mock upload adapter — every editor instance shares one. We mint
 // a single object URL per file and the browser keeps the bytes
@@ -53,6 +55,7 @@ export function DocsPage() {
   const [online, setOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine,
   );
+  const scope = useDocScope();
 
   const workspace = socketWorkspace ?? "";
 
@@ -121,6 +124,14 @@ export function DocsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [workspace, version],
   );
+  const scopedProjects = useMemo(
+    () =>
+      applyDocFilter({
+        projects,
+        filter: { scope, sort: "updated", query: "" },
+      }).map(({ project }) => project),
+    [projects, scope],
+  );
 
   // Resolve the route id to a real project. Mismatches (deleted doc,
   // wrong workspace, hand-typed garbage URL) show the empty state.
@@ -129,16 +140,17 @@ export function DocsPage() {
     [routeId, projects],
   );
 
-  // Auto-pick first non-archived doc when no route id is set —
-  // replace history so the bare /docs URL doesn't pollute the back
-  // stack. Triggers only on initial mount / when projects load in.
+  // Auto-pick the first doc inside the active sidebar scope when no
+  // route id is set. This keeps `/docs` aligned with filters: an
+  // empty Archive scope stays empty instead of silently opening a
+  // normal doc from All.
   useEffect(() => {
     if (routeId) return;
-    const first = projects.find((p) => !p.archived);
+    const first = scopedProjects[0];
     if (first) {
       void navigate(`/docs/${first.id}`, { replace: true });
     }
-  }, [routeId, projects, navigate]);
+  }, [routeId, scopedProjects, navigate]);
 
   // Load draft on selection change.
   //
@@ -316,10 +328,10 @@ export function DocsPage() {
             if (selected) void persist(selected.id, draftBuffer);
           }}
           onFlush={() => void autosave.flush()}
-          onRename={onRename}
-          onChangeTags={onChangeTags}
-          onTogglePinned={onTogglePinned}
-          onToggleArchived={onToggleArchived}
+          onRename={(next) => void onRename(next)}
+          onChangeTags={(next) => void onChangeTags(next)}
+          onTogglePinned={() => void onTogglePinned()}
+          onToggleArchived={() => void onToggleArchived()}
           onAskAgent={onAskAgent}
           onDelete={() => setConfirmingDelete(selected)}
           tagSuggestions={tagSuggestions}
@@ -335,7 +347,7 @@ export function DocsPage() {
           confirmLabel={t("docsDeleteConfirm")}
           cancelLabel={t("docsCreateCancel")}
           onCancel={() => setConfirmingDelete(null)}
-          onConfirm={onDelete}
+          onConfirm={() => void onDelete()}
         />
       ) : null}
     </main>
@@ -574,7 +586,7 @@ function DocsEditorMeta(props: EditorColumnProps) {
             title={project.pinned ? t("docsActionUnpin") : t("docsActionPin")}
             onClick={props.onTogglePinned}
           >
-            ★
+            <PinIcon filled={!!project.pinned} />
           </button>
           <button
             type="button"
@@ -615,7 +627,7 @@ function DocsEditorMeta(props: EditorColumnProps) {
             }
             onClick={props.onToggleArchived}
           >
-            {project.archived ? "↺" : "⌫"}
+            {project.archived ? <RestoreIcon /> : <ArchiveIcon />}
           </button>
           <button
             type="button"
@@ -656,7 +668,7 @@ function DocsEditorMeta(props: EditorColumnProps) {
             title={t("docsActionDeleteDoc")}
             onClick={props.onDelete}
           >
-            ×
+            <CloseIcon />
           </button>
         </div>
       </div>
@@ -687,4 +699,84 @@ function bodyStats(s: string): BodyStats {
   const words = (s.match(/\S+/g) ?? []).filter((w) => /\w/.test(w)).length;
   const minutes = Math.max(1, Math.round(words / 220));
   return { words, minutes };
+}
+
+function PinIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m12 2.8 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.6 3 1.1-6.2L2.9 9.4l6.3-.9L12 2.8Z" />
+    </svg>
+  );
+}
+
+function ArchiveIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 7h18" />
+      <path d="M5 7v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7" />
+      <path d="M8 3h8l1 4H7l1-4Z" />
+      <path d="M10 12h4" />
+    </svg>
+  );
+}
+
+function RestoreIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 7h18" />
+      <path d="M5 7v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7" />
+      <path d="M8 3h8l1 4H7l1-4Z" />
+      <path d="m10 13 2-2 2 2" />
+      <path d="M12 11v6" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
 }

@@ -49,6 +49,9 @@ use std::sync::Arc;
 
 use harness_channel::{ChannelBindingStore, ChannelInstanceStore};
 use harness_core::{AgentProfileStore, ConversationStore, PermissionMode, PermissionStore, TodoStore};
+use harness_learning::{
+    MemoryStore as LearningMemoryStore, SkillLifecycleStore, SkillUsageStore,
+};
 use harness_observability::{EvalStore, ObservabilityStore};
 use harness_project::{
     ActivityStore, CommentStore, DocStore, LabelStore, ProjectMemoryStore, ProjectStore,
@@ -164,6 +167,28 @@ impl FromRef<AppState> for ObservabilityLayer {
             observability: s.observability.clone(),
             evals: s.evals.clone(),
             telemetry: s.telemetry.clone(),
+        }
+    }
+}
+
+/// Self-improving-agent slice — Phase 0 telemetry store + Phase 1
+/// long-term Memory store. Consumed by `learning_routes.rs` and
+/// `memory_routes.rs`. Each field is independently `None`-able so
+/// operators can opt in to telemetry without enabling memory writes,
+/// or vice-versa. Routes 503 cleanly when their store is missing.
+#[derive(Clone)]
+pub struct LearningLayer {
+    pub skill_usage: Option<Arc<dyn SkillUsageStore>>,
+    pub memory: Option<Arc<dyn LearningMemoryStore>>,
+    pub skill_lifecycle: Option<Arc<dyn SkillLifecycleStore>>,
+}
+
+impl FromRef<AppState> for LearningLayer {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            skill_usage: s.learning_skill_usage.clone(),
+            memory: s.learning_memory.clone(),
+            skill_lifecycle: s.skill_lifecycle.clone(),
         }
     }
 }

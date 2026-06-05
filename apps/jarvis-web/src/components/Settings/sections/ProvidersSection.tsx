@@ -387,7 +387,7 @@ function ProviderRow({
           </span>
         ) : null}
         {info.kind && info.kind !== info.name ? (
-          <span className="settings-tag" title="Profile kind">
+          <span className="settings-tag" title={t("setSecBProvidersProfileKind")}>
             {info.kind}
           </span>
         ) : null}
@@ -398,7 +398,7 @@ function ProviderRow({
         </span>
         <span className="mono">{info.default_model}</span>
         {defaultBadges.map((b) => (
-          <span key={b} className="settings-tag" title={`capability: ${b}`}>
+          <span key={b} className="settings-tag" title={t("setSecBProvidersCapability", b)}>
             {b}
           </span>
         ))}
@@ -416,7 +416,7 @@ function ProviderRow({
                     <span
                       key={b}
                       className="settings-tag"
-                      title={`capability: ${b}`}
+                      title={t("setSecBProvidersCapability", b)}
                     >
                       {b}
                     </span>
@@ -451,13 +451,13 @@ function ProviderRow({
       </div>
       {probeResult ? (
         <div className="settings-row-hint" role="status">
-          {probeResult.auth_ok ? "✓ auth ok" : "✗ auth failed"}
+          {probeResult.auth_ok ? t("setSecBProvidersAuthOk") : t("setSecBProvidersAuthFailed")}
           {" · "}
           {probeResult.default_model_ok
-            ? "model ok"
-            : `model: ${probeResult.error ?? "error"}`}
+            ? t("setSecBProvidersModelOk")
+            : t("setSecBProvidersModelError", probeResult.error ?? t("error"))}
           {" · "}
-          {probeResult.latency_ms} ms
+          {t("setSecBProvidersLatencyMs", probeResult.latency_ms)}
         </div>
       ) : null}
       {probeError ? (

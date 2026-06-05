@@ -10,6 +10,7 @@
 
 import { useAppStore } from "../../store/appStore";
 import type { PlanItem } from "../../store/appStore";
+import { t } from "../../utils/i18n";
 
 export function PlanCountSpan() {
   const plan = useAppStore((s) => s.plan);
@@ -29,13 +30,13 @@ export function PlanList() {
           <path d="m3 12 1 1 2-2" />
           <path d="m3 18 1 1 2-2" />
         </svg>
-        <strong data-i18n="noPlan">No plan yet.</strong>
-        <span data-i18n="planEmptyBody">Jarvis writes the plan here as it explores. Keep chatting.</span>
+        <strong data-i18n="noPlan">{t("noPlan")}</strong>
+        <span data-i18n="planEmptyBody">{t("wkSpacePlanEmptyBody")}</span>
       </div>
     );
   }
   return (
-    <ol className="plan-list" aria-label="Agent plan">
+    <ol className="plan-list" aria-label={t("wkSpacePlanAria")}>
       {plan.map((item) => (
         <PlanRow key={item.id} item={item} />
       ))}
@@ -105,13 +106,13 @@ function StatusIcon({ status }: { status: PlanItem["status"] }) {
 function statusLabel(status: PlanItem["status"]): string {
   switch (status) {
     case "in_progress":
-      return "doing";
+      return t("todoStatusInProgress");
     case "completed":
-      return "done";
+      return t("todoStatusCompleted");
     case "cancelled":
-      return "skip";
+      return t("todoStatusCancelled");
     case "pending":
     default:
-      return "todo";
+      return t("todoStatusPending");
   }
 }

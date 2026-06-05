@@ -18,6 +18,34 @@ import { showError } from "./status";
 /// result last.
 let convoListSeq = 0;
 
+/// Force-refetch the persisted history for the *currently-active*
+/// conversation and replace the in-memory message list. Used by the
+/// stream-recovery path when the server reports `resume_error:
+/// evicted` (the client has fallen further behind the in-memory
+/// ring buffer than its bounds allow) or when `tail_replay_start`
+/// signals a `first_seq` gap. Does NOT send a fresh `Resume` frame —
+/// the caller is presumed to already be on the active conversation;
+/// this is purely a history rehydrate.
+///
+/// Returns `false` when there is no active conversation, persistence
+/// is disabled, or the fetch fails.
+export async function forceReloadActiveConversation(): Promise<boolean> {
+  const store = appStore.getState();
+  if (!store.persistEnabled) return false;
+  const id = store.activeId;
+  if (!id) return false;
+  try {
+    const r = await fetch(apiUrl(`/v1/conversations/${encodeURIComponent(id)}`));
+    if (!r.ok) return false;
+    const body = await r.json();
+    appStore.getState().loadHistory(body.messages || []);
+    return true;
+  } catch (e: any) {
+    console.warn("force reload after evicted resume failed", e);
+    return false;
+  }
+}
+
 export async function refreshConvoList(): Promise<void> {
   if (!appStore.getState().persistEnabled) return;
   const mySeq = ++convoListSeq;
@@ -118,6 +146,16 @@ export async function resumeConversation(id: string): Promise<void> {
     const { provider, model } = pickedRouting();
     if (provider) frame.provider = provider;
     if (model) frame.model = model;
+    // Stream-recovery cursor: when the client has already seen
+    // events for this conversation (cached from prior live tail or
+    // REST poll), ask the server to only replay events with
+    // `seq > cursor`. The server may still respond with
+    // `resume_error: evicted` when our cursor is older than the
+    // oldest retained seq — the lifecycle handler force-reloads
+    // history in that case.
+    const { clientLastSeq } = await import("./chatRuns");
+    const cursor = clientLastSeq(id);
+    if (cursor > 0) frame.after_seq = cursor;
     // Flip activeId BEFORE sending the frame so any reply
     // (including resumed/error/delta from an in-flight per-turn
     // socket for the same id) lands on the active path in

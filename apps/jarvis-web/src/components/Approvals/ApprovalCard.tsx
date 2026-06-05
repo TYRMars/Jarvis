@@ -18,6 +18,7 @@
 
 import { useState } from "react";
 import type { ApprovalCardState } from "../../store/appStore";
+import { appStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { sendFrame, isOpen } from "../../services/socket";
 import { appendRule, type Scope } from "../../services/permissions";
@@ -48,6 +49,10 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
   const [sent, setSent] = useState(false);
   const [remember, setRemember] = useState(false);
   const [rememberScope, setRememberScope] = useState<Scope>("session");
+  /// Count of approvals batch-approved in the same click (>= 2 means
+  /// this card's approve also resolved sibling pending cards for the
+  /// same tool). 0 = no batch happened; drives the verdict suffix.
+  const [batchCount, setBatchCount] = useState(0);
   const decided = entry.status !== "pending";
   const locked = decided || sent;
 
@@ -70,6 +75,30 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
       bucket,
       rule: { tool: entry.name },
     });
+  }
+
+  /// The concrete rule string the "remember" checkbox would persist —
+  /// shown as a code chip so the user sees exactly what gets saved
+  /// before they commit to it. Tool-only matcher today, mirroring
+  /// `maybeRemember`'s `rule: { tool }`.
+  const rulePreview = t("approvalRulePreview", entry.name);
+
+  /// Approve this card AND every OTHER still-pending approval for the
+  /// same tool, in one click. Snapshots the approvals array at click
+  /// time (so a card pushed/finalized mid-handler doesn't skew the
+  /// count) and fires one `approve` frame per matching id. Returns the
+  /// number of *additional* siblings approved alongside this card.
+  function batchApproveSameTool(): number {
+    const pending = appStore
+      .getState()
+      .approvals.filter(
+        (c) => c.status === "pending" && c.name === entry.name && c.id !== entry.id,
+      );
+    let extra = 0;
+    for (const c of pending) {
+      if (send({ type: "approve", tool_call_id: c.id })) extra += 1;
+    }
+    return extra;
   }
 
   return (
@@ -104,7 +133,16 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
             // Fire-and-forget the rule write; do NOT await it before
             // approving — `appendRule` shows its own error banner.
             void maybeRemember("allow");
-            if (send({ type: "approve", tool_call_id: entry.id })) setSent(true);
+            if (send({ type: "approve", tool_call_id: entry.id })) {
+              setSent(true);
+              // With "remember", the just-saved allow rule will (and
+              // any other in-flight call for this tool should) clear —
+              // so approve every matching sibling now in one action.
+              if (remember) {
+                const extra = batchApproveSameTool();
+                if (extra > 0) setBatchCount(extra + 1);
+              }
+            }
           }}
         >
           {denyArmed ? t("cancel") : t("approve")}
@@ -183,11 +221,26 @@ export function ApprovalCard({ entry }: { entry: ApprovalCardState }) {
             </label>
           ) : null}
           {remember ? (
+            <div className="approval-remember-rule">
+              <span className="approval-remember-rule-label">
+                {t("approvalRuleChipLabel")}
+              </span>
+              <code className="approval-rule-chip">{rulePreview}</code>
+            </div>
+          ) : null}
+          {remember ? (
             <div className="approval-remember-hint">{t("rememberAlwaysHint")}</div>
           ) : null}
         </div>
       ) : null}
-      <div className="approval-verdict">{verdictText}</div>
+      <div className="approval-verdict">
+        {verdictText}
+        {batchCount > 1 ? (
+          <span className="approval-batch-feedback">
+            {t("batchApproveFeedback", batchCount)}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

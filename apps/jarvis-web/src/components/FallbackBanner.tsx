@@ -11,6 +11,7 @@
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../store/appStore";
+import { t } from "../utils/i18n";
 
 const VISIBLE_MS = 8_000;
 
@@ -40,7 +41,7 @@ export function FallbackBanner() {
         ↻
       </span>
       <span className="fallback-banner-body">
-        <strong>Provider fallback</strong>
+        <strong>{t("chatCoreProviderFallback")}</strong>
         <span className="fallback-banner-arrow"> · </span>
         <span className="mono">{latest.from}</span>
         <span className="fallback-banner-arrow"> → </span>

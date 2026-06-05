@@ -162,7 +162,7 @@ function QuickSwitcherModal({ close }: { close: () => void }) {
             type="button"
             className="ghost-icon"
             title={t("close") || "Close"}
-            aria-label="Close"
+            aria-label={t("close") || "Close"}
             onClick={close}
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

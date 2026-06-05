@@ -20,6 +20,23 @@ export type PermissionMode = "ask" | "accept-edits" | "plan" | "auto" | "bypass"
 export type Decision = "deny" | "ask" | "allow";
 export type Scope = "user" | "project" | "session";
 
+/// Canonical Tab-cycle order for the permission mode. Shared by the
+/// composer's Tab handler and the mode chip's click-to-cycle so they
+/// always advance through the same sequence.
+export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
+  "ask",
+  "accept-edits",
+  "plan",
+  "auto",
+  "bypass",
+];
+
+/// Next mode in the cycle, wrapping back to the first.
+export function nextPermissionMode(current: PermissionMode): PermissionMode {
+  const i = PERMISSION_MODE_CYCLE.indexOf(current);
+  return PERMISSION_MODE_CYCLE[(i + 1) % PERMISSION_MODE_CYCLE.length];
+}
+
 export interface PermissionRule {
   tool: string;
   matchers?: Record<string, string>;

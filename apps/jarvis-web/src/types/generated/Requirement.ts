@@ -94,6 +94,16 @@ depends_on: Array<string>,
  */
 label_ids: Array<string>, 
 /**
+ * Optional [`WorkflowDefinition`](harness_workflow) bound to this
+ * requirement. When set, executing the requirement (manually or via
+ * the auto loop) runs the multi-step workflow recipe instead of a
+ * single undifferentiated agent turn. `None` = the legacy
+ * single-agent run. Older JSON rows without the field deserialise
+ * as `None`. The id is a soft reference — no storage-layer FK — so
+ * deleting a workflow simply makes the binding a no-op at run time.
+ */
+workflow_id: string | null, 
+/**
  * RFC-3339 / ISO-8601 timestamp of creation.
  */
 created_at: string, 

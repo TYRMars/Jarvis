@@ -6,6 +6,7 @@
 
 import { NodeViewContent, NodeViewWrapper, type NodeViewProps } from "@tiptap/react";
 import { CALLOUT_VARIANTS, type CalloutVariant } from "./Callout";
+import { t } from "../../../../../utils/i18n";
 
 const VARIANT_LABEL: Record<CalloutVariant, string> = {
   info: "INFO",
@@ -38,7 +39,7 @@ export function CalloutView({ node, updateAttributes, editor }: NodeViewProps) {
           {VARIANT_LABEL[variant]}
         </span>
         {editable ? (
-          <div className="callout-variant-switcher" role="radiogroup" aria-label="Callout variant">
+          <div className="callout-variant-switcher" role="radiogroup" aria-label={t("docsEdCalloutVariant")}>
             {CALLOUT_VARIANTS.map((v) => (
               <button
                 key={v}

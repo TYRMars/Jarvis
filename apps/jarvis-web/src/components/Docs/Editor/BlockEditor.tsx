@@ -77,7 +77,7 @@ export function BlockEditor({
   onMarkdownChange,
   readOnly = false,
   ariaLabel,
-  placeholder = "输入 / 打开命令菜单，或直接开始书写…",
+  placeholder = t("docsEdPlaceholder"),
   uploadAdapter,
   extraCandidates,
   onReady,

@@ -23,6 +23,7 @@ import {
   useFloating,
 } from "@floating-ui/react";
 import type { SlashCandidate } from "./candidates";
+import { t } from "../../../../../utils/i18n";
 
 export interface SlashMenuListProps {
   items: readonly SlashCandidate[];
@@ -124,7 +125,7 @@ export const SlashMenuList = forwardRef<SlashMenuListHandle, SlashMenuListProps>
           className="slash-menu slash-menu-empty"
           role="listbox"
         >
-          没有匹配项
+          {t("noMatches")}
         </div>
       );
     }
@@ -138,7 +139,7 @@ export const SlashMenuList = forwardRef<SlashMenuListHandle, SlashMenuListProps>
         style={{ ...floatingStyles, minWidth: MIN_WIDTH, maxHeight: MAX_HEIGHT }}
         className="slash-menu"
         role="listbox"
-        aria-label="块插入菜单"
+        aria-label={t("docsEdSlashMenuLabel")}
       >
         {items.map((item, idx) => (
           <button

@@ -44,6 +44,7 @@ import { newConversation, resumeConversation } from "./services/conversations";
 import { loadProviders } from "./services/providers";
 import { apiUrl } from "./services/api";
 import { ConfirmDialogHost } from "./components/ui";
+import { t } from "./utils/i18n";
 import "./styles.css";
 
 export function App() {
@@ -149,15 +150,15 @@ function ChatLayout({ newDraftOnMount = false }: { newDraftOnMount?: boolean }) 
 
   return (
     <>
-      <a className="skip-link" href="#chat">Skip to main content</a>
+      <a className="skip-link" href="#chat">{t("chatCoreSkipToContent")}</a>
       <div id="app">
         <AppSidebar />
         <AppChatPane />
         <AppWorkspaceRail />
         <AppApprovalsRail />
 
-        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
-        <div id="resize-rail" className="resize-handle resize-rail" role="separator" aria-orientation="vertical" aria-label="Resize approvals panel" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label={t("chatCoreResizeSidebar")} tabIndex={-1} />
+        <div id="resize-rail" className="resize-handle resize-rail" role="separator" aria-orientation="vertical" aria-label={t("chatCoreResizeApprovals")} tabIndex={-1} />
 
         <QuickSwitcher />
       </div>
@@ -177,12 +178,12 @@ function ChatSessionLayout() {
 function ProjectsLayout() {
   return (
     <>
-      <a className="skip-link" href="#projects-page">Skip to main content</a>
+      <a className="skip-link" href="#projects-page">{t("chatCoreSkipToContent")}</a>
       <div id="app" className="page-app projects-app">
         <AppSidebar />
         <ProjectsPage />
 
-        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label={t("chatCoreResizeSidebar")} tabIndex={-1} />
 
         <QuickSwitcher />
       </div>
@@ -193,12 +194,12 @@ function ProjectsLayout() {
 function DocsLayout() {
   return (
     <>
-      <a className="skip-link" href="#docs-page">Skip to main content</a>
+      <a className="skip-link" href="#docs-page">{t("chatCoreSkipToContent")}</a>
       <div id="app" className="page-app docs-app">
         <AppSidebar />
         <DocsPage />
 
-        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label={t("chatCoreResizeSidebar")} tabIndex={-1} />
 
         <QuickSwitcher />
       </div>
@@ -214,7 +215,7 @@ function CustomizeLayout() {
   return (
     <>
       <a className="skip-link" href="#customize-page">
-        Skip to main content
+        {t("chatCoreSkipToContent")}
       </a>
       <div id="app" className="page-app projects-app">
         <AppSidebar />
@@ -225,7 +226,7 @@ function CustomizeLayout() {
           className="resize-handle resize-sidebar"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize sidebar"
+          aria-label={t("chatCoreResizeSidebar")}
           tabIndex={-1}
         />
 
@@ -241,7 +242,7 @@ function WorktreesLayout() {
   return (
     <>
       <a className="skip-link" href="#worktrees-page">
-        Skip to main content
+        {t("chatCoreSkipToContent")}
       </a>
       <div id="app" className="page-app projects-app">
         <AppSidebar />
@@ -252,7 +253,7 @@ function WorktreesLayout() {
           className="resize-handle resize-sidebar"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize sidebar"
+          aria-label={t("chatCoreResizeSidebar")}
           tabIndex={-1}
         />
 
@@ -268,12 +269,12 @@ function WorktreesLayout() {
 function AutoModeDashboardLayout() {
   return (
     <>
-      <a className="skip-link" href="#auto-mode-page">Skip to main content</a>
+      <a className="skip-link" href="#auto-mode-page">{t("chatCoreSkipToContent")}</a>
       <div id="app" className="page-app projects-app">
         <AppSidebar />
         <AutoModeDashboardPage />
 
-        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label={t("chatCoreResizeSidebar")} tabIndex={-1} />
 
         <QuickSwitcher />
       </div>
@@ -289,14 +290,14 @@ function AutoModeDashboardLayout() {
 function WorkOverviewLayout() {
   return (
     <>
-      <a className="skip-link" href="#work-overview-page">Skip to main content</a>
+      <a className="skip-link" href="#work-overview-page">{t("chatCoreSkipToContent")}</a>
       <div id="app" className="page-app projects-app">
         <AppSidebar />
         <main id="work-overview-page" className="work-overview-page-shell" tabIndex={-1}>
           <WorkOverviewPage />
         </main>
 
-        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={-1} />
+        <div id="resize-sidebar" className="resize-handle resize-sidebar" role="separator" aria-orientation="vertical" aria-label={t("chatCoreResizeSidebar")} tabIndex={-1} />
 
         <QuickSwitcher />
       </div>

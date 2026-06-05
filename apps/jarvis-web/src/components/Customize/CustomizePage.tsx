@@ -6,11 +6,13 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { McpSection } from "../Settings/sections/McpSection";
 import { SkillsSection } from "../Settings/sections/SkillsSection";
 import { PluginsSection } from "../Settings/sections/PluginsSection";
-import { McpMarketPanel, SkillMarketPanel } from "./MarketPanels";
+import { WorkflowsSection } from "../Settings/sections/WorkflowsSection";
+import { McpMarketPanel, SkillMarketPanel, WorkflowMarketPanel } from "./MarketPanels";
 import { t } from "../../utils/i18n";
 import { useAppStore, appStore } from "../../store/appStore";
 import { listSkills } from "../../services/skills";
 import { listMcpServers } from "../../services/mcp";
+import { loadWorkflows } from "../../services/workflows";
 import {
   fetchMarketplace,
   installPlugin,
@@ -20,13 +22,13 @@ import {
 } from "../../services/plugins";
 import { sendFrame } from "../../services/socket";
 
-type ManageTab = "plugins" | "mcp" | "skills";
-type MarketTab = "plugins" | "skills" | "mcp";
+type ManageTab = "plugins" | "mcp" | "skills" | "workflows";
+type MarketTab = "plugins" | "skills" | "mcp" | "workflows";
 type CustomizeMode = "market" | "manage";
 type CustomizeView = { mode: CustomizeMode; manageTab: ManageTab; marketTab: MarketTab };
 
-const MANAGE_TABS: ManageTab[] = ["plugins", "mcp", "skills"];
-const MARKET_TABS: MarketTab[] = ["plugins", "skills", "mcp"];
+const MANAGE_TABS: ManageTab[] = ["plugins", "mcp", "skills", "workflows"];
+const MARKET_TABS: MarketTab[] = ["plugins", "skills", "mcp", "workflows"];
 const PLUGIN_MARKET_PAGE_SIZE = 12;
 
 type CustomizeStats = Record<ManageTab, { total: number; active: number; hint: string }>;
@@ -35,6 +37,7 @@ const EMPTY_STATS: CustomizeStats = {
   plugins: { total: 0, active: 0, hint: "0 installed" },
   mcp: { total: 0, active: 0, hint: "0 running" },
   skills: { total: 0, active: 0, hint: "0 active" },
+  workflows: { total: 0, active: 0, hint: "0 workflows" },
 };
 
 const MANAGE_META: Record<ManageTab, { label: string; desc: string }> = {
@@ -50,12 +53,17 @@ const MANAGE_META: Record<ManageTab, { label: string; desc: string }> = {
     label: "Skills",
     desc: "Activate prompt capabilities for this chat session.",
   },
+  workflows: {
+    label: "Workflows",
+    desc: "Author multi-step agent recipes and bind them to requirements.",
+  },
 };
 
 const MARKET_META: Record<MarketTab, { label: string; placeholder: string }> = {
   plugins: { label: "Plugins", placeholder: "Search plugins" },
   skills: { label: "Skills", placeholder: "Search skills" },
   mcp: { label: "MCP", placeholder: "Search MCP servers" },
+  workflows: { label: "Workflows", placeholder: "Search workflows" },
 };
 
 function tx(key: string, fallback: string): string {
@@ -97,8 +105,8 @@ export function CustomizePage() {
 
   const refreshStats = () => {
     setStatsLoading(true);
-    Promise.all([listPlugins(), listMcpServers(), listSkills()])
-      .then(([plugins, mcpServers, skills]) => {
+    Promise.all([listPlugins(), listMcpServers(), listSkills(), loadWorkflows().catch(() => [])])
+      .then(([plugins, mcpServers, skills, workflows]) => {
         const runningMcp = mcpServers.filter((s) => s.status === "running").length;
         setStats({
           plugins: {
@@ -115,6 +123,11 @@ export function CustomizePage() {
             total: skills.length,
             active: activeSkills.length,
             hint: t("customizeSkillsStat", activeSkills.length, skills.length),
+          },
+          workflows: {
+            total: workflows.length,
+            active: workflows.length,
+            hint: t("customizeWorkflowsStat", workflows.length),
           },
         });
       })
@@ -225,7 +238,7 @@ function MarketView({
   return (
     <>
       <header className="customize-topbar">
-        <nav className="customize-tabs" aria-label={tx("customizeMarketTabs", "Marketplace sections")}>
+        <nav className="customize-tabs" aria-label={t("custMktMarketSections")}>
           {MARKET_TABS.map((id) => (
             <button
               key={id}
@@ -241,14 +254,14 @@ function MarketView({
         <div className="customize-top-actions">
           <button type="button" className="customize-action-btn" onClick={onManage}>
             <GearIcon />
-            <span>{tx("customizeManage", "Manage")}</span>
+            <span>{t("customizeManage")}</span>
           </button>
         </div>
       </header>
       <section className="customize-content customize-market-content">
         <div className="customize-hero">
           <h1 className="customize-title">
-            {tx("customizeHeroTitle", "Let Jarvis work your way")}
+            {t("customizeHeroTitle")}
           </h1>
         </div>
         {tab === "plugins" ? <PluginMarketHome onInstalled={onInstalled} /> : null}
@@ -260,6 +273,11 @@ function MarketView({
         {tab === "mcp" ? (
           <div className="customize-main-column customize-market-column">
             <McpMarketPanel onInstalled={onMcpInstalled} />
+          </div>
+        ) : null}
+        {tab === "workflows" ? (
+          <div className="customize-main-column customize-market-column">
+            <WorkflowMarketPanel onInstalled={onInstalled} />
           </div>
         ) : null}
       </section>
@@ -296,15 +314,15 @@ function ManageView({
     <>
       <header className="customize-topbar customize-manage-topbar">
         <button type="button" className="customize-breadcrumb" onClick={onMarket}>
-          {tx("customizeMarketPlugins", "Plugins")}
+          {t("customizeMarketPlugins")}
         </button>
         <NavIcon kind="chevron" />
-        <span className="customize-breadcrumb-current">{tx("customizeManage", "Manage")}</span>
+        <span className="customize-breadcrumb-current">{t("customizeManage")}</span>
       </header>
       <section className="customize-content customize-manage-content">
         <div className="customize-main-column">
           <div className="customize-manage-toolbar">
-            <nav className="customize-tabs" aria-label={tx("customizeManageTabs", "Manage sections")}>
+            <nav className="customize-tabs" aria-label={t("custMktManageSections")}>
               {MANAGE_TABS.map((id) => (
                 <button
                   key={id}
@@ -324,7 +342,7 @@ function ManageView({
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder={tx("customizeManageSearch", "Search installed")}
+                placeholder={t("custMktSearchInstalled")}
               />
             </label>
           </div>
@@ -343,6 +361,7 @@ function ManageView({
             {tab === "skills" ? (
               <SkillsSection embedded refreshToken={skillsRefreshToken} query={query} />
             ) : null}
+            {tab === "workflows" ? <WorkflowsSection embedded /> : null}
           </div>
         </div>
       </section>
@@ -433,21 +452,21 @@ function PluginMarketHome({ onInstalled }: { onInstalled: () => void }) {
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={tx("customizeSearchPlugins", "Search plugins")}
+          placeholder={t("custMktSearchPlugins")}
         />
       </form>
       <div className="customize-feature-panel">
         <div className="customize-feature-chip">
           <span className="customize-feature-icon">J</span>
-          <span>{tx("customizeFeaturePrompt", "Install a workflow pack and try it in chat")}</span>
+          <span>{t("custMktFeaturePrompt")}</span>
         </div>
         <button type="button" className="customize-feature-btn">
           <ChatBubbleIcon />
-          {tx("customizeTryInChat", "Try in chat")}
+          {t("custMktTryInChat")}
         </button>
       </div>
       <div className="customize-section-label">
-        {tx("customizeFeatured", "Featured")}
+        {t("custMktFeatured")}
       </div>
       {state.kind === "loading" ? <div className="market-empty">…</div> : null}
       {state.kind === "error" ? (
@@ -469,7 +488,7 @@ function PluginMarketHome({ onInstalled }: { onInstalled: () => void }) {
                   className="customize-plugin-action"
                   onClick={() => { void install(entry); }}
                   disabled={installed || installing !== null}
-                  aria-label={installed ? tx("pluginsInstalled", "Installed") : tx("pluginsInstallBtn", "Install")}
+                  aria-label={installed ? t("pluginsInstalled") : t("pluginsInstallBtn")}
                 >
                   {installed ? <CheckIcon /> : installing === entry.value ? "…" : <PlusIcon />}
                 </button>
@@ -527,7 +546,7 @@ function CustomizeLoadMore({
   return (
     <div ref={refEl} className="market-load-more">
       <button type="button" className="settings-btn" onClick={onLoadMore}>
-        {tx("marketLoadMore", "Load more")}
+        {t("custMktLoadMore")}
       </button>
     </div>
   );

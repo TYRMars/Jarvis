@@ -610,7 +610,7 @@ function summariseConfig(inst: ChannelInstance): string {
 }
 
 function maskUrl(url: string): string {
-  if (!url) return "(empty)";
+  if (!url) return tx("channelsEmptyValue", "(empty)");
   if (url.includes("${env:")) return url; // template — show verbatim, it's not a secret
   // Strip query string to avoid leaking webhook keys in the row preview.
   const qmark = url.indexOf("?");
@@ -645,7 +645,7 @@ function ChannelForm({
   const [err, setErr] = useState<string | null>(null);
 
   if (!meta) {
-    return <div className="settings-error">Unknown kind: {kind}</div>;
+    return <div className="settings-error">{tx("channelsUnknownKind", "Unknown kind:")} {kind}</div>;
   }
 
   const onSubmitForm = async (e: React.FormEvent) => {

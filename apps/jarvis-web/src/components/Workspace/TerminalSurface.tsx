@@ -180,7 +180,7 @@ export function TerminalSurface() {
       term.writeln("\r\n[\x1b[31mwebsocket error\x1b[0m]\r\n");
     };
     ws.onclose = (ev) => {
-      setStatus({ kind: "closed", reason: ev.reason || "disconnected" });
+      setStatus({ kind: "closed", reason: ev.reason || t("disconnected") });
       term.writeln(
         `\r\n[\x1b[33msession closed${ev.reason ? `: ${ev.reason}` : ""}\x1b[0m]\r\n`,
       );

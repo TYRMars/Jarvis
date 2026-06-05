@@ -33,6 +33,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { t } from "../../utils/i18n";
 
 export interface SelectOption<T extends string = string> {
   /// Identity stored in `value`. Must be unique within the option list.
@@ -316,13 +317,13 @@ export function Select<T extends string = string>({
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search…"
-                aria-label="Search options"
+                placeholder={t("uiKitSelectSearchPlaceholder")}
+                aria-label={t("uiKitSelectSearchAriaLabel")}
               />
             </div>
           )}
           {filtered.length === 0 ? (
-            <div className="ui-select-empty">No matches</div>
+            <div className="ui-select-empty">{t("noMatches")}</div>
           ) : (
             <ul className="ui-select-list">
               {filtered.map((opt, idx) => {
