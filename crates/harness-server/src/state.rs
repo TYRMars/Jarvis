@@ -381,6 +381,13 @@ pub struct AppState {
     /// enabled jobs at their due time. `None` keeps automation routes at
     /// 503 for tests / specialised binaries that don't wire it.
     pub automations: Option<Arc<dyn AutomationStore>>,
+    /// Process-wide in-memory reservation set for in-flight scheduled
+    /// automations. Reserved synchronously before a run is spawned (by
+    /// both the scheduler tick and the manual trigger) so the same
+    /// automation can't double-fire in the window before its persisted
+    /// `Running` flag lands. Always present (cheap default); mirrors
+    /// `auto_mode`'s `active_requirements` claim set.
+    pub automation_claims: crate::automation_runtime::AutomationClaims,
     /// Optional declarative-workflow store. When set, `/v1/workflows`
     /// exposes CRUD + run dispatch and the auto loop runs a requirement's
     /// bound workflow instead of a single-agent turn. `None` keeps the
@@ -454,6 +461,7 @@ impl AppState {
             memory_stats: None,
             memory_runtime: None,
             automations: None,
+            automation_claims: crate::automation_runtime::AutomationClaims::default(),
             workflows: None,
         }
     }
@@ -517,6 +525,7 @@ impl AppState {
             memory_stats: None,
             memory_runtime: None,
             automations: None,
+            automation_claims: crate::automation_runtime::AutomationClaims::default(),
             workflows: None,
         }
     }
