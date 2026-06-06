@@ -1226,6 +1226,22 @@ pub async fn run(
             auto_cfg.reviewer_auto_accept = true;
         }
     }
+    // Global cap on concurrent *manually-dispatched* workflow runs
+    // (`POST /v1/workflows/:id/run`). Mirrors the auto loop's
+    // concurrency cap by default; `JARVIS_WORKFLOW_MAX_CONCURRENT`
+    // overrides. Without this the manual route would fire-and-forget
+    // unbounded `tokio::spawn`s (issue #78).
+    let workflow_max_concurrent = std::env::var("JARVIS_WORKFLOW_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(auto_cfg.max_concurrent_units);
+    state = state.with_workflow_concurrency(workflow_max_concurrent);
+    // Captured before `auto_cfg` is moved into `spawn_auto_mode`; used
+    // as the reaper's default budget unless `JARVIS_WORKFLOW_RUN_TIMEOUT_MS`
+    // overrides.
+    let workflow_run_timeout_ms_default = auto_cfg.run_timeout_ms;
+
     // Build the runtime with the resolved concurrency cap so the
     // semaphore pool size matches what `tick` will enforce. The
     // spawn helper falls back to default capacity when the runtime
@@ -1254,6 +1270,25 @@ pub async fn run(
     }
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
     harness_server::spawn_automation_scheduler(state.clone());
+    // Stale-run reaper for manually-dispatched + auto workflow runs:
+    // one sweep immediately (reclaiming rows left `Running` by a prior
+    // process crash), then every `JARVIS_WORKFLOW_REAP_SECONDS`. Uses
+    // the auto loop's run-timeout budget unless overridden (issue #78).
+    let workflow_reap_seconds = std::env::var("JARVIS_WORKFLOW_REAP_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(harness_server::DEFAULT_WORKFLOW_REAP_SECONDS);
+    let workflow_run_timeout_ms = std::env::var("JARVIS_WORKFLOW_RUN_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(workflow_run_timeout_ms_default);
+    harness_server::spawn_workflow_reaper(
+        state.clone(),
+        workflow_reap_seconds,
+        workflow_run_timeout_ms,
+    );
     if let (Some(pm), Some(projects), Some(requirements)) = (
         project_memory_runtime,
         state.projects.clone(),

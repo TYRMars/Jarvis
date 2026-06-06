@@ -131,6 +131,8 @@ not on a stock box). The `make` targets apply it automatically; override with
 
 **Worktrees:** `JARVIS_WORKTREE_MODE` (`off`/`per_run`/`per_unit`; auto mode upgrades `off`→`per_run` so the scheduler never mutates the main checkout), `JARVIS_WORKTREE_ROOT` (`.jarvis/worktrees`).
 
+**Workflows** (manual `POST /v1/workflows/:id/run` governance): `JARVIS_WORKFLOW_MAX_CONCURRENT` (global cap on concurrent manually-dispatched runs via a `WorkflowRunGate` semaphore; defaults to `JARVIS_WORK_MAX_CONCURRENT` — over-cap POSTs get `429`), `JARVIS_WORKFLOW_REAP_SECONDS` (`60` — stale-run reaper cadence; flips orphaned `Running`/`Pending` rows left by a crash to `Cancelled`, skipping runs still alive in-process), `JARVIS_WORKFLOW_RUN_TIMEOUT_MS` (reaper budget; defaults to `JARVIS_WORK_RUN_TIMEOUT_MS`, ×3 safety multiplier for `Running`). Cancel an in-flight run via `POST /v1/workflow-runs/:run_id/cancel`.
+
 Passing `--mcp-serve` runs the binary as an MCP server on stdio exposing the local
 ToolRegistry — no LLM/HTTP setup.
 
@@ -341,9 +343,13 @@ prefixed names.
   Plus `/v1/workspace/{list,read,find,diff/*}` (files/search/git) and `/v1/workspace/terminal` (PTY WS);
   `/v1/workspaces` (persisted recent-workspace registry).
 - `/v1/automations` (+ `/:id/run`) — scheduled-task CRUD + on-demand trigger (`automation_runtime`).
-- `/v1/workflows` (+ `/:id`, `/:id/run`, `/:id/runs`, `/v1/workflow-runs/:id`) — declarative
-  multi-step agent workflows (CRUD + dispatch). Bindable to a Requirement via its `workflow_id`;
-  executed by `workflow_runtime::drive_workflow` (also branched into from `auto_mode`). See
+- `/v1/workflows` (+ `/:id`, `/:id/run`, `/:id/runs`, `/v1/workflow-runs/:id`, `/v1/workflow-runs/:id/cancel`) —
+  declarative multi-step agent workflows (CRUD + dispatch + cancel). Bindable to a Requirement via its
+  `workflow_id`; executed by `workflow_runtime::drive_workflow` (also branched into from `auto_mode`).
+  Manual `/run` dispatch is governed by a process-wide `WorkflowRunGate` (`workflow_concurrency.rs`):
+  a global concurrency semaphore (over-cap → `429`), a run-cancel ledger of `AbortHandle`s, and a
+  liveness set the `spawn_workflow_reaper` background sweep consults so it only reclaims orphaned
+  `Running` rows (left by a crash), never live in-process runs. See
   `docs/proposals/declarative-workflows.zh-CN.md`.
 - `/v1/skills` (+ `/:name`, `/reload`, `/:name/lifecycle`, archive/restore) — Skills catalog.
 - `/v1/plugins` (+ `/:name`, `/marketplace`), `/v1/market/{mcp,skills,skills/install}` — plugin/market.
