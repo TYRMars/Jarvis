@@ -22,7 +22,7 @@ use axum::{
     Router,
 };
 use harness_learning::{
-    MemoryFilter, MemoryItem, MemoryKind, MemoryPatch, MemoryScope, MemoryStore,
+    MemoryFilter, MemoryItem, MemoryKind, MemoryPatch, MemoryRejection, MemoryScope, MemoryStore,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -170,9 +170,16 @@ async fn create_memory(
         )
             .into_response();
     }
+    // Apply the per-field title/body caps that every other write path
+    // (`MemoryItem::new`, `MemoryPatch::apply`) guarantees. The REST body
+    // deserializes a `MemoryItem` directly, so without this a raw POST could
+    // persist far past the per-field caps (only the guard's 8 KiB total cap
+    // would catch it).
+    let mut item = item;
+    item.enforce_field_caps();
     match store.upsert(item).await {
         Ok(saved) => (StatusCode::CREATED, Json(json!({"item": saved}))).into_response(),
-        Err(e) => internal_error(e),
+        Err(e) => upsert_error(e),
     }
 }
 
@@ -207,7 +214,7 @@ async fn patch_memory(
     }
     match store.upsert(updated).await {
         Ok(saved) => Json(json!({"item": saved})).into_response(),
-        Err(e) => internal_error(e),
+        Err(e) => upsert_error(e),
     }
 }
 
@@ -231,6 +238,23 @@ fn internal_error(e: harness_learning::BoxError) -> Response {
         Json(json!({"error": e.to_string()})),
     )
         .into_response()
+}
+
+/// Map a `store.upsert` error to a response. A [`MemoryRejection`] means the
+/// *client* supplied bad input (prompt-injection / credential-like /
+/// invisible-unicode / hide-from-user / oversized) — the guard's contract
+/// surfaces that as `400 Bad Request`, not a 5xx that would imply a server
+/// fault the caller should retry. Anything else (genuine store I/O failure)
+/// falls through to 500.
+fn upsert_error(e: harness_learning::BoxError) -> Response {
+    if let Some(rej) = e.downcast_ref::<MemoryRejection>() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": rej.to_string()})),
+        )
+            .into_response();
+    }
+    internal_error(e)
 }
 
 #[cfg(test)]
@@ -405,11 +429,12 @@ mod tests {
             .body(Body::from(body.to_string()))
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
-        // We propagate the rejection as 500 today (BoxError →
-        // internal_error helper). The important part is that nothing
-        // landed on disk. The validator's error message names the
-        // rejection class so operators see *why* in the response.
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        // A validator rejection is *client* bad input, so the handler
+        // downcasts the boxed `MemoryRejection` and returns 400 — not a
+        // 5xx implying a retryable server fault. Nothing lands on disk,
+        // and the validator's error message names the rejection class so
+        // operators see *why* in the response.
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(
@@ -418,6 +443,44 @@ mod tests {
         );
         let all = inner.list(harness_learning::MemoryFilter::default()).await.unwrap();
         assert!(all.is_empty(), "rejected write must leave no on-disk trace");
+    }
+
+    /// REST create deserializes a `MemoryItem` straight from the body, so it
+    /// must still apply the per-field title/body caps that `MemoryItem::new`
+    /// guarantees — otherwise a raw POST persists past the caps every other
+    /// write path enforces.
+    #[tokio::test]
+    async fn post_enforces_per_field_caps() {
+        let router = crate::routes::router(test_state());
+        let huge_title = "T".repeat(MemoryItem::TITLE_CAP + 500);
+        let huge_body = "B".repeat(MemoryItem::BODY_CAP + 5000);
+        let body = json!({
+            "id": "",
+            "scope": {"kind": "user"},
+            "kind": "fact",
+            "title": huge_title,
+            "body": huge_body,
+            "source": {"kind": "user"},
+            "confidence": 1.0,
+            "created_at": "",
+            "updated_at": "",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/memories")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), 16384).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let title = v["item"]["title"].as_str().unwrap();
+        let saved_body = v["item"]["body"].as_str().unwrap();
+        assert_eq!(title.chars().count(), MemoryItem::TITLE_CAP);
+        // Truncated body is BODY_CAP chars plus the ellipsis marker.
+        assert_eq!(saved_body.chars().count(), MemoryItem::BODY_CAP + 1);
+        assert!(saved_body.ends_with('…'));
     }
 
     #[tokio::test]

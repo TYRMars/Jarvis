@@ -503,20 +503,12 @@ impl MemoryItem {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> Self {
-        let mut title: String = title.into();
-        if title.chars().count() > Self::TITLE_CAP {
-            title = title.chars().take(Self::TITLE_CAP).collect();
-        }
-        let mut body: String = body.into();
-        if body.chars().count() > Self::BODY_CAP {
-            body = body.chars().take(Self::BODY_CAP).collect::<String>() + "…";
-        }
-        Self {
+        let mut item = Self {
             id: String::new(),
             scope,
             kind,
-            title,
-            body,
+            title: title.into(),
+            body: body.into(),
             tags: Vec::new(),
             source: MemorySource::User,
             confidence: 1.0,
@@ -525,6 +517,23 @@ impl MemoryItem {
             updated_at: String::new(),
             last_used_at: None,
             attributes: Value::Null,
+        };
+        item.enforce_field_caps();
+        item
+    }
+
+    /// Truncate `title` / `body` in place to the per-field caps
+    /// ([`Self::TITLE_CAP`] / [`Self::BODY_CAP`]), appending an ellipsis to a
+    /// truncated body so the cut is detectable from the wire shape alone.
+    /// Shared by [`Self::new`] and any write path (e.g. the REST surface)
+    /// that builds a `MemoryItem` by deserialization rather than `new`, so
+    /// the caps are guaranteed uniformly across every path that persists.
+    pub fn enforce_field_caps(&mut self) {
+        if self.title.chars().count() > Self::TITLE_CAP {
+            self.title = self.title.chars().take(Self::TITLE_CAP).collect();
+        }
+        if self.body.chars().count() > Self::BODY_CAP {
+            self.body = self.body.chars().take(Self::BODY_CAP).collect::<String>() + "…";
         }
     }
 
