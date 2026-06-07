@@ -13836,6 +13836,103 @@ select.settings-input {
   overflow-wrap: anywhere;
 }
 
+.requirement-detail-todo-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.requirement-detail-todo-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.requirement-detail-todo-select-all input {
+  cursor: pointer;
+  accent-color: var(--accent-blue);
+}
+
+.requirement-detail-todo-batch-bar {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--accent-blue) 8%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 30%, var(--border-soft));
+  border-radius: 999px;
+}
+
+.requirement-detail-todo-batch-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  color: #fff;
+  background: var(--accent-blue);
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.requirement-detail-todo-batch-bar .batch-btn {
+  padding: 2px 9px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.requirement-detail-todo-batch-bar .batch-btn:hover {
+  border-color: var(--border);
+  background: var(--panel-hover);
+}
+
+.requirement-detail-todo-batch-bar .batch-btn-fail:hover {
+  color: rgb(200, 50, 50);
+  border-color: color-mix(in srgb, #dc2626 40%, var(--border-soft));
+}
+
+.requirement-detail-todo-batch-bar .batch-btn-skip:hover,
+.requirement-detail-todo-batch-bar .batch-btn-clear:hover {
+  color: var(--text-soft);
+}
+
+.requirement-detail-todo-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 22px 12px;
+  color: var(--text-soft);
+  text-align: center;
+}
+
+.requirement-detail-todo-empty-state svg {
+  color: var(--text-faint, var(--text-soft));
+  opacity: 0.6;
+}
+
+.requirement-detail-todo-empty-state p {
+  margin: 0;
+  font-size: var(--fs-12);
+}
+
 .requirement-detail-todo-list {
   display: flex;
   flex-direction: column;
@@ -13847,8 +13944,9 @@ select.settings-input {
 
 .requirement-detail-todo {
   display: flex;
-  flex-direction: column;
-  gap: 9px;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
   padding: 10px 12px;
   background: var(--panel-hover);
   border: 1px solid var(--border-soft);
@@ -13865,14 +13963,33 @@ select.settings-input {
   background: color-mix(in srgb, #dc2626 6%, var(--panel-hover));
 }
 
-.requirement-detail-todo-summary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
+.requirement-detail-todo.is-selected {
+  border-color: color-mix(in srgb, var(--accent-blue) 55%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent-blue) 8%, var(--panel-hover));
 }
 
-.requirement-detail-todo-summary strong {
+.requirement-detail-todo-checkbox {
+  margin: 3px 0 0;
+  flex: none;
+  cursor: pointer;
+  accent-color: var(--accent-blue);
+}
+
+.requirement-detail-todo-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.requirement-detail-todo-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.requirement-detail-todo-title-row strong {
   min-width: 0;
   color: var(--text);
   font-size: var(--fs-13);
@@ -13885,15 +14002,30 @@ select.settings-input {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex: none;
   width: fit-content;
+  margin: 0;
   padding: 2px 7px;
   color: var(--text-soft);
   background: var(--panel);
   border: 1px solid var(--border-soft);
   border-radius: 999px;
+  font-family: inherit;
   font-size: 10.5px;
   font-weight: 700;
   white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.requirement-detail-todo-status:hover {
+  border-color: var(--border);
+  background: var(--panel-hover);
+}
+
+.requirement-detail-todo-status-glyph {
+  font-size: 11px;
+  line-height: 1;
 }
 
 .requirement-detail-todo-status.status-passed {
@@ -14013,10 +14145,6 @@ select.settings-input {
     width: 100%;
   }
 
-  .requirement-detail-todo-summary {
-    grid-template-columns: 1fr;
-    align-items: start;
-  }
 }
 
 .requirement-detail-footer {
