@@ -276,7 +276,12 @@ pub async fn run(
     // with `JARVIS_LEARNING_STORE_URL` / `JARVIS_MEMORY_STORE_URL`.
     // Disable both with `JARVIS_LEARNING=0`.
     let learning_disabled = std::env::var("JARVIS_LEARNING")
-        .map(|v| matches!(v.as_str(), "0" | "false" | "no"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | "disabled"
+            )
+        })
         .unwrap_or(false);
     let (learning_store, memory_store, skill_lifecycle_store) = if learning_disabled {
         info!(
