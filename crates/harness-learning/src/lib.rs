@@ -203,13 +203,17 @@ pub trait SkillUsageStore: Send + Sync {
 pub fn fold_events_into_rows(events: Vec<SkillUsageEvent>) -> Vec<SkillUsageRow> {
     use std::collections::HashMap;
 
-    #[derive(Hash, PartialEq, Eq)]
+    #[derive(Hash, PartialEq, Eq, Clone)]
     struct Key(String, SkillSource, SkillScope);
 
     let mut rows: HashMap<Key, SkillUsageRow> = HashMap::new();
+    // Tracks the `created_at` of the event currently recorded in each row's
+    // `last_action`, so we can keep the *newest* action regardless of input
+    // ordering (the fold makes no ordering guarantee — see the doc-comment).
+    let mut last_action_at: HashMap<Key, String> = HashMap::new();
     for ev in events {
         let key = Key(ev.skill_name.clone(), ev.source.clone(), ev.scope.clone());
-        let row = rows.entry(key).or_insert_with(|| SkillUsageRow {
+        let row = rows.entry(key.clone()).or_insert_with(|| SkillUsageRow {
             skill_name: ev.skill_name.clone(),
             source: ev.source.clone(),
             scope: ev.scope.clone(),
@@ -232,9 +236,16 @@ pub fn fold_events_into_rows(events: Vec<SkillUsageEvent>) -> Vec<SkillUsageRow>
             | SkillUsageAction::Archived
             | SkillUsageAction::Restored => row.patch_count += 1,
         }
-        // Keep `last_action` as the newest action seen for this row.
-        if row.last_action.is_none() {
+        // Keep `last_action` as the newest action seen for this row, comparing
+        // `created_at` like `last_used_at` above so the result is independent of
+        // input ordering (ascending or descending).
+        let is_newer = last_action_at
+            .get(&key)
+            .map(|at| at.as_str() < ev.created_at.as_str())
+            .unwrap_or(true);
+        if is_newer {
             row.last_action = Some(ev.action.clone());
+            last_action_at.insert(key, ev.created_at.clone());
         }
     }
     let mut out: Vec<SkillUsageRow> = rows.into_values().collect();
@@ -906,6 +917,28 @@ mod tests {
         assert_eq!(rust.view_count, 1);
         assert_eq!(rust.use_count, 2);
         assert_eq!(rust.last_used_at.as_deref(), Some("2026-01-03T00:00:00Z"));
+    }
+
+    #[test]
+    fn fold_last_action_is_newest_regardless_of_order() {
+        // Newest event is the `Used` at 2026-01-03; `last_action` must reflect
+        // it whether the input is ascending or descending (the fold makes no
+        // ordering guarantee — see issue #90).
+        let ascending = vec![
+            ev("s", SkillUsageAction::Viewed, "2026-01-01T00:00:00Z"),
+            ev("s", SkillUsageAction::Patched, "2026-01-02T00:00:00Z"),
+            ev("s", SkillUsageAction::Used, "2026-01-03T00:00:00Z"),
+        ];
+        let rows = fold_events_into_rows(ascending);
+        assert_eq!(rows[0].last_action, Some(SkillUsageAction::Used));
+
+        let descending = vec![
+            ev("s", SkillUsageAction::Used, "2026-01-03T00:00:00Z"),
+            ev("s", SkillUsageAction::Patched, "2026-01-02T00:00:00Z"),
+            ev("s", SkillUsageAction::Viewed, "2026-01-01T00:00:00Z"),
+        ];
+        let rows = fold_events_into_rows(descending);
+        assert_eq!(rows[0].last_action, Some(SkillUsageAction::Used));
     }
 
     #[test]
