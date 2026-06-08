@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::state::AppState;
-use crate::workflow_runtime::execute_workflow_run;
+use crate::workflow_runtime::{execute_workflow_run, fail_run_if_running};
 
 /// Wall-clock budget for a single agent step in a manually dispatched
 /// run. Matches the auto loop's `JARVIS_WORK_RUN_TIMEOUT_MS` default.
@@ -218,17 +218,24 @@ async fn run_workflow(
         return server_error(e.to_string());
     }
     let response_run = run.clone();
+    let run_id = run.id.clone();
     let state2 = state.clone();
     tokio::spawn(async move {
-        execute_workflow_run(
+        // Guard the detached executor: a panic anywhere inside
+        // `execute_workflow_run` would otherwise be swallowed by tokio's
+        // default hook and leave the run stuck `Running` forever, since the
+        // terminal-status write lives at the end of the executor.
+        let exec = std::panic::AssertUnwindSafe(execute_workflow_run(
             &state2,
             &def,
             requirement.as_ref(),
             run,
             None,
             DEFAULT_RUN_TIMEOUT_MS,
-        )
-        .await;
+        ));
+        if futures::FutureExt::catch_unwind(exec).await.is_err() {
+            fail_run_if_running(&state2, &run_id, "workflow run panicked").await;
+        }
     });
     (axum::http::StatusCode::ACCEPTED, Json(response_run)).into_response()
 }

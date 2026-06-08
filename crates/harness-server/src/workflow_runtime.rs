@@ -177,6 +177,30 @@ pub(crate) async fn execute_workflow_run(
     run
 }
 
+/// Reconcile a run that a spawned executor may have left mid-flight: if
+/// the persisted run is still `Running`, flip it to `Failed` so a panic
+/// (whose terminal-status write never ran) can't leave it hanging in
+/// flight forever. No-op when the store is absent or the run already
+/// reached a terminal state.
+pub(crate) async fn fail_run_if_running(state: &AppState, run_id: &str, error: &str) {
+    let Some(store) = state.workflows.as_ref() else {
+        return;
+    };
+    match store.get_run(run_id).await {
+        Ok(Some(mut run)) if run.status == WorkflowRunStatus::Running => {
+            run.error = Some(error.to_string());
+            run.finish(WorkflowRunStatus::Failed);
+            if let Err(e) = store.upsert_run(&run).await {
+                warn!(error = %e, run_id = %run_id, "workflow: persist panicked run failed");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(error = %e, run_id = %run_id, "workflow: reconcile panicked run failed");
+        }
+    }
+}
+
 /// Owned execution context — cloned once from `&AppState` so the
 /// recursive async methods don't fight lifetime threading.
 struct Ctx {
@@ -335,11 +359,6 @@ impl Ctx {
             project_id: self.project_id.clone(),
             ..Default::default()
         };
-        if let Some(store) = self.state.store.as_ref() {
-            if let Err(e) = store.save_envelope(&conversation_id, &conv, &metadata).await {
-                warn!(error = %e, "workflow: save conversation failed");
-            }
-        }
 
         let workspace = self.workspace.clone();
         let agent = match self.state.build_agent_with(None, model, |cfg| {
@@ -347,6 +366,8 @@ impl Ctx {
         }) {
             Ok(agent) => agent,
             Err(e) => {
+                // Build failed before the conversation was persisted — there is
+                // nothing to orphan and no conversation to reference.
                 return single(WorkflowStepResult::failed(
                     step,
                     None,
@@ -354,6 +375,15 @@ impl Ctx {
                 ));
             }
         };
+
+        // Persist the initial conversation only once we hold a runnable agent,
+        // so a build failure can't leave an orphaned envelope that no step
+        // result references.
+        if let Some(store) = self.state.store.as_ref() {
+            if let Err(e) = store.save_envelope(&conversation_id, &conv, &metadata).await {
+                warn!(error = %e, "workflow: save conversation failed");
+            }
+        }
 
         let mut conv_for_run = conv.clone();
         let result = timeout(Duration::from_millis(self.timeout_ms), async {
@@ -439,6 +469,56 @@ fn last_assistant_text(conv: &Conversation) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct StubLlm;
+
+    #[async_trait::async_trait]
+    impl harness_core::LlmProvider for StubLlm {
+        async fn complete(
+            &self,
+            _: harness_core::ChatRequest,
+        ) -> Result<harness_core::ChatResponse, harness_core::Error> {
+            Err(harness_core::Error::Provider("stub".into()))
+        }
+    }
+
+    fn test_state() -> AppState {
+        let cfg = harness_core::AgentConfig::new("stub-model");
+        let agent = Arc::new(harness_core::Agent::new(Arc::new(StubLlm) as _, cfg));
+        AppState::new(agent).with_workflows(Arc::new(harness_store::MemoryWorkflowStore::new()))
+    }
+
+    #[tokio::test]
+    async fn fail_run_if_running_flips_running_to_failed() {
+        let state = test_state();
+        let store = state.workflows.clone().unwrap();
+        let run = WorkflowRun::new("wf", None);
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+
+        fail_run_if_running(&state, &run_id, "workflow run panicked").await;
+
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Failed);
+        assert_eq!(got.error.as_deref(), Some("workflow run panicked"));
+        assert!(got.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn fail_run_if_running_leaves_terminal_run_untouched() {
+        let state = test_state();
+        let store = state.workflows.clone().unwrap();
+        let mut run = WorkflowRun::new("wf", None);
+        run.finish(WorkflowRunStatus::Succeeded);
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+
+        fail_run_if_running(&state, &run_id, "should not apply").await;
+
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Succeeded);
+        assert!(got.error.is_none());
+    }
 
     #[test]
     fn render_template_substitutes_prev_and_outputs() {
