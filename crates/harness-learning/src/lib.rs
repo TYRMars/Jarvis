@@ -503,20 +503,12 @@ impl MemoryItem {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> Self {
-        let mut title: String = title.into();
-        if title.chars().count() > Self::TITLE_CAP {
-            title = title.chars().take(Self::TITLE_CAP).collect();
-        }
-        let mut body: String = body.into();
-        if body.chars().count() > Self::BODY_CAP {
-            body = body.chars().take(Self::BODY_CAP).collect::<String>() + "…";
-        }
-        Self {
+        let mut item = Self {
             id: String::new(),
             scope,
             kind,
-            title,
-            body,
+            title: title.into(),
+            body: body.into(),
             tags: Vec::new(),
             source: MemorySource::User,
             confidence: 1.0,
@@ -525,6 +517,25 @@ impl MemoryItem {
             updated_at: String::new(),
             last_used_at: None,
             attributes: Value::Null,
+        };
+        item.clamp_fields();
+        item
+    }
+
+    /// Re-apply the per-field [`TITLE_CAP`](Self::TITLE_CAP) /
+    /// [`BODY_CAP`](Self::BODY_CAP) truncation in place. [`MemoryItem::new`]
+    /// runs this for freshly-built rows, but a `MemoryItem` deserialized
+    /// straight from a REST body (or hand-constructed) never passes through
+    /// `new` — so the store boundary calls this before persisting to keep the
+    /// documented invariant (title ≤ `TITLE_CAP`, body ≤ `BODY_CAP` plus an
+    /// ellipsis) true for *every* write path. Idempotent: a row already within
+    /// the caps is left untouched.
+    pub fn clamp_fields(&mut self) {
+        if self.title.chars().count() > Self::TITLE_CAP {
+            self.title = self.title.chars().take(Self::TITLE_CAP).collect();
+        }
+        if self.body.chars().count() > Self::BODY_CAP {
+            self.body = self.body.chars().take(Self::BODY_CAP).collect::<String>() + "…";
         }
     }
 
@@ -944,6 +955,28 @@ mod tests {
         assert!(m.id.is_empty(), "id is store-allocated");
         assert!(m.created_at.is_empty(), "created_at is store-allocated");
         assert_eq!(m.confidence, 1.0);
+    }
+
+    #[test]
+    fn clamp_fields_truncates_raw_oversized_item() {
+        // Mimic a MemoryItem deserialized from a REST body: build via `new`
+        // (so the row is well-formed) then overwrite the fields directly,
+        // bypassing `new`'s truncation — exactly the path that skips the caps.
+        let mut m = MemoryItem::new(MemoryScope::user(), MemoryKind::Preference, "ok", "ok");
+        m.title = "a".repeat(MemoryItem::TITLE_CAP + 50);
+        m.body = "b".repeat(MemoryItem::BODY_CAP + 100);
+        m.clamp_fields();
+        assert_eq!(m.title.chars().count(), MemoryItem::TITLE_CAP);
+        assert_eq!(m.body.chars().count(), MemoryItem::BODY_CAP + 1);
+        assert!(m.body.ends_with('…'));
+    }
+
+    #[test]
+    fn clamp_fields_is_idempotent_within_caps() {
+        let mut m = MemoryItem::new(MemoryScope::user(), MemoryKind::Preference, "short", "body");
+        let before = m.clone();
+        m.clamp_fields();
+        assert_eq!(m, before, "rows within the caps are left untouched");
     }
 
     #[test]
