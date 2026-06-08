@@ -51,7 +51,8 @@ use harness_core::{
     Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
 };
 use harness_learning::{
-    fold_events_into_rows, MemoryFilter, MemoryItem, MemoryStore, SkillLifecycle,
+    fold_events_into_rows, validate_memory_safe, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore, SkillLifecycle,
     SkillLifecycleStore, SkillUsageEvent, SkillUsageFilter, SkillUsageRow, SkillUsageStore,
 };
 use harness_observability::{
@@ -67,7 +68,7 @@ use harness_project::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::error::StoreError;
 
@@ -2111,6 +2112,13 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
 /// through this trait too.
 pub struct JsonFileMemoryStore {
     dir: PathBuf,
+    /// Serialises the read-modify-write of [`MemoryStore::patch`] against
+    /// itself and against [`MemoryStore::delete`] within a single
+    /// process. Without it, two `patch` calls (or a `patch` racing a
+    /// `delete`) would interleave their get/write and lose updates or
+    /// resurrect a removed file. Cross-process atomicity would need an
+    /// OS file lock and is out of scope here.
+    write_lock: Mutex<()>,
 }
 
 impl JsonFileMemoryStore {
@@ -2118,7 +2126,10 @@ impl JsonFileMemoryStore {
         let dir = dir.into();
         ensure_dir(&dir)?;
         ensure_dir(&dir.join("memories"))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            write_lock: Mutex::new(()),
+        })
     }
 
     fn item_path(&self, id: &str) -> PathBuf {
@@ -2177,7 +2188,32 @@ impl MemoryStore for JsonFileMemoryStore {
         Ok(item)
     }
 
+    /// Atomic (in-process) read-modify-write. The `write_lock` is held
+    /// across get → apply → validate → persist, and `delete` takes the
+    /// same lock, so a concurrent `delete` either lands before the
+    /// `get` (we observe the missing file → `Ok(None)`, no resurrection)
+    /// or after the persist (the file is removed). Two `patch` calls
+    /// serialise, so neither loses the other's update.
+    async fn patch(
+        &self,
+        id: &str,
+        patch: MemoryPatch,
+    ) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
+        let Some(mut item) = read_json_optional::<MemoryItem>(&self.item_path(id)).await? else {
+            return Ok(None);
+        };
+        patch.apply(&mut item);
+        validate_memory_safe(&item)
+            .map_err(|e| -> harness_learning::BoxError { Box::new(e) })?;
+        item.updated_at = Utc::now().to_rfc3339();
+        let bytes = serde_json::to_vec_pretty(&item).map_err(StoreError::from)?;
+        atomic_write(&self.item_path(&item.id), &bytes).await?;
+        Ok(Some(item))
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
         match tokio::fs::remove_file(&self.item_path(id)).await {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
