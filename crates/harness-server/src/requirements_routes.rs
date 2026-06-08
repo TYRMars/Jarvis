@@ -307,6 +307,11 @@ async fn create_requirement(
     if let Some(deps) = body.depends_on {
         item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
     }
+    if item.depends_on.iter().any(|d| d == &item.id) {
+        return bad_request(
+            "`depends_on` must not contain the requirement's own id (self-dependency)",
+        );
+    }
     if let Some(label_ids) = body.label_ids {
         item.label_ids = label_ids
             .into_iter()
@@ -477,6 +482,11 @@ async fn update_requirement(
     }
     if let Some(deps) = body.depends_on {
         item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+    }
+    if item.depends_on.iter().any(|d| d == &item.id) {
+        return bad_request(
+            "`depends_on` must not contain the requirement's own id (self-dependency)",
+        );
     }
     if let Some(label_ids) = body.label_ids {
         item.label_ids = label_ids
@@ -2435,6 +2445,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn patch_rejects_self_dependency() {
+        let state = state_with_store();
+        let store = state.requirements.as_ref().unwrap().clone();
+        let req = Requirement::new("p1", "self dep");
+        store.upsert(&req).await.unwrap();
+
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{}", req.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"depends_on":["{}"]}}"#, req.id)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // The bad edit must not have persisted.
+        let stored = store.get(&req.id).await.unwrap().unwrap();
+        assert!(stored.depends_on.is_empty());
     }
 
     // ---- Triage routes -------------------------------------------------

@@ -633,6 +633,12 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
         // also iterates `reqs`.
         let dep_index: std::collections::HashMap<String, RequirementStatus> =
             reqs.iter().map(|r| (r.id.clone(), r.status)).collect();
+        // Structural deadlock detection for the depends_on gate:
+        // requirements that sit on — or transitively behind — a
+        // dependency cycle can never satisfy the gate, so they are
+        // surfaced once as a `blocked` row rather than skipped in
+        // silence forever (issue #97).
+        let cycle_blocked = cycle_blocked_requirement_ids(&reqs);
 
         for req in &reqs {
             if picked >= config.max_units_per_tick {
@@ -668,10 +674,50 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                 );
                 continue;
             }
-            // v1.0 — depends_on. Skip until every listed
-            // dependency reaches `done`. Unknown ids (deleted /
-            // cross-project) are treated as "not yet done" so a
-            // stale ref blocks rather than silently passes.
+            // v1.0 — depends_on gate. Skip until every listed
+            // dependency reaches `done`. Three distinct failure
+            // shapes; the first two are *permanent* deadlocks that we
+            // surface once as an operator-visible `blocked` Activity
+            // row instead of an endless silent skip (issue #97):
+            //
+            //  - self-dependency  → a row that lists its own id can
+            //    never be `done` while blocked, so it blocks itself
+            //    forever.
+            //  - dependency cycle → A→B, B→A: no member ever reaches
+            //    `done`, so all members (and anything behind them)
+            //    stall permanently.
+            //
+            // Unknown ids (deleted / cross-project) stay a silent
+            // `debug!` skip: they fail safe (block rather than run the
+            // wrong thing), and a block on a genuinely deleted dep is
+            // the intended behaviour. Cross-project deps are not
+            // resolved across stores in v1 — author them within a
+            // single project.
+            if req.depends_on.iter().any(|d| d == &req.id) {
+                record_blocked_once(state, &req.id, "self_dependency", json!({ "dep": req.id }))
+                    .await;
+                debug!(
+                    requirement_id = %req.id,
+                    reason = "self_dependency",
+                    "auto mode skipping requirement (self-dependency deadlock)"
+                );
+                continue;
+            }
+            if cycle_blocked.contains(req.id.as_str()) {
+                record_blocked_once(
+                    state,
+                    &req.id,
+                    "dependency_cycle",
+                    json!({ "depends_on": req.depends_on }),
+                )
+                .await;
+                debug!(
+                    requirement_id = %req.id,
+                    reason = "dependency_cycle",
+                    "auto mode skipping requirement (dependency cycle)"
+                );
+                continue;
+            }
             if let Some(blocking_dep) = req.depends_on.iter().find(|dep_id| {
                 !dep_index
                     .get(dep_id.as_str())
@@ -1910,6 +1956,99 @@ fn truncate_one_line(s: &str, cap: usize) -> String {
     } else {
         one.to_string()
     }
+}
+
+/// Compute the set of requirement ids that can **never** satisfy
+/// their `depends_on` gate because they sit on — or transitively
+/// behind — a dependency cycle within the project.
+///
+/// Only in-project edges are considered: a dep id pointing outside
+/// `reqs` (deleted / cross-project) is dropped here so it can't close
+/// a cycle; those unknown-id blocks are handled separately by the
+/// caller (they fail safe and stay a silent skip).
+///
+/// Implementation is a Kahn-style peel: a requirement "settles" once
+/// every in-project dep it lists has settled. Whatever can't settle
+/// is stuck behind a cycle — self-loops (`A→A`) and mutual cycles
+/// (`A→B→A`) included.
+fn cycle_blocked_requirement_ids(reqs: &[Requirement]) -> HashSet<String> {
+    let ids: HashSet<&str> = reqs.iter().map(|r| r.id.as_str()).collect();
+    let mut pending: std::collections::HashMap<&str, HashSet<&str>> = reqs
+        .iter()
+        .map(|r| {
+            let deps: HashSet<&str> = r
+                .depends_on
+                .iter()
+                .map(String::as_str)
+                .filter(|d| ids.contains(d))
+                .collect();
+            (r.id.as_str(), deps)
+        })
+        .collect();
+    loop {
+        let settled: Vec<&str> = pending
+            .iter()
+            .filter(|(_, deps)| deps.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        if settled.is_empty() {
+            break;
+        }
+        for id in &settled {
+            pending.remove(id);
+        }
+        for deps in pending.values_mut() {
+            for id in &settled {
+                deps.remove(id);
+            }
+        }
+    }
+    pending.keys().map(|id| id.to_string()).collect()
+}
+
+/// Append a `Blocked` Activity row for a permanently-deadlocked
+/// requirement, but only when the newest existing row isn't already
+/// the same block — so the per-tick scheduler surfaces the stall once
+/// rather than spamming the timeline every tick. If a later event
+/// (run, status change, manual unblock) intervenes, a recurring block
+/// re-emits.
+async fn record_blocked_once(
+    state: &AppState,
+    requirement_id: &str,
+    reason: &str,
+    detail: serde_json::Value,
+) {
+    let Some(store) = state.activities.as_ref() else {
+        return;
+    };
+    match store.list_for_requirement(requirement_id).await {
+        Ok(rows) => {
+            if let Some(latest) = rows.first() {
+                if latest.kind == ActivityKind::Blocked
+                    && latest.body.get("reason").and_then(|v| v.as_str()) == Some(reason)
+                {
+                    return;
+                }
+            }
+        }
+        Err(e) => {
+            // Better a possible duplicate row than a silent stall:
+            // fall through and emit.
+            warn!(error = %e, "auto mode: dedup list for blocked activity failed");
+        }
+    }
+    let mut body = detail;
+    if let serde_json::Value::Object(map) = &mut body {
+        map.insert("reason".to_string(), json!(reason));
+    }
+    record_activity(
+        state,
+        requirement_id,
+        ActivityKind::Blocked,
+        ActivityActor::System,
+        body,
+    )
+    .await;
 }
 
 pub(crate) async fn record_activity(
@@ -4098,5 +4237,103 @@ Do {{ requirement.title }} in {{ issue.state }}.
         runs.upsert(&backdated).await.unwrap();
         let n = tick(&state, &c).await.unwrap();
         assert_eq!(n, 1, "elapsed backoff window must let the row through");
+    }
+
+    // ---- depends_on cycle detection (issue #97) -----------------------
+
+    /// Build a requirement with a known id and dependency list, so the
+    /// graph-shape tests below can wire edges deterministically.
+    fn req_with_deps(id: &str, deps: &[&str]) -> Requirement {
+        let mut r = Requirement::new("proj", id);
+        r.id = id.to_string();
+        r.depends_on = deps.iter().map(|s| s.to_string()).collect();
+        r
+    }
+
+    #[test]
+    fn cycle_detection_flags_self_loop() {
+        let reqs = vec![req_with_deps("a", &["a"])];
+        let blocked = cycle_blocked_requirement_ids(&reqs);
+        assert!(blocked.contains("a"), "self-loop must be flagged");
+    }
+
+    #[test]
+    fn cycle_detection_flags_mutual_cycle_and_dependents() {
+        // a→b, b→a (cycle); c→a (behind the cycle); d standalone.
+        let reqs = vec![
+            req_with_deps("a", &["b"]),
+            req_with_deps("b", &["a"]),
+            req_with_deps("c", &["a"]),
+            req_with_deps("d", &[]),
+        ];
+        let blocked = cycle_blocked_requirement_ids(&reqs);
+        assert!(blocked.contains("a"), "cycle member a flagged");
+        assert!(blocked.contains("b"), "cycle member b flagged");
+        assert!(blocked.contains("c"), "dependent behind cycle flagged");
+        assert!(!blocked.contains("d"), "standalone row not flagged");
+    }
+
+    #[test]
+    fn cycle_detection_ignores_acyclic_and_unknown_deps() {
+        // a→b→done-chain is acyclic; e depends on an unknown
+        // (cross-project / deleted) id, which must NOT count as a
+        // cycle (the unknown-id block is handled by the caller).
+        let reqs = vec![
+            req_with_deps("a", &["b"]),
+            req_with_deps("b", &[]),
+            req_with_deps("e", &["external-id"]),
+        ];
+        let blocked = cycle_blocked_requirement_ids(&reqs);
+        assert!(blocked.is_empty(), "no cycles → empty set, got {blocked:?}");
+    }
+
+    #[tokio::test]
+    async fn tick_surfaces_self_dependency_as_blocked_activity() {
+        let state = wire_stores(base_state_with_canned_llm("done."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "self blocked");
+        req.status = RequirementStatus::Backlog;
+        req.triage_state = TriageState::Approved;
+        req.assignee_id = Some(prof.id.clone());
+        req.depends_on = vec![req.id.clone()];
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 0, "self-dependency must not be picked up");
+
+        let acts = state
+            .activities
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        let blocked: Vec<_> = acts
+            .iter()
+            .filter(|a| a.kind == ActivityKind::Blocked)
+            .collect();
+        assert_eq!(blocked.len(), 1, "exactly one blocked row surfaced");
+        assert_eq!(
+            blocked[0].body.get("reason").and_then(|v| v.as_str()),
+            Some("self_dependency")
+        );
+
+        // A second tick must NOT re-emit (dedup on newest row).
+        let _ = tick(&state, &cfg()).await.unwrap();
+        let acts2 = state
+            .activities
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        let blocked2 = acts2.iter().filter(|a| a.kind == ActivityKind::Blocked).count();
+        assert_eq!(blocked2, 1, "blocked row must not be re-emitted each tick");
     }
 }
