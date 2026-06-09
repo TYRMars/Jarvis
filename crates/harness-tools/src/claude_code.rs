@@ -239,9 +239,29 @@ impl Tool for ClaudeCodeRunTool {
             .stdin(Stdio::null())
             .kill_on_drop(true);
 
-        let child = cmd.spawn().map_err(|e| -> BoxError {
-            format!("failed to spawn `{}`: {e}", self.binary.display()).into()
-        })?;
+        // Spawning can transiently fail with `ETXTBSY` ("Text file
+        // busy") on Linux when another thread in this process still
+        // holds the target binary open for writing while we `fork`+
+        // `exec` it — the child inherits the open write fd and `execve`
+        // refuses. The writer closes its fd promptly, so a short bounded
+        // retry clears it. Harmless on other platforms / other errors,
+        // which surface immediately.
+        const ETXTBSY: i32 = 26;
+        let mut attempts = 0u32;
+        let child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(e) if e.raw_os_error() == Some(ETXTBSY) && attempts < 10 => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(e) => {
+                    return Err(
+                        format!("failed to spawn `{}`: {e}", self.binary.display()).into(),
+                    );
+                }
+            }
+        };
 
         let output =
             match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
