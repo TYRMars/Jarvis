@@ -286,27 +286,27 @@ struct GeGenerationConfig {
 
 impl GoogleRequest {
     fn from_request(r: &ChatRequest) -> Self {
-        // Walk the harness messages once, accumulating systems + a name
-        // lookup for tool result conversion, then a second pass builds
-        // the contents array.
+        // Walk the harness messages once, accumulating systems, then a
+        // second pass builds the contents array.
         let mut system_text = String::new();
-        let mut id_to_name: HashMap<&str, &str> = HashMap::new();
         for m in &r.messages {
-            match m {
-                Message::System { content, .. } => {
-                    if !system_text.is_empty() {
-                        system_text.push_str("\n\n");
-                    }
-                    system_text.push_str(content);
+            if let Message::System { content, .. } = m {
+                if !system_text.is_empty() {
+                    system_text.push_str("\n\n");
                 }
-                Message::Assistant { tool_calls, .. } => {
-                    for tc in tool_calls {
-                        id_to_name.insert(tc.id.as_str(), tc.name.as_str());
-                    }
-                }
-                _ => {}
+                system_text.push_str(content);
             }
         }
+
+        // Tool-call id → name resolution is scoped to the *current* turn,
+        // not the whole conversation. Gemini matches `functionResponse`
+        // ↔ `functionCall` by name (no ids on the wire), and our
+        // synthesised `gem_<index>` ids restart at `gem_0` every turn, so
+        // a conversation-wide map would let a later turn's `gem_0`
+        // shadow an earlier one (issue #45). Ids are unique *within* a
+        // turn, so we rebuild the map from each assistant turn's
+        // tool-calls and resolve the tool replies that follow against it.
+        let mut current_turn_ids: HashMap<&str, &str> = HashMap::new();
 
         let mut contents: Vec<GeContent> = Vec::new();
         for m in &r.messages {
@@ -324,6 +324,13 @@ impl GoogleRequest {
                     reasoning_content: _,
                     ..
                 } => {
+                    // Start a fresh resolution scope for this turn so a
+                    // colliding `gem_<index>` id from an earlier turn can
+                    // never leak into this turn's tool replies.
+                    current_turn_ids.clear();
+                    for tc in tool_calls {
+                        current_turn_ids.insert(tc.id.as_str(), tc.name.as_str());
+                    }
                     let mut parts: Vec<GePart> = Vec::new();
                     if let Some(text) = content {
                         if !text.is_empty() {
@@ -355,7 +362,7 @@ impl GoogleRequest {
                     content,
                     ..
                 } => {
-                    let name = id_to_name
+                    let name = current_turn_ids
                         .get(tool_call_id.as_str())
                         .copied()
                         .unwrap_or(tool_call_id.as_str())
@@ -790,6 +797,64 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["functionResponse"]["name"], "x");
         assert_eq!(parts[1]["functionResponse"]["name"], "y");
+    }
+
+    #[test]
+    fn convert_tool_results_resolve_name_per_turn_despite_colliding_ids() {
+        // Regression for #45: synthesised `gem_<index>` ids restart at
+        // `gem_0` each turn, so a conversation-wide id→name map would let
+        // turn 2's `gem_0` (code.grep) shadow turn 1's `gem_0` (fs.read),
+        // sending the wrong functionResponse name for turn 1's reply.
+        // Name resolution must be scoped to the turn the reply belongs to.
+        let r = req_with(vec![
+            Message::user("turn one"),
+            Message::Assistant {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: "gem_0".into(),
+                    name: "fs.read".into(),
+                    arguments: json!({}),
+                }],
+                reasoning_content: None,
+                cache: None,
+            },
+            Message::tool_result("gem_0", "file contents"),
+            Message::user("turn two"),
+            Message::Assistant {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: "gem_0".into(),
+                    name: "code.grep".into(),
+                    arguments: json!({}),
+                }],
+                reasoning_content: None,
+                cache: None,
+            },
+            Message::tool_result("gem_0", "grep hits"),
+        ]);
+        let body = GoogleRequest::from_request(&r);
+        let v = body_value(&body);
+        let contents = v["contents"].as_array().unwrap();
+        // user, model, user(result), user(question), model, user(result)
+        assert_eq!(contents.len(), 6);
+        // Turn 1's reply must resolve to fs.read, not the later code.grep.
+        assert_eq!(
+            contents[2]["parts"][0]["functionResponse"]["name"],
+            "fs.read"
+        );
+        assert_eq!(
+            contents[2]["parts"][0]["functionResponse"]["response"]["result"],
+            "file contents"
+        );
+        // Turn 2's reply resolves to code.grep.
+        assert_eq!(
+            contents[5]["parts"][0]["functionResponse"]["name"],
+            "code.grep"
+        );
+        assert_eq!(
+            contents[5]["parts"][0]["functionResponse"]["response"]["result"],
+            "grep hits"
+        );
     }
 
     #[test]
