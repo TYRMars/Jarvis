@@ -141,8 +141,11 @@ async fn list(args: ListArgs, cfg: Option<&Config>) -> Result<()> {
             .lines()
             .next()
             .unwrap_or("");
-        let trimmed = if desc.len() > 50 {
-            format!("{}…", &desc[..50])
+        // Truncate by char count, not byte index — plugin descriptions may
+        // be Chinese, and a raw byte slice panics when byte 50 splits a
+        // multibyte char.
+        let trimmed = if desc.chars().count() > 50 {
+            format!("{}…", desc.chars().take(50).collect::<String>())
         } else {
             desc.to_string()
         };

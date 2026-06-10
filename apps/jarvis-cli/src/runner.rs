@@ -543,8 +543,11 @@ async fn run_one_turn(
                         // status line; the model still sees the
                         // whole thing.
                         let one_line = content.lines().next().unwrap_or("").trim();
-                        let trimmed = if one_line.len() > 200 {
-                            format!("{}…", &one_line[..200])
+                        // Truncate by char count, not byte index — a raw byte
+                        // slice panics when byte 200 splits a multibyte char
+                        // (CJK, emoji), and tool output is free-form text.
+                        let trimmed = if one_line.chars().count() > 200 {
+                            format!("{}…", one_line.chars().take(200).collect::<String>())
                         } else {
                             one_line.to_string()
                         };
@@ -885,10 +888,13 @@ fn print_policy(policy: &PolicyTable) {
 
 fn short_args(value: &serde_json::Value) -> String {
     let s = value.to_string();
-    if s.len() <= 80 {
+    // Truncate by char count, not byte index — JSON arg values routinely
+    // contain CJK, and a raw byte slice panics when byte 80 splits a
+    // multibyte char.
+    if s.chars().count() <= 80 {
         s
     } else {
-        format!("{}…", &s[..80])
+        format!("{}…", s.chars().take(80).collect::<String>())
     }
 }
 
