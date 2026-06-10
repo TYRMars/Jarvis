@@ -324,9 +324,17 @@ Manual `Start`/drag ignores both gates — they're scheduler-only.
 - `POST /v1/roadmap/import` — same as the `roadmap.import` tool (`{slug?,name?,source_subdir?,prune?}`
   → `ImportSummary`; 503 if stores/workspace-root unset).
 
-**Auto-loop guards** (`auto_mode::tick`, all silent skips): `triage_state == Approved`,
+**Auto-loop guards** (`auto_mode::tick`, mostly silent skips): `triage_state == Approved`,
 `assignee_id.is_some()`, all `depends_on` reach Done (topo sort), no in-flight run, `failed_count <
-max_retries`, and Review rows under `AcceptancePolicy::Human` are skipped.
+max_retries`, and Review rows under `AcceptancePolicy::Human` are skipped. The `depends_on` gate
+distinguishes *permanent* deadlocks from ordinary waiting: a **self-dependency** (a row listing its
+own id) or a **dependency cycle** (`A→B→A`, plus anything transitively behind one) surfaces an
+operator-visible `Blocked` Activity row **once** (deduped on the newest row, reason
+`self_dependency` / `dependency_cycle`) instead of skipping in silence forever. Self-dependency is
+also rejected at requirement create/update time (REST + `requirement.{create,update}` tools).
+Cross-project `depends_on` ids are **not** resolved across stores — author dependencies within a
+single project; an id pointing outside the project is treated as "not yet done" and blocks (a
+silent `debug!` skip, since a deleted-dep block is intended).
 
 **Acceptance policy** (`Requirement.acceptance_policy`): `Subagent` (default) auto-flips Review→Done
 **unless** `JARVIS_REVIEWER_AUTO_ACCEPT` is set, in which case the picker re-picks the Review row,
