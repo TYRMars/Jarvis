@@ -22,7 +22,7 @@ use axum::{
     Router,
 };
 use harness_learning::{
-    MemoryFilter, MemoryItem, MemoryKind, MemoryPatch, MemoryScope, MemoryStore,
+    MemoryFilter, MemoryItem, MemoryKind, MemoryPatch, MemoryRejection, MemoryScope, MemoryStore,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -185,28 +185,22 @@ async fn patch_memory(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let existing = match store.get(&id).await {
-        Ok(Some(item)) => item,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "no such memory", "id": id})),
-            )
-                .into_response();
-        }
-        Err(e) => return internal_error(e),
-    };
-    let mut updated = existing;
-    patch.apply(&mut updated);
-    if updated.title.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "title must be non-empty after patch"})),
+    // Atomic read-modify-write in the store — serialises against
+    // concurrent patches and lets `delete` win (no resurrected rows).
+    match store.patch(&id, patch).await {
+        Ok(Some(saved)) => Json(json!({"item": saved})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no such memory", "id": id})),
         )
-            .into_response();
-    }
-    match store.upsert(updated).await {
-        Ok(saved) => Json(json!({"item": saved})).into_response(),
+            .into_response(),
+        // A patched row that fails the safety/non-empty validator is a
+        // bad request, not a server fault — surface it as 400.
+        Err(e) if e.downcast_ref::<MemoryRejection>().is_some() => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
         Err(e) => internal_error(e),
     }
 }

@@ -2186,6 +2186,7 @@ name = "harness-router"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "futures",
  "harness-core",
  "tokio",
  "tracing",

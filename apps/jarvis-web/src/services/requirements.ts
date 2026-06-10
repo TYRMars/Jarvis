@@ -495,6 +495,41 @@ export async function updateRequirementTodo(
   return body;
 }
 
+interface RequirementTodoBatchResponse {
+  todos: RequirementTodo[];
+  requirement: Requirement;
+}
+
+/**
+ * Apply one status to several todos of a requirement in a single
+ * server-side read-modify-write. Use this instead of fanning out N
+ * concurrent {@link updateRequirementTodo} calls against the same
+ * requirement: parallel per-item PATCHes race on the whole-row write
+ * and silently drop all but the last update (issue #110). One request
+ * also means one rejection to surface, not N swallowed promises.
+ */
+export async function batchUpdateRequirementTodos(
+  requirementId: string,
+  todoIds: string[],
+  status: RequirementTodoStatus,
+): Promise<RequirementTodoBatchResponse> {
+  const r = await fetch(
+    apiUrl(`/v1/requirements/${encodeURIComponent(requirementId)}/todos`),
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: todoIds, status }),
+    },
+  );
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`batch update TODOs ${r.status}: ${text || r.statusText}`);
+  }
+  const body = (await r.json()) as RequirementTodoBatchResponse;
+  upsertLocal(body.requirement);
+  return body;
+}
+
 export async function deleteRequirementTodo(
   requirementId: string,
   todoId: string,
