@@ -237,6 +237,9 @@ export interface UpdateRequirementInput {
   /// Phase 3.8 — replace the label-id list. Order is preserved.
   /// Omit to leave as-is; pass `[]` to clear all chips.
   label_ids?: string[];
+  /// Bind / unbind a declarative workflow. Omit to leave as-is; pass a
+  /// definition id to bind, or `null` / `""` to clear the binding.
+  workflow_id?: string | null;
 }
 
 /// Patch a Requirement. Optimistic — applies immediately to cache,
@@ -259,6 +262,9 @@ export function updateRequirement(
       ? { conversation_ids: patch.conversation_ids }
       : {}),
     ...(patch.label_ids !== undefined ? { label_ids: patch.label_ids } : {}),
+    ...(patch.workflow_id !== undefined
+      ? { workflow_id: patch.workflow_id }
+      : {}),
     updated_at: new Date().toISOString(),
   };
   upsertLocal(next);
@@ -485,6 +491,41 @@ export async function updateRequirementTodo(
     throw new Error(`update TODO ${r.status}: ${text || r.statusText}`);
   }
   const body = (await r.json()) as RequirementTodoMutationResponse;
+  upsertLocal(body.requirement);
+  return body;
+}
+
+interface RequirementTodoBatchResponse {
+  todos: RequirementTodo[];
+  requirement: Requirement;
+}
+
+/**
+ * Apply one status to several todos of a requirement in a single
+ * server-side read-modify-write. Use this instead of fanning out N
+ * concurrent {@link updateRequirementTodo} calls against the same
+ * requirement: parallel per-item PATCHes race on the whole-row write
+ * and silently drop all but the last update (issue #110). One request
+ * also means one rejection to surface, not N swallowed promises.
+ */
+export async function batchUpdateRequirementTodos(
+  requirementId: string,
+  todoIds: string[],
+  status: RequirementTodoStatus,
+): Promise<RequirementTodoBatchResponse> {
+  const r = await fetch(
+    apiUrl(`/v1/requirements/${encodeURIComponent(requirementId)}/todos`),
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: todoIds, status }),
+    },
+  );
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`batch update TODOs ${r.status}: ${text || r.statusText}`);
+  }
+  const body = (await r.json()) as RequirementTodoBatchResponse;
   upsertLocal(body.requirement);
   return body;
 }

@@ -6,6 +6,7 @@
 
 import { useAppStore } from "../store/appStore";
 import { requestInterrupt } from "../services/socket";
+import { t } from "../utils/i18n";
 
 export function SendButton() {
   const inFlight = useAppStore((s) => s.inFlight);
@@ -16,7 +17,7 @@ export function SendButton() {
       type="submit"
       id="send"
       className={"send-btn" + (inFlight ? " hidden" : "")}
-      title="Send"
+      title={t("send")}
       data-i18n-title="send"
       disabled={inFlight || empty}
     >
@@ -35,9 +36,9 @@ export function StopButton() {
       type="button"
       id="stop"
       className={"stop-btn" + (inFlight ? "" : " hidden")}
-      title="Stop"
+      title={t("stop")}
       data-i18n-title="stop"
-      aria-label="Stop"
+      aria-label={t("stop")}
       onClick={() => requestInterrupt()}
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

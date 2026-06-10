@@ -31,6 +31,7 @@ import {
   applyLabelDeleted,
   applyLabelUpdated,
 } from "../labels";
+import { applyMemoryDeleted, applyMemoryUpserted } from "../memories";
 
 export const domainFrameHandlers: Record<string, (ev: any) => void> = {
   // ---- Persistent TODO board frames ----
@@ -111,5 +112,14 @@ export const domainFrameHandlers: Record<string, (ev: any) => void> = {
     ) {
       applyLabelDeleted(ev.project_id, ev.label_id);
     }
+  },
+  // ---- Long-term Memory frames (self-improving-agent Phase 1) ----
+  // Source: harness_store::GuardedMemoryStore broadcast. Keeps the
+  // Settings → Memory panel synced across tabs without polling.
+  memory_upserted: (ev) => {
+    if (ev.item) applyMemoryUpserted(ev.item);
+  },
+  memory_deleted: (ev) => {
+    if (typeof ev.id === "string") applyMemoryDeleted(ev.id);
   },
 };

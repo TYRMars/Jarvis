@@ -14,6 +14,7 @@ import type { ToolBlockEntry } from "../../store/appStore";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { DecisionSourceChip } from "../Approvals/DecisionSourceChip";
+import { GrantPermissionChip } from "../Approvals/GrantPermissionChip";
 import { SubAgentCard } from "../SubAgent/SubAgentCard";
 import type { SubAgentRun } from "../SubAgent/types";
 import {
@@ -111,11 +112,20 @@ export function ToolBlock({ entry, forceOpen = false }: ToolBlockProps) {
         </span>
         <span className="tool-name">{entry.name}</span>
         {badge ? <span className="tool-badge">{badge}</span> : null}
-        {duration ? <span className="tool-duration" title={t("toolDurationHint") || "Execution time"}>{duration}</span> : null}
+        {duration ? <span className="tool-duration" title={t("toolDurationHint")}>{duration}</span> : null}
         {teaser ? (
           <span className="tool-summary" title={teaser}>{teaser}</span>
         ) : null}
         {entry.decisionSource ? <DecisionSourceChip source={entry.decisionSource} /> : null}
+        {/* Post-hoc grant: only for finished approval-gated tools that
+            were NOT already auto-decided by a stored rule. Lets the user
+            persist an allow rule after the fact (incl. from restored
+            history), so the next call of this tool skips the prompt. */}
+        {status === "ok" &&
+        APPROVAL_GATED_TOOLS.has(entry.name) &&
+        !entry.decisionSource ? (
+          <GrantPermissionChip tool={entry.name} />
+        ) : null}
       </div>
       {open && (
         <div className="tool-body">

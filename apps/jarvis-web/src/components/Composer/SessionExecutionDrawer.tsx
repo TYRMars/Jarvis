@@ -67,7 +67,7 @@ export function SessionExecutionDrawer({
             type="button"
             className="requirement-detail-close"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t("detailClose")}
           >
             ×
           </button>
@@ -125,7 +125,7 @@ export function SessionExecutionDrawer({
                   className="requirement-detail-run-worktree"
                   title={run.worktree_path}
                 >
-                  📁 worktree: <code>{run.worktree_path}</code>
+                  📁 {t("composerDrawerWorktreeLabel")} <code>{run.worktree_path}</code>
                 </p>
               )}
             </div>
@@ -134,7 +134,7 @@ export function SessionExecutionDrawer({
 
         {verification && (
           <section className="requirement-detail-verify">
-            <h3 className="requirement-detail-runs-heading">Verification</h3>
+            <h3 className="requirement-detail-runs-heading">{t("composerDrawerVerification")}</h3>
             <p className="requirement-detail-run-text">
               <span
                 className={

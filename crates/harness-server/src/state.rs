@@ -1,12 +1,24 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use harness_automation::AutomationStore;
+use harness_workflow::WorkflowStore;
 use harness_channel::{ChannelBindingStore, ChannelInstanceStore};
-use harness_core::{Agent, AgentConfig, AgentProfileStore, ConversationStore, LlmProvider, PermissionMode, PermissionStore, TodoStore, ToolRegistry};
-use harness_observability::{EvalStore, ObservabilityStore};
-use harness_project::{ActivityStore, CommentStore, DocStore, LabelStore, ProjectMemoryStore, ProjectStore, RequirementRunStore, RequirementStore};
+use harness_core::{
+    Agent, AgentConfig, AgentProfileStore, ConversationStore, LlmProvider, PermissionMode,
+    PermissionStore, TodoStore, ToolRegistry,
+};
 use harness_mcp::McpManager;
+use harness_learning::{
+    MemoryEvent, MemoryStore as LearningMemoryStore, SkillLifecycleStore, SkillUsageStore,
+};
+use tokio::sync::broadcast;
+use harness_observability::{EvalStore, ObservabilityStore};
 use harness_plugin::PluginManager;
+use harness_project::{
+    ActivityStore, CommentStore, DocStore, LabelStore, ProjectMemoryStore, ProjectStore,
+    RequirementRunStore, RequirementStore,
+};
 use harness_skill::SkillCatalog;
 use harness_store::WorkspaceStore;
 
@@ -255,6 +267,35 @@ pub struct AppState {
     /// by default in the binary, with SQL backends planned behind
     /// the same trait.
     pub evals: Option<Arc<dyn EvalStore>>,
+    /// Optional skill-usage telemetry store — Phase 0 of
+    /// `docs/proposals/self-improving-agent.zh-CN.md`. Records
+    /// per-skill view / use / patch events so the Web UI can show
+    /// which skills are getting hit and the future Learning Reviewer
+    /// can score relevance. `None` ⇒ `/v1/learning/skill-usage*`
+    /// returns 503; agent loops silently skip the emit.
+    pub learning_skill_usage: Option<Arc<dyn SkillUsageStore>>,
+    /// Optional long-term Memory store — Phase 1 of the same proposal.
+    /// Backs `/v1/memories*` and (in a follow-up) the prompt-context
+    /// injection that feeds the agent "I prefer terse answers"-style
+    /// facts at turn start. Phase 1 only exposes the User scope
+    /// through tools / REST; the type itself supports Project /
+    /// Workspace so later phases don't migrate. `None` ⇒
+    /// `/v1/memories*` returns 503.
+    pub learning_memory: Option<Arc<dyn LearningMemoryStore>>,
+    /// Broadcast channel for [`MemoryEvent`]s — `Some(_)` whenever
+    /// `learning_memory` was opened through
+    /// [`harness_store::GuardedMemoryStore`] (which is the
+    /// composition-root default). The WS handler `subscribe()`s and
+    /// forwards each event as a `{type: "memory_upserted"|"memory_deleted"}`
+    /// JSON frame so the Web UI doesn't have to poll
+    /// `/v1/memories`.
+    pub memory_events: Option<broadcast::Sender<MemoryEvent>>,
+    /// Optional skill-lifecycle store — Phase 2 of the same proposal.
+    /// Tracks Active / Stale / Archived state + provenance per catalog
+    /// skill, separate from the authored `SKILL.md` frontmatter. Backs
+    /// `/v1/skills/:name/lifecycle` + `archive` / `restore`. `None` ⇒
+    /// those routes 503; the catalog still serves skills unchanged.
+    pub skill_lifecycle: Option<Arc<dyn SkillLifecycleStore>>,
     /// Optional project-scoped long-term memory store. When `Some(_)`,
     /// the auto loop captures a [`harness_project::ProjectMemory`] row
     /// for every Failed run and prepends the most recent project
@@ -335,6 +376,30 @@ pub struct AppState {
     /// the panel can render an "off, enable in config" hint
     /// instead of pretending to have a state.
     pub memory_runtime: Option<MemoryRuntime>,
+    /// Optional scheduled-automation store. When set, `/v1/automations`
+    /// exposes CRUD and `apps/jarvis` starts the tick loop that runs
+    /// enabled jobs at their due time. `None` keeps automation routes at
+    /// 503 for tests / specialised binaries that don't wire it.
+    pub automations: Option<Arc<dyn AutomationStore>>,
+    /// Process-wide in-memory reservation set for in-flight scheduled
+    /// automations. Reserved synchronously before a run is spawned (by
+    /// both the scheduler tick and the manual trigger) so the same
+    /// automation can't double-fire in the window before its persisted
+    /// `Running` flag lands. Always present (cheap default); mirrors
+    /// `auto_mode`'s `active_requirements` claim set.
+    pub automation_claims: crate::automation_runtime::AutomationClaims,
+    /// Optional declarative-workflow store. When set, `/v1/workflows`
+    /// exposes CRUD + run dispatch and the auto loop runs a requirement's
+    /// bound workflow instead of a single-agent turn. `None` keeps the
+    /// workflow routes at 503 for tests / binaries that don't wire it.
+    pub workflows: Option<Arc<dyn WorkflowStore>>,
+    /// Process-wide governor for manually-dispatched workflow runs:
+    /// the global concurrency cap, the run-cancel ledger, and the
+    /// liveness set the stale-run reaper consults. Always present
+    /// (cheap to clone); the binary resizes it from
+    /// `JARVIS_WORKFLOW_MAX_CONCURRENT` via
+    /// [`with_workflow_concurrency`](Self::with_workflow_concurrency).
+    pub workflow_run_gate: crate::workflow_concurrency::WorkflowRunGate,
 }
 
 /// Snapshot of the memory + sync configuration the binary
@@ -376,7 +441,9 @@ impl AppState {
             activities: None,
             channel_instances: None,
             channel_bindings: None,
-            channel_adapters: Arc::new(crate::channel_adapter::ChannelAdapterRegistry::with_defaults()),
+            channel_adapters: Arc::new(
+                crate::channel_adapter::ChannelAdapterRegistry::with_defaults(),
+            ),
             agent_profiles: None,
             docs: None,
             comments: None,
@@ -384,6 +451,10 @@ impl AppState {
             observability: None,
             telemetry: None,
             evals: None,
+            learning_skill_usage: None,
+            learning_memory: None,
+            memory_events: None,
+            skill_lifecycle: None,
             project_memories: None,
             todos_in_prompt: true,
             worktree_mode: WorktreeMode::Off,
@@ -396,6 +467,10 @@ impl AppState {
             subagent_runs: None,
             memory_stats: None,
             memory_runtime: None,
+            automations: None,
+            automation_claims: crate::automation_runtime::AutomationClaims::default(),
+            workflows: None,
+            workflow_run_gate: crate::workflow_concurrency::WorkflowRunGate::default(),
         }
     }
 
@@ -431,7 +506,9 @@ impl AppState {
             activities: None,
             channel_instances: None,
             channel_bindings: None,
-            channel_adapters: Arc::new(crate::channel_adapter::ChannelAdapterRegistry::with_defaults()),
+            channel_adapters: Arc::new(
+                crate::channel_adapter::ChannelAdapterRegistry::with_defaults(),
+            ),
             agent_profiles: None,
             docs: None,
             comments: None,
@@ -439,6 +516,10 @@ impl AppState {
             observability: None,
             telemetry: None,
             evals: None,
+            learning_skill_usage: None,
+            learning_memory: None,
+            memory_events: None,
+            skill_lifecycle: None,
             project_memories: None,
             todos_in_prompt: true,
             worktree_mode: WorktreeMode::Off,
@@ -451,6 +532,10 @@ impl AppState {
             subagent_runs: None,
             memory_stats: None,
             memory_runtime: None,
+            automations: None,
+            automation_claims: crate::automation_runtime::AutomationClaims::default(),
+            workflows: None,
+            workflow_run_gate: crate::workflow_concurrency::WorkflowRunGate::default(),
         }
     }
 
@@ -598,10 +683,7 @@ impl AppState {
     /// Channels). Without one, every `/v1/channels*` endpoint
     /// returns 503 and the corresponding Settings tab renders an
     /// "unconfigured" placeholder.
-    pub fn with_channel_instance_store(
-        mut self,
-        store: Arc<dyn ChannelInstanceStore>,
-    ) -> Self {
+    pub fn with_channel_instance_store(mut self, store: Arc<dyn ChannelInstanceStore>) -> Self {
         self.channel_instances = Some(store);
         self
     }
@@ -611,10 +693,7 @@ impl AppState {
     /// `feishu_app` / `dingtalk_stream`). Without one, the inbound
     /// route paths can't decide "resume" vs. "create" and return
     /// 503.
-    pub fn with_channel_binding_store(
-        mut self,
-        store: Arc<dyn ChannelBindingStore>,
-    ) -> Self {
+    pub fn with_channel_binding_store(mut self, store: Arc<dyn ChannelBindingStore>) -> Self {
         self.channel_bindings = Some(store);
         self
     }
@@ -636,9 +715,7 @@ impl AppState {
     /// stores. Returns `None` when the channel-instance store isn't
     /// configured — callers (e.g. the `channel.send` agent tool)
     /// then surface "channels not configured" to the user.
-    pub fn channel_dispatcher(
-        &self,
-    ) -> Option<Arc<dyn harness_channel::ChannelDispatcher>> {
+    pub fn channel_dispatcher(&self) -> Option<Arc<dyn harness_channel::ChannelDispatcher>> {
         let store = self.channel_instances.clone()?;
         Some(Arc::new(crate::channel_adapter::ChannelDispatcherImpl {
             store,
@@ -698,6 +775,40 @@ impl AppState {
     /// `/v1/evals*` returns 503.
     pub fn with_eval_store(mut self, store: Arc<dyn EvalStore>) -> Self {
         self.evals = Some(store);
+        self
+    }
+
+    /// Wire in the skill-usage telemetry store. Without one,
+    /// `/v1/learning/skill-usage*` returns 503 and the agent loop
+    /// silently skips recording — `docs/proposals/self-improving-agent.zh-CN.md`
+    /// Phase 0.
+    pub fn with_skill_usage_store(mut self, store: Arc<dyn SkillUsageStore>) -> Self {
+        self.learning_skill_usage = Some(store);
+        self
+    }
+
+    /// Wire in the long-term Memory store. Without one,
+    /// `/v1/memories*` returns 503 — Phase 1 of the same proposal.
+    pub fn with_user_memory_store(mut self, store: Arc<dyn LearningMemoryStore>) -> Self {
+        self.learning_memory = Some(store);
+        self
+    }
+
+    /// Wire the same broadcast channel the
+    /// [`harness_store::GuardedMemoryStore`] publishes on. The WS
+    /// handler subscribes and forwards each event as a JSON frame.
+    /// Pair with [`Self::with_user_memory_store`] so the channel and
+    /// the wrapped store stay aligned.
+    pub fn with_memory_events(mut self, tx: broadcast::Sender<MemoryEvent>) -> Self {
+        self.memory_events = Some(tx);
+        self
+    }
+
+    /// Wire in the skill-lifecycle store — Phase 2 of the
+    /// self-improving-agent proposal. Without one,
+    /// `/v1/skills/:name/lifecycle` + `archive` / `restore` 503.
+    pub fn with_skill_lifecycle_store(mut self, store: Arc<dyn SkillLifecycleStore>) -> Self {
+        self.skill_lifecycle = Some(store);
         self
     }
 
@@ -788,6 +899,33 @@ impl AppState {
     /// reconstructs.
     pub fn with_memory_runtime(mut self, rt: MemoryRuntime) -> Self {
         self.memory_runtime = Some(rt);
+        self
+    }
+
+    /// Wire in scheduled automation definitions. The binary normally
+    /// passes the same persistence bundle used for conversations so
+    /// scheduled tasks survive restarts under the JSON backend.
+    pub fn with_automation_store(mut self, store: Arc<dyn AutomationStore>) -> Self {
+        self.automations = Some(store);
+        self
+    }
+
+    /// Wire in the declarative-workflow store. The binary passes the
+    /// same persistence URL used for conversations so definitions and
+    /// runs survive restarts under the JSON backend.
+    pub fn with_workflows(mut self, store: Arc<dyn WorkflowStore>) -> Self {
+        self.workflows = Some(store);
+        self
+    }
+
+    /// Resize the global cap on concurrent manually-dispatched workflow
+    /// runs. The binary calls this from `JARVIS_WORKFLOW_MAX_CONCURRENT`
+    /// (falling back to the auto loop's `JARVIS_WORK_MAX_CONCURRENT`).
+    /// Must run before any run is dispatched — it replaces the gate's
+    /// semaphore, so existing permits would be orphaned.
+    pub fn with_workflow_concurrency(mut self, max_concurrent: usize) -> Self {
+        self.workflow_run_gate =
+            crate::workflow_concurrency::WorkflowRunGate::new(max_concurrent);
         self
     }
 

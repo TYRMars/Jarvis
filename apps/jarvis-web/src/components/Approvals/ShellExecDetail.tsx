@@ -13,6 +13,8 @@
 //     pattern (rm -rf, curl | sh, > /dev/, etc.) — we still let the
 //     user approve, but we want them to pause first.
 
+import { t } from "../../utils/i18n";
+
 interface Props {
   args: any;
 }
@@ -67,26 +69,26 @@ export function ShellExecDetail({ args }: Props) {
             <line x1="12" y1="9" x2="12" y2="13" />
             <circle cx="12" cy="17" r="0.5" fill="currentColor" />
           </svg>
-          <span>danger pattern: {danger}</span>
+          <span>{t("apprvDangerPattern", danger)}</span>
         </div>
       ) : null}
 
       <div className="shell-exec-cmd">
         <span className="shell-exec-prompt" aria-hidden="true">$</span>
-        <code>{command || "(empty command)"}</code>
+        <code>{command || t("apprvEmptyCommand")}</code>
       </div>
 
       {(cwd || timeoutMs != null) ? (
         <div className="shell-exec-meta">
           {cwd ? (
             <span className="shell-exec-meta-item">
-              <span className="shell-exec-meta-label">cwd</span>
+              <span className="shell-exec-meta-label">{t("shellExecCwd")}</span>
               <code>{cwd}</code>
             </span>
           ) : null}
           {timeoutMs != null ? (
             <span className="shell-exec-meta-item">
-              <span className="shell-exec-meta-label">timeout</span>
+              <span className="shell-exec-meta-label">{t("shellExecTimeout")}</span>
               <code>{Math.round(timeoutMs / 100) / 10}s</code>
             </span>
           ) : null}

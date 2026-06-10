@@ -22,6 +22,7 @@ import { AgentLoadingFooter } from "./AgentLoadingFooter";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { EmptyConvoHint } from "./EmptyConvoHint";
 import { CollapsedToolGroup } from "./CollapsedToolGroup";
+import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { CompactionMarker } from "./CompactionMarker";
 import { MarkdownView } from "./MarkdownView";
 import { isReadOnlyTool } from "./toolStepSummary";
@@ -101,7 +102,7 @@ export function MessageList() {
   const activeId = useAppStore((s) => s.activeId);
   const emptyHint = useAppStore((s) => s.emptyHintIdShort);
   const markerMap = useAppStore((s) => s.compactionMarkers);
-  const { ref } = useStickToBottom<HTMLElement>({ activeId });
+  const { ref, isAtBottom, scrollToBottom } = useStickToBottom<HTMLElement>({ activeId });
 
   const groups = useMemo(
     () => groupForFolding(messages, toolBlocks),
@@ -135,6 +136,7 @@ export function MessageList() {
   }, [groups]);
 
   return (
+    <>
     <section id="messages" aria-live="polite" ref={ref}>
       {messages.length === 0 && !emptyHint && <WelcomeScreen />}
       {messages.length === 0 && emptyHint && <EmptyConvoHint idShort={emptyHint} />}
@@ -238,5 +240,10 @@ export function MessageList() {
        * XMarkdown tail cursor doesn't reach. */}
       <AgentLoadingFooter />
     </section>
+    <ScrollToBottomButton
+      visible={!isAtBottom && messages.length > 0}
+      onClick={scrollToBottom}
+    />
+    </>
   );
 }

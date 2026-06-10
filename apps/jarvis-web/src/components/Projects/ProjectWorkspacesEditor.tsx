@@ -216,12 +216,12 @@ function ProbeReadout({ result }: { result: RowProbe }) {
     return (
       <span className="project-workspace-probe">
         <span className="project-workspace-probe-branch">
-          {info.branch ?? "(detached)"}
+          {info.branch ?? t("projDetailDetachedHead")}
         </span>
         {info.dirty ? (
           <span
             className="session-dirty-dot"
-            title="dirty worktree"
+            title={t("projDetailDirtyWorktree")}
             aria-hidden="true"
           />
         ) : null}

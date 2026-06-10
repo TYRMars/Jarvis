@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "jarvis-plugins",
+  "description": "In-tree Claude Code plugins shipped with the Jarvis repo: control a running Jarvis server, code-review pack, and the GitNexus code-intelligence bridge.",
+  "owner": {
+    "name": "Jarvis Project"
+  },
+  "plugins": [
+    {
+      "name": "jarvis-control",
+      "description": "Drive a running Jarvis server from Claude Code: list Projects/Requirements, start runs, approve/reject triage, dispatch reviewer subagents, and auto-generate one Skill per Jarvis Project.",
+      "author": { "name": "Jarvis Project" },
+      "category": "productivity",
+      "source": "./jarvis-control"
+    }
+  ]
+}

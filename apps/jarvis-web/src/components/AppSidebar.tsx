@@ -20,14 +20,6 @@ import {
 } from "react-router-dom";
 import { t } from "../utils/i18n";
 import { chipColor } from "../utils/chipColor";
-
-/// Translate the i18n key when present, fall back to the supplied
-/// literal otherwise. Used for sidebar entries whose i18n keys
-/// haven't been seeded into every locale yet.
-function translateOrFallback(key: string, fallback: string): string {
-  const v = t(key);
-  return v === key ? fallback : v;
-}
 import {
   setDocScope,
   useDocScope,
@@ -36,7 +28,9 @@ import {
 } from "../services/docScope";
 import {
   createDocProject,
+  getDocDraft,
   listDocProjects,
+  loadDocDraft,
   subscribeDocs,
 } from "../services/docs";
 import { applyDocFilter } from "./Docs/useDocFilter";
@@ -170,7 +164,7 @@ function ChatSidebarBody() {
             <path d="M12 12v4" />
             <path d="M10 14h4" />
           </svg>
-          <span>{translateOrFallback("sidebarNavCustomize", "能力市场")}</span>
+          <span>{t("customize")}</span>
         </NavLink>
       </nav>
       <ConvoList />
@@ -300,11 +294,13 @@ function WorkSidebarBody() {
 
 function DocSidebarBody() {
   const navigate = useNavigate();
-  const location = useLocation();
   const params = useParams<{ id?: string }>();
   const socketWorkspace = useAppStore((s) => s.socketWorkspace);
   const scope = useDocScope();
   const [query, setQuery] = useState("");
+  const [draftSearchBodies, setDraftSearchBodies] = useState<
+    Map<string, string | null>
+  >(() => new Map());
 
   // Subscribe to the docs cache so counts stay live as docs are
   // created / deleted / pinned / archived from anywhere.
@@ -323,6 +319,14 @@ function DocSidebarBody() {
     () => Array.from(counts.tags.entries()).sort((a, b) => b[1] - a[1]),
     [counts.tags],
   );
+  const searchableDrafts = useMemo(() => {
+    const next = new Map(draftSearchBodies);
+    for (const project of projects) {
+      const draft = getDocDraft(project.id);
+      if (draft) next.set(project.id, draft.content);
+    }
+    return next;
+  }, [projects, draftSearchBodies]);
 
   // The list inside the sidebar mirrors the same scope+search rules
   // the page used to apply in its standalone list column.
@@ -331,16 +335,48 @@ function DocSidebarBody() {
       applyDocFilter({
         projects,
         filter: { scope, sort: "updated", query },
+        drafts: searchableDrafts,
       }),
-    [projects, scope, query],
+    [projects, scope, query, searchableDrafts],
   );
 
   const onScope = (next: DocScope) => {
     setDocScope(next);
-    if (!location.pathname.startsWith("/docs")) {
-      void navigate("/docs");
-    }
+    const first = applyDocFilter({
+      projects,
+      filter: { scope: next, sort: "updated", query: "" },
+    })[0]?.project;
+    void navigate(first ? `/docs/${first.id}` : "/docs");
   };
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    const ids = applyDocFilter({
+      projects,
+      filter: { scope, sort: "updated", query: "" },
+    }).map(({ project }) => project.id);
+    const missing = ids.filter((id) => !draftSearchBodies.has(id));
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(
+      missing.map(async (id) => {
+        const draft = (await loadDocDraft(id)) ?? getDocDraft(id);
+        return [id, draft?.content ?? null] as const;
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setDraftSearchBodies((prev) => {
+        const next = new Map(prev);
+        for (const [id, content] of entries) next.set(id, content);
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects, scope, query, draftSearchBodies]);
 
   const openNew = async () => {
     // Mint a fresh doc immediately and navigate to it. No inline
@@ -352,6 +388,8 @@ function DocSidebarBody() {
       ...(socketWorkspace ? { workspace: socketWorkspace } : {}),
     });
     if (project) {
+      setDocScope({ type: "all" });
+      setQuery("");
       void navigate(`/docs/${project.id}`);
     } else {
       // Backend offline: fall back to the docs root so the page
@@ -414,11 +452,11 @@ function DocSidebarBody() {
           <p className="mode-sidebar-empty">
             {query
               ? t("docsListNoMatch") || "No matching docs"
-              : t("docsListEmpty") || "No docs yet"}
+              : emptyDocScopeText(scope)}
           </p>
         ) : (
           <ul className="docs-rail-rows">
-            {filtered.map(({ project }) => (
+            {filtered.map(({ project, snippet }) => (
               <li key={project.id}>
                 <NavLink
                   to={`/docs/${project.id}`}
@@ -432,11 +470,21 @@ function DocSidebarBody() {
                 >
                   {project.pinned ? (
                     <span className="docs-rail-row-pin" aria-hidden>
-                      ★
+                      <PinGlyph />
                     </span>
                   ) : null}
-                  <span className="docs-rail-row-title">
-                    {project.title || t("docsUntitled") || "Untitled"}
+                  <span className="docs-rail-row-main">
+                    <span className="docs-rail-row-title">
+                      {project.title || t("docsUntitled") || "Untitled"}
+                    </span>
+                    {snippet ? (
+                      <span
+                        className="docs-rail-row-snippet"
+                        aria-label={t("docsSnippetAria") || "Search match"}
+                      >
+                        {snippet}
+                      </span>
+                    ) : null}
                   </span>
                 </NavLink>
               </li>
@@ -470,6 +518,38 @@ function DocSidebarBody() {
         />
       </div>
     </>
+  );
+}
+
+function emptyDocScopeText(scope: DocScope): string {
+  if (scope.type === "all") return t("docsListEmpty") || "No docs yet";
+  return t("docsListEmptyTitle", docScopeLabel(scope));
+}
+
+function docScopeLabel(scope: DocScope): string {
+  switch (scope.type) {
+    case "all":
+      return t("docsScopeAll") || "All docs";
+    case "pinned":
+      return t("docsScopePinned") || "Pinned";
+    case "archived":
+      return t("docsScopeArchive") || "Archive";
+    case "tag":
+      return `#${scope.tag}`;
+  }
+}
+
+function PinGlyph() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="m12 2.8 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.6 3 1.1-6.2L2.9 9.4l6.3-.9L12 2.8Z" />
+    </svg>
   );
 }
 

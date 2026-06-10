@@ -4,6 +4,7 @@
 // — the visible chrome is just an icon + label; click toggles open.
 
 import { useState } from "react";
+import { t } from "../../utils/i18n";
 import { BackgroundTasksPanel } from "./BackgroundTasksPanel";
 
 export function BackgroundTasksButton() {
@@ -14,8 +15,8 @@ export function BackgroundTasksButton() {
         type="button"
         className="bg-tasks-trigger"
         aria-expanded={open}
-        aria-label="Background tasks"
-        title="Background tasks"
+        aria-label={t("sideBarBackgroundTasks")}
+        title={t("sideBarBackgroundTasks")}
         onClick={() => setOpen((v) => !v)}
       >
         <svg

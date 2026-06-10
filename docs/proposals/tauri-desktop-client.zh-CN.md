@@ -1,6 +1,6 @@
 # Jarvis Desktop：Tauri 壳与 Server Sidecar
 
-Status: **Proposed**
+Status: **Adopted partial** — Tauri 壳与 Server Sidecar 已落地于 `apps/jarvis-desktop`（`tauri.conf.json` + `src/{main,commands,sidecar,tray,prefs,logs}.rs`）；仍在完善中（看板项「Jarvis Desktop：Tauri 壳」标记为进行中）。
 
 Owner: Jarvis
 

@@ -7,10 +7,13 @@ rust-version.workspace = true
 description = "Pluggable persistence for the agent harness. JSON-file by default; SQLite / Postgres / MySQL behind opt-in features."
 
 [dependencies]
+harness-automation.workspace = true
 harness-channel.workspace = true
 harness-core.workspace = true
+harness-learning.workspace = true
 harness-observability.workspace = true
 harness-project.workspace = true
+harness-workflow.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,6 +29,7 @@ chrono = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile.workspace = true
+harness-workflow.workspace = true
 
 [features]
 # Default: JSON-file + in-memory backends only. SQL backends are

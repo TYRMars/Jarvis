@@ -25,6 +25,11 @@
 //!   — list structured execution/checklist items for one requirement.
 //! - `POST   /v1/requirements/:id/todos`
 //!   — add a TODO/check item (`{title, kind?, command?, depends_on?}`).
+//! - `PATCH  /v1/requirements/:id/todos`
+//!   — batch status update for several TODOs of one requirement in a
+//!   single read-modify-write (`{ids: [...], status}`). Atomic with
+//!   respect to concurrent callers, avoiding the lost-update race that
+//!   per-item fan-out PATCHes hit on the JSON store.
 //! - `PATCH  /v1/requirements/:id/todos/:todo_id`
 //!   — update TODO/check status, command, dependencies, or evidence.
 //! - `DELETE /v1/requirements/:id/todos/:todo_id`
@@ -103,7 +108,9 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route(
             "/v1/requirements/:id/todos",
-            get(list_requirement_todos).post(create_requirement_todo),
+            get(list_requirement_todos)
+                .post(create_requirement_todo)
+                .patch(batch_update_requirement_todos),
         )
         .route(
             "/v1/requirements/:id/todos/:todo_id",
@@ -307,6 +314,11 @@ async fn create_requirement(
     if let Some(deps) = body.depends_on {
         item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
     }
+    if item.depends_on.iter().any(|d| d == &item.id) {
+        return bad_request(
+            "`depends_on` must not contain the requirement's own id (self-dependency)",
+        );
+    }
     if let Some(label_ids) = body.label_ids {
         item.label_ids = label_ids
             .into_iter()
@@ -369,6 +381,11 @@ struct UpdateBody {
     /// Omit to leave as-is; pass `[]` to clear.
     #[serde(default)]
     label_ids: Option<Vec<String>>,
+    /// Bind / unbind a declarative workflow. Three-state semantics:
+    /// omit ⇒ leave as-is, `null` ⇒ clear the binding, string ⇒ bind to
+    /// that `WorkflowDefinition` id.
+    #[serde(default, deserialize_with = "deserialize_optional_workflow")]
+    workflow_id: OptionalWorkflow,
 }
 
 /// Three-state value for `verification_plan` in PATCH —
@@ -389,6 +406,28 @@ where
     Ok(match opt {
         Some(p) => OptionalPlan::Set(p),
         None => OptionalPlan::Clear,
+    })
+}
+
+/// Three-state value for `workflow_id` in PATCH — same shape as
+/// [`OptionalPlan`] but for the workflow binding string.
+#[derive(Debug, Default)]
+enum OptionalWorkflow {
+    #[default]
+    Missing,
+    Clear,
+    Set(String),
+}
+
+fn deserialize_optional_workflow<'de, D>(de: D) -> Result<OptionalWorkflow, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(de)?;
+    Ok(match opt {
+        Some(s) if !s.trim().is_empty() => OptionalWorkflow::Set(s.trim().to_string()),
+        // `null` or `""` both clear the binding.
+        _ => OptionalWorkflow::Clear,
     })
 }
 
@@ -451,11 +490,21 @@ async fn update_requirement(
     if let Some(deps) = body.depends_on {
         item.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
     }
+    if item.depends_on.iter().any(|d| d == &item.id) {
+        return bad_request(
+            "`depends_on` must not contain the requirement's own id (self-dependency)",
+        );
+    }
     if let Some(label_ids) = body.label_ids {
         item.label_ids = label_ids
             .into_iter()
             .filter(|id| !id.trim().is_empty())
             .collect();
+    }
+    match body.workflow_id {
+        OptionalWorkflow::Missing => {}
+        OptionalWorkflow::Clear => item.workflow_id = None,
+        OptionalWorkflow::Set(id) => item.workflow_id = Some(id),
     }
     item.touch();
     match store.upsert(&item).await {
@@ -822,6 +871,14 @@ struct UpdateRequirementTodoBody {
     depends_on: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct BatchUpdateRequirementTodosBody {
+    /// Ids of the todos to update. Must all belong to the requirement.
+    ids: Vec<String>,
+    /// New status applied to every listed todo.
+    status: String,
+}
+
 async fn list_requirement_todos(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let store = match require_store(&state) {
         Ok(s) => s,
@@ -1016,6 +1073,83 @@ async fn update_requirement_todo(
             )
             .await;
             Json(json!({ "todo": todo, "requirement": item })).into_response()
+        }
+        Err(e) => internal_error(e),
+    }
+}
+
+/// Batch status update for several todos of one requirement.
+///
+/// A single read-modify-write over the whole `Requirement` covers every
+/// listed todo, so concurrent batch actions can no longer clobber each
+/// other the way per-item fan-out PATCHes did (issue #110). The client
+/// issues one request, gets one authoritative `requirement` snapshot
+/// back, and a single failure point to surface to the user.
+async fn batch_update_requirement_todos(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<BatchUpdateRequirementTodosBody>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if body.ids.is_empty() {
+        return bad_request("`ids` must not be empty");
+    }
+    let status = match RequirementTodoStatus::from_wire(&body.status) {
+        Some(status) => status,
+        None => return bad_request(format!("unknown todo status `{}`", body.status)),
+    };
+    let mut item = match store.get(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("requirement `{id}` not found") })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_error(e),
+    };
+    // Validate every id up front so a single unknown id fails the whole
+    // batch (no partial write) and the caller learns exactly which.
+    let missing: Vec<&String> = body
+        .ids
+        .iter()
+        .filter(|todo_id| !item.todos.iter().any(|t| &&t.id == todo_id))
+        .collect();
+    if !missing.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "todo(s) not found", "missing": missing })),
+        )
+            .into_response();
+    }
+    let mut updated = Vec::with_capacity(body.ids.len());
+    for todo in item.todos.iter_mut() {
+        if body.ids.contains(&todo.id) {
+            todo.status = status;
+            todo.touch();
+            updated.push(todo.clone());
+        }
+    }
+    item.touch();
+    match store.upsert(&item).await {
+        Ok(()) => {
+            record_activity(
+                &state,
+                &item.id,
+                ActivityKind::Comment,
+                ActivityActor::Human,
+                json!({
+                    "kind": "requirement_todos_batch_updated",
+                    "todo_ids": updated.iter().map(|t| &t.id).collect::<Vec<_>>(),
+                    "status": status.as_wire(),
+                }),
+            )
+            .await;
+            Json(json!({ "todos": updated, "requirement": item })).into_response()
         }
         Err(e) => internal_error(e),
     }
@@ -2272,6 +2406,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn batch_todo_status_update_applies_to_all_listed() {
+        let app = app(state_with_store());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/projects/p1/requirements")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"ship","todos":[{"title":"a"},{"title":"b"},{"title":"c"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let v = read_json(resp).await;
+        let id = v["id"].as_str().unwrap().to_string();
+        let t1 = v["todos"][0]["id"].as_str().unwrap().to_string();
+        let t2 = v["todos"][1]["id"].as_str().unwrap().to_string();
+        let t3 = v["todos"][2]["id"].as_str().unwrap().to_string();
+
+        // Batch-pass t1 and t2 in one call; t3 stays untouched.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{id}/todos"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"ids":["{t1}","{t2}"],"status":"passed"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = read_json(resp).await;
+        assert_eq!(v["todos"].as_array().unwrap().len(), 2);
+
+        // The persisted requirement reflects every listed update — no
+        // lost-update, and the unlisted todo is left as-is.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/requirements/{id}/todos"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let items = v["items"].as_array().unwrap();
+        let status_of = |tid: &str| {
+            items
+                .iter()
+                .find(|t| t["id"] == tid)
+                .and_then(|t| t["status"].as_str())
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(status_of(&t1), "passed");
+        assert_eq!(status_of(&t2), "passed");
+        assert_eq!(status_of(&t3), "pending");
+    }
+
+    #[tokio::test]
+    async fn batch_todo_update_rejects_unknown_id_without_writing() {
+        let app = app(state_with_store());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/projects/p1/requirements")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"ship","todos":[{"title":"a"}]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let id = v["id"].as_str().unwrap().to_string();
+        let t1 = v["todos"][0]["id"].as_str().unwrap().to_string();
+
+        // One good id + one missing id → whole batch fails, no partial write.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{id}/todos"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"ids":["{t1}","nope"],"status":"passed"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // t1 must still be pending — the failed batch left nothing behind.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/requirements/{id}/todos"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        assert_eq!(v["items"][0]["status"], "pending");
+
+        // Empty id list → 400.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{id}/todos"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ids":[],"status":"passed"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn create_rejects_blank_title() {
         let resp = app(state_with_store())
             .oneshot(
@@ -2403,6 +2673,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn patch_rejects_self_dependency() {
+        let state = state_with_store();
+        let store = state.requirements.as_ref().unwrap().clone();
+        let req = Requirement::new("p1", "self dep");
+        store.upsert(&req).await.unwrap();
+
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/requirements/{}", req.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"depends_on":["{}"]}}"#, req.id)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // The bad edit must not have persisted.
+        let stored = store.get(&req.id).await.unwrap().unwrap();
+        assert!(stored.depends_on.is_empty());
     }
 
     // ---- Triage routes -------------------------------------------------

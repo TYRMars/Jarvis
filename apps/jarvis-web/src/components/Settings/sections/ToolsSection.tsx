@@ -30,42 +30,42 @@ function tx(key: string, fallback: string): string {
 }
 
 const SOURCE_OPTIONS: { value: ToolSourceKind | ""; label: string }[] = [
-  { value: "", label: "All sources" },
-  { value: "builtin", label: "Built-in" },
+  { value: "", label: t("setSecCSourceAll") },
+  { value: "builtin", label: t("setSecCSourceBuiltin") },
   { value: "mcp", label: "MCP" },
-  { value: "plugin", label: "Plugin" },
+  { value: "plugin", label: t("setSecCSourcePlugin") },
   { value: "subagent", label: "SubAgent" },
 ];
 
 const PACK_OPTIONS: { value: ToolPack | ""; label: string }[] = [
-  { value: "", label: "All packs" },
-  { value: "file-read", label: "File Read" },
-  { value: "file-write", label: "File Write" },
-  { value: "code-search", label: "Code Search" },
-  { value: "shell", label: "Shell" },
+  { value: "", label: t("setSecCPackAll") },
+  { value: "file-read", label: t("setSecCPackFileRead") },
+  { value: "file-write", label: t("setSecCPackFileWrite") },
+  { value: "code-search", label: t("setSecCPackCodeSearch") },
+  { value: "shell", label: t("setSecCPackShell") },
   { value: "git", label: "Git" },
-  { value: "web", label: "Web" },
-  { value: "project", label: "Project" },
-  { value: "requirement", label: "Requirement" },
-  { value: "todo", label: "Todo" },
-  { value: "doc", label: "Doc" },
-  { value: "memory", label: "Memory" },
-  { value: "skill", label: "Skill" },
-  { value: "cloud", label: "Cloud" },
+  { value: "web", label: t("setSecCPackWeb") },
+  { value: "project", label: t("setSecCPackProject") },
+  { value: "requirement", label: t("setSecCPackRequirement") },
+  { value: "todo", label: t("setSecCPackTodo") },
+  { value: "doc", label: t("setSecCPackDoc") },
+  { value: "memory", label: t("setSecCPackMemory") },
+  { value: "skill", label: t("setSecCPackSkill") },
+  { value: "cloud", label: t("setSecCPackCloud") },
   { value: "sub-agent", label: "SubAgent" },
   { value: "mcp", label: "MCP" },
-  { value: "other", label: "Other" },
+  { value: "other", label: t("setSecCPackOther") },
 ];
 
 const RISK_OPTIONS: { value: ToolRisk | ""; label: string }[] = [
-  { value: "", label: "All risk levels" },
-  { value: "read-only", label: "Read-only" },
-  { value: "metadata-write", label: "Metadata write" },
-  { value: "workspace-write", label: "Workspace write" },
-  { value: "shell", label: "Shell" },
-  { value: "network", label: "Network" },
-  { value: "external-side-effect", label: "External side effect" },
-  { value: "secret-access", label: "Secret access" },
+  { value: "", label: t("setSecCRiskAll") },
+  { value: "read-only", label: t("setSecCRiskReadOnly") },
+  { value: "metadata-write", label: t("setSecCRiskMetadataWrite") },
+  { value: "workspace-write", label: t("setSecCRiskWorkspaceWrite") },
+  { value: "shell", label: t("setSecCPackShell") },
+  { value: "network", label: t("setSecCRiskNetwork") },
+  { value: "external-side-effect", label: t("setSecCRiskExternalSideEffect") },
+  { value: "secret-access", label: t("setSecCRiskSecretAccess") },
 ];
 
 function riskTone(risk: ToolRisk): "muted" | "warn" | "danger" {
@@ -85,11 +85,11 @@ function riskTone(risk: ToolRisk): "muted" | "warn" | "danger" {
 
 function describeSource(meta: ToolMetadata): string {
   const s = meta.source;
-  if (!s || s.kind === "builtin") return "built-in";
+  if (!s || s.kind === "builtin") return t("setSecCDescBuiltin");
   if (s.kind === "mcp") return `MCP · ${s.server}`;
-  if (s.kind === "plugin") return `plugin · ${s.plugin}`;
-  if (s.kind === "subagent") return `subagent · ${s.subagent}`;
-  return "unknown";
+  if (s.kind === "plugin") return `${t("setSecCDescPlugin")} · ${s.plugin}`;
+  if (s.kind === "subagent") return `${t("setSecCDescSubagent")} · ${s.subagent}`;
+  return t("setSecCDescUnknown");
 }
 
 export function ToolsSection() {
@@ -244,29 +244,29 @@ export function ToolsSection() {
                     {meta.risk}
                   </span>
                   {meta.pack ? (
-                    <span className="settings-tag" title="product pack">
+                    <span className="settings-tag" title={t("setSecCTitleProductPack")}>
                       {meta.pack}
                     </span>
                   ) : null}
-                  <span className="settings-tag" title="source">
+                  <span className="settings-tag" title={t("setSecCTitleSource")}>
                     {describeSource(meta)}
                   </span>
                   {meta.requiresApproval ? (
                     <span
                       className="settings-tag settings-tag-warn"
-                      title="approval-gated"
+                      title={t("setSecCTitleApprovalGated")}
                     >
-                      approval
+                      {t("setSecCTagApproval")}
                     </span>
                   ) : null}
                   {meta.cacheable ? (
-                    <span className="settings-tag" title="cacheable">
-                      cache
+                    <span className="settings-tag" title={t("setSecCTitleCacheable")}>
+                      {t("setSecCTagCache")}
                     </span>
                   ) : null}
                   {meta.isTerminal ? (
-                    <span className="settings-tag" title="terminal tool">
-                      terminal
+                    <span className="settings-tag" title={t("setSecCTitleTerminalTool")}>
+                      {t("setSecCTagTerminal")}
                     </span>
                   ) : null}
                 </div>

@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiUrl } from "../../../services/api";
+import { t } from "../../../utils/i18n";
 
 type Scope = "workspace" | "user";
 
@@ -94,10 +95,10 @@ export function MemoryIncludesPanel({ scope }: Props) {
         }
         const obj = (parsed ?? {}) as Record<string, unknown>;
         const summary =
-          (typeof obj.added === "string" && `Added ${obj.added}`) ||
-          (typeof obj.removed === "string" && `Removed ${obj.removed}`) ||
-          (typeof obj.target === "string" && `Refreshed ${obj.target}`) ||
-          "OK";
+          (typeof obj.added === "string" && t("setSecBIncludesAdded", obj.added)) ||
+          (typeof obj.removed === "string" && t("setSecBIncludesRemoved", obj.removed)) ||
+          (typeof obj.target === "string" && t("setSecBIncludesRefreshed", obj.target)) ||
+          t("setSecBOk");
         setActionMessage({ ok: true, text: summary });
         await refresh();
       } catch (e) {
@@ -112,7 +113,7 @@ export function MemoryIncludesPanel({ scope }: Props) {
   if (unavailable) {
     return (
       <div className="memory-sync-empty">
-        Memory tools aren't enabled on this server, so includes are unavailable.
+        {t("setSecBIncludesUnavailable")}
       </div>
     );
   }
@@ -120,14 +121,14 @@ export function MemoryIncludesPanel({ scope }: Props) {
   return (
     <div className="memory-includes">
       <div className="memory-includes-header">
-        <span className="memory-sync-label">Includes ({scope})</span>
+        <span className="memory-sync-label">{t("setSecBIncludesLabel", scope)}</span>
         <button
           type="button"
           className="memory-sync-btn ghost"
           onClick={() => void refresh()}
           disabled={loading}
         >
-          {loading ? "…" : "Reload"}
+          {loading ? "…" : t("setSecBReload")}
         </button>
       </div>
 
@@ -138,7 +139,7 @@ export function MemoryIncludesPanel({ scope }: Props) {
       )}
 
       {data && data.items.length === 0 && (
-        <div className="memory-includes-empty">No include directives yet.</div>
+        <div className="memory-includes-empty">{t("setSecBIncludesEmpty")}</div>
       )}
 
       {data && data.items.length > 0 && (
@@ -150,7 +151,7 @@ export function MemoryIncludesPanel({ scope }: Props) {
             >
               <div className="memory-includes-row">
                 <span className={`memory-includes-kind kind-${item.kind}`}>
-                  {item.kind === "git_url" ? "git" : "local"}
+                  {item.kind === "git_url" ? t("setSecBKindGit") : t("setSecBKindLocal")}
                 </span>
                 <code className="memory-includes-target">{item.target}</code>
                 <div className="memory-includes-actions">
@@ -164,9 +165,9 @@ export function MemoryIncludesPanel({ scope }: Props) {
                           target: item.target,
                         })
                       }
-                      title="Re-clone the cached git copy"
+                      title={t("setSecBIncludesRefreshTitle")}
                     >
-                      Refresh
+                      {t("setSecBRefresh")}
                     </button>
                   )}
                   <button
@@ -179,19 +180,19 @@ export function MemoryIncludesPanel({ scope }: Props) {
                         scope,
                       })
                     }
-                    title="Remove this directive from MEMORY.md"
+                    title={t("setSecBIncludesRemoveTitle")}
                   >
-                    Remove
+                    {t("remove")}
                   </button>
                 </div>
               </div>
               {item.resolves ? (
                 <div className="memory-includes-detail">
-                  resolved → <code>{item.path}</code>
+                  {t("setSecBResolved")} <code>{item.path}</code>
                 </div>
               ) : (
                 <div className="memory-includes-detail memory-includes-err">
-                  {item.error || "unresolved"}
+                  {item.error || t("setSecBUnresolved")}
                 </div>
               )}
             </li>
@@ -203,7 +204,7 @@ export function MemoryIncludesPanel({ scope }: Props) {
         <input
           type="text"
           className="memory-sync-input"
-          placeholder="/abs/path/memory or git+https://host/r.git[#branch]"
+          placeholder={t("setSecBIncludesAddPlaceholder")}
           value={newTarget}
           onChange={(e) => setNewTarget(e.target.value)}
           disabled={actionBusy}
@@ -219,7 +220,7 @@ export function MemoryIncludesPanel({ scope }: Props) {
             }).then(() => setNewTarget(""))
           }
         >
-          {actionBusy ? "Adding…" : "Add include"}
+          {actionBusy ? t("setSecBAdding") : t("setSecBAddInclude")}
         </button>
       </div>
 

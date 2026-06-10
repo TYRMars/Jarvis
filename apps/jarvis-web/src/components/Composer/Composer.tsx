@@ -14,6 +14,7 @@ import { sendFrame, isOpen } from "../../services/socket";
 import { startConversationTurn } from "../../services/conversationSockets";
 import { currentJarvisSoulPrompt } from "../../store/persistence";
 import { isLocalProjectId } from "../../services/projects";
+import { nextPermissionMode, setSocketMode } from "../../services/permissions";
 
 const PASTE_THRESHOLD_BYTES = 2048;
 
@@ -92,6 +93,23 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
     setValue("");
     try { cmd.run?.(); }
     catch (e: any) { showBanner(String(e?.message || e)); }
+  };
+
+  // Tab in an empty/idle textarea (no slash palette open) advances the
+  // permission mode through the canonical cycle, mirroring the mode
+  // chip's click-to-cycle. Sends the change over the per-socket
+  // `set_mode` frame; the server echoes a `permission_mode` frame that
+  // syncs the store. No-op when no socket is open. Bypass needs an
+  // explicit confirm — the same guard the chip / ModeBadge use.
+  const cyclePermissionMode = () => {
+    if (!isOpen()) return;
+    const current = useAppStore.getState().permissionMode;
+    const next = nextPermissionMode(current);
+    if (next === "bypass") {
+      const ok = window.confirm(t("permModeBypassConfirm"));
+      if (!ok) return;
+    }
+    setSocketMode(next);
   };
 
   const submit = () => {
@@ -219,6 +237,22 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
                 return;
               }
             }
+            // Tab (no modifiers) cycles the permission mode, but only
+            // when the slash palette is closed so it doesn't steal the
+            // palette's accept-selection Tab above. Shift/Alt/Ctrl/Meta
+            // Tab is left alone (browser focus traversal).
+            if (
+              e.key === "Tab" &&
+              !slashOpen &&
+              !e.shiftKey &&
+              !e.altKey &&
+              !e.ctrlKey &&
+              !e.metaKey
+            ) {
+              e.preventDefault();
+              cyclePermissionMode();
+              return;
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               if (useAppStore.getState().inFlight) {
                 return;
@@ -237,6 +271,16 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
           onHover={setSlashIdx}
           onPick={acceptSlash}
         />
+      </div>
+      <div className="composer-hint-row" aria-hidden="true">
+        <span className={"input-hint" + (value.length === 0 ? " visible" : "")}>
+          {t("composerInputSendHint")}
+        </span>
+        {slashOpen ? (
+          <span className="slash-command-count">
+            {t("composerSlashCommandsCount", filtered.length)}
+          </span>
+        ) : null}
       </div>
       {metaChildren && <div className="composer-meta">{metaChildren}</div>}
     </form>

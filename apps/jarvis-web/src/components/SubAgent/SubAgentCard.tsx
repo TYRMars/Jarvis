@@ -33,11 +33,6 @@ interface Props {
   onToggle?: (next: boolean) => void;
 }
 
-function tx(key: string, fallback: string): string {
-  const v = t(key);
-  return v === key ? fallback : v;
-}
-
 export function SubAgentCard({ run, expanded, onToggle }: Props) {
   // Auto-expand running runs; auto-collapse on done (unless caller
   // controls). Manual toggle wins over the auto-collapse so a user
@@ -75,11 +70,11 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
   const statusLabel = (() => {
     switch (run.status) {
       case "running":
-        return tx("subagentStatusRunning", "Running");
+        return t("subagentStatusRunning");
       case "done":
-        return tx("subagentStatusDone", "Done");
+        return t("subagentStatusDone");
       case "error":
-        return tx("subagentStatusError", "Failed");
+        return t("subagentStatusError");
     }
   })();
 
@@ -114,7 +109,7 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
           collapsed state so users know what the subagent did. */}
       <div className="subagent-card-summary">
         <span className="subagent-card-summary-label">
-          {tx("subagentTaskLabel", "Task")}:
+          {t("subagentTaskLabel")}:
         </span>
         <span className="subagent-card-summary-text">{run.task}</span>
       </div>
@@ -129,7 +124,7 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
           <ol className="subagent-timeline">
             {toolEntries.length > 0 ? (
               <li className="subagent-timeline-overview">
-                <span>{tx("subagentTimelineTools", "Tool calls")}</span>
+                <span>{t("subagentTimelineTools")}</span>
                 <strong className="tabular-nums">
                   {completedTools}/{toolEntries.length}
                 </strong>
@@ -137,7 +132,7 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
             ) : null}
             {run.timeline.length === 0 ? (
               <li className="subagent-timeline-empty">
-                {tx("subagentTimelineWaiting", "Waiting for first event...")}
+                {t("subagentTimelineWaiting")}
               </li>
             ) : (
               run.timeline.map((entry, i) => (
@@ -148,7 +143,7 @@ export function SubAgentCard({ run, expanded, onToggle }: Props) {
           {run.status === "done" && run.finalMessage ? (
             <div className="subagent-card-final">
               <span className="subagent-card-final-label">
-                {tx("subagentFinalLabel", "Result")}:
+                {t("subagentFinalLabel")}:
               </span>
               <span className="subagent-card-final-text">{run.finalMessage}</span>
             </div>
@@ -174,7 +169,7 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
         <span className="subagent-timeline-head">
           <span className="subagent-timeline-name mono">{entry.name}</span>
           <span className="subagent-timeline-state">
-            {ended ? tx("subagentToolDone", "done") : tx("subagentToolRunning", "running")}
+            {ended ? t("subagentToolDone") : t("subagentToolRunning")}
           </span>
         </span>
         <span className="subagent-timeline-args">

@@ -1,0 +1,16 @@
+[package]
+name = "harness-router"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Smart model routing: classify task difficulty and pick a (provider, model) per request for the Jarvis harness."
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+harness-core.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

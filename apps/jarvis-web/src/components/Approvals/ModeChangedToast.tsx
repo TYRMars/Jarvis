@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../../store/appStore";
+import { t } from "../../utils/i18n";
 
 const AUTO_CLEAR_MS = 6000;
 
@@ -44,14 +45,14 @@ export function ModeChangedToast() {
     <div className="mode-changed-toast" role="status" aria-live="polite">
       <span className="mode-changed-toast-icon" aria-hidden="true">⇄</span>
       <span className="mode-changed-toast-body">
-        {describe(recent.via)} switched permission mode to{" "}
+        {describe(recent.via)} {t("apprvModeSwitchedTo")}{" "}
         <strong>{recent.mode}</strong>
-        {recent.mode === "plan" ? " — next turn will be read-only." : ""}
+        {recent.mode === "plan" ? t("apprvModeSwitchedPlanNote") : ""}
       </span>
       <button
         type="button"
         className="mode-changed-toast-close"
-        aria-label="Dismiss"
+        aria-label={t("apprvDismiss")}
         onClick={() => clear(null)}
       >
         ×
@@ -63,10 +64,10 @@ export function ModeChangedToast() {
 function describe(via: string): string {
   switch (via) {
     case "tool":
-      return "Agent";
+      return t("apprvModeViaAgent");
     case "plan_accepted":
-      return "Plan accept";
+      return t("apprvModeViaPlanAccept");
     default:
-      return "Mode change";
+      return t("apprvModeViaModeChange");
   }
 }

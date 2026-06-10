@@ -1,6 +1,6 @@
 # Web 多会话并行与异步运行
 
-Status: **Proposed**
+Status: **Adopted partial** — Phase 0–2 已落地（`ConversationRuntime`/`lifecycleSlice` 状态解耦、`conversationSockets.ts` 多 foreground socket、`ChatRunRegistry`/`chatRuns.ts` 后台 run 与 seq 断线补帧）。Phase 3 体验完善（Running 面板、Sidebar 状态摘要、系统通知、多 tab BroadcastChannel 去重）待做。
 
 Owner: Jarvis
 

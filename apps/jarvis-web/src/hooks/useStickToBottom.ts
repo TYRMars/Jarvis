@@ -19,7 +19,7 @@
 //      XMarkdown roots as they commit one by one over the next
 //      ~200ms.
 
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface UseStickToBottomOpts {
   /// Conversation / view id. When this flips, the hook treats it
@@ -41,10 +41,25 @@ export function useStickToBottom<E extends HTMLElement = HTMLElement>(
   const ref = useRef<E | null>(null);
   // Track whether the user wants the view to follow new content
   // (true = stick to bottom, false = preserve their scroll position).
-  // Mutated by the scroll listener; read by the layout effect.
+  // Mutated by the scroll listener; read synchronously by Layers 2/3
+  // (the layout-effect chain), so it must stay a ref — React state is
+  // async and would lag the in-flight content snap by a frame.
   const stickToBottomRef = useRef(true);
+  // Subscribable mirror of `stickToBottomRef` for render-time reads
+  // (the scroll-to-bottom FAB). Only flips when the boolean actually
+  // changes, so a stream of scroll events at the same band doesn't
+  // churn re-renders.
+  const [isAtBottom, setIsAtBottom] = useState(true);
   // Last activeId we reacted to — used to detect view switches.
   const prevActiveIdRef = useRef<string | null>(null);
+
+  // Keep the ref + the subscribable state in lockstep. Skips the
+  // setState when the value is unchanged so identical scroll events
+  // don't re-render consumers.
+  const setSticky = useCallback((next: boolean) => {
+    stickToBottomRef.current = next;
+    setIsAtBottom((prev) => (prev === next ? prev : next));
+  }, []);
 
   // Layer 1 — listen for user scrolls; flip the sticky flag when
   // they leave the bottom band.
@@ -53,11 +68,11 @@ export function useStickToBottom<E extends HTMLElement = HTMLElement>(
     if (!el) return;
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      stickToBottomRef.current = distance < threshold;
+      setSticky(distance < threshold);
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [threshold]);
+  }, [threshold, setSticky]);
 
   // Layer 2 — on every render, if the user is near the bottom, snap.
   // useLayoutEffect runs sync after DOM mutations, before paint, so
@@ -74,7 +89,7 @@ export function useStickToBottom<E extends HTMLElement = HTMLElement>(
   useEffect(() => {
     if (activeId === prevActiveIdRef.current) return;
     prevActiveIdRef.current = activeId;
-    stickToBottomRef.current = true;
+    setSticky(true);
     const el = ref.current;
     if (!el) return;
     let frames = 0;
@@ -93,7 +108,17 @@ export function useStickToBottom<E extends HTMLElement = HTMLElement>(
     };
     raf = requestAnimationFrame(chase);
     return () => cancelAnimationFrame(raf);
-  }, [activeId, chaseFrames]);
+  }, [activeId, chaseFrames, setSticky]);
 
-  return { ref };
+  // Imperative action for the scroll-to-bottom FAB: snap to the
+  // bottom and re-arm auto-follow so subsequent streaming deltas keep
+  // tracking. Layer 2's layout effect picks up the flag on its next
+  // pass, so we don't need to fight it here.
+  const scrollToBottom = useCallback(() => {
+    setSticky(true);
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [setSticky]);
+
+  return { ref, isAtBottom, scrollToBottom };
 }

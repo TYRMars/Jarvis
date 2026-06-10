@@ -42,9 +42,24 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::Utc;
+use harness_automation::{AutomationStore, AutomationTask};
 use harness_channel::{ChannelBinding, ChannelBindingStore};
-use harness_core::{AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation, ConversationLifecycle, ConversationMetadata, ConversationRecord, ConversationStore, Message, Tenant, TenantStore, TodoEvent, TodoItem, TodoStore};
-use harness_observability::{DashboardSnapshot, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteRun, MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun, ObservedSpanSummary, TimeWindow};
+use harness_workflow::{WorkflowDefinition, WorkflowRun, WorkflowStore};
+use harness_core::{
+    AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
+    ConversationLifecycle, ConversationMetadata, ConversationRecord, ConversationStore, Message,
+    Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
+};
+use harness_learning::{
+    fold_events_into_rows, validate_memory_safe, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore, SkillLifecycle,
+    SkillLifecycleStore, SkillUsageEvent, SkillUsageFilter, SkillUsageRow, SkillUsageStore,
+};
+use harness_observability::{
+    DashboardSnapshot, EvalBaseline, EvalCaseResult, EvalFilter, EvalStore, EvalSuiteRun,
+    MetricPoint, ObservabilityFilter, ObservabilityStore, ObservedOutcome, ObservedRun,
+    ObservedSpanSummary, TimeWindow,
+};
 use harness_project::{
     Activity, ActivityEvent, ActivityStore, Comment, CommentEvent, CommentStore, DocDraft,
     DocEvent, DocProject, DocStore, Label, LabelEvent, LabelStore, Project, ProjectStore,
@@ -53,7 +68,7 @@ use harness_project::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::error::StoreError;
 
@@ -209,6 +224,209 @@ impl ConversationStore for JsonFileConversationStore {
     }
 }
 
+pub struct JsonFileAutomationStore {
+    base: PathBuf,
+}
+
+impl JsonFileAutomationStore {
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        Ok(Self { base })
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.base.join("automations")
+    }
+
+    fn path_for(&self, id: &str) -> PathBuf {
+        self.dir().join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl AutomationStore for JsonFileAutomationStore {
+    async fn list(&self) -> Result<Vec<AutomationTask>, BoxError> {
+        let dir = self.dir();
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let mut rows = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                continue;
+            }
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            if let Ok(task) = serde_json::from_slice::<AutomationTask>(&bytes) {
+                rows.push(task);
+            }
+        }
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AutomationTask>, BoxError> {
+        let path = self.path_for(id);
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Box::new(e)),
+        };
+        let task = serde_json::from_slice::<AutomationTask>(&bytes).map_err(StoreError::from)?;
+        Ok(Some(task))
+    }
+
+    async fn upsert(&self, task: &AutomationTask) -> Result<(), BoxError> {
+        let dir = self.dir();
+        ensure_dir(&dir).map_err(|e| -> BoxError { Box::new(e) })?;
+        let path = self.path_for(&task.id);
+        let bytes = serde_json::to_vec_pretty(task).map_err(StoreError::from)?;
+        atomic_write(&path, &bytes).await
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let path = self.path_for(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
+// ---------- WorkflowStore ----------------------------------------------------
+
+/// On-disk [`WorkflowStore`]. Definitions live under `<base>/workflows/`
+/// and runs under `<base>/workflow_runs/`, one `<id>.json` each, atomic
+/// `.tmp`+rename like every other JSON-file store.
+pub struct JsonFileWorkflowStore {
+    base: PathBuf,
+}
+
+impl JsonFileWorkflowStore {
+    pub fn open(base: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let base = base.into();
+        ensure_dir(&base)?;
+        Ok(Self { base })
+    }
+
+    fn defs_dir(&self) -> PathBuf {
+        self.base.join("workflows")
+    }
+
+    fn runs_dir(&self) -> PathBuf {
+        self.base.join("workflow_runs")
+    }
+
+    fn def_path(&self, id: &str) -> PathBuf {
+        self.defs_dir().join(format!("{}.json", encode_id(id)))
+    }
+
+    fn run_path(&self, id: &str) -> PathBuf {
+        self.runs_dir().join(format!("{}.json", encode_id(id)))
+    }
+}
+
+#[async_trait]
+impl WorkflowStore for JsonFileWorkflowStore {
+    async fn list(&self) -> Result<Vec<WorkflowDefinition>, BoxError> {
+        let mut rows = read_json_dir::<WorkflowDefinition>(&self.defs_dir()).await?;
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<WorkflowDefinition>, BoxError> {
+        read_json_file::<WorkflowDefinition>(&self.def_path(id)).await
+    }
+
+    async fn upsert(&self, def: &WorkflowDefinition) -> Result<(), BoxError> {
+        ensure_dir(&self.defs_dir()).map_err(|e| -> BoxError { Box::new(e) })?;
+        let bytes = serde_json::to_vec_pretty(def).map_err(StoreError::from)?;
+        atomic_write(&self.def_path(&def.id), &bytes).await
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        match tokio::fs::remove_file(self.def_path(id)).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    async fn list_runs(
+        &self,
+        workflow_id: Option<&str>,
+        requirement_id: Option<&str>,
+    ) -> Result<Vec<WorkflowRun>, BoxError> {
+        let mut rows = read_json_dir::<WorkflowRun>(&self.runs_dir()).await?;
+        rows.retain(|r| {
+            // `Option::is_none_or` is stable since 1.82 but the workspace
+            // MSRV is 1.80 (see conversations.rs); use `map_or` instead.
+            workflow_id.map_or(true, |w| r.workflow_id == w)
+                && requirement_id.map_or(true, |req| r.requirement_id.as_deref() == Some(req))
+        });
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        Ok(rows)
+    }
+
+    async fn get_run(&self, run_id: &str) -> Result<Option<WorkflowRun>, BoxError> {
+        read_json_file::<WorkflowRun>(&self.run_path(run_id)).await
+    }
+
+    async fn upsert_run(&self, run: &WorkflowRun) -> Result<(), BoxError> {
+        ensure_dir(&self.runs_dir()).map_err(|e| -> BoxError { Box::new(e) })?;
+        let bytes = serde_json::to_vec_pretty(run).map_err(StoreError::from)?;
+        atomic_write(&self.run_path(&run.id), &bytes).await
+    }
+}
+
+/// Read every `*.json` (excluding `*.json.tmp`) in `dir` into `T`,
+/// skipping unreadable / undecodable files. Returns an empty vec when
+/// the directory doesn't exist yet.
+async fn read_json_dir<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>, BoxError> {
+    let mut read_dir = match tokio::fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Box::new(e)),
+    };
+    let mut rows = Vec::new();
+    while let Some(entry) = read_dir.next_entry().await? {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            continue;
+        }
+        let bytes = match tokio::fs::read(entry.path()).await {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        if let Ok(row) = serde_json::from_slice::<T>(&bytes) {
+            rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+
+/// Read a single `*.json` file into `T`. `Ok(None)` when the file is
+/// absent; decode errors surface as a [`StoreError`].
+async fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, BoxError> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Box::new(e)),
+    };
+    let row = serde_json::from_slice::<T>(&bytes).map_err(StoreError::from)?;
+    Ok(Some(row))
+}
+
 // ---------- ProjectStore ----------------------------------------------------
 
 pub struct JsonFileProjectStore {
@@ -296,18 +514,10 @@ impl ProjectStore for JsonFileProjectStore {
             let _ = remove_dir_all_if_exists(&req_dir).await;
             for rid in &req_ids {
                 let encoded_rid = encode_id(rid);
-                let _ = remove_dir_all_if_exists(
-                    &base.join("requirement_runs").join(&encoded_rid),
-                )
-                .await;
-                let _ = remove_dir_all_if_exists(
-                    &base.join("activities").join(&encoded_rid),
-                )
-                .await;
-                let _ = remove_dir_all_if_exists(
-                    &base.join("comments").join(&encoded_rid),
-                )
-                .await;
+                let _ = remove_dir_all_if_exists(&base.join("requirement_runs").join(&encoded_rid))
+                    .await;
+                let _ = remove_dir_all_if_exists(&base.join("activities").join(&encoded_rid)).await;
+                let _ = remove_dir_all_if_exists(&base.join("comments").join(&encoded_rid)).await;
             }
         }
         Ok(removed)
@@ -613,18 +823,10 @@ impl RequirementStore for JsonFileRequirementStore {
         // requirement_title / project_name joins resolve to None and
         // the UI shows "(deleted)" rows).
         let encoded_rid = encode_id(&item.id);
-        let _ = remove_dir_all_if_exists(
-            &self.base.join("requirement_runs").join(&encoded_rid),
-        )
-        .await;
-        let _ = remove_dir_all_if_exists(
-            &self.base.join("activities").join(&encoded_rid),
-        )
-        .await;
-        let _ = remove_dir_all_if_exists(
-            &self.base.join("comments").join(&encoded_rid),
-        )
-        .await;
+        let _ =
+            remove_dir_all_if_exists(&self.base.join("requirement_runs").join(&encoded_rid)).await;
+        let _ = remove_dir_all_if_exists(&self.base.join("activities").join(&encoded_rid)).await;
+        let _ = remove_dir_all_if_exists(&self.base.join("comments").join(&encoded_rid)).await;
         if removed {
             let _ = self.tx.send(RequirementEvent::Deleted {
                 project_id: item.project_id,
@@ -1622,8 +1824,21 @@ impl TenantStore for JsonFileTenantStore {
 
 // ---------- observability / eval stores ------------------------------------
 
+/// Default ceiling on `runs/*.json` files kept on disk. Each tool /
+/// agent / subagent invocation appends one tiny file; without a cap
+/// the directory grows without bound (and `list_runs` / `dashboard`,
+/// which rescan the whole directory, slow down linearly). 2000 keeps
+/// the rolling dashboard window useful while bounding disk + scan
+/// cost. Override at the composition root via
+/// `JsonFileObservabilityStore::with_max_runs` (the binary reads
+/// `JARVIS_OBSERVABILITY_MAX_RUNS`).
+pub const DEFAULT_MAX_OBSERVED_RUNS: usize = 2000;
+
 pub struct JsonFileObservabilityStore {
     dir: PathBuf,
+    /// `Some(n)` caps `runs/` at `n` files (oldest pruned on append);
+    /// `None` disables pruning (unbounded growth).
+    max_runs: Option<usize>,
 }
 
 impl JsonFileObservabilityStore {
@@ -1634,7 +1849,17 @@ impl JsonFileObservabilityStore {
         ensure_dir(&dir.join("spans"))?;
         ensure_dir(&dir.join("metrics"))?;
         ensure_dir(&dir.join("dashboards"))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            max_runs: Some(DEFAULT_MAX_OBSERVED_RUNS),
+        })
+    }
+
+    /// Override the `runs/` retention cap. `Some(n)` keeps the newest
+    /// `n` files; `None` disables pruning entirely.
+    pub fn with_max_runs(mut self, max_runs: Option<usize>) -> Self {
+        self.max_runs = max_runs;
+        self
     }
 
     fn run_path(&self, id: &str) -> PathBuf {
@@ -1660,7 +1885,11 @@ impl JsonFileObservabilityStore {
 impl ObservabilityStore for JsonFileObservabilityStore {
     async fn append_run(&self, run: &ObservedRun) -> Result<(), BoxError> {
         let bytes = serde_json::to_vec_pretty(run).map_err(StoreError::from)?;
-        atomic_write(&self.run_path(&run.id), &bytes).await
+        atomic_write(&self.run_path(&run.id), &bytes).await?;
+        if let Some(max) = self.max_runs {
+            prune_oldest_files(&self.dir.join("runs"), max).await;
+        }
+        Ok(())
     }
 
     async fn append_span_summary(&self, span: &ObservedSpanSummary) -> Result<(), BoxError> {
@@ -1796,6 +2025,359 @@ impl EvalStore for JsonFileEvalStore {
     }
 }
 
+// ---------- learning / skill-usage store -----------------------------------
+
+/// Default retention cap for the skill-usage `events/` directory. Telemetry
+/// fires on every skill `Listed`/`Viewed`/`Used`, so without a cap the
+/// directory grows without bound and every `list_events`/`report` read pays
+/// an O(N) full-directory scan. Mirrors [`DEFAULT_MAX_OBSERVED_RUNS`].
+pub const DEFAULT_MAX_SKILL_USAGE_EVENTS: usize = 5000;
+
+/// JSON-file backend for [`SkillUsageStore`]. Each event becomes one file
+/// under `<dir>/events/<id>.json`; ids are synthesized from a UTC RFC-3339
+/// timestamp + a monotonic per-process counter so concurrent writes inside
+/// the same nanosecond don't collide. Same atomic-write + percent-encoded
+/// filename discipline as the conversation store, so the directory is safe
+/// to ship raw between machines.
+pub struct JsonFileSkillUsageStore {
+    dir: PathBuf,
+    max_events: Option<usize>,
+}
+
+impl JsonFileSkillUsageStore {
+    pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let dir = dir.into();
+        ensure_dir(&dir)?;
+        ensure_dir(&dir.join("events"))?;
+        Ok(Self {
+            dir,
+            max_events: Some(DEFAULT_MAX_SKILL_USAGE_EVENTS),
+        })
+    }
+
+    /// Override the `events/` retention cap. `Some(n)` keeps the newest
+    /// `n` files; `None` disables pruning entirely.
+    pub fn with_max_events(mut self, max_events: Option<usize>) -> Self {
+        self.max_events = max_events;
+        self
+    }
+
+    fn event_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("events")
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    fn next_id(now: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("{now}-{n:08}")
+    }
+}
+
+#[async_trait]
+impl SkillUsageStore for JsonFileSkillUsageStore {
+    async fn record_event(
+        &self,
+        mut event: SkillUsageEvent,
+    ) -> Result<SkillUsageEvent, harness_learning::BoxError> {
+        if event.created_at.is_empty() {
+            event.created_at = Utc::now().to_rfc3339();
+        }
+        if event.id.is_empty() {
+            event.id = Self::next_id(&event.created_at);
+        }
+        let bytes = serde_json::to_vec_pretty(&event).map_err(StoreError::from)?;
+        atomic_write(&self.event_path(&event.id), &bytes).await?;
+        if let Some(max) = self.max_events {
+            prune_oldest_files(&self.dir.join("events"), max).await;
+        }
+        Ok(event)
+    }
+
+    async fn list_events(
+        &self,
+        filter: SkillUsageFilter,
+    ) -> Result<Vec<SkillUsageEvent>, harness_learning::BoxError> {
+        let mut rows: Vec<SkillUsageEvent> = read_json_records(&self.dir.join("events")).await?;
+        rows.retain(|r| skill_usage_matches(r, &filter));
+        rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        if let Some(limit) = filter.limit {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
+
+    async fn report(
+        &self,
+        filter: SkillUsageFilter,
+    ) -> Result<Vec<SkillUsageRow>, harness_learning::BoxError> {
+        // Aggregation always operates over the unbounded slice; `limit`
+        // would only narrow the input and produce misleading totals.
+        let mut wide = filter.clone();
+        wide.limit = None;
+        let events = self.list_events(wide).await?;
+        Ok(fold_events_into_rows(events))
+    }
+}
+
+// ---------- learning / long-term memory store ------------------------------
+
+/// Default ceiling on `memories/*.json` files kept on disk. The store
+/// writes one file per row and `list` rescans the whole directory, so
+/// without a cap auto-captured rows (the auto-loop drops a `gotcha` per
+/// failed run) grow the directory — and every `/v1/memories` read —
+/// without bound. 5000 keeps a generous window for user-curated rows
+/// while bounding disk + scan cost; pinned rows are never pruned.
+/// Override at the composition root via
+/// [`JsonFileMemoryStore::with_max_items`].
+pub const DEFAULT_MAX_MEMORY_ITEMS: usize = 5000;
+
+/// JSON-file backend for [`MemoryStore`]. One file per id under
+/// `<dir>/memories/<id>.json`; ids are synthesised from a UTC RFC-3339
+/// timestamp + a monotonic counter, same pattern as the skill-usage
+/// store. Single source of truth for User Memory (Phase 1); the type
+/// also handles Project / Workspace scope because Phase 4 will route
+/// through this trait too.
+pub struct JsonFileMemoryStore {
+    dir: PathBuf,
+    /// `Some(n)` caps `memories/` at roughly `n` files (oldest
+    /// non-pinned pruned on `upsert`); `None` disables pruning.
+    max_items: Option<usize>,
+    /// Serialises the read-modify-write of [`MemoryStore::patch`] against
+    /// itself and against [`MemoryStore::delete`] within a single
+    /// process. Without it, two `patch` calls (or a `patch` racing a
+    /// `delete`) would interleave their get/write and lose updates or
+    /// resurrect a removed file. Cross-process atomicity would need an
+    /// OS file lock and is out of scope here.
+    write_lock: Mutex<()>,
+}
+
+impl JsonFileMemoryStore {
+    pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let dir = dir.into();
+        ensure_dir(&dir)?;
+        ensure_dir(&dir.join("memories"))?;
+        Ok(Self {
+            dir,
+            max_items: Some(DEFAULT_MAX_MEMORY_ITEMS),
+            write_lock: Mutex::new(()),
+        })
+    }
+
+    /// Override the `memories/` retention cap. `Some(n)` keeps roughly
+    /// the newest `n` rows (pinned rows are always kept); `None`
+    /// disables pruning entirely (unbounded growth).
+    pub fn with_max_items(mut self, max_items: Option<usize>) -> Self {
+        self.max_items = max_items;
+        self
+    }
+
+    fn item_path(&self, id: &str) -> PathBuf {
+        self.dir
+            .join("memories")
+            .join(format!("{}.json", encode_id(id)))
+    }
+
+    fn next_id(now: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("mem_{now}-{n:08}")
+    }
+}
+
+#[async_trait]
+impl MemoryStore for JsonFileMemoryStore {
+    async fn list(
+        &self,
+        filter: MemoryFilter,
+    ) -> Result<Vec<MemoryItem>, harness_learning::BoxError> {
+        let mut rows: Vec<MemoryItem> = read_json_records(&self.dir.join("memories")).await?;
+        rows.retain(|r| memory_matches(r, &filter));
+        // Pinned first, then by updated_at descending. Stable when both
+        // pinned + same timestamp so the UI list doesn't reshuffle.
+        rows.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+        if let Some(limit) = filter.limit {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        read_json_optional(&self.item_path(id)).await
+    }
+
+    async fn upsert(
+        &self,
+        mut item: MemoryItem,
+    ) -> Result<MemoryItem, harness_learning::BoxError> {
+        let now = Utc::now().to_rfc3339();
+        if item.created_at.is_empty() {
+            item.created_at = now.clone();
+        }
+        item.updated_at = now.clone();
+        if item.id.is_empty() {
+            item.id = Self::next_id(&now);
+        }
+        let bytes = serde_json::to_vec_pretty(&item).map_err(StoreError::from)?;
+        atomic_write(&self.item_path(&item.id), &bytes).await?;
+        if let Some(max) = self.max_items {
+            prune_oldest_memory_items(&self.dir.join("memories"), max).await;
+        }
+        Ok(item)
+    }
+
+    /// Atomic (in-process) read-modify-write. The `write_lock` is held
+    /// across get → apply → validate → persist, and `delete` takes the
+    /// same lock, so a concurrent `delete` either lands before the
+    /// `get` (we observe the missing file → `Ok(None)`, no resurrection)
+    /// or after the persist (the file is removed). Two `patch` calls
+    /// serialise, so neither loses the other's update.
+    async fn patch(
+        &self,
+        id: &str,
+        patch: MemoryPatch,
+    ) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
+        let Some(mut item) = read_json_optional::<MemoryItem>(&self.item_path(id)).await? else {
+            return Ok(None);
+        };
+        patch.apply(&mut item);
+        validate_memory_safe(&item)
+            .map_err(|e| -> harness_learning::BoxError { Box::new(e) })?;
+        item.updated_at = Utc::now().to_rfc3339();
+        let bytes = serde_json::to_vec_pretty(&item).map_err(StoreError::from)?;
+        atomic_write(&self.item_path(&item.id), &bytes).await?;
+        Ok(Some(item))
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
+        match tokio::fs::remove_file(&self.item_path(id)).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
+fn memory_matches(row: &MemoryItem, filter: &MemoryFilter) -> bool {
+    if let Some(scope) = filter.scope.as_ref() {
+        if &row.scope != scope {
+            return false;
+        }
+    }
+    if let Some(kind) = filter.kind.as_ref() {
+        if &row.kind != kind {
+            return false;
+        }
+    }
+    if let Some(pin) = filter.pinned {
+        if row.pinned != pin {
+            return false;
+        }
+    }
+    for required in &filter.tags {
+        if !row.tags.iter().any(|t| t == required) {
+            return false;
+        }
+    }
+    true
+}
+
+// ---------- learning / skill-lifecycle store -------------------------------
+
+/// JSON-file backend for [`SkillLifecycleStore`]. One file per skill
+/// under `<dir>/skill-lifecycle/<name>.json`, percent-encoded so
+/// arbitrary skill names land safely on every OS.
+pub struct JsonFileSkillLifecycleStore {
+    dir: PathBuf,
+}
+
+impl JsonFileSkillLifecycleStore {
+    pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let dir = dir.into();
+        ensure_dir(&dir)?;
+        ensure_dir(&dir.join("skill-lifecycle"))?;
+        Ok(Self { dir })
+    }
+
+    fn row_path(&self, name: &str) -> PathBuf {
+        self.dir
+            .join("skill-lifecycle")
+            .join(format!("{}.json", encode_id(name)))
+    }
+}
+
+#[async_trait]
+impl SkillLifecycleStore for JsonFileSkillLifecycleStore {
+    async fn list(&self) -> Result<Vec<SkillLifecycle>, harness_learning::BoxError> {
+        let mut rows: Vec<SkillLifecycle> =
+            read_json_records(&self.dir.join("skill-lifecycle")).await?;
+        rows.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
+        Ok(rows)
+    }
+
+    async fn get(
+        &self,
+        skill_name: &str,
+    ) -> Result<Option<SkillLifecycle>, harness_learning::BoxError> {
+        read_json_optional(&self.row_path(skill_name)).await
+    }
+
+    async fn upsert(
+        &self,
+        mut row: SkillLifecycle,
+    ) -> Result<SkillLifecycle, harness_learning::BoxError> {
+        let now = Utc::now().to_rfc3339();
+        if row.created_at.is_empty() {
+            row.created_at = now.clone();
+        }
+        row.updated_at = now;
+        let bytes = serde_json::to_vec_pretty(&row).map_err(StoreError::from)?;
+        atomic_write(&self.row_path(&row.skill_name), &bytes).await?;
+        Ok(row)
+    }
+
+    async fn delete(&self, skill_name: &str) -> Result<bool, harness_learning::BoxError> {
+        match tokio::fs::remove_file(&self.row_path(skill_name)).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
+fn skill_usage_matches(row: &SkillUsageEvent, filter: &SkillUsageFilter) -> bool {
+    if let Some(name) = filter.skill_name.as_ref() {
+        if &row.skill_name != name {
+            return false;
+        }
+    }
+    if let Some(scope) = filter.scope.as_ref() {
+        if &row.scope != scope {
+            return false;
+        }
+    }
+    if let Some(action) = filter.action.as_ref() {
+        if &row.action != action {
+            return false;
+        }
+    }
+    if let Some(conv) = filter.conversation_id.as_ref() {
+        if row.conversation_id.as_deref() != Some(conv.as_str()) {
+            return false;
+        }
+    }
+    true
+}
+
 // ---------- shared helpers -------------------------------------------------
 
 async fn read_json_optional<T>(path: &Path) -> Result<Option<T>, BoxError>
@@ -1889,19 +2471,19 @@ impl JsonFileChannelBindingStore {
         ensure_dir(&base)?;
         let path = base.join("channel_bindings.json");
         let initial = match std::fs::read(&path) {
-            Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice::<Vec<ChannelBinding>>(
-                &bytes,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "channel_bindings.json parse failed; starting empty"
-                    );
-                    Vec::new()
+            Ok(bytes) if !bytes.is_empty() => {
+                match serde_json::from_slice::<Vec<ChannelBinding>>(&bytes) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "channel_bindings.json parse failed; starting empty"
+                        );
+                        Vec::new()
+                    }
                 }
-            },
+            }
             _ => Vec::new(),
         };
         Ok(Self {
@@ -1920,9 +2502,10 @@ impl JsonFileChannelBindingStore {
 impl ChannelBindingStore for JsonFileChannelBindingStore {
     async fn upsert(&self, binding: &ChannelBinding) -> Result<(), BoxError> {
         let mut guard = self.state.write().await;
-        if let Some(slot) = guard.iter_mut().find(|b| {
-            b.channel == binding.channel && b.channel_chat_id == binding.channel_chat_id
-        }) {
+        if let Some(slot) = guard
+            .iter_mut()
+            .find(|b| b.channel == binding.channel && b.channel_chat_id == binding.channel_chat_id)
+        {
             *slot = binding.clone();
         } else {
             guard.push(binding.clone());
@@ -1946,8 +2529,11 @@ impl ChannelBindingStore for JsonFileChannelBindingStore {
 
     async fn list_for_channel(&self, channel: &str) -> Result<Vec<ChannelBinding>, BoxError> {
         let guard = self.state.read().await;
-        let mut rows: Vec<ChannelBinding> =
-            guard.iter().filter(|b| b.channel == channel).cloned().collect();
+        let mut rows: Vec<ChannelBinding> = guard
+            .iter()
+            .filter(|b| b.channel == channel)
+            .cloned()
+            .collect();
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(rows)
     }
@@ -1997,20 +2583,19 @@ impl JsonFileChannelInstanceStore {
         ensure_dir(&base)?;
         let path = base.join("channel_instances.json");
         let initial = match std::fs::read(&path) {
-            Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice::<
-                Vec<harness_channel::ChannelInstance>,
-            >(&bytes)
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "channel_instances.json parse failed; starting empty"
-                    );
-                    Vec::new()
+            Ok(bytes) if !bytes.is_empty() => {
+                match serde_json::from_slice::<Vec<harness_channel::ChannelInstance>>(&bytes) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "channel_instances.json parse failed; starting empty"
+                        );
+                        Vec::new()
+                    }
                 }
-            },
+            }
             _ => Vec::new(),
         };
         Ok(Self {
@@ -2027,10 +2612,7 @@ impl JsonFileChannelInstanceStore {
 
 #[async_trait]
 impl harness_channel::ChannelInstanceStore for JsonFileChannelInstanceStore {
-    async fn upsert(
-        &self,
-        instance: &harness_channel::ChannelInstance,
-    ) -> Result<(), BoxError> {
+    async fn upsert(&self, instance: &harness_channel::ChannelInstance) -> Result<(), BoxError> {
         let mut guard = self.state.write().await;
         if let Some(slot) = guard.iter_mut().find(|i| i.id == instance.id) {
             *slot = instance.clone();
@@ -2042,10 +2624,7 @@ impl harness_channel::ChannelInstanceStore for JsonFileChannelInstanceStore {
         self.flush(&snapshot).await
     }
 
-    async fn get(
-        &self,
-        id: &str,
-    ) -> Result<Option<harness_channel::ChannelInstance>, BoxError> {
+    async fn get(&self, id: &str) -> Result<Option<harness_channel::ChannelInstance>, BoxError> {
         let guard = self.state.read().await;
         Ok(guard.iter().find(|i| i.id == id).cloned())
     }
@@ -2126,6 +2705,104 @@ async fn collect_dir_ids(dir: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// Bound a directory of `<id>.json` records to at most `max` files,
+/// deleting the oldest (by mtime) once it grows past a slack margin.
+///
+/// Best-effort: any I/O error short-circuits silently — a flaky prune
+/// must never break the append that triggered it.
+///
+/// Two-pass to stay cheap on the hot path: pass one just *counts*
+/// `.json` files (no per-entry `stat`), and only when the count
+/// exceeds `max + max/10` does pass two `stat` each file for its mtime,
+/// sort, and delete down to `max`. The 10% slack batches the
+/// expensive pass so steady-state appends pay only the directory walk.
+async fn prune_oldest_files(dir: &Path, max: usize) {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".json") || name.ends_with(".json.tmp") {
+            continue;
+        }
+        paths.push(entry.path());
+    }
+
+    // Slack so we don't re-scan-and-stat on every single append once at
+    // steady state — only when we've drifted `max/10` past the cap.
+    let slack = max / 10;
+    if paths.len() <= max.saturating_add(slack) {
+        return;
+    }
+
+    let mut stamped: Vec<(std::time::SystemTime, PathBuf)> = Vec::with_capacity(paths.len());
+    for path in paths {
+        let mtime = match tokio::fs::metadata(&path).await {
+            Ok(meta) => meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+            Err(_) => std::time::UNIX_EPOCH,
+        };
+        stamped.push((mtime, path));
+    }
+    stamped.sort_by_key(|a| a.0);
+
+    let to_remove = stamped.len().saturating_sub(max);
+    for (_, path) in stamped.into_iter().take(to_remove) {
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+}
+
+/// Prune the `memories/` directory down to roughly `max` rows, deleting
+/// the oldest *non-pinned* items first. Pinned rows are user-curated and
+/// are never pruned, so a flood of auto-captured `gotcha` rows can't
+/// evict a hand-pinned preference.
+///
+/// Best-effort: any I/O error short-circuits silently — a flaky prune
+/// must never break the `upsert` that triggered it.
+///
+/// Cheap on the hot path: pass one only *counts* `.json` files and bails
+/// when under `max + max/10`; only past that 10% slack does pass two
+/// read every row to partition pinned vs. not and sort the candidates.
+async fn prune_oldest_memory_items(dir: &Path, max: usize) {
+    let mut count = 0usize;
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".json") && !name.ends_with(".json.tmp") {
+            count += 1;
+        }
+    }
+
+    // Slack so we don't read-and-sort on every append once at steady
+    // state — only when we've drifted `max/10` past the cap.
+    if count <= max.saturating_add(max / 10) {
+        return;
+    }
+
+    let rows: Vec<MemoryItem> = match read_json_records(dir).await {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    // Pinned rows are protected but still consume the budget, so the
+    // total still trends toward `max`. If pinned alone exceeds the cap
+    // we keep them all and prune every non-pinned row.
+    let pinned = rows.iter().filter(|r| r.pinned).count();
+    let keep_non_pinned = max.saturating_sub(pinned);
+    let mut victims: Vec<MemoryItem> = rows.into_iter().filter(|r| !r.pinned).collect();
+    // Oldest first by `updated_at`, so `skip(keep)` keeps the newest.
+    victims.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+    let drop_count = victims.len().saturating_sub(keep_non_pinned);
+    for victim in victims.into_iter().take(drop_count) {
+        let _ = tokio::fs::remove_file(&dir.join(format!("{}.json", encode_id(&victim.id)))).await;
+    }
 }
 
 async fn remove_dir_all_if_exists(dir: &Path) -> std::io::Result<()> {
@@ -2913,6 +3590,66 @@ mod tests {
         assert_eq!(snapshot.p95_latency_ms, Some(1000));
     }
 
+    fn sample_run(id: &str) -> ObservedRun {
+        ObservedRun {
+            id: id.into(),
+            trace_id: None,
+            span_id: None,
+            parent_run_id: None,
+            kind: harness_observability::ObservedRunKind::Tool,
+            name: "echo".into(),
+            started_at: "2026-05-08T00:00:00Z".into(),
+            ended_at: Some("2026-05-08T00:00:00Z".into()),
+            duration_ms: Some(1),
+            outcome: ObservedOutcome::Success,
+            conversation_id: None,
+            project_id: None,
+            workspace_hash: None,
+            attributes: serde_json::json!({}),
+            metrics: serde_json::json!({}),
+            artifact_ids: Vec::new(),
+        }
+    }
+
+    fn runs_file_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir.join("runs"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".json") && !name.ends_with(".json.tmp")
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn observability_runs_are_capped_when_max_set() {
+        let dir = tempdir().unwrap();
+        // slack = max/10 = 0, so steady state is exactly `max`.
+        let store = JsonFileObservabilityStore::open(dir.path())
+            .unwrap()
+            .with_max_runs(Some(5));
+        for i in 0..30 {
+            store.append_run(&sample_run(&format!("run-{i:03}"))).await.unwrap();
+        }
+        assert_eq!(runs_file_count(dir.path()), 5, "runs/ must be bounded by the cap");
+        let rows = store.list_runs(ObservabilityFilter::default()).await.unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn observability_runs_unbounded_when_max_none() {
+        let dir = tempdir().unwrap();
+        let store = JsonFileObservabilityStore::open(dir.path())
+            .unwrap()
+            .with_max_runs(None);
+        for i in 0..12 {
+            store.append_run(&sample_run(&format!("run-{i:03}"))).await.unwrap();
+        }
+        assert_eq!(runs_file_count(dir.path()), 12, "None disables pruning");
+    }
+
     #[tokio::test]
     async fn eval_store_persists_baselines_and_case_results() {
         let dir = tempdir().unwrap();
@@ -3028,5 +3765,420 @@ mod tests {
         // Only one row exists for the channel.
         let rows = store.list_for_channel("wecom").await.unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    // ---- SkillUsageStore (JSON-file) ------------------------------------
+
+    #[tokio::test]
+    async fn skill_usage_roundtrip_and_filter() {
+        use harness_learning::{
+            SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent, SkillUsageFilter,
+        };
+        let dir = tempdir().unwrap();
+        let store = JsonFileSkillUsageStore::open(dir.path()).unwrap();
+
+        let mk = |name: &str, action: SkillUsageAction| SkillUsageEvent {
+            id: String::new(),
+            skill_name: name.into(),
+            source: SkillSource::Bundled,
+            action,
+            scope: SkillScope::workspace("/ws"),
+            conversation_id: Some("c1".into()),
+            requirement_id: None,
+            run_id: None,
+            created_at: String::new(),
+            attributes: serde_json::Value::Null,
+        };
+
+        // Stamping: empty id + created_at get filled in.
+        let recorded = store.record_event(mk("rust", SkillUsageAction::Viewed)).await.unwrap();
+        assert!(!recorded.id.is_empty());
+        assert!(!recorded.created_at.is_empty());
+
+        store.record_event(mk("rust", SkillUsageAction::Used)).await.unwrap();
+        store.record_event(mk("python", SkillUsageAction::Used)).await.unwrap();
+
+        // Reopen — events must survive.
+        drop(store);
+        let store = JsonFileSkillUsageStore::open(dir.path()).unwrap();
+        let all = store.list_events(SkillUsageFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 3);
+        // Newest-first.
+        assert!(all[0].created_at >= all[1].created_at);
+
+        // Filter by skill name.
+        let only_rust = store
+            .list_events(SkillUsageFilter {
+                skill_name: Some("rust".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(only_rust.len(), 2);
+
+        // Aggregate report.
+        let rows = store.report(SkillUsageFilter::default()).await.unwrap();
+        let rust_row = rows.iter().find(|r| r.skill_name == "rust").unwrap();
+        assert_eq!(rust_row.view_count, 1);
+        assert_eq!(rust_row.use_count, 1);
+    }
+
+    fn skill_events_file_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir.join("events"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".json") && !name.ends_with(".json.tmp")
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn skill_usage_events_are_capped_when_max_set() {
+        use harness_learning::{SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent};
+        let dir = tempdir().unwrap();
+        // slack = max/10 = 0, so steady state is exactly `max`.
+        let store = JsonFileSkillUsageStore::open(dir.path())
+            .unwrap()
+            .with_max_events(Some(5));
+        for _ in 0..30 {
+            store
+                .record_event(SkillUsageEvent {
+                    id: String::new(),
+                    skill_name: "rust".into(),
+                    source: SkillSource::Bundled,
+                    action: SkillUsageAction::Used,
+                    scope: SkillScope::workspace("/ws"),
+                    conversation_id: None,
+                    requirement_id: None,
+                    run_id: None,
+                    created_at: String::new(),
+                    attributes: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            skill_events_file_count(dir.path()),
+            5,
+            "events/ must be bounded by the cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_usage_events_unbounded_when_max_none() {
+        use harness_learning::{SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent};
+        let dir = tempdir().unwrap();
+        let store = JsonFileSkillUsageStore::open(dir.path())
+            .unwrap()
+            .with_max_events(None);
+        for _ in 0..12 {
+            store
+                .record_event(SkillUsageEvent {
+                    id: String::new(),
+                    skill_name: "rust".into(),
+                    source: SkillSource::Bundled,
+                    action: SkillUsageAction::Used,
+                    scope: SkillScope::workspace("/ws"),
+                    conversation_id: None,
+                    requirement_id: None,
+                    run_id: None,
+                    created_at: String::new(),
+                    attributes: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            skill_events_file_count(dir.path()),
+            12,
+            "None disables pruning"
+        );
+    }
+
+    // ---- SkillUsageStore (in-memory) ------------------------------------
+
+    #[tokio::test]
+    async fn memory_skill_usage_filters_by_action() {
+        use crate::memory::MemorySkillUsageStore;
+        use harness_learning::{
+            SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent, SkillUsageFilter,
+        };
+        let store = MemorySkillUsageStore::new();
+        let mk = |action| SkillUsageEvent {
+            id: String::new(),
+            skill_name: "k".into(),
+            source: SkillSource::User,
+            action,
+            scope: SkillScope::user(),
+            conversation_id: None,
+            requirement_id: None,
+            run_id: None,
+            created_at: String::new(),
+            attributes: serde_json::Value::Null,
+        };
+        store.record_event(mk(SkillUsageAction::Viewed)).await.unwrap();
+        store.record_event(mk(SkillUsageAction::Used)).await.unwrap();
+        let used = store
+            .list_events(SkillUsageFilter {
+                action: Some(SkillUsageAction::Used),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].action, SkillUsageAction::Used);
+    }
+
+    // ---- MemoryStore (JSON-file) ----------------------------------------
+
+    #[tokio::test]
+    async fn memory_roundtrip_and_filter() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        let store = JsonFileMemoryStore::open(dir.path()).unwrap();
+
+        let a = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Preference,
+                "Be terse",
+                "answer in ≤3 sentences unless asked",
+            ))
+            .await
+            .unwrap();
+        assert!(!a.id.is_empty());
+        assert!(!a.created_at.is_empty());
+        assert_eq!(a.updated_at, a.created_at);
+
+        let b = store
+            .upsert(
+                MemoryItem::new(MemoryScope::user(), MemoryKind::Fact, "zh-CN", "reply in zh-CN")
+                    .with_tag("lang"),
+            )
+            .await
+            .unwrap();
+
+        // Reopen — rows must survive.
+        drop(store);
+        let store = JsonFileMemoryStore::open(dir.path()).unwrap();
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Get by id.
+        let loaded = store.get(&a.id).await.unwrap().unwrap();
+        assert_eq!(loaded.title, "Be terse");
+
+        // Filter by tag.
+        let lang_only = store
+            .list(MemoryFilter {
+                tags: vec!["lang".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(lang_only.len(), 1);
+        assert_eq!(lang_only[0].id, b.id);
+
+        // Delete is idempotent.
+        assert!(store.delete(&a.id).await.unwrap());
+        assert!(!store.delete(&a.id).await.unwrap());
+        assert!(store.get(&a.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn memory_upsert_keeps_created_at_refreshes_updated_at() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        let store = JsonFileMemoryStore::open(dir.path()).unwrap();
+        let mut item = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "t",
+                "b",
+            ))
+            .await
+            .unwrap();
+        let original_created = item.created_at.clone();
+        // Update the title, re-upsert.
+        item.title = "t2".into();
+        // Force the timestamp to move forward so updated_at strictly
+        // differs even in a fast CI environment with low timer
+        // resolution.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let updated = store.upsert(item).await.unwrap();
+        assert_eq!(
+            updated.created_at, original_created,
+            "created_at must be preserved across upserts"
+        );
+        assert!(
+            updated.updated_at >= original_created,
+            "updated_at must be refreshed"
+        );
+
+        let _ = store.list(MemoryFilter::default()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_upsert_prunes_oldest_non_pinned_over_cap() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        // Cap of 4: slack is max/10 == 0, so the prune fires once we
+        // exceed 4 files.
+        let store = JsonFileMemoryStore::open(dir.path())
+            .unwrap()
+            .with_max_items(Some(4));
+
+        // One pinned row that must always survive the sweep.
+        store
+            .upsert(
+                MemoryItem::new(MemoryScope::user(), MemoryKind::Preference, "pinned", "keep me")
+                    .pinned(),
+            )
+            .await
+            .unwrap();
+
+        // Insert well past the cap; updated_at is monotonic per upsert
+        // (RFC-3339), so the earliest writes are the prune victims.
+        for i in 0..20 {
+            store
+                .upsert(MemoryItem::new(
+                    MemoryScope::user(),
+                    MemoryKind::Fact,
+                    format!("row-{i}"),
+                    "body",
+                ))
+                .await
+                .unwrap();
+            // Nudge the clock so updated_at strictly orders the rows.
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert!(
+            all.len() <= 4,
+            "row count stays bounded by the cap, got {}",
+            all.len()
+        );
+        // Pinned row is never pruned.
+        assert!(
+            all.iter().any(|r| r.title == "pinned"),
+            "pinned row must survive pruning"
+        );
+        // The newest non-pinned row survives; the oldest is gone.
+        assert!(
+            all.iter().any(|r| r.title == "row-19"),
+            "newest row must be kept"
+        );
+        assert!(
+            !all.iter().any(|r| r.title == "row-0"),
+            "oldest row must be pruned"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_upsert_unbounded_when_cap_disabled() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        let store = JsonFileMemoryStore::open(dir.path())
+            .unwrap()
+            .with_max_items(None);
+        for i in 0..12 {
+            store
+                .upsert(MemoryItem::new(
+                    MemoryScope::user(),
+                    MemoryKind::Fact,
+                    format!("row-{i}"),
+                    "body",
+                ))
+                .await
+                .unwrap();
+        }
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 12, "None disables pruning");
+    }
+
+    // ---- MemoryStore (in-memory) ----------------------------------------
+
+    // ---- SkillLifecycleStore (JSON-file) --------------------------------
+
+    #[tokio::test]
+    async fn skill_lifecycle_roundtrip_and_archive() {
+        use harness_learning::{
+            SkillCreator, SkillLifecycle, SkillLifecycleStore, SkillSource, SkillState,
+        };
+        let dir = tempdir().unwrap();
+        let store = JsonFileSkillLifecycleStore::open(dir.path()).unwrap();
+
+        let saved = store
+            .upsert(SkillLifecycle::new(
+                "rust-debugger",
+                SkillSource::Workspace,
+                SkillCreator::Agent,
+            ))
+            .await
+            .unwrap();
+        assert!(!saved.created_at.is_empty());
+        assert_eq!(saved.state, SkillState::Active);
+
+        // Archive it.
+        let mut archived = saved.clone();
+        archived.state = SkillState::Archived;
+        archived.archived_at = Some("2026-05-29T00:00:00Z".into());
+        archived.absorbed_into = Some("debugging-umbrella".into());
+        store.upsert(archived).await.unwrap();
+
+        // Reopen — survives + reflects the archive.
+        drop(store);
+        let store = JsonFileSkillLifecycleStore::open(dir.path()).unwrap();
+        let got = store.get("rust-debugger").await.unwrap().unwrap();
+        assert_eq!(got.state, SkillState::Archived);
+        assert_eq!(got.absorbed_into.as_deref(), Some("debugging-umbrella"));
+        assert_eq!(got.created_at, saved.created_at, "created_at preserved");
+
+        let all = store.list().await.unwrap();
+        assert_eq!(all.len(), 1);
+
+        assert!(store.delete("rust-debugger").await.unwrap());
+        assert!(!store.delete("rust-debugger").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn memory_in_memory_list_sorts_pinned_first() {
+        use crate::memory::MemoryMemoryStore;
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let store = MemoryMemoryStore::new();
+        let a = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "unpinned",
+                "b",
+            ))
+            .await
+            .unwrap();
+        let _b = store
+            .upsert(
+                MemoryItem::new(MemoryScope::user(), MemoryKind::Fact, "pinned", "b").pinned(),
+            )
+            .await
+            .unwrap();
+        let rows = store.list(MemoryFilter::default()).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].pinned, "pinned row sorts first");
+        assert_eq!(rows[1].id, a.id);
     }
 }

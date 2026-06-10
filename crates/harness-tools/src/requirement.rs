@@ -892,6 +892,11 @@ impl Tool for RequirementCreateTool {
         if let Some(deps) = parsed.depends_on {
             req.depends_on = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
         }
+        if req.depends_on.iter().any(|d| d == &req.id) {
+            return Err("requirement.create: `depends_on` must not contain the \
+                 requirement's own id (self-dependency)"
+                .into());
+        }
         if let Some(todos) = parsed.todos {
             for todo in todos {
                 req.todos.push(todo_from_input(todo)?);
@@ -1035,6 +1040,11 @@ impl Tool for RequirementUpdateTool {
         }
         if let Some(deps) = parsed.depends_on {
             let cleaned: Vec<String> = deps.into_iter().filter(|d| !d.trim().is_empty()).collect();
+            if cleaned.iter().any(|d| d == &item.id) {
+                return Err("requirement.update: `depends_on` must not contain the \
+                     requirement's own id (self-dependency)"
+                    .into());
+            }
             if item.depends_on != cleaned {
                 item.depends_on = cleaned;
                 changed = true;
@@ -1676,6 +1686,25 @@ mod tests {
         assert_eq!(tail.body["kind"], "triage_change");
         assert_eq!(tail.body["from"], "proposed_by_agent");
         assert_eq!(tail.body["to"], "approved");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_self_dependency() {
+        let (rs, acts) = fixtures();
+        let r = seed(&rs, "p", "x").await;
+        let update = RequirementUpdateTool::new(rs.clone(), acts);
+        let err = update
+            .invoke(json!({ "id": r.id, "depends_on": [r.id.clone(), "other"] }))
+            .await
+            .expect_err("self-dependency must be rejected");
+        assert!(
+            err.to_string().contains("self-dependency"),
+            "error should name the self-dependency: {err}"
+        );
+        // Store must be untouched — the bad edit never persisted.
+        let arc: Arc<dyn RequirementStore> = rs;
+        let stored = arc.get(&r.id).await.unwrap().unwrap();
+        assert!(stored.depends_on.is_empty(), "deps must not have been written");
     }
 
     #[tokio::test]

@@ -23,11 +23,6 @@ interface Props {
   maxRecent?: number;
 }
 
-function tx(key: string, fallback: string): string {
-  const v = t(key);
-  return v === key ? fallback : v;
-}
-
 export function SubAgentRail({ runs, maxRecent = 8 }: Props) {
   const running = runs.filter((r) => r.status === "running");
   // Sort recent newest-first so the most recent finish is on top.
@@ -42,29 +37,26 @@ export function SubAgentRail({ runs, maxRecent = 8 }: Props) {
     : null;
 
   return (
-    <aside className="subagent-rail" aria-label={tx("subagentRailLabel", "SubAgent activity")}>
+    <aside className="subagent-rail" aria-label={t("subagentRailLabel")}>
       <header className="subagent-rail-header">
-        <h3>{tx("subagentRailTitle", "SubAgents")}</h3>
+        <h3>{t("subagentRailTitle")}</h3>
         <span className="subagent-rail-count tabular-nums">
           {running.length > 0
-            ? tx("subagentRailRunning", "%d running").replace("%d", String(running.length))
-            : tx("subagentRailIdle", "Idle")}
+            ? t("subagentRailRunning").replace("%d", String(running.length))
+            : t("subagentRailIdle")}
         </span>
       </header>
 
       {running.length === 0 && recent.length === 0 ? (
         <p className="subagent-rail-empty">
-          {tx(
-            "subagentRailEmpty",
-            "Subagents you delegate to will appear here as they run.",
-          )}
+          {t("subagentRailEmpty")}
         </p>
       ) : null}
 
       {running.length > 0 ? (
         <section className="subagent-rail-section">
           <div className="subagent-rail-section-label">
-            {tx("subagentRailSectionRunning", "Running")}
+            {t("subagentRailSectionRunning")}
           </div>
           <ul className="subagent-rail-list">
             {running.map((r) => (
@@ -79,7 +71,7 @@ export function SubAgentRail({ runs, maxRecent = 8 }: Props) {
       {recent.length > 0 ? (
         <section className="subagent-rail-section">
           <div className="subagent-rail-section-label">
-            {tx("subagentRailSectionRecent", "Recent")}
+            {t("subagentRailSectionRecent")}
           </div>
           <ul className="subagent-rail-list">
             {recent.map((r) => (
@@ -95,13 +87,13 @@ export function SubAgentRail({ runs, maxRecent = 8 }: Props) {
         <div
           className="subagent-rail-popover"
           role="dialog"
-          aria-label={tx("subagentRailDetail", "SubAgent detail")}
+          aria-label={t("subagentRailDetail")}
         >
           <button
             type="button"
             className="subagent-rail-popover-close"
             onClick={() => setOpenId(null)}
-            aria-label={tx("subagentRailClose", "Close")}
+            aria-label={t("subagentRailClose")}
           >
             ×
           </button>

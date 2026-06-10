@@ -32,22 +32,28 @@
 
 mod error;
 mod json_file;
+mod learning_guard;
 mod memory;
 mod permission;
 mod workspace;
 
 pub use error::StoreError;
+pub use learning_guard::{GuardedMemoryStore, MEMORY_EVENT_CHANNEL_CAPACITY};
 pub use json_file::{
-    JsonFileActivityStore, JsonFileAgentProfileStore, JsonFileChannelBindingStore,
-    JsonFileChannelInstanceStore, JsonFileCommentStore, JsonFileConversationStore, JsonFileDocStore,
-    JsonFileEvalStore, JsonFileLabelStore, JsonFileObservabilityStore, JsonFileProjectStore,
-    JsonFileRequirementRunStore, JsonFileRequirementStore, JsonFileTenantStore, JsonFileTodoStore,
+    JsonFileActivityStore, JsonFileAgentProfileStore, JsonFileAutomationStore,
+    JsonFileChannelBindingStore, JsonFileChannelInstanceStore, JsonFileCommentStore,
+    JsonFileConversationStore, JsonFileDocStore, JsonFileEvalStore, JsonFileLabelStore,
+    JsonFileMemoryStore, JsonFileObservabilityStore, JsonFileProjectStore,
+    JsonFileRequirementRunStore, JsonFileRequirementStore, JsonFileSkillLifecycleStore,
+    JsonFileSkillUsageStore, JsonFileTenantStore, JsonFileTodoStore, JsonFileWorkflowStore,
+    DEFAULT_MAX_MEMORY_ITEMS, DEFAULT_MAX_OBSERVED_RUNS, DEFAULT_MAX_SKILL_USAGE_EVENTS,
 };
 pub use memory::{
-    MemoryActivityStore, MemoryAgentProfileStore, MemoryChannelBindingStore,
+    MemoryActivityStore, MemoryAgentProfileStore, MemoryAutomationStore, MemoryChannelBindingStore,
     MemoryChannelInstanceStore, MemoryCommentStore, MemoryConversationStore, MemoryDocStore,
-    MemoryLabelStore, MemoryProjectMemoryStore, MemoryProjectStore, MemoryRequirementRunStore,
-    MemoryRequirementStore, MemoryTenantStore, MemoryTodoStore,
+    MemoryLabelStore, MemoryMemoryStore, MemoryProjectMemoryStore, MemoryProjectStore,
+    MemoryRequirementRunStore, MemoryRequirementStore, MemorySkillLifecycleStore,
+    MemorySkillUsageStore, MemoryTenantStore, MemoryTodoStore, MemoryWorkflowStore,
 };
 pub use permission::JsonFilePermissionStore;
 pub use workspace::{default_path as default_workspaces_path, WorkspaceEntry, WorkspaceStore};
@@ -81,13 +87,16 @@ pub use mysql::{
 
 use std::sync::Arc;
 
+use harness_automation::AutomationStore;
 use harness_channel::{ChannelBindingStore, ChannelInstanceStore};
 use harness_core::{AgentProfileStore, ConversationStore, TenantStore, TodoStore};
+use harness_learning::{MemoryStore, SkillLifecycleStore, SkillUsageStore};
 use harness_observability::{EvalStore, ObservabilityStore};
 use harness_project::{
     ActivityStore, CommentStore, DocStore, LabelStore, ProjectStore, RequirementRunStore,
     RequirementStore,
 };
+use harness_workflow::WorkflowStore;
 
 /// Bundle of stores returned by [`connect_all`]. The backends share
 /// their underlying resource (DB pool or base directory) so a single
@@ -138,6 +147,10 @@ pub struct StoreBundle {
     /// JSON-file is canonical; SQL deployments fall back to in-memory
     /// until a SQL impl lands.
     pub channel_instances: Arc<dyn ChannelInstanceStore>,
+    /// Scheduled automation definitions. JSON-file is the canonical
+    /// persisted backend; SQL deployments use an in-memory store until
+    /// SQL migrations are added for this newer surface.
+    pub automations: Arc<dyn AutomationStore>,
 }
 
 /// Open both stores for a given database URL. The scheme selects the
@@ -172,6 +185,8 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 Arc::new(JsonFileChannelBindingStore::open(&path)?) as Arc<dyn ChannelBindingStore>;
             let channel_instances = Arc::new(JsonFileChannelInstanceStore::open(&path)?)
                 as Arc<dyn ChannelInstanceStore>;
+            let automations =
+                Arc::new(JsonFileAutomationStore::open(&path)?) as Arc<dyn AutomationStore>;
             Ok(StoreBundle {
                 conversations,
                 projects,
@@ -186,6 +201,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 tenants,
                 channel_bindings,
                 channel_instances,
+                automations,
             })
         }
         #[cfg(feature = "sqlite")]
@@ -211,6 +227,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 Arc::new(MemoryChannelBindingStore::new()) as Arc<dyn ChannelBindingStore>;
             let channel_instances =
                 Arc::new(MemoryChannelInstanceStore::new()) as Arc<dyn ChannelInstanceStore>;
+            let automations = Arc::new(MemoryAutomationStore::new()) as Arc<dyn AutomationStore>;
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -225,6 +242,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 tenants: Arc::new(tenants),
                 channel_bindings,
                 channel_instances,
+                automations,
             })
         }
         #[cfg(feature = "postgres")]
@@ -247,6 +265,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             // across SQL-deployment restarts until that lands.
             let channel_instances =
                 Arc::new(MemoryChannelInstanceStore::new()) as Arc<dyn ChannelInstanceStore>;
+            let automations = Arc::new(MemoryAutomationStore::new()) as Arc<dyn AutomationStore>;
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -261,6 +280,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 tenants,
                 channel_bindings,
                 channel_instances,
+                automations,
             })
         }
         #[cfg(feature = "mysql")]
@@ -283,6 +303,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
             // across SQL-deployment restarts until that lands.
             let channel_instances =
                 Arc::new(MemoryChannelInstanceStore::new()) as Arc<dyn ChannelInstanceStore>;
+            let automations = Arc::new(MemoryAutomationStore::new()) as Arc<dyn AutomationStore>;
             Ok(StoreBundle {
                 conversations: Arc::new(conv),
                 projects: Arc::new(proj),
@@ -297,6 +318,7 @@ pub async fn connect_all(url: &str) -> Result<StoreBundle, StoreError> {
                 tenants,
                 channel_bindings,
                 channel_instances,
+                automations,
             })
         }
         other => Err(StoreError::UnsupportedScheme(other.to_string())),
@@ -375,6 +397,106 @@ pub async fn connect_observability(url: &str) -> Result<Arc<dyn ObservabilitySto
     }
 }
 
+/// Like [`connect_observability`], but overrides the `runs/` retention
+/// cap. `max_runs == Some(n)` keeps the newest `n` run files (oldest
+/// pruned on append); `None` disables pruning (unbounded growth — the
+/// pre-retention behaviour). The composition root passes the value
+/// resolved from `JARVIS_OBSERVABILITY_MAX_RUNS`.
+pub async fn connect_observability_capped(
+    url: &str,
+    max_runs: Option<usize>,
+) -> Result<Arc<dyn ObservabilityStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileObservabilityStore::open(path)?.with_max_runs(max_runs))
+                as Arc<dyn ObservabilityStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
+/// Open the skill-usage telemetry store for a given URL. Phase 0 of
+/// [`docs/proposals/self-improving-agent.zh-CN.md`] ships the JSON-file
+/// backend; SQL backends will follow the same scheme selection pattern
+/// once their migrations land.
+pub async fn connect_skill_usage(url: &str) -> Result<Arc<dyn SkillUsageStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileSkillUsageStore::open(path)?) as Arc<dyn SkillUsageStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
+/// Like [`connect_skill_usage`], but overrides the `events/` retention
+/// cap. Telemetry fires on every skill `Listed`/`Viewed`/`Used`, so
+/// without a cap the directory grows without bound and every
+/// `list_events`/`report` read pays an O(N) full-directory scan.
+/// `max_events == Some(n)` keeps the newest `n` event files (oldest
+/// pruned on append); `None` disables pruning (the pre-retention
+/// behaviour). The composition root passes the value resolved from
+/// `JARVIS_LEARNING_MAX_EVENTS`.
+pub async fn connect_skill_usage_capped(
+    url: &str,
+    max_events: Option<usize>,
+) -> Result<Arc<dyn SkillUsageStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileSkillUsageStore::open(path)?.with_max_events(max_events))
+                as Arc<dyn SkillUsageStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
+/// Open the long-term Memory store for a given URL. Phase 1 of the
+/// self-improving-agent proposal ships the JSON-file backend; SQL
+/// backends follow the same scheme-selection convention as the rest
+/// of `harness-store`.
+pub async fn connect_memory(url: &str) -> Result<Arc<dyn MemoryStore>, StoreError> {
+    connect_memory_capped(url, Some(DEFAULT_MAX_MEMORY_ITEMS)).await
+}
+
+/// Like [`connect_memory`] but with an explicit retention cap. `None`
+/// disables pruning (unbounded growth); `Some(n)` keeps roughly the
+/// newest `n` rows (pinned rows are always kept). The composition root
+/// passes the operator-configured value (`JARVIS_MEMORY_MAX_ITEMS`).
+pub async fn connect_memory_capped(
+    url: &str,
+    max_items: Option<usize>,
+) -> Result<Arc<dyn MemoryStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileMemoryStore::open(path)?.with_max_items(max_items))
+                as Arc<dyn MemoryStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
+/// Open the skill-lifecycle store for a given URL. Phase 2 of the
+/// self-improving-agent proposal — JSON-file only for now.
+pub async fn connect_skill_lifecycle(
+    url: &str,
+) -> Result<Arc<dyn SkillLifecycleStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileSkillLifecycleStore::open(path)?) as Arc<dyn SkillLifecycleStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
 /// Open the eval result / baseline store for a given URL. Phase 1
 /// implements the JSON-file backend; SQL backends intentionally remain
 /// unsupported until their schema is added.
@@ -386,6 +508,22 @@ pub async fn connect_evals(url: &str) -> Result<Arc<dyn EvalStore>, StoreError> 
             Ok(Arc::new(JsonFileEvalStore::open(path)?) as Arc<dyn EvalStore>)
         }
         other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
+/// Open the declarative-workflow store for a given URL. The JSON-file
+/// backend is canonical; SQL deployments fall back to in-memory (so the
+/// feature is available everywhere, but workflows won't survive restarts
+/// under sqlite/postgres/mysql until a SQL impl lands) — the same posture
+/// the `automations` store takes for newer surfaces.
+pub async fn connect_workflows(url: &str) -> Result<Arc<dyn WorkflowStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileWorkflowStore::open(path)?) as Arc<dyn WorkflowStore>)
+        }
+        _ => Ok(Arc::new(MemoryWorkflowStore::new()) as Arc<dyn WorkflowStore>),
     }
 }
 

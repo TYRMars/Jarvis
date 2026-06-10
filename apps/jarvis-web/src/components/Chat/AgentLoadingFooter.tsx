@@ -8,6 +8,20 @@
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../../store/appStore";
+import { t } from "../../utils/i18n";
+
+// Status verbs cycled (~every 3s) while a turn is in flight, so the
+// footer reads as "alive" during silent stretches. These are i18n
+// keys resolved at render time so the active language wins. Cadence
+// matches the Claude Code reference: `Math.floor(elapsed / 3) % len`.
+const LOADING_VERB_KEYS = [
+  "loadingStatusThinking",
+  "loadingStatusAnalyzing",
+  "loadingStatusWorking",
+  "loadingStatusReasoning",
+  "loadingStatusComputing",
+  "loadingStatusProcessing",
+] as const;
 
 export function AgentLoadingFooter() {
   const inFlight = useAppStore((s) => s.inFlight);
@@ -38,24 +52,34 @@ export function AgentLoadingFooter() {
   const tokensIn = usage.completion + usage.reasoning;
   const tokensLabel = formatTokens(tokensIn);
 
+  // Rotate a status verb roughly every 3 seconds off the same 1s
+  // tick that drives the elapsed counter — no extra timer needed.
+  const verbLabel = t(LOADING_VERB_KEYS[Math.floor(elapsedSec / 3) % LOADING_VERB_KEYS.length]);
+
   return (
-    <div className="agent-loading" role="status" aria-live="polite" aria-label="Jarvis is thinking">
+    <div className="agent-loading" role="status" aria-live="polite" aria-label={t("chatMsgAJarvisThinking")}>
       <span className="agent-loading-dots" aria-hidden="true">
         <span />
         <span />
         <span />
       </span>
       <span className="agent-loading-text">
+        <span key={verbLabel} className="agent-loading-verb">{verbLabel}</span>
+        <span className="agent-loading-sep" aria-hidden="true">·</span>
         <span className="agent-loading-elapsed">{elapsedLabel}</span>
         {tokensIn > 0 ? (
           <>
             <span className="agent-loading-sep" aria-hidden="true">·</span>
             <span className="agent-loading-tokens">
               <span className="agent-loading-arrow" aria-hidden="true">↓</span>
-              {tokensLabel} tokens
+              {t("chatMsgATokens", tokensLabel)}
             </span>
           </>
         ) : null}
+      </span>
+      <span className="agent-loading-esc-hint">
+        <kbd className="agent-loading-kbd">ESC</kbd>
+        {t("loadingEscHint")}
       </span>
     </div>
   );

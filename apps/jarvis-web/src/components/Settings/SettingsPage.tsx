@@ -51,6 +51,8 @@ import {
 } from "./sections/SystemSection";
 import { PermissionsSection } from "./sections/PermissionsSection";
 import { ChannelsSection } from "./sections/ChannelsSection";
+import { MemorySection } from "./sections/MemorySection";
+import { WorkflowsSection } from "./sections/WorkflowsSection";
 import { ProjectsSettingsSection } from "./sections/ProjectsSettingsSection";
 import { LabelsSettingsSection } from "./sections/LabelsSettingsSection";
 import { SoulSection } from "./sections/SoulSection";
@@ -118,6 +120,11 @@ const NAV_GROUPS: NavGroup[] = [
         fallback: "Subagents",
       },
       {
+        id: "workflows",
+        labelKey: "settingsNavWorkflows",
+        fallback: "Workflows",
+      },
+      {
         id: "extensions",
         labelKey: "settingsNavExtensions",
         fallback: "Extensions",
@@ -128,6 +135,11 @@ const NAV_GROUPS: NavGroup[] = [
         id: "permissions",
         labelKey: "settingsNavPermissions",
         fallback: "Permissions",
+      },
+      {
+        id: "memory",
+        labelKey: "settingsNavMemory",
+        fallback: "Memory",
       },
       {
         id: "channels",
@@ -325,7 +337,7 @@ export function SettingsPage() {
 
   return (
     <div id="settings-page" className="settings-page">
-      <a className="skip-link" href="#settings-main">Skip to main content</a>
+      <a className="skip-link" href="#settings-main">{tx("setRootSkipToMain", "Skip to main content")}</a>
       <header className="settings-header">
         <Link to="/" className="settings-back" aria-label={tx("settingsBack", "Back to chat")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -536,6 +548,8 @@ function renderSection(parsed: ParsedHash, setTab: (tab: string) => void) {
       return <ToolsSection />;
     case "subagents":
       return <AgentsSection />;
+    case "workflows":
+      return <WorkflowsSection />;
     case "extensions":
       return (
         <ExtensionsSection
@@ -545,6 +559,8 @@ function renderSection(parsed: ParsedHash, setTab: (tab: string) => void) {
       );
     case "permissions":
       return <PermissionsSection />;
+    case "memory":
+      return <MemorySection />;
     case "channels":
       return <ChannelsSection />;
     case "projects":

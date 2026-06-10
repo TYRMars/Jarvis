@@ -16,6 +16,8 @@ import { ModeChangedToast } from "./Approvals/ModeChangedToast";
 import { PlanModeBanner } from "./Approvals/PlanModeBanner";
 import { PlanProposedCard } from "./Approvals/PlanProposedCard";
 import { ModelMenu } from "./ModelMenu/ModelMenu";
+import { PermissionModeChip } from "./Composer/PermissionModeChip";
+import { EffortLevelSelector } from "./Composer/EffortLevelSelector";
 import { UsageBadge } from "./UsageBadge";
 import { ComposerShoulder } from "./ComposerShoulder";
 import { ComposerProjectRail } from "./Composer/ComposerProjectRail";
@@ -24,6 +26,7 @@ import { BackgroundTasksButton } from "./BackgroundTasks/BackgroundTasksButton";
 import { pickedRouting } from "../services/socket";
 import { slashCommands } from "../services/slash_commands";
 import { useAppStore } from "../store/appStore";
+import { t } from "../utils/i18n";
 
 export function AppChatPane() {
   const pendingAsk = useAppStore((s) => {
@@ -93,7 +96,9 @@ export function AppChatPane() {
               {inSession ? (
                 <div className="composer-actions">
                   <ModeBadge />
-                  <ComposerToolButton label="Open docs" onClick={() => { window.location.href = "/docs"; }}>
+                  <PermissionModeChip />
+                  <EffortLevelSelector />
+                  <ComposerToolButton label={t("chatCoreOpenDocs")} onClick={() => { window.location.href = "/docs"; }}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <path d="M8 6h8" />
                       <path d="M8 10h8" />
@@ -127,7 +132,7 @@ function CommandSeedButton({ compact = false }: { compact?: boolean }) {
   const setValue = useAppStore((s) => s.setComposerValue);
   return (
     <ComposerToolButton
-      label={compact ? "More composer actions" : "Add command"}
+      label={compact ? t("chatCoreMoreComposerActions") : t("chatCoreAddCommand")}
       onClick={() => {
         setValue(value.trim().startsWith("/") ? value : "/");
         requestAnimationFrame(() => document.getElementById("input")?.focus());
@@ -154,12 +159,12 @@ function VoiceInputButton() {
 
   return (
     <ComposerToolButton
-      label="Voice input"
+      label={t("chatCoreVoiceInput")}
       onClick={() => {
         const SpeechRecognition =
           (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (!SpeechRecognition) {
-          showBanner("Voice input is not supported by this browser.");
+          showBanner(t("chatCoreVoiceUnsupported"));
           return;
         }
         const recognition = new SpeechRecognition();
@@ -173,7 +178,7 @@ function VoiceInputButton() {
           setValue(value + spacer + transcript);
           requestAnimationFrame(() => document.getElementById("input")?.focus());
         };
-        recognition.onerror = () => showBanner("Voice input failed.");
+        recognition.onerror = () => showBanner(t("chatCoreVoiceFailed"));
         recognition.start();
       }}
     >

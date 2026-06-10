@@ -194,7 +194,7 @@ export function ProjectBoard({
   }, [orphans]);
 
   return (
-    <section className="project-board" aria-label={`${project.name} board`}>
+    <section className="project-board" aria-label={t("projBoardAria", project.name)}>
       <div className="project-board-head">
         {/* The project name is already in the page header (the
             ProjectsPage h1), so we don't repeat it here — duplicate
@@ -941,7 +941,7 @@ function TriageDrawer({
   };
 
   return (
-    <section className="triage-drawer" aria-label="Triage queue">
+    <section className="triage-drawer" aria-label={t("projBoardTriageQueueAria")}>
       <header className="triage-drawer-head">
         <span className="triage-drawer-title tabular-nums" aria-live="polite">
           {t("triageHeader", candidates.length)}

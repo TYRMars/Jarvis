@@ -5,229 +5,136 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Jarvis is a Rust agent runtime organised as a Cargo **workspace** around a small, runtime-
-independent harness. The repository was rewritten from a TypeScript Egg.js + tegg
-implementation; do not assume any prior TS conventions or files apply — they were deleted
-in the rewrite.
+independent harness. The repo was rewritten from a TypeScript Egg.js + tegg implementation;
+no prior TS conventions or files apply — they were deleted in the rewrite.
 
 The single design rule: **`harness-core` knows nothing about HTTP, providers, storage, or
-MCP.** It only owns the agent loop and the traits everything else implements. Sibling
-crates plug in.
+MCP.** It owns only the agent loop and the traits everything else implements. Sibling crates
+plug in. Library crates must never read `std::env` — `apps/jarvis/src/main.rs` is the sole
+composition root.
 
 ## Workspace layout
 
 ```
 apps/
-  jarvis/          # HTTP server binary (composition root) — `serve` /
-                   # `mcp-serve` / `init` / `login` / `status` / `workspace`
-                   # subcommands.
-  jarvis-cli/      # Terminal coding-agent. Drives `harness-core::Agent`
-                   # in-process; no HTTP server. Reuses harness-llm /
-                   # harness-tools verbatim; provider construction is
-                   # env-only (no auth-store / config file). Mirrors the
-                   # WS handler's three-channel select pattern (stdin /
-                   # pending approvals / agent events) over stdout. Both
-                   # an interactive REPL and a `--no-interactive` pipe
-                   # mode that runs one turn under `AlwaysDeny`.
-  jarvis-web/      # React 19 + react-router SPA, built by Vite into `dist/`
-                   # which `harness-server` folds into the binary via
-                   # `include_dir!`. Served at server root `/`; routes
-                   # today are `/` (chat) and `/settings` (full
-                   # settings page).
+  jarvis/          # HTTP server binary + composition root. Subcommands:
+                   # serve / mcp-serve / init / login / status / workspace.
+  jarvis-cli/      # Terminal coding-agent. Drives harness-core::Agent in-process
+                   # (no HTTP); provider construction is env-only. REPL + a
+                   # --no-interactive pipe mode (one turn under AlwaysDeny).
+  jarvis-web/      # React 19 + react-router SPA, built by Vite into dist/ and
+                   # baked into harness-server via include_dir!. Served at /.
+  jarvis-desktop/  # Tauri shell. Excluded from default CI (needs WebKitGTK).
 
-crates/
-  harness-channel/ # Channel value types (OutboundMessage, SendOutcome,
-                   # ChannelInstance, ChannelBinding, inbound primitives) +
-                   # ChannelDispatcher trait + ChannelInstanceStore /
-                   # ChannelBindingStore traits. Shared vocabulary between
-                   # harness-tools (the channel.send tool), harness-store
-                   # (persistence impls), and harness-server (adapter
-                   # registry + HTTP routes). harness-core does NOT
-                   # depend on it.
-  harness-project/ # Project domain — Project / Requirement /
-                   # RequirementRun / Activity / Comment / Label /
-                   # DocProject / DocDraft / ProjectMemory value types +
-                   # their 8 *Store traits. The "Work" feature
-                   # (kanban + audit timeline + comments + labels).
-                   # Extracted from harness-core so the latter stays
-                   # agent-loop-only. Depends on harness-core for the
-                   # single shared LLM type (`Usage` on RequirementRun).
-                   # Used by harness-tools, harness-store, harness-server.
-  harness-core/    # Agent, Conversation, Message, Tool, LlmProvider, Memory, Approver traits + run loop
-  harness-llm/     # LlmProvider impls: OpenAI, Anthropic, Google, Codex (ChatGPT OAuth)
-  harness-mcp/     # MCP bridge (rmcp): McpClient adapts remote tools into Tool;
-                   # McpServer exposes a local ToolRegistry over stdio
-  harness-memory/  # Memory impls: SlidingWindowMemory + SummarizingMemory
-  harness-observability/ # Local quality / telemetry value types and
-                   # persistence traits — Eval* (suite runs / grader
-                   # verdicts / baselines) + Observed* (run / span
-                   # facts / metrics / dashboards) + ObservabilityStore
-                   # / EvalStore. Extracted from harness-core to
-                   # decouple "is the agent doing well?" concerns
-                   # from the agent loop. True leaf — no harness-*
-                   # deps.
-  harness-server/  # Axum router + `serve(addr, AppState)` helper.
-                   # Owns the ChannelAdapter trait + per-kind impls
-                   # (wecom_webhook / feishu_bot / dingtalk_bot /
-                   # wecom_app) and the inbound callback routes.
-  harness-store/   # ConversationStore / ProjectStore / TodoStore;
-                   # JSON-file + in-memory by default, SQLite /
-                   # Postgres / MySQL behind opt-in cargo features.
-                   # Also implements the channel store traits from
-                   # harness-channel.
-  harness-tools/   # Built-in `Tool` impls: echo, time.now, http.fetch,
-                   # fs.{read,list,write,edit}, code.grep, shell.exec,
-                   # channel.send (talks to harness-channel::ChannelDispatcher)
+crates/  (libraries; deps are workspace-only: `foo.workspace = true`)
+  harness-core/        # Agent, Conversation, Message, Tool, LlmProvider, Memory,
+                       # Approver traits + the run loop. The leaf everything builds on.
+  harness-llm/         # LlmProvider impls: OpenAI, Anthropic, Google, Responses
+                       # (public OpenAI + Codex ChatGPT-OAuth). Kimi/Ollama reuse
+                       # the OpenAI wire format via base-URL swaps.
+  harness-router/      # Smart routing — RoutingProvider (an LlmProvider) classifies
+                       # each request's difficulty into a Tier via a Classifier and
+                       # rewrites the model before delegating. P0: HeuristicClassifier
+                       # (no LLM). Wired in apps/jarvis as the primary provider entry
+                       # when JARVIS_ROUTER_ENABLED. Depends on core only.
+  harness-mcp/         # MCP bridge (rmcp): McpClient adapts remote tools into Tool;
+                       # McpServer exposes a local ToolRegistry over stdio.
+  harness-memory/      # Memory impls: SlidingWindowMemory + SummarizingMemory.
+  harness-tools/       # Built-in Tool impls (fs.*, shell.exec, git.*, code.grep,
+                       # http.fetch, channel.send, memory.*, requirement.*, …).
+  harness-channel/     # Channel value types + ChannelDispatcher / *Store traits.
+                       # Shared vocabulary for tools / store / server. core does NOT depend on it.
+  harness-project/     # Project domain VALUE TYPES + *Store traits — Project /
+                       # Requirement / RequirementRun / VerificationPlan / Activity /
+                       # Comment / Label / DocProject / DocDraft / ProjectMemory. The
+                       # "Work" feature (kanban + audit timeline). Depends on core (Usage type).
+  harness-requirement/ # Requirement EXECUTION orchestration — context-manifest builders,
+                       # roadmap import, RequirementRunEvent streams. Re-exports project
+                       # value types. Depends on core + harness-project.
+  harness-observability/ # Eval* + Observed* value types + ObservabilityStore / EvalStore
+                       # traits ("is the agent doing well?"). True leaf, no harness-* deps.
+  harness-store/       # Concrete store backends (ConversationStore / ProjectStore /
+                       # TodoStore / channel / permission / memory). JSON-file + in-memory
+                       # default; SQLite / Postgres / MySQL behind opt-in features.
+  harness-server/      # Axum router + serve(addr, AppState). Owns ChannelAdapter trait
+                       # + per-kind impls and every /v1 route module.
+  harness-skill/       # Anthropic-style Skills catalog — SKILL.md (markdown + YAML
+                       # frontmatter) discovery, activation selectors. Depends on core only.
+  harness-subagents/   # SubAgent trait + registry for delegated agents (internal loop
+                       # or SDK sidecar) invoked via subagent.<name> tools. Depends on core.
+  harness-plugin/      # Plugin packaging — plugin.json manifests bundling skills + MCP
+                       # servers, install/uninstall via PluginManager. Depends on core +
+                       # harness-channel + harness-mcp + harness-skill.
+  harness-learning/    # Self-improving-agent surfaces: SkillUsageEvent/Store telemetry +
+                       # MemoryItem/Store long-term memory, with injection/leak guards.
+                       # Depends on core only.
+  harness-automation/  # AutomationTask + ScheduleSpec (one-time / interval) + AutomationStore
+                       # for scheduled work. Depends on core only.
+  harness-cloud/       # Edge/cloud runtime scaffold — EdgeNode, EdgeCommand, TaskMessage,
+                       # EdgeTransport (+ WebSocket/loopback impls). Depends on core only.
+  harness-workflow/    # Declarative multi-step agent Workflows — WorkflowDefinition /
+                       # WorkflowStep (Agent/Pipeline/Phase/Parallel) / WorkflowRun +
+                       # WorkflowStore. Bindable to a Requirement; executed by
+                       # harness-server's workflow_runtime. Depends on core only.
 ```
 
-`Cargo.toml` at the root is a workspace manifest with shared `[workspace.dependencies]`;
-member crates always reference deps as `foo.workspace = true`. New crates go under
-`crates/` (libraries) or `apps/` (binaries) and must be added to `members` in the root
-`Cargo.toml`.
+New crates go under `crates/` (libraries) or `apps/` (binaries) and must be added to
+`members` in the root `Cargo.toml`, which also holds the shared `[workspace.dependencies]`.
 
 ## Commands
 
 ```bash
-cargo check --workspace --exclude jarvis-desktop
-cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings   # CI gate
-cargo test --workspace --exclude jarvis-desktop
-cargo test -p harness-core message::                                             # filter by path
-cargo run -p jarvis                                                              # needs OPENAI_API_KEY
+make check            # cargo check  --workspace --exclude jarvis-desktop
+make lint             # cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings  (CI gate)
+make test             # cargo test   --workspace --exclude jarvis-desktop
+make ts-codegen       # regenerate apps/jarvis-web/src/types/generated/ from ts_rs types
+cargo test -p harness-core message::          # filter by path
+cargo run -p jarvis                           # needs OPENAI_API_KEY
 cargo build --release -p jarvis
 ```
 
-`--exclude jarvis-desktop` matches Linux CI: the Tauri crate needs
-WebKitGTK + GObject system libs (`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`,
-`librsvg2-dev`) that aren't installed on a stock dev box. Drop the flag
-once you've installed the GTK toolchain locally, or use the `Makefile`
-targets (`make check` / `make lint` / `make test`) which apply the
-exclusion automatically — override with `WORKSPACE_EXCLUDE=` on a fully
-provisioned machine.
+`--exclude jarvis-desktop` matches Linux CI (the Tauri crate needs WebKitGTK + GObject libs
+not on a stock box). The `make` targets apply it automatically; override with
+`WORKSPACE_EXCLUDE=` on a fully provisioned machine. **Clippy with `-D warnings` is the gate**
+— keep the tree clean against it.
 
-Env vars consumed by the `jarvis` binary:
-`JARVIS_PROVIDER` (`openai` (default), `openai-responses`, `anthropic`, `google`, `codex`, `kimi`, or `ollama`),
-`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` /
-`KIMI_API_KEY` (required for the matching provider unless
-`--mcp-serve` is passed; `GEMINI_API_KEY` is also accepted as an
-alias for Google; `MOONSHOT_API_KEY` aliases `KIMI_API_KEY`),
-`CODEX_HOME` (default `~/.codex`; `provider=codex` reads
-`auth.json` from here), `CODEX_ACCESS_TOKEN` (dev-only escape hatch:
-when set, used in place of `auth.json` with no refresh capability;
-optional `CODEX_ACCOUNT_ID` for the `ChatGPT-Account-ID` header),
-`JARVIS_MODEL` (per-provider default: `gpt-4o-mini` /
-`claude-3-5-sonnet-latest` / `gemini-1.5-flash` /
-`gpt-5.4-mini` / `kimi-k2-thinking`),
-`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` / `GOOGLE_BASE_URL` /
-`CODEX_BASE_URL` / `KIMI_BASE_URL` (Kimi defaults to
-`https://api.moonshot.cn/v1` — set to `https://api.moonshot.ai/v1`
-for the international tenant),
-`OLLAMA_BASE_URL` (Ollama defaults to `http://localhost:11434/v1`,
-the local-server endpoint; only point this somewhere else for a
-hosted Ollama proxy), `OLLAMA_API_KEY` (optional — the local
-server ignores it; only some hosted proxies need one),
-`ANTHROPIC_VERSION` (defaults to `2023-06-01`),
-`CODEX_ORIGINATOR` (defaults to `jarvis`),
-`CODEX_RESPONSES_PATH` (defaults to `/codex/responses`),
-`CODEX_REASONING_SUMMARY` / `OPENAI_REASONING_SUMMARY`
-(`auto` / `concise` / `detailed` — opts the request into the
-reasoning block; required for reasoning models),
-`CODEX_INCLUDE_ENCRYPTED_REASONING` /
-`OPENAI_INCLUDE_ENCRYPTED_REASONING` (any value enables it),
-`CODEX_SERVICE_TIER` / `OPENAI_SERVICE_TIER` (`auto` /
-`priority` / `flex`),
-`CODEX_REFRESH_TOKEN_URL_OVERRIDE` (test-only — points
-`auth.openai.com/oauth/token` somewhere else),
-`JARVIS_ADDR` (default `0.0.0.0:7001`),
-`JARVIS_FS_ROOT` (default `.`, sandboxes `fs.*`, `git.*`,
-`code.grep`, `workspace.context` tools and the `shell.exec` cwd; the
-`--workspace <path>` CLI flag overrides this and is the recommended
-form for one-shot invocations),
-`JARVIS_ENABLE_FS_WRITE` (any value opts into `fs.write`),
-`JARVIS_ENABLE_FS_EDIT` (any value opts into `fs.edit`),
-`JARVIS_ENABLE_FS_PATCH` (any value opts into `fs.patch` —
-multi-hunk unified-diff apply, atomic per call, approval-gated),
-`JARVIS_ENABLE_SHELL_EXEC` (any value opts into `shell.exec`),
-`JARVIS_DISABLE_GIT_READ` (any value drops the read-only `git.*`
-toolset, which is otherwise on by default),
-`JARVIS_NO_PROJECT_CONTEXT` (any value disables auto-loading
-`AGENTS.md` / `CLAUDE.md` / `AGENT.md` from the workspace into the
-system prompt; defaults to loading them, capped at 8 KiB),
-`JARVIS_PROJECT_CONTEXT_BYTES` (override the default 8 KiB cap;
-truncation logs a startup WARN naming this env var so operators with
-larger instruction files can opt back to a higher cap explicitly),
-`JARVIS_SHELL_TIMEOUT_MS` (default `30000`, per-call default for `shell.exec`),
-`JARVIS_MCP_SERVERS` (comma-separated `prefix=command args...` list of
-external MCP servers to spawn and adapt into Tools),
-`JARVIS_DB_URL` (optional; opens a `ConversationStore` +
-`ProjectStore` + `TodoStore` at startup. Defaults to
-`json:///<XDG_DATA_HOME or ~/.local/share>/jarvis/conversations`
-when neither this env nor `[persistence].url` is set, so out-of-the-
-box deployments are persistent without any config. Scheme picks
-backend: `json:` (default, always available) /
-`sqlite:` / `postgres://` / `mysql://` (the SQL backends are
-opt-in cargo features — build with
-`cargo build -p jarvis --features sqlite`),
-`JARVIS_DISABLE_TODOS` (any value disables the persistent project
-TODO board even when `JARVIS_DB_URL` is set; `todo.*` tools stay
-unregistered and `/v1/todos*` returns 503),
-`JARVIS_MEMORY_TOKENS` (optional; when set, installs a memory backend
-with that estimated-token budget),
-`JARVIS_MEMORY_MODE` (optional, `window` (default) or `summary`),
-`JARVIS_MEMORY_MODEL` (optional; model used by `summary` mode, defaults
-to `JARVIS_MODEL`),
-`JARVIS_APPROVAL_MODE` (**deprecated** — kept for back-compat only,
-the binary logs a WARN at startup when set. New deployments should
-use `JARVIS_PERMISSION_MODE` (`ask` / `accept-edits` / `plan` /
-`auto` / `bypass`) which drives the same approval gate plus the
-five-mode permission engine from `permission-modes.md`),
-`JARVIS_WORK_MODE` (optional, `off` (default) or `auto`; when
-`auto`, `harness-server::auto_mode` spawns a background scheduler
-that picks Approved Requirements with an assignee + all
-`depends_on` done, mints a fresh-session run, and auto-runs the
-per-Requirement `verification_plan` after each agent loop. Off
-unless explicitly opted in),
-`JARVIS_WORK_TICK_SECONDS` (default `30`),
-`JARVIS_WORK_MAX_UNITS_PER_TICK` (default `1` — per-tick burst
-budget; how many candidates the picker may spawn-task in a single
-tick before waiting for the next interval),
-`JARVIS_WORK_MAX_CONCURRENT` (default `2` — true global concurrency
-cap. Each spawned drive task acquires a permit from the
-auto-mode runtime's `Semaphore` before invoking the LLM; surplus
-spawns wait in the semaphore's FIFO queue rather than racing for
-rate-limit tokens. Independent from the per-tick burst —
-`max_units_per_tick=10 + max_concurrent=2` picks 10 per tick but
-only 2 ever run in parallel. WORKFLOW.md alias:
-`agent.max_concurrent_agents` (was misnamed in v1.0 to mean
-per-tick; v1.1 routes it to the real concurrency cap)),
-`JARVIS_WORK_MAX_RETRIES` (default `1`),
-`JARVIS_WORK_RUN_TIMEOUT_MS` (default `600000` — 10 min wall-clock
-budget per agent loop pickup),
-`JARVIS_REVIEWER_AUTO_ACCEPT` (any non-empty / non-`0` / non-`false`
-value opts in to reviewer-subagent dispatch on Review → Done under
-`AcceptancePolicy::Subagent`; default off — see "Reviewer
-auto-accept" below),
-`JARVIS_SUBAGENT_CLAUDE_CODE_BIN` (default `claude` — path / name
-of the Claude Code CLI used by `subagent.claude_code`),
-`JARVIS_SUBAGENT_CLAUDE_CODE_MODEL` (default unset — forwarded as
-`--model <id>`; when absent the CLI picks whatever
-`claude /model` configured),
-`JARVIS_SUBAGENT_CLAUDE_CODE_ARGS` (default unset — whitespace-split
-extra args forwarded verbatim to the `claude` binary, inserted
-after `--model` and before the task positional. Use for
-`--bare` in keychain-less environments, etc.),
-`JARVIS_SUBAGENT_CODEX_MODEL` / `JARVIS_SUBAGENT_READER_MODEL` /
-`JARVIS_SUBAGENT_REVIEWER_MODEL` (each defaults to unset —
-overrides the model for the named subagent's internal agent loop),
-`JARVIS_SUBAGENT_MAX_CONCURRENCY` (default `3` — parallel-dispatch
-cap for `subagent.batch`),
-`JARVIS_WORKTREE_MODE` (`off` / `per_run` / `per_unit`; auto mode
-upgrades from `off` to `per_run` automatically so the scheduler
-never mutates the main checkout),
-`JARVIS_WORKTREE_ROOT` (default `.jarvis/worktrees` under the
-workspace),
-`RUST_LOG`.
+### Environment variables (consumed only by `apps/jarvis`)
 
-Passing `--mcp-serve` runs the binary as an MCP server on stdio,
-exposing the local ToolRegistry — no LLM/HTTP setup is performed.
+**Provider & auth** (`JARVIS_PROVIDER` ∈ `openai` (default) / `openai-responses` / `anthropic` / `google` / `codex` / `kimi` / `ollama`):
+
+| var | notes |
+|-----|-------|
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `KIMI_API_KEY` | required for the matching provider (unless `--mcp-serve`). Aliases: `GEMINI_API_KEY`→Google, `MOONSHOT_API_KEY`→Kimi |
+| `JARVIS_MODEL` | per-provider default: `gpt-4o-mini` / `claude-3-5-sonnet-latest` / `gemini-1.5-flash` / `gpt-5.4-mini` / `kimi-k2-thinking` |
+| `*_BASE_URL` | `OPENAI_` / `ANTHROPIC_` / `GOOGLE_` / `CODEX_` / `KIMI_` (Kimi default `…moonshot.cn/v1`; `.ai/v1` for intl) / `OLLAMA_` (default `localhost:11434/v1`) |
+| `OLLAMA_API_KEY` | optional (local server ignores it) |
+| `ANTHROPIC_VERSION` | default `2023-06-01` |
+| `CODEX_HOME` | default `~/.codex`; `provider=codex` reads `auth.json` here |
+| `CODEX_ACCESS_TOKEN` / `CODEX_ACCOUNT_ID` | dev escape hatch — static token, no refresh |
+| `CODEX_ORIGINATOR` (`jarvis`) / `CODEX_RESPONSES_PATH` (`/codex/responses`) / `CODEX_REFRESH_TOKEN_URL_OVERRIDE` (test-only) | |
+
+**Responses/reasoning knobs:** `CODEX_REASONING_SUMMARY` / `OPENAI_REASONING_SUMMARY` (`auto`/`concise`/`detailed` — required for reasoning models), `CODEX_INCLUDE_ENCRYPTED_REASONING` / `OPENAI_INCLUDE_ENCRYPTED_REASONING` (any value enables), `CODEX_SERVICE_TIER` / `OPENAI_SERVICE_TIER` (`auto`/`priority`/`flex`).
+
+**Server / workspace:** `JARVIS_ADDR` (`0.0.0.0:7001`), `JARVIS_FS_ROOT` (`.`, sandboxes `fs.*`/`git.*`/`code.grep`/`workspace.context` + `shell.exec` cwd; `--workspace <path>` CLI flag overrides), `JARVIS_NO_PROJECT_CONTEXT` (disable auto-loading `AGENTS.md`/`CLAUDE.md`/`AGENT.md`), `JARVIS_PROJECT_CONTEXT_BYTES` (cap, default 8 KiB), `RUST_LOG`.
+
+**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`).
+
+**Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`). `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
+
+**Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in cargo features), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`), `JARVIS_MEMORY_MAX_ITEMS` (long-term Memory store retention cap; default `5000`, `0`/`off`/`unlimited` disables pruning; pinned rows are never pruned).
+
+**Auto/Work mode** (`JARVIS_WORK_MODE` = `off` (default) / `auto`): `JARVIS_WORK_TICK_SECONDS` (`30`), `JARVIS_WORK_MAX_UNITS_PER_TICK` (`1` — per-tick burst), `JARVIS_WORK_MAX_CONCURRENT` (`2` — true global concurrency cap via a Semaphore; independent of the burst budget), `JARVIS_WORK_MAX_RETRIES` (`1`), `JARVIS_WORK_RUN_TIMEOUT_MS` (`600000`), `JARVIS_REVIEWER_AUTO_ACCEPT` (opt into reviewer-subagent dispatch on Review→Done under `Subagent` policy; default off).
+
+**Subagents:** `JARVIS_SUBAGENT_CLAUDE_CODE_BIN` (`claude`), `_CLAUDE_CODE_MODEL`, `_CLAUDE_CODE_ARGS` (verbatim extra args), `_CODEX_MODEL` / `_READER_MODEL` / `_REVIEWER_MODEL` (per-subagent model override), `JARVIS_SUBAGENT_MAX_CONCURRENCY` (`3` — `subagent.batch` fan-out cap).
+
+**Smart routing** (`harness-router`, opt-in; off = identical to today): `JARVIS_ROUTER_ENABLED` (truthy wraps the primary provider entry in a `RoutingProvider`), `JARVIS_ROUTER_TIER_{SIMPLE,MEDIUM,COMPLEX,REASONING}` (each `<provider>/<model>`; any unset tier falls through to the primary `(provider, model)`). Requests explicitly targeting a *different* provider bypass routing. Distinct from the operator-static `JARVIS_ROUTE_*` slots (`harness-server::ModelRoutePolicy`) consumed by subagents/summariser.
+
+**Worktrees:** `JARVIS_WORKTREE_MODE` (`off`/`per_run`/`per_unit`; auto mode upgrades `off`→`per_run` so the scheduler never mutates the main checkout), `JARVIS_WORKTREE_ROOT` (`.jarvis/worktrees`).
+
+**Workflows** (manual `POST /v1/workflows/:id/run` governance): `JARVIS_WORKFLOW_MAX_CONCURRENT` (global cap on concurrent manually-dispatched runs via a `WorkflowRunGate` semaphore; defaults to `JARVIS_WORK_MAX_CONCURRENT` — over-cap POSTs get `429`), `JARVIS_WORKFLOW_REAP_SECONDS` (`60` — stale-run reaper cadence; flips orphaned `Running`/`Pending` rows left by a crash to `Cancelled`, skipping runs still alive in-process), `JARVIS_WORKFLOW_RUN_TIMEOUT_MS` (reaper budget; defaults to `JARVIS_WORK_RUN_TIMEOUT_MS`, ×3 safety multiplier for `Running`). Cancel an in-flight run via `POST /v1/workflow-runs/:run_id/cancel`.
+
+Passing `--mcp-serve` runs the binary as an MCP server on stdio exposing the local
+ToolRegistry — no LLM/HTTP setup.
 
 ## Architecture
 
@@ -236,838 +143,327 @@ exposing the local ToolRegistry — no LLM/HTTP setup is performed.
 Two entry points, same loop:
 
 - `Agent::run(&mut Conversation) -> Result<RunOutcome>` — blocking. Calls
-  `LlmProvider::complete`, appends the assistant message, dispatches tool calls,
-  loops until a non-`ToolCalls` finish reason or `max_iterations`.
-- `Agent::run_stream(self: Arc<Self>, Conversation) -> AgentStream` — streaming.
-  Calls `LlmProvider::complete_stream`, forwards `ContentDelta`s as
-  `AgentEvent::Delta`, emits `ToolStart` / `ToolEnd` around each invocation, and
-  finishes with exactly one `AgentEvent::Done` (carrying the final `Conversation`)
-  or `AgentEvent::Error`. The streaming version takes the conversation by value
-  because it lives inside an `async_stream!` block; consumers rebuild state from
-  the event stream.
+  `LlmProvider::complete`, appends the assistant message, dispatches tool calls, loops until
+  a non-`ToolCalls` finish reason or `max_iterations`.
+- `Agent::run_stream(self: Arc<Self>, Conversation) -> AgentStream` — streaming. Forwards
+  `ContentDelta`s as `AgentEvent::Delta`, wraps each call in `ToolStart`/`ToolEnd`, finishes
+  with exactly one `Done` (carrying the final `Conversation`) or `Error`. Takes the
+  conversation by value (lives in an `async_stream!` block); consumers rebuild state from events.
 
-Before the first LLM call, the configured `system_prompt` is prepended to the
-conversation iff it has no system message already. Tool errors are **caught and
-surfaced as text** (`format!("tool error: {e}")`) on both paths so the model can
-recover — preserve that when editing `agent.rs`.
+Before the first LLM call the configured `system_prompt` is prepended iff there's no system
+message already. Tool errors are **caught and surfaced as text** (`format!("tool error: {e}")`)
+on both paths so the model can recover — preserve that when editing `agent.rs`.
 
-### Message model (`message.rs`)
+**Message model** (`message.rs`): `Message` is an externally-tagged enum (`role` discriminator)
+shaped like the OpenAI chat-completions wire format so providers map both ways losslessly. Tool
+arguments are stored as parsed `serde_json::Value`; the OpenAI provider re-serialises them to
+the JSON-string form OpenAI expects.
 
-`Message` is an externally-tagged enum (`role` discriminator) deliberately shaped like
-the OpenAI chat-completions wire format so providers can map both directions losslessly.
-Tool arguments are stored as `serde_json::Value` (already parsed); the OpenAI provider
-serialises them back to the JSON-string form OpenAI expects in `OaFunctionCallOut`.
-
-### Tools (`tool.rs`)
+### Tools (`tool.rs` + `harness-tools`)
 
 ```rust
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn parameters(&self) -> serde_json::Value; // JSON schema
+    fn parameters(&self) -> serde_json::Value;          // JSON schema (return an object schema)
     async fn invoke(&self, args: Value) -> Result<String, BoxError>;
+    fn requires_approval(&self) -> bool { false }
 }
 ```
 
-`BoxError` is re-exported from `harness-core` so tool implementors don't need `anyhow`.
-`ToolRegistry` is a thin `HashMap<String, Arc<dyn Tool>>` and is the only thing the agent
-loop talks to — `register` inserts by `Tool::name()`, so two tools with the same name
-silently overwrite each other.
+`BoxError` is re-exported from `harness-core`. `ToolRegistry` is a thin
+`HashMap<String, Arc<dyn Tool>>`; `register` keys by `Tool::name()`, so **same-named tools
+silently overwrite** — keep names namespaced (`<group>.<verb>`).
 
-### Built-in tools (`harness-tools`)
+`register_builtins(&mut ToolRegistry, BuiltinsConfig)` is the one-shot entry point; individual
+tools are also pub for selective registration. When adding a tool: put it in the right module
+under `crates/harness-tools/src/`, export from `lib.rs`, add to `register_builtins` if on by
+default. **Anything that writes to disk or runs code stays opt-in and approval-gated** (follow
+the `fs.write` / `shell.exec` precedent).
 
-`register_builtins(&mut ToolRegistry, BuiltinsConfig)` is the one-shot entry point the
-binary uses. The individual tools are also pub so callers can register selectively:
+**Always-on, read-only:** `echo`, `time.now`, `http.fetch` (GET/POST, body truncated to
+`http_max_bytes`≈256 KiB), `code.grep` (regex over sandbox, `.gitignore`-aware via the `ignore`
+crate, `path`/`glob` narrowers, `max_results` + 64 KiB budget), `git.{status,diff,log,show}`
+(read-only over host `git -C <root>`, typed per-subcommand schemas, arg validators reject
+`-`-leading/null/newline; off via `JARVIS_DISABLE_GIT_READ`), `workspace.context` (compact JSON
+workspace snapshot — the intended first call), `project.checks` (manifest scanner → suggested
+commands, executes nothing), `plan.update` (pushes the full plan snapshot — replace, not patch —
+via the `harness_core::plan` task-local channel → `AgentEvent::PlanUpdate`), `triage.scan_candidates`
+(surfaces `TODO/FIXME/XXX/HACK` markers as Requirement candidates without writing), `ask.text`,
+`exit_plan`.
 
-- `echo` — returns its `text` arg; useful for smoke-testing the tool loop.
-- `time.now` — `{unix, iso}` UTC.
-- `http.fetch` — GET/POST with headers/body, response truncated to `http_max_bytes`
-  (default 256 KiB). Returns a `HTTP <status>\n<headers>\n\n<body>` string.
-- `code.grep` — regex search across the sandbox root. Walks via the
-  `ignore` crate so `.gitignore` / `.ignore` / hidden / VCS dirs are
-  skipped automatically; binary or non-UTF-8 files are skipped silently.
-  Optional `path` (relative subdir, sandboxed) and `glob` (e.g. `*.rs`)
-  narrow the scan. Returns `path:line: snippet` triples capped by
-  `max_results` and a 64 KiB byte budget; lines longer than 240 chars
-  are truncated. Always on (read-only).
-- `plan.update` — push the agent's working plan into the event
-  stream. Input is `{items: [{id, title, status, note?}]}`; status ∈
-  `{pending, in_progress, completed, cancelled}`. Each call **replaces
-  the whole snapshot** (no diffing on the wire). Emits via the
-  `harness_core::plan` task-local channel; the agent loop relays each
-  snapshot as `AgentEvent::PlanUpdate { items }`. Always-on, no
-  approval — the side effect is purely a typed event, not a
-  filesystem / process write. Outside an agent loop the emit is a
-  no-op (so the tool's tests can run without standing up the harness).
-- `project.checks` — read-only manifest scanner. Returns
-  `{suggestions: [{manifest, kind, command, why}]}` with conservative
-  recommendations per ecosystem (`Cargo.toml` →
-  `cargo check / clippy / test`; `package.json` →
-  `npm test / lint / build`; `pyproject.toml` → `pytest / ruff check`;
-  `go.mod` → `go test / vet / build ./...`). **Suggests, does not
-  execute** — the model still has to call `shell.exec` (which is
-  approval-gated) to actually run a command. Always-on.
-- `workspace.context` — compact JSON snapshot of the workspace:
-  absolute root, VCS state (`branch` / `head` / `dirty` when git is
-  present, `vcs: "none"` otherwise), instruction files
-  (`AGENTS.md` / `CLAUDE.md` / `README.md` / `CONTRIBUTING.md`),
-  package manifests (root + one level deep into `apps/` / `crates/`
-  / `packages/` / `services/` / `modules/` / `libs/`), and a
-  shallow top-level directory listing. Read-only, always on. The
-  intended "first call" before the model picks where to grep or
-  edit. No source-file contents — use `fs.read` for those.
-- `requirement.{list,start,block,complete,create,update,delete}` —
-  agent-side CRUD over the kanban under a `Project`. Mirrors
-  `crates/harness-server/src/requirements_routes.rs`. Important
-  defaults: `requirement.create` populates new rows with
-  `triage_state=ProposedByAgent` so the auto loop won't pick them
-  up; the agent must pass `triage_state="approved"` explicitly when
-  the user has confirmed (the system-prompt `Spec → Project`
-  workflow paragraph teaches this). `start` flips the kanban
-  column; `block` writes a structured `Activity::Blocked` row but
-  doesn't change status (the wire enum has no Blocked column);
-  `complete` flips to `Review` and is structurally barred from
-  writing `Done` (human-only acceptance gate); `delete` is the
-  only `requirement.*` tool that's approval-gated, because the
-  row's run history disappears with it. All status-mutation tools
-  emit Activity rows so the timeline carries the audit trail. Off
-  by default — registered only when **both** `requirement_store`
-  and `activity_store` are configured.
-- `triage.scan_candidates` — surface follow-up Requirement
-  candidates from passive workspace signals. v1.0 source:
-  `todo_comments` (walks the workspace via the same `ignore`-crate
-  filter as `code.grep` and emits each `TODO|FIXME|XXX|HACK`
-  marker as `{title, description, source: "todo_comment", path,
-  line}`). Skips empty markers (`// TODO` with no body) so the
-  noise stays low. Returns the list **without** writing anything;
-  the agent decides which candidates to commit via
-  `requirement.create(triage_state="proposed_by_scan")`. Optional
-  `path` narrows the scan, `limit` caps results (default 50, max
-  200). Read-only, always on. Future sources (`failed_runs` /
-  `orphan_worktrees`) are deferred to v1.1 — adding either would
-  require threading `RequirementRunStore` through `BuiltinsConfig`.
-- `roadmap.import` — bootstrap the workspace's roadmap into Work.
-  Scans `docs/proposals/`, `docs/roadmap/`, `roadmap/`, or
-  `ROADMAP.md` (in that order), parses each file's `**Status:**` /
-  `**状态：**` line, and creates / updates one `Requirement` per
-  proposal under a workspace-derived `Project` (default slug
-  `<workspace-basename>-roadmap`, e.g. `jarvis-roadmap`,
-  `acme-roadmap`). zh-CN translations are merged into their English
-  peer (`foo.md` + `foo.zh-CN.md` → one Requirement with the
-  translation linked in `description`); a standalone zh-CN file
-  becomes the main entry. Idempotent — a hidden
-  `<!-- roadmap-source: <path> -->` marker on the first line of each
-  Requirement's `description` lets re-runs skip / update existing
-  rows; manual Requirements without the marker are never touched.
-  Status keywords map: `Adopted`/`Done`/`Shipped`/`已落地` →
-  `done`; `Adopted partial`/`In progress`/`WIP`/`部分`/`进行中` →
-  `in_progress`; `Review`/`Verifying`/`审核` → `review`;
-  `Proposed`/`Planned`/`Backlog`/`提议`/`待办` → `backlog`. Returns
-  `{project_id, slug, name, source, created, updated, unchanged,
-  removed, total, items, note?}`. Off by default — registered only
-  when **both** `project_store` and `requirement_store` are set.
-  Approval-gated. Optional args: `slug`, `name`, `source_subdir`
-  (relative to workspace; absolute paths and `..` components are
-  rejected), `prune` (default false — orphan-marker Requirements
-  are kept).
-- `fs.patch` — apply a unified diff across one or more files.
-  Accepts standard `--- a/<path>` / `+++ b/<path>` headers, with or
-  without a `diff --git` preamble. Splits multi-file diffs on the
-  preamble (preferred) or on `--- ` / `+++ ` header pairs, parses
-  each block via `diffy::Patch::from_str`, applies hunks against
-  the sandboxed file with **no fuzz / no whitespace tolerance**,
-  and writes only after every block parses + applies cleanly
-  (atomic per call). Supports file creation (`--- /dev/null`) and
-  deletion (`+++ /dev/null`); refuses binary patches, renames, and
-  any path outside the sandbox root. Off by default — flip
-  `BuiltinsConfig::enable_fs_patch` (or set
-  `JARVIS_ENABLE_FS_PATCH`). Approval-gated.
-- `git.status` / `git.diff` / `git.log` / `git.show` — read-only git
-  inspection over the host's `git` binary, scoped via `git -C <root>`
-  to the tool root. Each subcommand has its own typed schema (no
-  free-form `args` array). Arg validators reject anything starting
-  with `-` and any null/newline bytes, so the model can't smuggle a
-  `--upload-pack=…`-style option through a `revision` or `path`
-  field. `git.diff` understands `staged`, `from`/`to` ranges,
-  `path`, and `stat_only`; `git.log` takes `limit` (default 20,
-  cap 200), `revision`, `path`, and `format=short|full`;
-  `git.show` takes `revision` (required), `metadata_only`, and
-  `path`. Stdout is truncated at 64 KiB; running `git.status` in a
-  non-git directory returns the soft sentinel `(not a git
-  repository)` instead of erroring. On by default — flip
-  `BuiltinsConfig::enable_git_read = false` (or set
-  `JARVIS_DISABLE_GIT_READ`) to skip the whole group, e.g. when
-  `git` isn't on `PATH`.
-- `fs.read` / `fs.list` / `fs.write` / `fs.edit` — every `fs.*` tool is
-  scoped to a `root` supplied at construction. The shared
-  `sandbox::resolve_under` helper rejects absolute paths and any component
-  equal to `..`. `fs.edit` does a uniqueness-checked string replace
-  (`old_string` must occur exactly once unless `replace_all = true`); it's
-  the preferred primitive for editing existing files because the
-  uniqueness gate limits accidental rewrites. Both write primitives are
-  **opt-in** — flip `BuiltinsConfig::enable_fs_write` /
-  `enable_fs_edit` (or set `JARVIS_ENABLE_FS_WRITE` /
-  `JARVIS_ENABLE_FS_EDIT`).
-- `shell.exec` — runs `sh -c <command>` (or `cmd /C` on Windows) inside
-  the sandbox root. Optional `cwd` is resolved through the same sandbox
-  helper; optional `timeout_ms` overrides the configured default.
-  stdout/stderr are captured separately and each truncated at 64 KiB.
-  Killed with `kill_on_drop` on timeout. **Off by default** — flip
-  `BuiltinsConfig::enable_shell_exec` (or set `JARVIS_ENABLE_SHELL_EXEC`)
-  and tune the default timeout via `shell_default_timeout_ms` /
-  `JARVIS_SHELL_TIMEOUT_MS`.
+**Filesystem** (`fs.*` scoped to a construction-time `root`; `sandbox::resolve_under` rejects
+absolute paths and `..`): `fs.read`/`fs.list` always on; `fs.write`, `fs.edit` (uniqueness-checked
+string replace — `old_string` must occur once unless `replace_all`), `fs.patch` (multi-file unified
+diff via `diffy`, no fuzz, atomic per call, supports `/dev/null` create/delete, refuses
+binary/renames/out-of-sandbox) are **opt-in + approval-gated**. `shell.exec` (`sh -c` /`cmd /C`,
+sandboxed cwd, stdout/stderr each truncated 64 KiB, killed on timeout) is opt-in + approval-gated.
 
-When adding a new built-in tool, keep tool names namespaced (`<group>.<verb>`) and add
-it to the right module under `crates/harness-tools/src/`, then export from `lib.rs` and
-add a line to `register_builtins` if it should be on by default. Anything
-that writes to disk or runs code on the host should follow the
-`fs.write` / `fs.edit` / `shell.exec` precedent and stay opt-in.
+**Conditional (registered when their stores/config are present):**
+- `requirement.{list,start,block,complete,create,update,delete,review_verdict}` — agent-side
+  kanban CRUD (mirrors `requirements_routes.rs`). `create` defaults `triage_state=ProposedByAgent`
+  (auto loop won't pick it up — pass `triage_state="approved"` when the user confirmed); `complete`
+  flips to Review and is structurally barred from writing Done (human-only gate); `delete` is the
+  only approval-gated one. All status mutations emit Activity rows. Needs `requirement_store` +
+  `activity_store`.
+- `roadmap.import` — scans `docs/proposals/` → `docs/roadmap/` → `roadmap/` → `ROADMAP.md`, creates/
+  updates one Requirement per proposal under a `<basename>-roadmap` Project. Idempotent via a hidden
+  `<!-- roadmap-source: … -->` marker; zh-CN files merge into their English peer; maps `**Status:**`
+  keywords → kanban status. Approval-gated; needs `project_store` + `requirement_store`.
+- `doc.{list,search,get,upsert,create,update,delete,draft.get,draft.save}` — DocProject + append-only
+  Markdown drafts (mutators approval-gated).
+- `memory.{list,read,write,delete,include_add,include_list,include_remove,include_refresh,
+  sync,sync_status,sync_setup}` + `memory_icloud_setup` — agent long-term memory store, git/iCloud
+  sync, include directives (writes/sync/deletes approval-gated).
+- `learning.memory.{list,add,update,delete}` — user long-term memory rows (delete approval-gated).
+- `todo.{list,add,update,delete}` — workspace TODO board (ungated).
+- `subagent.<name>` (`review` / `claude_code` / `codex` / `reader` / `batch` …) — delegate to a
+  sub-agent loop or CLI sidecar. `claude_code.run` / `codex.run` are approval-gated, off by default.
+- `enter_plan_mode` / `harness.health` — off by default.
 
 ### LLM providers (`harness-llm`)
 
-Three `LlmProvider` implementations today, all over `reqwest`. They
-share nothing except the trait — the wire shapes diverge enough that
-trying to factor out a common transport hurts more than it helps.
+Each impl is over `reqwest` and shares nothing but the trait — wire shapes diverge too much to
+factor a common transport. The `Conversation` shape is the lingua franca; each provider owns the
+conversion **and must preserve tool-call/tool-result pairing** — getting it wrong shows up as
+cryptic 400s mid-stream. Add providers under `harness-llm/src/`, implement `LlmProvider`,
+re-export from `lib.rs`.
 
-**OpenAI** (`OpenAiProvider`):
-- Tool-call `arguments` are a **JSON-encoded string**, not an object.
-  Conversion happens in `OaFunctionCallOut::From<ToolCall>` (out) and
-  `parse_tool_call` (in, where empty strings become `{}`).
-- `finish_reason` defaults: missing reason + non-empty `tool_calls` →
-  `ToolCalls`, otherwise `Stop`.
-- Streaming uses `reqwest::Response::bytes_stream()` with a manual SSE
-  parser (`data: <json>\n\n`, `data: [DONE]` sentinel).
-  `StreamAccumulator` reassembles tool-call argument fragments
-  (delivered as string slices that must be concatenated in index
-  order) and emits exactly one `LlmChunk::Finish` at the end.
+**OpenAI** (`OpenAiProvider`): tool-call `arguments` are a **JSON-encoded string** (converted in
+`OaFunctionCallOut::From` / `parse_tool_call`, empty→`{}`). `finish_reason` defaults: missing +
+non-empty `tool_calls` → `ToolCalls` else `Stop`. Manual SSE parser (`data: <json>\n\n`, `[DONE]`
+sentinel); `StreamAccumulator` reassembles argument fragments in index order, one `Finish` at end.
+Kimi/Ollama reuse this provider with swapped base URLs.
 
-**Anthropic** (`AnthropicProvider`, `anthropic.rs`):
-- System messages are pulled out of `messages` into a top-level
-  `system` field (multiple system entries are joined with `\n\n`).
-- Tool use is a content block, not a separate message: assistant turns
-  carry `[{type:text}, {type:tool_use, id, name, input}]`, and tool
-  results travel back as `{type:tool_result, tool_use_id, content}`
-  blocks inside a `user` message. `convert_messages` coalesces
-  consecutive `Message::Tool` entries into a single user message with
-  multiple `tool_result` blocks so Anthropic sees the canonical
-  pairing with the assistant's `tool_use` blocks.
-- `max_tokens` is **required** by Anthropic; we default to 4096 when
-  the caller doesn't supply one.
-- Streaming is typed SSE events (`message_start`,
-  `content_block_start`, `content_block_delta`, `content_block_stop`,
-  `message_delta`, `message_stop`, `ping`, plus a forward-compatible
-  `Unknown` sink). Tool-use input arrives as `input_json_delta`
-  fragments — concatenated and parsed at `content_block_stop`.
-  `stop_reason` lives on `message_delta`; the `Finish` chunk is
-  emitted on `message_stop`.
-- Default headers: `x-api-key`, `anthropic-version` (default
-  `2023-06-01`, override via `ANTHROPIC_VERSION`).
+**Anthropic** (`anthropic.rs`): `system` messages hoisted to a top-level `system` field (joined
+`\n\n`). Tool use is a content block — assistant turns carry `[{text},{tool_use,id,name,input}]`;
+results return as `{tool_result,tool_use_id,content}` blocks inside a `user` message;
+`convert_messages` coalesces consecutive `Message::Tool` into one user message. `max_tokens` is
+**required** (default 4096). Typed SSE events; tool input arrives as `input_json_delta` fragments
+parsed at `content_block_stop`; `Finish` on `message_stop`. Headers: `x-api-key`, `anthropic-version`.
 
-**Google Gemini** (`GoogleProvider`, `google.rs`):
-- System prompt goes into top-level `systemInstruction.parts`. Roles
-  are `user` / `model` (no `assistant` / `tool`); each message has a
-  `parts` array. Tool calls are `functionCall` parts; tool results
-  travel back as `functionResponse` parts inside a `user` role
-  message.
-- Gemini's `functionCall` doesn't carry an id. We synthesise stable
-  ids of the form `gem_<index>` so the harness's id-keyed routing
-  keeps working, and resolve the matching name from the prior
-  assistant message when sending tool results back. Consecutive
-  `Message::Tool` entries fold into one user message with multiple
-  `functionResponse` parts.
-- Tool result content is wrapped as `{ "result": "<text>" }` because
-  Gemini expects an object payload.
-- Streaming uses `streamGenerateContent?alt=sse`. Without `alt=sse`
-  Gemini ships a JSON *array* (not JSONL) which is brittle to parse
-  incrementally. Each SSE event is a complete
-  `GenerateContentResponse` slice: text parts are deltas (concatenate),
-  `functionCall` parts arrive **whole** in one chunk (Gemini does not
-  fragment tool-call arguments). The terminal `Finish` is synthesised
-  by `StreamAccumulator::finalise` when the body closes — Gemini has
-  no in-band sentinel.
+**Google Gemini** (`google.rs`): system prompt → `systemInstruction.parts`; roles `user`/`model`;
+tool calls are `functionCall` parts, results are `functionResponse` parts in a `user` message
+wrapped as `{"result": "<text>"}`. `functionCall` has no id — we synthesise `gem_<index>` and
+resolve the name from the prior assistant message. Streaming via `streamGenerateContent?alt=sse`
+(without `alt=sse` Gemini ships a JSON array); `functionCall` parts arrive **whole**; `Finish` is
+synthesised on body close (no in-band sentinel).
 
-**Responses API** (`ResponsesProvider`, `responses.rs` +
-`codex_auth.rs`): one wire layer, two pluggable auth strategies,
-two convenience constructors:
+**Responses API** (`responses.rs` + `codex_auth.rs`): one wire layer, two auth strategies/presets.
+`ResponsesProvider::openai_responses(api_key)` → `api.openai.com/v1/responses` (public; reasoning
+models). `ResponsesProvider::codex(CodexAuth)` → `chatgpt.com/backend-api/codex/responses` (ChatGPT
+subscription OAuth, flat-rate; not a public API — logs an `info!` on startup). Auth surface is
+`ResponsesAuth::ApiKey` vs `ChatGptOauth(Arc<Mutex<CodexAuth>>)`; extend the enum for new flavours.
+Wire differences from Chat Completions: `system`→top-level `instructions`; each tool call is a
+*separate* `{type:"function_call",call_id,name,arguments}` item in the top-level `input` array
+(replies → `function_call_output`); typed streaming events finalising on `response.completed`.
+`ResponsesConfig` knobs: `store` (default false — we own state), `service_tier`, `reasoning_summary`,
+`include_encrypted_reasoning`, `chain_responses`. **`chain_responses` defaults to false** for both
+flavours — the Codex backend rejects `store:true` (`400 Store must be set to false`); the openai
+flavour can opt in via `with_chain_responses(true)`.
 
-- `ResponsesProvider::openai_responses(api_key)` →
-  `api.openai.com/v1/responses` with a static `sk-...` API key.
-  This is the public OpenAI surface — useful for reasoning models
-  (`o1`, `o3`, `gpt-5`) and any feature OpenAI ships only on
-  Responses rather than Chat Completions.
-- `ResponsesProvider::codex(CodexAuth)` →
-  `chatgpt.com/backend-api/codex/responses` with a ChatGPT
-  subscription OAuth bearer (Codex CLI / Plus / Pro). Billed
-  flat-rate against the subscription instead of per-token. The
-  endpoint isn't a public OpenAI API and the path has changed
-  before — the binary logs an `info!` on startup naming the
-  endpoint and "subject to ChatGPT Terms of Service".
-- Both flavours are just `ResponsesConfig` presets — the auth
-  surface is `ResponsesAuth::ApiKey(...)` vs
-  `ResponsesAuth::ChatGptOauth(Arc<Mutex<CodexAuth>>)`. Add new
-  flavours (Azure AD, Bedrock, …) by extending the `ResponsesAuth`
-  enum.
-
-Wire-shape rules common to both flavours, three load-bearing
-differences from `openai.rs`'s Chat Completions:
-
-  - `system` messages are pulled out into a top-level `instructions`
-    field (joined with `\n\n` if multiple).
-  - Each `Assistant.tool_calls` entry becomes a *separate*
-    `{type:"function_call",call_id,name,arguments}` item in the
-    top-level `input` array, not embedded inside an assistant
-    message. Tool replies likewise become `function_call_output`
-    items.
-  - Streaming is typed events: `response.output_item.added`,
-    `response.output_text.delta`,
-    `response.function_call_arguments.delta`,
-    `response.output_item.done`, `response.completed`. The
-    accumulator emits `ToolCallDelta { id, name }` on
-    `output_item.added`, then `arguments_fragment` deltas, then
-    finalises the call on `output_item.done`. The terminal
-    `LlmChunk::Finish` is synthesised on `response.completed` (or
-    on body close).
-
-Optional config knobs surfaced through `ResponsesConfig`:
-`store` (default `false` — we own state via `harness-store`),
-`service_tier`, `reasoning_summary` (`auto` / `concise` /
-`detailed`), `include_encrypted_reasoning` (gates
-`include: ["reasoning.encrypted_content"]` for cross-turn cache),
-`chain_responses` (whether requests with `previous_response_id`
-forward as a delta + force `store: true`).
-
-**`chain_responses` flavour-specific defaults (v1.0):** the public
-OpenAI Responses endpoint accepts `store: true`, but the Codex
-backend at `chatgpt.com/backend-api/codex/responses` rejects it
-with `400 {"detail":"Store must be set to false"}`. So:
-- `ResponsesConfig::codex(...)` defaults `chain_responses=false`.
-  Tool-using agent loops still work — the provider just sends the
-  full message history each iteration instead of a chained delta.
-  Costs more tokens; works reliably.
-- `ResponsesConfig::openai_responses(...)` also defaults to
-  `chain_responses=false` for symmetry; flip to `true` via
-  `with_chain_responses(true)` when you want the cache benefit
-  against the public endpoint.
-
-**Auth lives in `codex_auth.rs`** (used by the `ChatGptOauth`
-strategy):
-  - `CodexAuth::load_from_codex_home(path)` parses
-    `<codex_home>/auth.json` (the file Codex CLI writes on `codex
-    login`) and pulls `tokens.access_token` /
-    `tokens.refresh_token` / `tokens.account_id`.
-  - `CodexAuth::from_static(token, account)` is the dev backdoor
-    (no refresh).
-  - `CodexAuth::refresh(http)` POSTs `grant_type=refresh_token` to
-    `auth.openai.com/oauth/token` with the Codex CLI's `client_id`
-    (`app_EMoamEEZ73f0CkXaXp7hrann` — we extend the same session,
-    not create a new one) and writes the new tokens back to disk
-    via write-to-temp + atomic rename. Other fields in `auth.json`
-    (`auth_mode`, `OPENAI_API_KEY`, etc.) are preserved.
-
-**401 → refresh → retry once** in both `complete` and
-`complete_stream`, regardless of auth flavour. For `ApiKey` the
-"refresh" returns an error so the 401 surfaces upstream; for
-`ChatGptOauth` it actually rotates and retries. Concurrent requests
-coalesce: the lock holder compares the access token against a
-snapshot taken before the failed request, and skips a redundant
-refresh if another request already rotated it.
-
-Add new providers by creating a module under `harness-llm/src/` (or a
-separate crate), implementing `LlmProvider`, and re-exporting from
-`lib.rs`. The harness `Conversation` shape is the lingua franca; the
-provider module owns the conversion in both directions and **must**
-preserve tool-call/tool-result pairing — getting that wrong manifests
-as cryptic 400s mid-stream.
+`codex_auth.rs`: `load_from_codex_home` parses `<codex_home>/auth.json`; `from_static` is the
+dev backdoor (no refresh); `refresh` POSTs `grant_type=refresh_token` to `auth.openai.com/oauth/token`
+with the Codex CLI client_id (extends the same session) and atomically rewrites `auth.json`,
+preserving other fields. **401 → refresh → retry once** in both `complete`/`complete_stream`; for
+`ApiKey` the refresh errors so the 401 surfaces; concurrent requests coalesce (token-snapshot
+comparison skips a redundant refresh).
 
 ### MCP bridge (`harness-mcp`)
 
-Two directions on top of the `rmcp` SDK:
-
-- **Client** (`client.rs`): `McpClient::connect(&McpClientConfig)` spawns an external
-  MCP server as a child process over stdio (via `TokioChildProcess`), performs the
-  handshake, then `register_into(&mut ToolRegistry)` lists every remote tool and
-  inserts a private `RemoteTool` adapter for each. The adapter's `Tool::invoke`
-  forwards to `CallToolRequestParams::new(name).with_arguments(obj)` and flattens
-  the `Vec<Content>` back into a single string. Remote tools are renamed
-  `<prefix>.<name>` so multiple MCP servers don't collide. The `McpClient` owns the
-  running child — drop it (or call `shutdown()`) to kill the server.
-  `connect_all_mcp(configs, &mut registry)` is the batch helper the binary uses.
-- **Server** (`server.rs`): `McpServer::new(Arc<ToolRegistry>)` implements the
-  `rmcp::ServerHandler` trait by hand (the `#[tool_router]` macro doesn't fit —
-  our tool set is runtime-known, not compile-time). `list_tools` maps
-  `ToolSpec` → `rmcp::model::Tool`; `call_tool` resolves the name, invokes the
-  harness `Tool`, and wraps the result in a `CallToolResult::success` /
-  `::error`. Tool errors are surfaced as an `is_error` result rather than a
-  JSON-RPC error so clients can read the error text.
-  `serve_registry_stdio(registry)` is the one-liner the `--mcp-serve` mode calls.
-
-When the harness `Tool::parameters` isn't a JSON object (e.g. it returns `true` or
-`null`), `list_tools` substitutes an empty object so we always send a valid MCP
-`inputSchema`. Keep tool `parameters()` returning object schemas to avoid
-surprising MCP clients.
-
-Transport features are pinned via `rmcp` features `server, client, transport-io,
-transport-child-process, macros`. If you need HTTP/streamable-http transports,
-add the corresponding rmcp feature and drop to `rmcp` directly — the helpers in
-this crate only wire stdio.
+Two directions on `rmcp`. **Client** (`client.rs`): `McpClient::connect` spawns an external server
+over stdio, handshakes, `register_into` lists remote tools and inserts a `RemoteTool` adapter per
+tool, renamed `<prefix>.<name>` to avoid collisions. The `McpClient` owns the child — drop/`shutdown()`
+to kill it; `connect_all_mcp` is the batch helper. **Server** (`server.rs`): `McpServer::new(Arc<ToolRegistry>)`
+hand-implements `ServerHandler` (our tool set is runtime-known). Tool errors surface as `is_error`
+results, not JSON-RPC errors. `serve_registry_stdio` is what `--mcp-serve` calls. Non-object
+`parameters()` get substituted with `{}` — keep schemas object-shaped. Pinned rmcp features:
+`server, client, transport-io, transport-child-process, macros` (stdio only).
 
 ### HTTP server (`harness-server`)
 
-`router(AppState)` returns an `axum::Router`; `serve(addr, state)` is the `tokio::net`
-+ `axum::serve` one-liner. Handlers split across three modules:
-`routes.rs` (chat + WS), `conversations.rs` (CRUD + persisted run),
-and `ui.rs` (the bundled web client at the server root `/`, files in
-`apps/jarvis-web/dist/` baked in via `include_dir!`).
+`router(AppState)` → `axum::Router`; `serve(addr, state)` is the one-liner. `AppState` holds
+`Arc<Agent>` + optional stores; extend it rather than threading registries through handlers.
 
-**SPA routing.** `ui::router()` mounts `GET /` → `index.html`. The
-main router uses `ui::spa_fallback` as its `.fallback(...)` handler
-so any extension-less path that doesn't match an explicit API route
-serves `index.html` — that's what lets `react-router-dom` own
-client-side routes like `/settings` without per-page server entries.
-Paths with file extensions still 404 cleanly when the asset is
-missing (silent HTML fallback for missing JS would mask deploy
-bugs); paths under `/v1/` and `/health` always 404 from the
-fallback as defence in depth so SDK clients never accidentally
-parse SPA HTML as JSON.
+**SPA routing:** `ui::router()` serves `/` → `index.html`; `ui::spa_fallback` serves `index.html`
+for any extension-less unmatched path so react-router owns client routes (`/settings`, `/projects`,
+…). Paths with extensions 404 cleanly; `/v1/` and `/health` always 404 from the fallback (so SDK
+clients never parse SPA HTML as JSON). The web client is baked in from `apps/jarvis-web/dist/` via
+`include_dir!`.
 
-**Workspace inspection** — `GET /v1/workspace`:
+**Streaming invariant:** SSE and WS both call `Agent::run_stream` and just serialise `AgentEvent`s
+— keep new transports on that path, don't reimplement the loop.
 
-Returns `{root, vcs, branch?, head?, dirty?}` for the resolved
-workspace root. Same shape as a trimmed `workspace.context` (no
-manifest scan). The git probe (`rev-parse --is-inside-work-tree`,
-`abbrev-ref HEAD`, `rev-parse --short HEAD`, `status --porcelain`)
-runs each call so the answer reflects the current branch / dirty
-state. `503 Service Unavailable` when the binary didn't pin a
-workspace root via `AppState::with_workspace_root` — the field is
-optional on `AppState` so test harnesses don't have to fake one,
-but every realistic deployment sets it. Used by the web UI's
-chat-header `WorkspaceBadge` and by ops scripts; the `jarvis
-workspace [--json]` CLI subcommand prints the same shape locally
-without booting a server.
+**Chat surfaces:**
+- `POST /v1/chat/completions` — blocking → `{message, iterations, history}`.
+- `POST /v1/chat/completions/stream` — SSE, each `data:` is one JSON `AgentEvent`.
+- `GET /v1/chat/ws` — multi-turn WebSocket. Frames in: `user` / `reset` / `resume{id}` /
+  `new{id?}` / `approve{tool_call_id}` / `deny{tool_call_id,reason?}`. Each socket gets its own
+  `ChannelApprover` wired into a per-socket `Agent`; pending approvals drain in the handler's
+  `tokio::select!` loop, which maps `tool_call_id → oneshot::Sender<ApprovalDecision>`. The agent
+  yields `ApprovalRequest` **before** awaiting so the client can decide in time. Guards: new
+  `user`/`reset`/`resume`/`new` while a turn runs → `error: turn in progress`; unknown approval id
+  → `error: no pending approval`. In persisted mode the WS saves `Done.conversation` under the
+  active id; `reset` clears both in-memory state and the persisted flag.
 
-**Ephemeral chat** — no store needed:
+**Persisted conversations CRUD** (503 when no `ConversationStore`): `POST /v1/conversations`
+(`{system?,id?}` → 201 `{id}`), `GET /v1/conversations?limit=N`, `GET`/`DELETE /v1/conversations/:id`,
+`POST /v1/conversations/:id/messages` (append + run + save → `{id,message,iterations,history}`;
+save failure is logged WARN but the reply still returns), `…/messages/stream` (SSE, saves on `Done`).
+The `__memory__.` key prefix is internal-only — filtered from list, GET/DELETE refused, POST bodies
+claiming it rejected.
 
-- `POST /v1/chat/completions` — blocking. Runs the loop to completion, returns
-  `{message, iterations, history}`.
-- `POST /v1/chat/completions/stream` — SSE. Each event's `data:` payload is a single
-  JSON-encoded `AgentEvent`. Axum's `Sse` layer handles framing and keep-alives.
-- `GET  /v1/chat/ws` — WebSocket. Multi-turn:
-  - `{"type":"user","content":"..."}` — append + run.
-  - `{"type":"reset"}` — clear in-memory conversation; also exits
-    persisted mode if active.
-  - `{"type":"resume","id":"..."}` — load a stored conversation and
-    enter persisted mode (auto-save after every turn). Server replies
-    `{"type":"resumed","id":"...","message_count":N}` or an `error` frame.
-  - `{"type":"new","id":"<optional>"}` — create a fresh persisted
-    session. If `id` is omitted, the server allocates a UUID and replies
-    `{"type":"started","id":"..."}`.
-  - `{"type":"approve","tool_call_id":"..."}` — approve a previously
-    surfaced `ApprovalRequest`. The agent unblocks and runs the tool.
-  - `{"type":"deny","tool_call_id":"...","reason":"..."?}` — reject
-    the call. The agent emits a synthetic `tool denied: <reason>`
-    result back to the model so it can adapt.
+**Work / triage / auto-loop.** Requirement rows carry `triage_state: TriageState`
+(`Approved`/`ProposedByAgent`/`ProposedByScan`, serde-skipped when default) and `depends_on: Vec<String>`.
+Manual `Start`/drag ignores both gates — they're scheduler-only.
+- `GET /v1/projects/:id/requirements?triage_state=approved|proposed_by_agent|proposed_by_scan|proposed`
+  (`proposed` = OR of both proposed-*; unknown → 400).
+- `POST /v1/requirements/:id/approve` (→ Approved, idempotent `{no_op:true}`), `…/reject` (`{reason}`
+  required; writes a `rejected` Activity *before* soft-delete), `…/runs` (mints a fresh-session run;
+  does **not** auto-start the loop), `…/review` (manual reviewer dispatch — validates Review +
+  `Subagent` policy + `subagent.review` registered; 202 `{dispatched:true}`).
+- `POST /v1/roadmap/import` — same as the `roadmap.import` tool (`{slug?,name?,source_subdir?,prune?}`
+  → `ImportSummary`; 503 if stores/workspace-root unset).
 
-  Each socket gets its own `ChannelApprover` wired into a per-socket
-  `Agent` (the global agent's config is cloned, the approver is
-  swapped). The approver's `mpsc<PendingApproval>` is drained
-  inside the WS handler's `tokio::select!` loop, which holds a
-  `HashMap<tool_call_id, oneshot::Sender<ApprovalDecision>>` so the
-  client's `approve` / `deny` frames find their way back to the
-  blocking `approver.approve()` call inside the agent. The agent
-  yields `ApprovalRequest` **before** awaiting, so the event reaches
-  the client in time for it to actually decide.
+**Auto-loop guards** (`auto_mode::tick`, mostly silent skips): `triage_state == Approved`,
+`assignee_id.is_some()`, all `depends_on` reach Done (topo sort), no in-flight run, `failed_count <
+max_retries`, and Review rows under `AcceptancePolicy::Human` are skipped. The `depends_on` gate
+distinguishes *permanent* deadlocks from ordinary waiting: a **self-dependency** (a row listing its
+own id) or a **dependency cycle** (`A→B→A`, plus anything transitively behind one) surfaces an
+operator-visible `Blocked` Activity row **once** (deduped on the newest row, reason
+`self_dependency` / `dependency_cycle`) instead of skipping in silence forever. Self-dependency is
+also rejected at requirement create/update time (REST + `requirement.{create,update}` tools).
+Cross-project `depends_on` ids are **not** resolved across stores — author dependencies within a
+single project; an id pointing outside the project is treated as "not yet done" and blocks (a
+silent `debug!` skip, since a deleted-dep block is intended).
 
-  State guards: while a turn is running (`event_rx.is_some()`), the
-  server rejects new `user` / `reset` / `resume` / `new` frames with
-  `error: turn in progress`. `approve` / `deny` for an unknown
-  `tool_call_id` get an `error: no pending approval for ...`.
+**Acceptance policy** (`Requirement.acceptance_policy`): `Subagent` (default) auto-flips Review→Done
+**unless** `JARVIS_REVIEWER_AUTO_ACCEPT` is set, in which case the picker re-picks the Review row,
+re-runs the agent (`drive_one`), and the prompt directs it to delegate to the `subagent.review`
+subagent whose terminal `requirement.review_verdict` call flips Done (`pass`) / InProgress (`fail`).
+`Human` keeps the row at Review (the picker also skips it) — for work the verification plan can't
+model. Reviewer auto-accept is off by default. Tests: `auto_mode.rs::tests` under `reviewer_flag`-
+prefixed names.
 
-  In persisted mode the WS captures `AgentEvent::Done.conversation` and
-  saves it under the active id. Reset clears both the in-memory state
-  and the persisted-mode flag — re-issue `resume` / `new` to restore it.
-
-**Persisted CRUD** (require a configured `ConversationStore`; return
-`503 Service Unavailable` when absent so callers can distinguish "not
-configured" from "really broken"):
-
-- `POST   /v1/conversations` — body `{"system"?, "id"?}` (both optional, body itself optional).
-  Returns `{"id"}` (201). When `system` is set, it's saved as the first message.
-- `GET    /v1/conversations?limit=N` — newest-first list of
-  `{id, created_at, updated_at, message_count}`.
-- `GET    /v1/conversations/:id` — `{"id","messages":[...]}` or 404.
-- `DELETE /v1/conversations/:id` — `{"deleted":true|false}` (404 if absent).
-- `POST   /v1/conversations/:id/messages` — body `{"content":"..."}`.
-  Loads the conversation, appends the user message, runs the agent
-  loop, saves, returns `{id, message, iterations, history}`. If the
-  post-run save fails the response still goes through — losing the
-  reply because we couldn't write to disk would be strictly worse —
-  and the failure is logged at WARN.
-- `POST   /v1/conversations/:id/messages/stream` — same plumbing, but
-  emits SSE `AgentEvent`s; saves on the terminal `Done` event.
-
-**Triage queue** — Requirement rows carry a v1.0
-`triage_state: TriageState`
-(`Approved` | `ProposedByAgent` | `ProposedByScan`) with
-`#[serde(default, skip_serializing_if = "TriageState::is_default")]`
-so legacy rows + Approved rows omit the field on the wire.
-`Requirement.depends_on: Vec<String>` (also `serde(default)`) lists
-other Requirement ids that must reach `done` before the auto loop
-will pick the row up. Manual `Start` / drag-and-drop ignores both
-gates — they are scheduler concerns.
-
-REST surface around triage:
-
-- `GET    /v1/projects/:id/requirements?triage_state=approved|
-  proposed_by_agent|proposed_by_scan|proposed` — `proposed` is the
-  synthetic OR-of-both-proposed-* filter the Triage drawer uses.
-  Unknown wire values 400.
-- `POST   /v1/requirements/:id/approve` — flips
-  `triage_state` → `Approved`, idempotent (responds with
-  `{no_op:true}` when already Approved), writes a `kind:"approved"`
-  Activity row.
-- `POST   /v1/requirements/:id/reject` — body `{reason: string}`
-  required and non-blank; writes a `kind:"rejected"` Activity row
-  to the parent project's audit timeline **before** soft-deleting
-  the Requirement so a future "recently rejected" UI can replay
-  the timeline by orphaned id.
-- `POST   /v1/requirements/:id/runs` — mints a fresh-session run
-  (the "Start fresh run" detail-panel button hits this). Returns
-  `{run, conversation_id, manifest_summary, requirement}`. The
-  agent loop is **not** kicked off automatically — the caller is
-  expected to drop a user message into the new conversation, or
-  let the auto loop pick it up.
-
-**Auto loop guards** (`harness-server::auto_mode::tick`):
-- `triage_state == Approved` (no proposed-by-* runs without human review)
-- `assignee_id.is_some()` (no anonymous pickup)
-- All `depends_on` entries reach `RequirementStatus::Done` (topo sort)
-- No in-flight Pending/Running run for the same requirement
-- `failed_count < max_retries`
-- v1.0 SubAgent — rows at Review under
-  `acceptance_policy == AcceptancePolicy::Human` are skipped (the
-  policy gate keeps them at Review until a person clicks
-  "complete"; re-running would burn LLM budget without ever
-  advancing status).
-
-The guards are silent skips — the row stays in Backlog (or Review,
-under the human-policy gate) until all conditions clear. Operators
-see the missing pickups in the activity timeline (no `RunStarted`
-row) rather than via an explicit "blocked" signal.
-
-**Acceptance policy** — `Requirement.acceptance_policy`
-(v1.0 SubAgent):
-- `Subagent` (default): preserves the pre-v1.0 auto-flip
-  Review → Done semantics **unless** `JARVIS_REVIEWER_AUTO_ACCEPT`
-  is set — see below.
-- `Human`: keeps the row at Review after a Completed run. The
-  picker also skips already-at-Review rows under this policy so
-  the auto loop doesn't burn cycles re-running them. Use it when
-  the verification plan can't model what "done" means
-  (UX/visual design, security-sensitive changes, anything subtly
-  judgment-dependent).
-
-**Reviewer auto-accept** — opt-in via
-`JARVIS_REVIEWER_AUTO_ACCEPT=1` (any non-empty / non-`0` /
-non-`false` value enables it). When enabled and a Completed run
-arrives against a `Subagent`-policy requirement, the auto picker
-re-picks the row at Review and runs the main agent again via
-[`drive_one`](crates/harness-server/src/auto_mode.rs); the system
-prompt directs the agent to delegate verification to the
-[`subagent.review`](crates/harness-subagents/src/reviewer.rs)
-subagent. The reviewer's terminal call to
-[`requirement.review_verdict`](crates/harness-tools/src/requirement.rs)
-flips the row to Done (`pass`) or InProgress (`fail`) with the
-commentary attached so the next pickup can adapt.
-
-Default off so completed work pauses at Review for a human
-acceptance click — that's the v1.0 safe default. Tests live in
-[`auto_mode.rs::tests`](crates/harness-server/src/auto_mode.rs)
-under the `reviewer_flag`-prefixed names (e.g.
-`tick_does_not_re_pick_review_subagent_after_completed_run_under_reviewer_flag`,
-`tick_still_picks_review_row_with_no_completed_history_under_reviewer_flag`,
-`tick_skips_review_with_completed_history_when_reviewer_flag_off`).
-
-**Manual reviewer trigger** — `POST /v1/requirements/:id/review`:
-
-Operator-initiated dispatch for the same flow, useful when
-`JARVIS_REVIEWER_AUTO_ACCEPT` is off (the default) or when the
-auto picker has skipped the row (e.g.
-`review_completed_awaiting_acceptance` guard fired) and a human
-wants to ask Jarvis to verify on demand. Validates
-`status == Review`, `acceptance_policy == Subagent`, and that
-`subagent.review` is registered in `state.tools`. Spawns the run
-via [`auto_mode::spawn_background_run`](crates/harness-server/src/auto_mode.rs)
-and returns `202 Accepted` with `{dispatched: true, requirement_id}`;
-the new run id is discoverable through
-`GET /v1/requirements/:id/runs`. Writes a
-`{kind:"reviewer_dispatched_manually"}` Comment Activity for the
-audit trail. 409s when the row is at the wrong status or under
-Human policy; 503 when `subagent.review` isn't registered.
-
-**Roadmap → Work bootstrap** — `POST /v1/roadmap/import`:
-
-Scan the workspace for proposal-style markdown
-(`docs/proposals/` → `docs/roadmap/` → `roadmap/` → `ROADMAP.md`)
-and create / update one `Requirement` per proposal under a
-workspace-derived `Project` (default slug
-`<workspace-basename>-roadmap`). Body is optional and accepts the
-same overrides as the [`roadmap.import`](#built-in-tools) tool:
-`{ slug?, name?, source_subdir?, prune? }`. Returns the
-`ImportSummary` shape: `{project_id, slug, name, source, created,
-updated, unchanged, removed, total, items, note?}`. Idempotent —
-re-runs only update Requirements whose title / description /
-status changed. Returns `503 Service Unavailable` when any of
-`ProjectStore`, `RequirementStore`, or the pinned workspace root
-isn't configured. Once imported, the Web UI's `/projects` kanban
-renders the roadmap automatically — no UI code change needed.
-
-SSE and WS both call `Agent::run_stream` and just serialise events — keep new transports
-on that same path rather than reimplementing the loop.
-
-`AppState` holds `Arc<Agent>` and an optional `Arc<dyn ConversationStore>`
-(populated when `JARVIS_DB_URL` is set). When per-request agent
-selection or multiple registered models are needed, extend `AppState`
-rather than threading a registry through every handler.
+**Other domain REST surfaces** (each follows the 503-when-unconfigured pattern):
+- `GET /v1/workspace` → `{root,vcs,branch?,head?,dirty?}` (live git probe; 503 if no pinned root).
+  Plus `/v1/workspace/{list,read,find,diff/*}` (files/search/git) and `/v1/workspace/terminal` (PTY WS);
+  `/v1/workspaces` (persisted recent-workspace registry).
+- `/v1/automations` (+ `/:id/run`) — scheduled-task CRUD + on-demand trigger (`automation_runtime`).
+- `/v1/workflows` (+ `/:id`, `/:id/run`, `/:id/runs`, `/v1/workflow-runs/:id`, `/v1/workflow-runs/:id/cancel`) —
+  declarative multi-step agent workflows (CRUD + dispatch + cancel). Bindable to a Requirement via its
+  `workflow_id`; executed by `workflow_runtime::drive_workflow` (also branched into from `auto_mode`).
+  Manual `/run` dispatch is governed by a process-wide `WorkflowRunGate` (`workflow_concurrency.rs`):
+  a global concurrency semaphore (over-cap → `429`), a run-cancel ledger of `AbortHandle`s, and a
+  liveness set the `spawn_workflow_reaper` background sweep consults so it only reclaims orphaned
+  `Running` rows (left by a crash), never live in-process runs. See
+  `docs/proposals/declarative-workflows.zh-CN.md`.
+- `/v1/skills` (+ `/:name`, `/reload`, `/:name/lifecycle`, archive/restore) — Skills catalog.
+- `/v1/plugins` (+ `/:name`, `/marketplace`), `/v1/market/{mcp,skills,skills/install}` — plugin/market.
+- `/v1/subagents` (list) + `/v1/subagents/runs*` (run ledger / cancel).
+- `/v1/agent-profiles` — user identity bundles (name/provider/model/system prompt).
+- `/v1/providers` (+ `/default`) — runtime provider config (503 with no admin impl).
+- `/v1/memories` + `/v1/memory/sync/*` — Phase-1 memory store + sync backend.
+- `/v1/learning/skill-usage` (+ `/report`) — skill-activation telemetry.
+- `/v1/doc-projects*` (+ `/:id/draft`) — append-only Markdown drafts.
+- `/v1/work/{overview,quality}` — dashboard aggregation (tolerates partial stores).
+- `/v1/diagnostics/{worktrees/orphans,runs/*,memory}` — health snapshots + worktree cleanup.
+- `/v1/channels` (+ `/:id`, `/:id/test`, `/kinds`, `/:id/callback`, `/:id/oauth/{start,callback}`) —
+  channel-instance CRUD, inbound platform callbacks (WeCom/Feishu/DingTalk), WeCom-app OAuth2 identity.
 
 ### Plan channel (`harness-core::plan`)
 
-Sibling to `harness-core::progress`. Per-tool-invocation
-`tokio::task_local` `mpsc::UnboundedSender<Vec<PlanItem>>`, scoped
-via `with_plan(...)` from inside the agent loop's tool-dispatch
-section. Tools call `plan::emit(items)`; the loop drains the
-receiver in step with `progress` (same `tokio::select!` arm
-pattern) and yields `AgentEvent::PlanUpdate { items }`. Each emit
-carries the **full latest snapshot** — replace, not patch — so a
-late-joining transport renders the current plan without replaying
-history. Outside an agent invocation the channel is absent and
-emits become no-ops, which keeps unit tests on `plan.update` etc.
-trivial. The web UI subscribes via `case "plan_update"` in
-`apps/jarvis-web/src/services/frames.ts` and renders into the
-`PlanList` component in the right rail.
+Sibling to `harness-core::progress`. Per-invocation `task_local` `mpsc::UnboundedSender<Vec<PlanItem>>`
+scoped via `with_plan(...)`. Tools call `plan::emit(items)`; the loop drains it in the same
+`tokio::select!` arm pattern as `progress` and yields `AgentEvent::PlanUpdate { items }`. Each emit
+is the **full latest snapshot** (replace, not patch). Outside an agent loop the channel is absent so
+emits are no-ops (keeps `plan.update` tests trivial). The web UI renders it in `PlanList` (right rail).
 
 ### Short-term memory (`harness-memory`)
 
-`harness_core::Memory` is the trait; concrete impls live in
-`harness-memory`. The agent loop calls `memory.compact(&messages)`
-inside `Agent::build_request` on every iteration and ships the returned
-`Vec<Message>` to the LLM — the canonical `Conversation` is **not**
-mutated, so transports that snapshot `AgentEvent::Done.conversation`
-keep the full unabridged history. Memory failures bubble up as
-`Error::Memory(String)` and surface to clients as `AgentEvent::Error`.
+`harness_core::Memory` is the trait; the loop calls `memory.compact(&messages)` inside
+`Agent::build_request` every iteration and ships the result to the LLM — the canonical
+`Conversation` is **not** mutated, so `Done.conversation` keeps full history. Failures bubble as
+`Error::Memory` → `AgentEvent::Error`.
 
-Two impls today, both share the turn-grouping helpers in
-`crates/harness-memory/src/turns.rs`:
+Both impls share the turn-grouping helpers in `turns.rs`. Invariants: a turn starts at `User` and
+runs through every following Assistant + `Tool` reply (never splits a tool-call from its answers —
+OpenAI rejects orphaned tool messages); leading `System` messages always kept; the most recent turn
+always kept even if over budget. Token counts are heuristic (`estimate_tokens`, ~chars/4 + per-message
+overhead).
 
-- `SlidingWindowMemory::new(max_tokens)` — hard-drops oldest turns,
-  optionally inserts a `[N earlier turn(s) omitted ...]` system note.
-- `SummarizingMemory::new(llm, model, max_tokens)` — same windowing
-  rules, but instead of dropping the oldest turns it asks the supplied
-  `LlmProvider` to summarise them and inserts the summary as a synthetic
-  `System` message between the leading systems and the kept recent turns.
-  Three-tier lookup keyed by a **stable BLAKE3 fingerprint** of the
-  dropped-prefix slice: in-memory single slot → optional persistent
-  store (`with_persistence(Arc<dyn ConversationStore>)`) → LLM. The
-  persistent tier writes synthetic `Conversation` rows under the
-  reserved key namespace `__memory__.summary:<hash>` so summaries
-  survive restarts and parallel workers sharing one DB see each other's
-  work. Leaves `SUMMARY_RESERVE_TOKENS` (256) of headroom in the budget
-  so the injected summary doesn't push us back over. Store load/save
-  failures degrade gracefully (`warn!` and fall through to the LLM /
-  return the result anyway) — a flaky DB never breaks compaction.
-
-Token counts are heuristic (`harness_core::estimate_tokens`, ~`chars/4`
-plus a fixed per-message overhead) — good enough to budget, not a
-tiktoken replacement. Both impls share invariants: a turn starts at a
-`User` message and runs through every Assistant + `Tool` reply that
-follows until the next `User`, so the compactor never splits an
-Assistant tool-call from its `Tool` answers (OpenAI rejects orphaned
-tool messages). Leading `System` messages are kept unconditionally; the
-most recent turn is always kept even if it alone exceeds the budget.
-
-`apps/jarvis` auto-attaches the conversation store to
-`SummarizingMemory` whenever both `JARVIS_MEMORY_MODE=summary` and
-`JARVIS_DB_URL` are set — no extra flag. Without `JARVIS_DB_URL` the
-in-memory single-slot cache still works; you just lose the
-cross-restart benefit.
-
-The `__memory__.` key prefix is the canonical "internal-only"
-namespace in the conversation store. The HTTP server filters it out of
-`GET /v1/conversations` and refuses GET / DELETE on those ids, plus
-rejects `POST /v1/conversations` bodies that try to claim the prefix.
-Other backends should respect the same convention if they ever expose
-a list-style API.
-
-When adding a new memory backend, put it under
-`crates/harness-memory/src/`, implement `Memory`, and re-export from
-`lib.rs`. Anything that needs the LLM takes `Arc<dyn LlmProvider>` in
-its constructor — the trait stays provider-agnostic. The summariser
-must call `complete` with `tools: vec![]` and a pinned `temperature` so
-the summary call doesn't accidentally invoke real tools or drift in
-output shape.
+- `SlidingWindowMemory::new(max_tokens)` — drops oldest turns, optional `[N earlier turn(s) omitted]`
+  note.
+- `SummarizingMemory::new(llm, model, max_tokens)` — summarises the dropped prefix into a synthetic
+  `System` message instead. Three-tier lookup keyed by a stable BLAKE3 fingerprint of the dropped
+  slice: in-memory slot → optional persistent store (`with_persistence`) → LLM. The persistent tier
+  writes synthetic rows under `__memory__.summary:<hash>` so summaries survive restarts and are
+  shared across workers; store failures degrade gracefully (`warn!` + fall through). Leaves
+  `SUMMARY_RESERVE_TOKENS` (256) headroom. The summary call must use `tools: vec![]` + a pinned
+  temperature. `apps/jarvis` auto-attaches the store when both `JARVIS_MEMORY_MODE=summary` and
+  `JARVIS_DB_URL` are set.
 
 ### Approval gate (`harness-core::approval`)
 
-Every `Tool` advertises a `requires_approval(&self) -> bool` method
-(default `false`). When `AgentConfig::with_approver` is set, the agent
-loop consults the approver **before** invoking any gated tool:
+`Tool::requires_approval` (default false). When `AgentConfig::with_approver` is set, the loop
+consults it before any gated tool: `Approve` runs it; `Deny{reason}` writes a synthetic
+`"tool denied: <reason>"` `Message::Tool` so the model adapts; an approver `Err` is treated as a
+Deny (`"approver failed: …"`) to keep the loop moving. **No approver configured → gated tools run
+unconditionally** (historical default). Gated today: `fs.write`, `fs.edit`, `fs.patch`, `shell.exec`
+(+ the conditional mutators listed above).
 
-- `Approve` → tool runs as usual.
-- `Deny { reason }` → tool is **not** invoked; the synthetic content
-  `"tool denied: <reason>"` is written into a `Message::Tool` so the
-  model sees the rejection and can adapt (apologise, ask the user,
-  pick another tool, …).
-- Approver returns `Err` → treated as a `Deny` with reason
-  `"approver failed: <error>"`. Better to keep the loop moving and let
-  the model surface the failure than to abort the whole turn.
-
-When **no** approver is configured, gated tools run unconditionally —
-that's the historical behaviour and stays the default so existing
-deployments don't break.
-
-`Tool::requires_approval` overrides today (all in `harness-tools`):
-`fs.write`, `fs.edit`, `fs.patch`, `shell.exec`. Read-only tools
-(`fs.read`, `fs.list`, `code.grep`, `git.{status,diff,log,show}`,
-`workspace.context`, `http.fetch`, `time.now`, `echo`) stay ungated.
-
-Built-in approver implementations:
-
-- `AlwaysApprove`, `AlwaysDeny` — no-op policies; useful as defaults
-  and in tests.
-- `ChannelApprover` — fan-outs `PendingApproval` (request +
-  `oneshot::Sender`) over a `tokio::mpsc` channel. The transport-side
-  consumer drains the channel, asks a human / UI / scripted policy,
-  and replies through the embedded responder. This is the building
-  block for interactive approval over WS/SSE — the receiver loop is
-  transport-specific, but the trait stays the same.
-
-Streaming surfaces two new event types around every gated invocation:
-
-- `AgentEvent::ApprovalRequest { id, name, arguments }` — emitted
-  before the call.
-- `AgentEvent::ApprovalDecision { id, name, decision }` — emitted as
-  soon as the approver replies.
-
-`ToolStart` / `ToolEnd` always wrap the call regardless of decision
-(deny case writes the `tool denied:` sentinel into `ToolEnd.content`),
-so transports that already pair those events don't need new branches.
-
-`apps/jarvis` exposes a coarse policy via `JARVIS_PERMISSION_MODE`
-(`ask` / `accept-edits` / `plan` / `auto` / `bypass`; the legacy
-`JARVIS_APPROVAL_MODE=auto|deny` is still accepted but logs a
-deprecation WARN at startup). The WS transport overrides whatever
-the global config says with a per-socket `ChannelApprover` so
-clients get genuine per-call control — see the `/v1/chat/ws`
-section above for the wire protocol.
+Approvers: `AlwaysApprove` / `AlwaysDeny` (tests/defaults); `ChannelApprover` (fans `PendingApproval`
+over an mpsc for a transport-side consumer — the WS building block). Streaming emits
+`AgentEvent::ApprovalRequest{id,name,arguments}` before and `ApprovalDecision{id,name,decision}` after;
+`ToolStart`/`ToolEnd` always wrap the call (deny writes the sentinel into `ToolEnd.content`). The WS
+transport overrides the global config with a per-socket `ChannelApprover` for genuine per-call control.
 
 ### Persistence (`harness-store`)
 
-`harness-core::ConversationStore` / `ProjectStore` / `TodoStore`
-are the traits; `harness-store` provides the concrete backends.
-**JSON-file is the default backend** — out-of-the-box deployments
-persist conversations / projects / TODOs to `~/.local/share/jarvis/conversations/`
-without any config. SQL backends (SQLite / Postgres / MySQL) are
-opt-in cargo features for ops that genuinely need a DB. Driver
-selection is both **compile-time** (cargo features) and **runtime**
-(URL scheme):
+Traits live in `harness-core`/`harness-project`/etc.; `harness-store` provides backends. **JSON-file
+is the default** (`~/.local/share/jarvis/conversations/`); SQL backends are opt-in cargo features.
+Backend is chosen both at compile time (feature) and runtime (URL scheme):
 
-| feature      | URL prefixes                    | backend                      |
-|--------------|---------------------------------|------------------------------|
-| (always on)  | `json:`, `json://`              | **Default**: JSON files in a directory. Zero extra deps. |
-| `sqlite`     | `sqlite:`, `sqlite::memory:`    | SQLite (opt-in: `cargo build -p jarvis --features sqlite`) |
-| `postgres`   | `postgres://`, `postgresql://`  | Postgres (opt-in: `--features postgres`) |
-| `mysql`      | `mysql://`, `mariadb://`        | MySQL / MariaDB (opt-in: `--features mysql`) |
+| feature     | URL prefixes                   | backend |
+|-------------|--------------------------------|---------|
+| (always on) | `json:` / `json://`            | JSON files in a directory (default, zero deps) |
+| `sqlite`    | `sqlite:` / `sqlite::memory:`  | SQLite (`--features sqlite`) |
+| `postgres`  | `postgres://` / `postgresql://`| Postgres (`--features postgres`) |
+| `mysql`     | `mysql://` / `mariadb://`      | MySQL/MariaDB (`--features mysql`) |
 
-`harness_store::connect(url)` returns `Arc<dyn ConversationStore>` — higher
-layers don't name the backend. The on-disk shape differs per backend:
-
-- **JSON**: one `<id>.json` file per conversation in a directory.
-  Filenames percent-encode any byte not in `[A-Za-z0-9._-]` so internal
-  `__memory__.summary:<hash>` keys land safely on Windows. Atomic write
-  via `.tmp` + rename. Suited to single-user / dev — `list()` is O(N)
-  file reads, not great past a few hundred conversations.
-- **SQL backends**: a single `conversations(id, messages, created_at,
-  updated_at)` table where `messages` is the JSON-serialised
-  `Conversation` and timestamps are RFC-3339 strings, so
-  `harness-core` doesn't need a time crate in its public surface.
-
-There's also `MemoryConversationStore` (always compiled) for tests / examples;
-it's not selectable via `connect()` by design — wire it up directly.
-
-When adding a new backend, decide whether it's "always on" (no external
-service) or feature-gated (needs a server / heavy dep). For "always on"
-follow `json_file.rs`: a struct, an atomic save, JSON-serialise the
-conversation. For feature-gated, copy `sqlite.rs`: a pool wrapper, an
-idempotent `migrate()`, and the same JSON-blob-in-a-row schema. Then
-add a match arm to `connect()` in `lib.rs`.
+`harness_store::connect(url)` → `Arc<dyn ConversationStore>`; higher layers don't name the backend.
+JSON: one `<id>.json` per conversation, filenames percent-encode bytes outside `[A-Za-z0-9._-]` (so
+`__memory__.summary:<hash>` keys are Windows-safe), atomic `.tmp`+rename, `list()` is O(N). SQL: one
+`conversations(id, messages, created_at, updated_at)` table, `messages` = JSON `Conversation`,
+RFC-3339 string timestamps (so core needs no time crate). `MemoryConversationStore` is always
+compiled for tests but not `connect()`-selectable. New backend: follow `json_file.rs` (always-on) or
+`sqlite.rs` (feature-gated: pool wrapper + idempotent `migrate()` + JSON-blob-in-a-row), then add a
+`connect()` arm.
 
 ### Binary (`apps/jarvis`)
 
-`apps/jarvis/src/main.rs` is the only place that knows about env vars, default models,
-or which tools are wired in. Treat it as the composition root — the library crates must
-not read `std::env`. New tools, providers, or middlewares get registered here.
+`main.rs` is the only place that reads env vars / picks default models / wires tools — the
+composition root. Library crates must not read `std::env`.
 
-**Workspace selection.** `jarvis serve --workspace <path>` (alias
-`--fs-root`) is the highest-priority way to set the sandbox root.
-Resolution order: CLI flag > `JARVIS_FS_ROOT` env > `[tools].fs_root`
-in config > `.`. The resolved path is logged once at startup
-(`workspace root resolved`).
-
-**System-prompt switch.** `serve.rs` picks the agent's system prompt
-in this order: `[agent].system_prompt` from config (verbatim
-override) > `CODING_SYSTEM_PROMPT` when *coding mode* is active and
-`[agent].coding_prompt_auto` is not `false` > `GENERAL_SYSTEM_PROMPT`.
-Coding mode is "any of `fs.edit` / `fs.write` / `fs.patch` /
-`shell.exec` is enabled" — i.e. the operator deliberately handed
-Jarvis the keys to mutate the workspace. The coding prompt mirrors
-the contract from `docs/proposals/aicoding-agent.md` (inspect before
-editing, prefer small reviewable patches, end with a change report).
-Both prompt strings live as `const`s at the top of `serve.rs` so
-they're discoverable in one place.
-
-**Project context auto-load.** After the system prompt resolves, the
-binary appends the workspace's `AGENTS.md` / `CLAUDE.md` /
-`AGENT.md` (in that priority order) via
-`harness_tools::workspace::load_instructions(root, max_bytes)`.
-Each file is wrapped in a `=== project context: <name> ===` header
-so the model can tell injected guidance from its own template.
-Combined output is capped at 8 KiB (override:
-`JARVIS_PROJECT_CONTEXT_BYTES`); overflow is truncated with a
-`[... project context truncated at N bytes ...]` marker, and
-`apps/jarvis::serve` logs a startup WARN whenever truncation fires so
-operators with larger instruction files notice and can raise the cap
-deliberately. The lower default (was 32 KiB) keeps the system prompt
-focused so prior tool results stay in the model's attention window. Disable
-entirely via `JARVIS_NO_PROJECT_CONTEXT=1` or
-`[agent].include_project_context = false`. `jarvis-cli` honours the
-same env vars plus a `--no-project-context` CLI flag. Deliberately
-**not** in the load list: `README.md`, `CONTRIBUTING.md` — those
-are usually marketing / human-PR docs, not agent guidance.
+- **Workspace selection:** `serve --workspace <path>` (alias `--fs-root`) > `JARVIS_FS_ROOT` >
+  `[tools].fs_root` > `.`. Logged once at startup.
+- **System-prompt switch** (`serve.rs`): `[agent].system_prompt` (verbatim) > `CODING_SYSTEM_PROMPT`
+  (when *coding mode* — any of `fs.edit`/`fs.write`/`fs.patch`/`shell.exec` enabled — and
+  `[agent].coding_prompt_auto != false`) > `GENERAL_SYSTEM_PROMPT`. Both consts live at the top of
+  `serve.rs`.
+- **Project-context auto-load:** appends `AGENTS.md` / `CLAUDE.md` / `AGENT.md` (priority order) via
+  `load_instructions`, each wrapped in `=== project context: <name> ===`, capped 8 KiB
+  (`JARVIS_PROJECT_CONTEXT_BYTES`; truncation logs WARN). Disable via `JARVIS_NO_PROJECT_CONTEXT=1` /
+  `[agent].include_project_context = false` / `jarvis-cli --no-project-context`. `README.md` /
+  `CONTRIBUTING.md` are deliberately excluded.
 
 ## Conventions
 
-- **Workspace deps only.** Every crate dep should be `foo.workspace = true`. Add the
-  version once in the root `Cargo.toml` `[workspace.dependencies]`.
-- **No `unwrap` in library crates.** Return `harness_core::Result` (or `BoxError` from
-  tools) and let the binary decide how to surface failure. `apps/jarvis` may use
-  `anyhow` freely.
-- **Errors:** library code uses `thiserror`-derived `Error` in `harness-core`; provider
-  errors get wrapped in `Error::Provider(String)` rather than leaking `reqwest::Error`.
-- **Clippy is the gate.** `cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings`
-  must pass; the existing code is clean against it. CI runs the same command
-  (see `.github/workflows/rust.yml`); `make lint` wraps it.
-- **Streaming lives on its own method.** `LlmProvider::complete_stream` is a
-  parallel entry point to `complete`; don't retrofit `complete`'s return type.
-  New providers can skip it — the default impl returns a stream that calls
-  `complete` and emits a single `Finish` chunk.
-- **Tool naming collisions** are silent — if you register two tools with the same
-  `name()`, the second wins. Prefer unique, namespaced names (`fs.read`, `http.fetch`).
-- **Wire-shape types are codegen'd to TypeScript.** Rust types crossing the SPA
-  boundary (REST replies, WS frames) use `#[derive(ts_rs::TS)]` so the frontend
-  imports a generated `.ts` instead of hand-maintaining a duplicate. Annotations
-  live on the type in its owning domain crate (`harness-channel`,
-  `harness-project`, `harness-observability` — never `harness-core`).
-  Regenerate with `make ts-codegen` after changing an annotated type; the
-  output under `apps/jarvis-web/src/types/generated/` is committed to git so
-  the SPA-only build doesn't need a Rust toolchain. See
-  `docs/conventions/rust-ts-codegen.md`.
+- **Workspace deps only** — `foo.workspace = true`; version lives once in the root `[workspace.dependencies]`.
+- **No `unwrap` in library crates** — return `harness_core::Result` / `BoxError`; `apps/jarvis` may use `anyhow`.
+- **Errors:** `thiserror`-derived `Error` in `harness-core`; provider errors wrapped in `Error::Provider(String)`, never leaking `reqwest::Error`.
+- **Clippy is the gate** — `make lint` must pass clean (mirrors CI `.github/workflows/rust.yml`).
+- **Streaming on its own method** — `complete_stream` parallels `complete`; don't retrofit `complete`'s return type. New providers may skip it (default impl wraps `complete` + one `Finish`).
+- **Tool-name collisions are silent** — second registration wins; keep names namespaced.
+- **Wire-shape types are codegen'd to TS** — types crossing the SPA boundary derive `#[derive(ts_rs::TS)]`; annotations live in the owning domain crate (`harness-channel` / `harness-project` / `harness-observability`, **never** `harness-core`). Run `make ts-codegen` after changes; the committed output is under `apps/jarvis-web/src/types/generated/`. See `docs/conventions/rust-ts-codegen.md`.

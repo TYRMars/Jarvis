@@ -130,7 +130,7 @@ export function CommitDialog({
               className={`modal-input${subjectWarn ? " modal-input-warn" : ""}`}
               value={subject}
               disabled={busy}
-              placeholder="feat: add code review rail card"
+              placeholder={t("wkSpaceCommitSubjectPlaceholder")}
               onChange={(e) => setSubject(e.target.value)}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {

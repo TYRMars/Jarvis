@@ -19,6 +19,7 @@ vi.mock("./socket", () => ({
 vi.mock("./conversations", () => ({
   refreshConvoList: vi.fn(),
   clearSessionRoute: vi.fn(),
+  forceReloadActiveConversation: vi.fn(() => Promise.resolve(true)),
 }));
 
 const get = () => useAppStore.getState();
@@ -164,6 +165,25 @@ describe("handleFrame: approval flow", () => {
       decision: { decision: "deny", reason: "no thanks" },
     });
     expect(get().approvals[0]).toMatchObject({ status: "denied", reason: "no thanks" });
+  });
+
+  it("approval_pending creates the same pending card shape as approval_request", () => {
+    handleFrame({
+      type: "approval_pending",
+      id: "ar_replay",
+      name: "shell.exec",
+      arguments: { cmd: "ls" },
+      category: "write",
+    });
+    expect(get().approvals).toHaveLength(1);
+    expect(get().approvals[0]).toMatchObject({ id: "ar_replay", status: "pending" });
+  });
+
+  it("approval_pending is idempotent against a prior approval_request for the same id (reconnect case)", () => {
+    handleFrame({ type: "approval_request", id: "ar_keep", name: "x", arguments: {} });
+    handleFrame({ type: "approval_pending", id: "ar_keep", name: "x", arguments: {} });
+    // Reconnect-replay must NOT duplicate the card. Same id → same row.
+    expect(get().approvals.filter((a: any) => a.id === "ar_keep")).toHaveLength(1);
   });
 });
 
@@ -514,6 +534,67 @@ describe("handleFrame: unknown frame", () => {
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
     handleFrame({ type: "totally_made_up", oddball: 1 });
     expect(spy).toHaveBeenCalledWith("unknown frame", expect.objectContaining({ type: "totally_made_up" }));
+    spy.mockRestore();
+  });
+});
+
+describe("handleFrame: stream-recovery (tail_replay_start + resume_error)", () => {
+  it("tail_replay_start with first_seq > clientLastSeq + 1 force-reloads history", async () => {
+    const { forceReloadActiveConversation } = await import("./conversations");
+    const { invalidateConversationSeq } = await import("./chatRuns");
+    (forceReloadActiveConversation as any).mockClear();
+    invalidateConversationSeq("conv-gap");
+    get().setActiveId("conv-gap");
+    // Client has never observed any seq for this conversation, so
+    // clientLastSeq returns 0. Server says first_seq = 50, which
+    // means seqs 1..49 are missing — exactly the gap case.
+    handleFrame({
+      type: "tail_replay_start",
+      count: 0,
+      first_seq: 50,
+      latest_seq: 100,
+    });
+    expect(forceReloadActiveConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it("tail_replay_start with first_seq == 1 is the no-eviction case and skips reload", async () => {
+    const { forceReloadActiveConversation } = await import("./conversations");
+    (forceReloadActiveConversation as any).mockClear();
+    get().setActiveId("conv-clean");
+    handleFrame({
+      type: "tail_replay_start",
+      count: 5,
+      first_seq: 1,
+      latest_seq: 5,
+    });
+    expect(forceReloadActiveConversation).not.toHaveBeenCalled();
+  });
+
+  it("tail_replay_start without first_seq (legacy server) is a no-op", async () => {
+    const { forceReloadActiveConversation } = await import("./conversations");
+    (forceReloadActiveConversation as any).mockClear();
+    get().setActiveId("conv-legacy");
+    handleFrame({ type: "tail_replay_start", count: 3 });
+    expect(forceReloadActiveConversation).not.toHaveBeenCalled();
+  });
+
+  it("resume_error always reloads + drops the seq cursor", async () => {
+    const { forceReloadActiveConversation } = await import("./conversations");
+    (forceReloadActiveConversation as any).mockClear();
+    get().setActiveId("conv-evicted");
+    handleFrame({
+      type: "resume_error",
+      reason: "evicted",
+      first_available_seq: 200,
+    });
+    expect(forceReloadActiveConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it("tail_replay_done is a silent marker", () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    handleFrame({ type: "tail_replay_done" });
+    // Must not log "unknown frame" — the handler exists.
+    expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 });

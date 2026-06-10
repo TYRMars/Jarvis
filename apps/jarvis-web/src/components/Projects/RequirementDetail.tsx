@@ -29,7 +29,16 @@ import {
   verifyRunByCommands,
 } from "../../services/requirements";
 import { pickedRouting } from "../../services/socket";
-import { Modal, Select } from "../ui";
+import {
+  listWorkflowRuns,
+  loadWorkflows,
+  runWorkflow,
+  subscribeWorkflows,
+  workflowsLoaded,
+  workflowsSnapshot,
+  type WorkflowRun,
+} from "../../services/workflows";
+import { Button, Modal, Select } from "../ui";
 import type { BoardColumn } from "./columns";
 import { MarkdownLite } from "./MarkdownLite";
 import { ActivityList } from "./activityRow";
@@ -40,6 +49,11 @@ import {
   RequirementLabelPicker,
   useEnsureLabels,
 } from "./RequirementLabels";
+
+function tx(key: string, fallback: string): string {
+  const v = t(key);
+  return v === key ? fallback : v;
+}
 
 // Right-side slide-in panel that replaces the previous in-place
 // expand interaction. The card surface stays compact (single
@@ -390,6 +404,11 @@ export function RequirementDetail({
             )}
           </section>
 
+          <RequirementWorkflowSection
+            requirement={requirement}
+            disabled={isLocalOnly}
+          />
+
           <RequirementTodosSection
             requirement={requirement}
             onHandleTodo={(todo) =>
@@ -553,6 +572,155 @@ function RequirementNextStep({
         )}
       </div>
     </section>
+  );
+}
+
+// Bind a declarative workflow to this requirement and run / inspect it.
+// When a workflow is bound, "working" the card (auto loop or the Run
+// button here) executes the whole recipe instead of a single agent turn.
+function RequirementWorkflowSection({
+  requirement,
+  disabled,
+}: {
+  requirement: Requirement;
+  disabled: boolean;
+}) {
+  const [tick, setTick] = useState(0);
+  const [runs, setRuns] = useState<WorkflowRun[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    if (!workflowsLoaded()) void loadWorkflows().catch(() => {});
+    const unsub = subscribeWorkflows(() => {
+      if (alive) setTick((n) => n + 1);
+    });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, []);
+  void tick;
+
+  const workflows = workflowsSnapshot();
+  const boundId = requirement.workflow_id ?? "";
+
+  const refreshRuns = async (wfId: string) => {
+    try {
+      const all = await listWorkflowRuns(wfId);
+      setRuns(all.filter((r) => r.requirement_id === requirement.id));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  useEffect(() => {
+    if (boundId) void refreshRuns(boundId);
+    else setRuns(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boundId, requirement.id]);
+
+  const onPick = (value: string) => {
+    setError(null);
+    updateRequirement(requirement.id, { workflow_id: value || null });
+  };
+
+  const onRun = async () => {
+    if (!boundId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await runWorkflow(boundId, requirement.id);
+      await refreshRuns(boundId);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const options = [
+    {
+      value: "",
+      label: tx("requirementWorkflowNone", "No workflow (single agent run)"),
+      searchText: "none",
+    },
+    ...workflows.map((w) => ({ value: w.id, label: w.name, searchText: w.name })),
+  ];
+
+  return (
+    <section className="requirement-detail-topic requirement-workflow">
+      <h3 className="requirement-detail-section-heading">
+        {tx("requirementWorkflowHeading", "Workflow")}
+      </h3>
+      <div className="requirement-workflow-row">
+        <Select
+          value={boundId}
+          onChange={onPick}
+          options={options}
+          ariaLabel={tx("requirementWorkflowPick", "Bind a workflow")}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={disabled || busy || !boundId}
+          onClick={() => void onRun()}
+        >
+          {busy
+            ? tx("requirementWorkflowRunning", "Running…")
+            : tx("requirementWorkflowRun", "Run workflow")}
+        </Button>
+      </div>
+      {error && (
+        <p className="requirement-detail-start-error" role="alert">
+          {error}
+        </p>
+      )}
+      {boundId && <WorkflowRunTimeline runs={runs} />}
+    </section>
+  );
+}
+
+// Compact run timeline for the requirement detail — one entry per
+// WorkflowRun bound to this requirement, with per-step status.
+function WorkflowRunTimeline({ runs }: { runs: WorkflowRun[] | null }) {
+  if (runs === null) return null;
+  if (runs.length === 0) {
+    return (
+      <p className="requirement-detail-empty">
+        {tx("requirementWorkflowNoRuns", "No workflow runs yet.")}
+      </p>
+    );
+  }
+  return (
+    <ul className="workflow-runs-list">
+      {runs.map((r) => (
+        <li key={r.id} className={`workflow-run-item workflow-run-${r.status}`}>
+          <div className="workflow-run-head">
+            <span className={`workflow-run-badge workflow-run-badge-${r.status}`}>
+              {r.status}
+            </span>
+            <span className="workflow-run-time">{r.started_at}</span>
+          </div>
+          <ol className="workflow-run-steps">
+            {r.step_results.map((s) => (
+              <li
+                key={s.step_id}
+                className={`workflow-run-step workflow-run-step-${s.status}`}
+              >
+                <span className="workflow-run-step-name">{s.name}</span>
+                <span
+                  className={`workflow-run-step-status workflow-run-step-status-${s.status}`}
+                >
+                  {s.status}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -868,7 +1036,7 @@ function RunDetail({
           className="requirement-detail-run-worktree"
           title={run.worktree_path}
         >
-          worktree: <code>{run.worktree_path}</code>
+          {t("projDetailWorktreeLabel")} <code>{run.worktree_path}</code>
         </p>
       )}
       {run.verification?.command_results &&
@@ -879,8 +1047,8 @@ function RunDetail({
                 <code>{cmd.command}</code>
                 <span className="requirement-detail-run-cmd-exit">
                   {cmd.exit_code === 0
-                    ? "exit 0"
-                    : "exit " + (cmd.exit_code ?? "?")}
+                    ? t("projDetailExitCode", 0)
+                    : t("projDetailExitCode", cmd.exit_code ?? "?")}
                   {" · "}
                   {cmd.duration_ms}ms
                 </span>
