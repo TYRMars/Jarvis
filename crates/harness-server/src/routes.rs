@@ -64,6 +64,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/chat/runs/:conversation_id/interrupt",
             post(interrupt_chat_run),
         )
+        .merge(crate::openapi::router())
         .merge(conversations::router())
         .merge(projects::router())
         .merge(permissions::router())

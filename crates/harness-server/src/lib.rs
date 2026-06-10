@@ -48,6 +48,7 @@ mod market_routes;
 mod memory_routes;
 mod mcp_routes;
 mod observability_routes;
+mod openapi;
 mod permissions;
 mod plugin_routes;
 mod project_binder;
