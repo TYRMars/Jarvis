@@ -87,7 +87,7 @@ export function CollapsedToolGroup({ messages }: Props) {
         <span className="tool-step-summary">
           {summary}
           <span className="tool-step-step-count">
-            {" "}· {messages.length} steps
+            {" "}· {t("chatMsgASteps", messages.length)}
           </span>
         </span>
         {badge ? <span className="tool-step-badge">{badge}</span> : null}

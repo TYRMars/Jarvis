@@ -19,9 +19,15 @@
 //! runs are surfaced through their dedicated detail endpoints. The
 //! panel is "what's in flight right now", not a history view.
 
-use axum::{extract::State, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::{Query, State},
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
+use harness_automation::AutomationRunStatus;
 use harness_project::RequirementRunStatus;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::chat_runs::ChatRunStatus;
@@ -54,6 +60,7 @@ pub enum TaskKind {
     SubagentRun,
     RequirementRun,
     McpServer,
+    AutomationRun,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,12 +72,50 @@ struct TasksResponse {
     generated_at: u64,
 }
 
-async fn list_tasks(State(state): State<AppState>) -> impl IntoResponse {
-    let items = collect_tasks(&state).await;
+/// Optional query filters for the tasks endpoint. v1 supports
+/// `?conversation=<id>` so reconnecting WS clients can ask "is the
+/// run for this conversation still in flight?" without sifting
+/// through every running task in the org.
+#[derive(Debug, Default, Deserialize)]
+pub struct TasksQuery {
+    /// When set, only entries tied to this conversation id are
+    /// returned. Matches `chat_run.id` directly; matches
+    /// `subagent_run` / `requirement_run` via their detail payload
+    /// when those records carry `conversation_id`. MCP entries are
+    /// always elided when this filter is active (they're not
+    /// conversation-scoped).
+    pub conversation: Option<String>,
+}
+
+async fn list_tasks(
+    State(state): State<AppState>,
+    Query(query): Query<TasksQuery>,
+) -> impl IntoResponse {
+    let mut items = collect_tasks(&state).await;
+    if let Some(conv) = query.conversation.as_deref() {
+        items.retain(|t| task_matches_conversation(t, conv));
+    }
     Json(TasksResponse {
         items,
         generated_at: now_ms(),
     })
+}
+
+/// Whether a `TaskEntry` is scoped to the requested conversation id.
+/// Chat runs match by `id` (the id is the conversation id today);
+/// subagent / requirement runs check `detail.conversation_id` when
+/// present; MCP entries never match (they're cross-conversation
+/// infrastructure).
+fn task_matches_conversation(task: &TaskEntry, conversation_id: &str) -> bool {
+    match task.kind {
+        TaskKind::ChatRun => task.id == conversation_id,
+        TaskKind::SubagentRun | TaskKind::RequirementRun => task
+            .detail
+            .get("conversation_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v == conversation_id),
+        TaskKind::McpServer | TaskKind::AutomationRun => false,
+    }
 }
 
 /// Build a snapshot of the current `TaskEntry` set from every
@@ -202,14 +247,10 @@ pub(crate) async fn collect_tasks(state: &AppState) -> Vec<TaskEntry> {
                 continue;
             }
             let (status, label) = match s.status {
-                McpServerStatus::Stopped => (
-                    "stopped",
-                    format!("MCP {} · stopped", s.prefix),
-                ),
-                McpServerStatus::Unhealthy => (
-                    "unhealthy",
-                    format!("MCP {} · unhealthy", s.prefix),
-                ),
+                McpServerStatus::Stopped => ("stopped", format!("MCP {} · stopped", s.prefix)),
+                McpServerStatus::Unhealthy => {
+                    ("unhealthy", format!("MCP {} · unhealthy", s.prefix))
+                }
                 McpServerStatus::Running => unreachable!(),
             };
             // MCP servers don't have a meaningful timestamp on
@@ -226,6 +267,30 @@ pub(crate) async fn collect_tasks(state: &AppState) -> Vec<TaskEntry> {
                 updated_at: now,
                 detail: serde_json::to_value(&s).unwrap_or(Value::Null),
             });
+        }
+    }
+
+    if let Some(store) = state.automations.as_ref() {
+        if let Ok(rows) = store.list().await {
+            for task in rows {
+                if task.last_run_status != Some(AutomationRunStatus::Running) {
+                    continue;
+                }
+                let started_ms = task
+                    .last_run_at
+                    .as_deref()
+                    .and_then(parse_rfc3339_ms)
+                    .unwrap_or_else(now_ms);
+                items.push(TaskEntry {
+                    kind: TaskKind::AutomationRun,
+                    id: task.id.clone(),
+                    label: format!("Automation · {}", task.title),
+                    status: "running".into(),
+                    started_at: started_ms,
+                    updated_at: parse_rfc3339_ms(&task.updated_at).unwrap_or(started_ms),
+                    detail: serde_json::to_value(&task).unwrap_or(Value::Null),
+                });
+            }
         }
     }
 
@@ -289,7 +354,9 @@ mod tests {
     #[tokio::test]
     async fn empty_state_returns_empty_items() {
         let state = mk_state();
-        let resp = list_tasks(State(state)).await.into_response();
+        let resp = list_tasks(State(state), Query(TasksQuery::default()))
+            .await
+            .into_response();
         let body = read_json(resp).await;
         assert!(body["items"].as_array().unwrap().is_empty());
         assert!(body["generated_at"].as_u64().is_some());
@@ -299,7 +366,9 @@ mod tests {
     async fn active_chat_run_surfaces() {
         let state = mk_state();
         state.chat_runs.start("conv-123");
-        let resp = list_tasks(State(state)).await.into_response();
+        let resp = list_tasks(State(state), Query(TasksQuery::default()))
+            .await
+            .into_response();
         let body = read_json(resp).await;
         let items = body["items"].as_array().unwrap();
         assert_eq!(items.len(), 1, "expected 1 task, got: {items:?}");
@@ -333,7 +402,9 @@ mod tests {
             },
         );
         let state = mk_state().with_subagent_runs(runs);
-        let resp = list_tasks(State(state)).await.into_response();
+        let resp = list_tasks(State(state), Query(TasksQuery::default()))
+            .await
+            .into_response();
         let body = read_json(resp).await;
         let items = body["items"].as_array().unwrap();
         assert_eq!(items.len(), 1, "expected the subagent run, got: {items:?}");
@@ -353,11 +424,48 @@ mod tests {
             conversation: harness_core::Conversation::new(),
         };
         state.chat_runs.event(Some("conv-done"), &done);
-        let resp = list_tasks(State(state)).await.into_response();
+        let resp = list_tasks(State(state), Query(TasksQuery::default()))
+            .await
+            .into_response();
         let body = read_json(resp).await;
         assert!(
             body["items"].as_array().unwrap().is_empty(),
             "completed run leaked into tasks: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn conversation_filter_keeps_matching_chat_run_and_drops_others() {
+        let state = mk_state();
+        state.chat_runs.start("conv-keep");
+        state.chat_runs.start("conv-drop");
+        let resp = list_tasks(
+            State(state),
+            Query(TasksQuery {
+                conversation: Some("conv-keep".into()),
+            }),
+        )
+        .await
+        .into_response();
+        let body = read_json(resp).await;
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "filter should keep only conv-keep");
+        assert_eq!(items[0]["id"], "conv-keep");
+    }
+
+    #[tokio::test]
+    async fn conversation_filter_returns_empty_when_no_match() {
+        let state = mk_state();
+        state.chat_runs.start("conv-a");
+        let resp = list_tasks(
+            State(state),
+            Query(TasksQuery {
+                conversation: Some("conv-other".into()),
+            }),
+        )
+        .await
+        .into_response();
+        let body = read_json(resp).await;
+        assert!(body["items"].as_array().unwrap().is_empty());
     }
 }

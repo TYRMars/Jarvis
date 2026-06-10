@@ -26,6 +26,7 @@ import {
   type ProjectWorkspaceStatus,
 } from "../../services/projects";
 import { samePath, folderNameFromPath } from "./resourceSelection";
+import { t } from "../../utils/i18n";
 
 function BranchIcon() {
   return (
@@ -123,7 +124,7 @@ export function MultiGitRail({ activePathOverride }: Props) {
             <span className="session-branch-rail-name">{label}</span>
             <span className="session-branch-rail-branch">{branchLabel}</span>
             {vcs === "git" && dirty ? (
-              <span className="session-dirty-dot" title="dirty worktree" />
+              <span className="session-dirty-dot" title={t("composerDirtyWorktree")} />
             ) : null}
           </span>
         );

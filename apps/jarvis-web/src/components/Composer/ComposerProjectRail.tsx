@@ -215,7 +215,7 @@ export function ComposerProjectRail() {
   };
 
   return (
-    <div className="composer-project-rail" ref={wrapRef} role="toolbar" aria-label="Project, folders, branches">
+    <div className="composer-project-rail" ref={wrapRef} role="toolbar" aria-label={t("composerRailToolbarLabel")}>
       {/* ===== Project picker chip ===== */}
       <div className="composer-project-rail-anchor" ref={projectMenuRef}>
         <button
@@ -246,8 +246,8 @@ export function ComposerProjectRail() {
           <button
             type="button"
             className="composer-project-chip-clear"
-            aria-label="Clear project"
-            title="Clear project"
+            aria-label={t("composerRailClearProject")}
+            title={t("composerRailClearProject")}
             onClick={onClearProject}
           >
             <CloseIcon />
@@ -341,13 +341,13 @@ export function ComposerProjectRail() {
               {ref ? (
                 <span
                   className="composer-folder-chip-mode"
-                  title={`Branch applied as ${ref.mode}`}
+                  title={t("composerRailBranchAppliedAs", ref.mode)}
                 >
                   {ref.mode === "worktree" ? "wt" : "ck"}
                 </span>
               ) : null}
               {dirty ? (
-                <span className="session-dirty-dot" title="dirty worktree" />
+                <span className="session-dirty-dot" title={t("composerDirtyWorktree")} />
               ) : null}
             </button>
             {popoverOpen && project ? (
@@ -376,8 +376,8 @@ export function ComposerProjectRail() {
           <button
             type="button"
             className="session-chip session-chip-add composer-add-folder-chip"
-            aria-label="Add folder to project"
-            title="Add folder to project"
+            aria-label={t("composerRailAddFolderToProject")}
+            title={t("composerRailAddFolderToProject")}
             onClick={() => setAddFolderOpen(true)}
           >
             <PlusIcon />

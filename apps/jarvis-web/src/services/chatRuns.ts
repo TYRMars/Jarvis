@@ -34,6 +34,40 @@ const trackedConversationIds = new Set<string>();
 let pollTimer: number | null = null;
 let unsupported = false;
 
+/// Drop the cached `seq` cursor for `conversationId`. Called from
+/// the WS `resume_error: evicted` / `tail_replay_start` gap-detection
+/// handlers when the client has fallen behind the server's ring
+/// buffer and needs to refetch persisted history from scratch
+/// rather than ask for `?after=<stale-seq>` (which would just
+/// re-trigger the same eviction error).
+export function invalidateConversationSeq(conversationId: string): void {
+  lastSeqByConversation.delete(conversationId);
+}
+
+/// Snapshot of the highest `seq` the client has observed for
+/// `conversationId`. Used by gap-detection in the lifecycle frame
+/// handler to decide whether `tail_replay_start.first_seq` indicates
+/// dropped events, and by `resumeConversation` to populate
+/// `Resume.after_seq` so reconnects only replay missing events. `0`
+/// when no events have been recorded yet — the "give me everything"
+/// cursor.
+export function clientLastSeq(conversationId: string): number {
+  return lastSeqByConversation.get(conversationId) ?? 0;
+}
+
+/// Update the cursor when a wire frame carries a numeric `seq`
+/// stamp. Called from `handleFrameForConversation` for every
+/// observed frame so a later disconnect → reconnect can resume
+/// from `clientLastSeq(id)` instead of re-replaying the whole ring.
+/// Monotonic — never moves backwards. No-op on frames without a
+/// numeric `seq` (lifecycle frames, transport-level signals like
+/// `tail_replay_start`, etc.).
+export function observeFrameSeq(conversationId: string, seq: unknown): void {
+  if (typeof seq !== "number" || !Number.isFinite(seq) || seq <= 0) return;
+  const prev = lastSeqByConversation.get(conversationId) ?? 0;
+  if (seq > prev) lastSeqByConversation.set(conversationId, seq);
+}
+
 export async function refreshChatRuns(): Promise<void> {
   if (unsupported) return;
   try {

@@ -633,6 +633,12 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
         // also iterates `reqs`.
         let dep_index: std::collections::HashMap<String, RequirementStatus> =
             reqs.iter().map(|r| (r.id.clone(), r.status)).collect();
+        // Structural deadlock detection for the depends_on gate:
+        // requirements that sit on — or transitively behind — a
+        // dependency cycle can never satisfy the gate, so they are
+        // surfaced once as a `blocked` row rather than skipped in
+        // silence forever (issue #97).
+        let cycle_blocked = cycle_blocked_requirement_ids(&reqs);
 
         for req in &reqs {
             if picked >= config.max_units_per_tick {
@@ -668,10 +674,50 @@ pub async fn tick(state: &AppState, config: &AutoModeConfig) -> Result<usize, St
                 );
                 continue;
             }
-            // v1.0 — depends_on. Skip until every listed
-            // dependency reaches `done`. Unknown ids (deleted /
-            // cross-project) are treated as "not yet done" so a
-            // stale ref blocks rather than silently passes.
+            // v1.0 — depends_on gate. Skip until every listed
+            // dependency reaches `done`. Three distinct failure
+            // shapes; the first two are *permanent* deadlocks that we
+            // surface once as an operator-visible `blocked` Activity
+            // row instead of an endless silent skip (issue #97):
+            //
+            //  - self-dependency  → a row that lists its own id can
+            //    never be `done` while blocked, so it blocks itself
+            //    forever.
+            //  - dependency cycle → A→B, B→A: no member ever reaches
+            //    `done`, so all members (and anything behind them)
+            //    stall permanently.
+            //
+            // Unknown ids (deleted / cross-project) stay a silent
+            // `debug!` skip: they fail safe (block rather than run the
+            // wrong thing), and a block on a genuinely deleted dep is
+            // the intended behaviour. Cross-project deps are not
+            // resolved across stores in v1 — author them within a
+            // single project.
+            if req.depends_on.iter().any(|d| d == &req.id) {
+                record_blocked_once(state, &req.id, "self_dependency", json!({ "dep": req.id }))
+                    .await;
+                debug!(
+                    requirement_id = %req.id,
+                    reason = "self_dependency",
+                    "auto mode skipping requirement (self-dependency deadlock)"
+                );
+                continue;
+            }
+            if cycle_blocked.contains(req.id.as_str()) {
+                record_blocked_once(
+                    state,
+                    &req.id,
+                    "dependency_cycle",
+                    json!({ "depends_on": req.depends_on }),
+                )
+                .await;
+                debug!(
+                    requirement_id = %req.id,
+                    reason = "dependency_cycle",
+                    "auto mode skipping requirement (dependency cycle)"
+                );
+                continue;
+            }
             if let Some(blocking_dep) = req.depends_on.iter().find(|dep_id| {
                 !dep_index
                     .get(dep_id.as_str())
@@ -1178,6 +1224,37 @@ async fn drive_one_with_prompt(
     timeout_ms: u64,
     workflow_prompt: Option<String>,
 ) -> Result<(), String> {
+    // A requirement bound to a declarative workflow runs the multi-step
+    // recipe instead of a single agent turn. The bound workflow must
+    // still exist in the store; otherwise we fall through to the normal
+    // single-agent path (the binding is a soft reference).
+    if let (Some(wf_id), Some(wf_store)) = (
+        requirement.workflow_id.as_deref(),
+        state.workflows.as_ref(),
+    ) {
+        match wf_store.get(wf_id).await {
+            Ok(Some(def)) => {
+                info!(
+                    requirement_id = %requirement.id,
+                    workflow_id = %wf_id,
+                    "auto mode: running bound workflow"
+                );
+                return drive_one_workflow(state, &def, requirement, workspace_override, timeout_ms)
+                    .await;
+            }
+            Ok(None) => {
+                warn!(
+                    requirement_id = %requirement.id,
+                    workflow_id = %wf_id,
+                    "auto mode: bound workflow not found; falling back to single-agent run"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, workflow_id = %wf_id, "auto mode: load bound workflow failed");
+            }
+        }
+    }
+
     let req_store = state
         .requirements
         .clone()
@@ -1342,6 +1419,7 @@ async fn drive_one_with_prompt(
         .await;
         advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
         capture_failure_memory(state, &requirement, &run).await;
+        capture_failure_learning_memory(state, &requirement, &run).await;
         record_activity(
             state,
             &requirement.id,
@@ -1499,6 +1577,7 @@ async fn drive_one_with_prompt(
     }
     advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
     capture_failure_memory(state, &requirement, &run).await;
+    capture_failure_learning_memory(state, &requirement, &run).await;
     record_activity(
         state,
         &requirement.id,
@@ -1508,6 +1587,181 @@ async fn drive_one_with_prompt(
             "run_id": run.id,
             "status": run.status.as_wire(),
             "auto": true,
+        }),
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Drive a requirement bound to a declarative workflow.
+///
+/// The workflow runtime mints its own per-step conversations, but the
+/// auto loop's re-pickup guards (in-flight dedup, retry cap, failure
+/// backoff) and status advancement all key off [`RequirementRun`] rows
+/// and the requirement status. The single-agent path
+/// (`drive_one_with_prompt`) writes those; the workflow path historically
+/// did not, so an approved workflow-bound row was re-dispatched on every
+/// tick forever (issue #80). This wraps the workflow dispatch in the same
+/// bookkeeping:
+///
+/// 1. Advance the requirement off `Backlog` and synthesise the execution
+///    checklist (so a clean run advances `InProgress` → `Review` instead
+///    of staying eligible).
+/// 2. Mint a `Running` [`RequirementRun`] **before** dispatch, so a
+///    workflow that outlives a tick is seen as in-flight and the next
+///    tick skips re-pickup.
+/// 3. Mark the run `Completed` / `Failed` from the workflow outcome and
+///    advance the requirement — letting the existing retry / backoff
+///    guards apply uniformly.
+async fn drive_one_workflow(
+    state: &AppState,
+    def: &harness_workflow::WorkflowDefinition,
+    requirement: &Requirement,
+    workspace_override: Option<PathBuf>,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    let req_store = state
+        .requirements
+        .clone()
+        .ok_or_else(|| "requirement store missing".to_string())?;
+    let run_store = state
+        .requirement_runs
+        .clone()
+        .ok_or_else(|| "run store missing".to_string())?;
+
+    let workspace = workspace_override
+        .clone()
+        .or_else(|| state.workspace_root.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // 1. Advance requirement off Backlog + synthesise the execution
+    //    checklist so completion lands at Review (awaiting acceptance)
+    //    rather than looping. Mirrors drive_one_with_prompt.
+    let mut requirement = requirement.clone();
+    let advanced = requirement.status == RequirementStatus::Backlog;
+    if advanced {
+        requirement.status = RequirementStatus::InProgress;
+        requirement.touch();
+    }
+    requirement.ensure_execution_checklist();
+    req_store
+        .upsert(&requirement)
+        .await
+        .map_err(|e| format!("upsert requirement: {e}"))?;
+
+    // 2. Mint a Running run BEFORE dispatch so `has_inflight` sees a
+    //    workflow that outlives a tick. The run is not tied to a single
+    //    conversation (the workflow links its per-step conversations onto
+    //    the requirement itself), so we mint a synthetic id.
+    let conversation_id = uuid::Uuid::new_v4().to_string();
+    let mut run = RequirementRun::new(requirement.id.clone(), conversation_id);
+    run.status = RequirementRunStatus::Running;
+    run.model = Some(state.agent_template.model.clone());
+    run.push_log(
+        RequirementRunLogLevel::Info,
+        "Auto workflow run started",
+        Some(json!({
+            "workflow_id": def.id,
+            "workspace": workspace.display().to_string(),
+            "project_id": requirement.project_id.clone(),
+        })),
+    );
+    run_store
+        .upsert(&run)
+        .await
+        .map_err(|e| format!("upsert run: {e}"))?;
+
+    record_activity(
+        state,
+        &requirement.id,
+        ActivityKind::RunStarted,
+        ActivityActor::System,
+        json!({
+            "run_id": run.id,
+            "workflow_id": def.id,
+            "auto": true,
+            "workflow": true,
+        }),
+    )
+    .await;
+    if advanced {
+        record_activity(
+            state,
+            &requirement.id,
+            ActivityKind::StatusChange,
+            ActivityActor::System,
+            json!({
+                "from": "backlog",
+                "to": "in_progress",
+                "reason": "auto_workflow_started",
+            }),
+        )
+        .await;
+    }
+
+    // 3. Dispatch. A Failed terminal status surfaces as Err.
+    let outcome = crate::workflow_runtime::drive_workflow(
+        state,
+        def,
+        Some(&requirement),
+        workspace_override,
+        timeout_ms,
+    )
+    .await;
+
+    match outcome {
+        Ok(wf_run) => {
+            run.summary = Some(truncate_one_line(
+                &format!(
+                    "Workflow '{}' completed ({} step(s)).",
+                    def.name,
+                    wf_run.step_results.len()
+                ),
+                240,
+            ));
+            run.push_log(
+                RequirementRunLogLevel::Success,
+                "Workflow completed",
+                Some(json!({
+                    "workflow_run_id": wf_run.id,
+                    "steps": wf_run.step_results.len(),
+                })),
+            );
+            run.finish(RequirementRunStatus::Completed);
+        }
+        Err(e) => {
+            run.push_log(
+                RequirementRunLogLevel::Error,
+                "Workflow failed",
+                Some(json!({ "error": e.clone() })),
+            );
+            run.error = Some(e);
+            run.finish(RequirementRunStatus::Failed);
+        }
+    }
+    if let Err(e) = run_store.upsert(&run).await {
+        warn!(error = %e, "upsert finished workflow run failed");
+    }
+
+    // The workflow linked its step conversations onto the requirement;
+    // reload before advancing so we operate on the durable row.
+    if let Ok(Some(latest)) = req_store.get(&requirement.id).await {
+        requirement = latest;
+    }
+    advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
+    capture_failure_memory(state, &requirement, &run).await;
+    capture_failure_learning_memory(state, &requirement, &run).await;
+    record_activity(
+        state,
+        &requirement.id,
+        ActivityKind::RunFinished,
+        ActivityActor::System,
+        json!({
+            "run_id": run.id,
+            "status": run.status.as_wire(),
+            "auto": true,
+            "workflow": true,
         }),
     )
     .await;
@@ -1872,7 +2126,100 @@ fn truncate_one_line(s: &str, cap: usize) -> String {
     }
 }
 
-async fn record_activity(
+/// Compute the set of requirement ids that can **never** satisfy
+/// their `depends_on` gate because they sit on — or transitively
+/// behind — a dependency cycle within the project.
+///
+/// Only in-project edges are considered: a dep id pointing outside
+/// `reqs` (deleted / cross-project) is dropped here so it can't close
+/// a cycle; those unknown-id blocks are handled separately by the
+/// caller (they fail safe and stay a silent skip).
+///
+/// Implementation is a Kahn-style peel: a requirement "settles" once
+/// every in-project dep it lists has settled. Whatever can't settle
+/// is stuck behind a cycle — self-loops (`A→A`) and mutual cycles
+/// (`A→B→A`) included.
+fn cycle_blocked_requirement_ids(reqs: &[Requirement]) -> HashSet<String> {
+    let ids: HashSet<&str> = reqs.iter().map(|r| r.id.as_str()).collect();
+    let mut pending: std::collections::HashMap<&str, HashSet<&str>> = reqs
+        .iter()
+        .map(|r| {
+            let deps: HashSet<&str> = r
+                .depends_on
+                .iter()
+                .map(String::as_str)
+                .filter(|d| ids.contains(d))
+                .collect();
+            (r.id.as_str(), deps)
+        })
+        .collect();
+    loop {
+        let settled: Vec<&str> = pending
+            .iter()
+            .filter(|(_, deps)| deps.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        if settled.is_empty() {
+            break;
+        }
+        for id in &settled {
+            pending.remove(id);
+        }
+        for deps in pending.values_mut() {
+            for id in &settled {
+                deps.remove(id);
+            }
+        }
+    }
+    pending.keys().map(|id| id.to_string()).collect()
+}
+
+/// Append a `Blocked` Activity row for a permanently-deadlocked
+/// requirement, but only when the newest existing row isn't already
+/// the same block — so the per-tick scheduler surfaces the stall once
+/// rather than spamming the timeline every tick. If a later event
+/// (run, status change, manual unblock) intervenes, a recurring block
+/// re-emits.
+async fn record_blocked_once(
+    state: &AppState,
+    requirement_id: &str,
+    reason: &str,
+    detail: serde_json::Value,
+) {
+    let Some(store) = state.activities.as_ref() else {
+        return;
+    };
+    match store.list_for_requirement(requirement_id).await {
+        Ok(rows) => {
+            if let Some(latest) = rows.first() {
+                if latest.kind == ActivityKind::Blocked
+                    && latest.body.get("reason").and_then(|v| v.as_str()) == Some(reason)
+                {
+                    return;
+                }
+            }
+        }
+        Err(e) => {
+            // Better a possible duplicate row than a silent stall:
+            // fall through and emit.
+            warn!(error = %e, "auto mode: dedup list for blocked activity failed");
+        }
+    }
+    let mut body = detail;
+    if let serde_json::Value::Object(map) = &mut body {
+        map.insert("reason".to_string(), json!(reason));
+    }
+    record_activity(
+        state,
+        requirement_id,
+        ActivityKind::Blocked,
+        ActivityActor::System,
+        body,
+    )
+    .await;
+}
+
+pub(crate) async fn record_activity(
     state: &AppState,
     requirement_id: &str,
     kind: ActivityKind,
@@ -2004,6 +2351,181 @@ async fn capture_failure_memory(state: &AppState, requirement: &Requirement, run
 /// to remember why this run blew up. The string is truncated to
 /// [`ProjectMemory::BODY_CAP`] inside `ProjectMemory::new`, so we
 /// can be slightly verbose here without budgeting carefully.
+/// Phase 1 self-improving-agent — sibling of
+/// [`capture_failure_memory`]. Writes a `MemoryItem` row through the
+/// new row-based [`harness_learning::MemoryStore`] when a
+/// `RequirementRun` lands in `Failed`. Different store from the
+/// existing `ProjectMemoryStore` path: this one lives under
+/// `<data-dir>/jarvis/memories/` and is shaped by the
+/// self-improving-agent spec (scope / kind / source / pinned / etc.)
+/// instead of the older file-based [`harness_project::ProjectMemory`].
+///
+/// Both fire together by design — Phase 2 will unify the two stores;
+/// until then operators see the same failure recorded in both
+/// surfaces, which is fine because they're consumed by different
+/// product paths (the older one feeds the next run's system prompt,
+/// the new one will feed the cross-project Memory UI + reviewer
+/// fork). No-op when the new store isn't configured.
+async fn capture_failure_learning_memory(
+    state: &AppState,
+    requirement: &Requirement,
+    run: &RequirementRun,
+) {
+    let Some(store) = state.learning_memory.as_ref() else {
+        return;
+    };
+    if run.status != RequirementRunStatus::Failed {
+        return;
+    }
+    let body = render_failure_memory_body(run);
+    let signature = failure_signature(run);
+    let req_tag = format!("requirement:{}", requirement.id);
+    let sig_tag = format!("error-sig:{signature}");
+
+    // Dedupe by (requirement_id, error-signature): a flapping
+    // requirement that re-fails the same way must not spawn a fresh
+    // gotcha row per attempt (that is the unbounded-noise half of the
+    // bug). If a matching row already exists, refresh it in place and
+    // bump an occurrence counter instead of inserting a duplicate.
+    let existing = store
+        .list(harness_learning::MemoryFilter {
+            scope: Some(harness_learning::MemoryScope::project(
+                requirement.project_id.clone(),
+            )),
+            kind: Some(harness_learning::MemoryKind::Gotcha),
+            tags: vec![req_tag.clone(), sig_tag.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+
+    if let Some(mut row) = existing.into_iter().next() {
+        let occurrences = row
+            .attributes
+            .get("occurrences")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+            + 1;
+        row.body = body;
+        row.source = harness_learning::MemorySource::Run {
+            run_id: run.id.clone(),
+        };
+        row.attributes = json!({
+            "occurrences": occurrences,
+            "last_run_id": run.id,
+            "error_signature": signature,
+        });
+        match store.upsert(row).await {
+            Ok(saved) => debug!(
+                run_id = %run.id,
+                memory_id = %saved.id,
+                occurrences,
+                project_id = %requirement.project_id,
+                "auto mode: failure deduped into existing learning memory row"
+            ),
+            Err(e) => warn!(
+                run_id = %run.id,
+                project_id = %requirement.project_id,
+                error = %e,
+                "auto mode: learning memory dedup update failed"
+            ),
+        }
+        return;
+    }
+
+    let mut item = harness_learning::MemoryItem::new(
+        harness_learning::MemoryScope::project(requirement.project_id.clone()),
+        harness_learning::MemoryKind::Gotcha,
+        format!("Run failed: {}", requirement.title),
+        body,
+    )
+    .with_source(harness_learning::MemorySource::Run {
+        run_id: run.id.clone(),
+    });
+    // Tag with the requirement id so the future Memory UI can offer
+    // "show all gotchas for this requirement" without a separate
+    // index, and with the error signature so the next failure of the
+    // same shape lands on this row instead of a fresh one.
+    item = item.with_tag(req_tag).with_tag(sig_tag);
+    item.attributes = json!({
+        "occurrences": 1u64,
+        "last_run_id": run.id,
+        "error_signature": signature,
+    });
+    // Lower confidence than user-typed rows — these are auto-derived
+    // signals; the reviewer fork may consolidate them later.
+    item.confidence = 0.7;
+    match store.upsert(item).await {
+        Ok(saved) => {
+            debug!(
+                run_id = %run.id,
+                memory_id = %saved.id,
+                project_id = %requirement.project_id,
+                "auto mode: failure captured into learning memory store"
+            );
+        }
+        Err(e) => warn!(
+            run_id = %run.id,
+            project_id = %requirement.project_id,
+            error = %e,
+            "auto mode: learning memory capture failed"
+        ),
+    }
+}
+
+/// Stable fingerprint of *how* a run failed, used to dedupe gotcha
+/// rows. Built from the first line of the run error plus the set of
+/// non-zero-exit verification commands (command + exit code) — the
+/// bits that identify a recurring failure — and deliberately excludes
+/// volatile detail (stderr bodies, timestamps) so the same failure
+/// hashes identically across retries. FNV-1a keeps it stable forever
+/// (unlike `DefaultHasher`, whose output isn't guaranteed across Rust
+/// versions) since the value is persisted in a tag.
+fn failure_signature(run: &RequirementRun) -> String {
+    let mut basis = String::new();
+    if let Some(err) = run
+        .error
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let first = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+        basis.push_str(first);
+        basis.push('\n');
+    }
+    if let Some(verification) = run.verification.as_ref() {
+        let mut cmds: Vec<String> = verification
+            .command_results
+            .iter()
+            .filter(|cr| cr.exit_code != Some(0))
+            .map(|cr| {
+                format!(
+                    "{}#{}",
+                    cr.command.trim(),
+                    cr.exit_code.map(|c| c.to_string()).unwrap_or_default()
+                )
+            })
+            .collect();
+        cmds.sort();
+        cmds.dedup();
+        basis.push_str(&cmds.join("\n"));
+    }
+    let basis = basis.trim();
+    let basis = if basis.is_empty() { "no-detail" } else { basis };
+    format!("{:016x}", fnv1a64(basis.as_bytes()))
+}
+
+/// 64-bit FNV-1a. Tiny, dependency-free, and deterministic across
+/// builds — exactly what a persisted dedup key needs.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn render_failure_memory_body(run: &RequirementRun) -> String {
     let mut body = String::new();
     if let Some(err) = run
@@ -2048,7 +2570,7 @@ mod tests {
     use harness_core::{AgentConfig, AgentProfile, ChatRequest, ChatResponse, Error, FinishReason, LlmProvider, Message};
 use harness_project::{Project, ProjectWorkspace, Requirement, RequirementStatus, RequirementTodo, RequirementTodoCreator, VerificationPlan};
     use harness_store::{
-        MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore,
+        MemoryActivityStore, MemoryAgentProfileStore, MemoryConversationStore, MemoryMemoryStore,
         MemoryProjectMemoryStore, MemoryProjectStore, MemoryRequirementRunStore,
         MemoryRequirementStore,
     };
@@ -3718,6 +4240,160 @@ Do {{ requirement.title }} in {{ issue.state }}.
         );
     }
 
+    // Phase 1 self-improving-agent — sibling of the test below
+    // (`failed_run_captures_project_memory_with_provenance`). Verifies
+    // the new row-based `MemoryStore` write path independent of the
+    // older `ProjectMemoryStore` one.
+
+    fn synth_failed_run(req_id: &str, run_id: &str, error: &str) -> RequirementRun {
+        // `RequirementRun::new(req_id, conversation_id)` auto-allocates
+        // a UUID for `run.id`; we override here so the test can assert
+        // the exact provenance round-trips through `MemorySource::Run`.
+        let mut run = RequirementRun::new(req_id, "conv-fixture");
+        run.id = run_id.to_string();
+        run.status = RequirementRunStatus::Failed;
+        run.error = Some(error.into());
+        run.started_at = chrono::Utc::now().to_rfc3339();
+        run.finished_at = Some(run.started_at.clone());
+        run
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_writes_gotcha_with_run_source() {
+        let state = base_state_with_canned_llm("ignored").with_user_memory_store(Arc::new(
+            MemoryMemoryStore::new(),
+        ));
+        let mut req = Requirement::new("proj-1", "Title goes here");
+        req.id = "req-fixture".into();
+        let run = synth_failed_run(&req.id, "run-fixture", "tests panicked");
+
+        capture_failure_learning_memory(&state, &req, &run).await;
+
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "exactly one gotcha per failed run");
+        let m = &rows[0];
+        assert_eq!(m.kind, harness_learning::MemoryKind::Gotcha);
+        match &m.scope {
+            harness_learning::MemoryScope::Project { project_id } => {
+                assert_eq!(project_id, "proj-1");
+            }
+            other => panic!("expected Project scope, got {other:?}"),
+        }
+        match &m.source {
+            harness_learning::MemorySource::Run { run_id } => {
+                assert_eq!(run_id, "run-fixture");
+            }
+            other => panic!("expected Run source, got {other:?}"),
+        }
+        assert!(m.title.contains("Title goes here"));
+        assert!(m.body.contains("tests panicked"));
+        assert!(m.tags.iter().any(|t| t == "requirement:req-fixture"));
+        assert!((m.confidence - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_skips_non_failed_runs() {
+        let state = base_state_with_canned_llm("ignored").with_user_memory_store(Arc::new(
+            MemoryMemoryStore::new(),
+        ));
+        let req = Requirement::new("proj-x", "ok one");
+        let mut run = synth_failed_run(&req.id, "rid", "unused");
+        run.status = RequirementRunStatus::Completed;
+        capture_failure_learning_memory(&state, &req, &run).await;
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "completed runs must not write a gotcha");
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_no_op_when_store_missing() {
+        // Don't wire a learning_memory store at all — function must
+        // return silently without panicking.
+        let state = base_state_with_canned_llm("ignored");
+        assert!(state.learning_memory.is_none());
+        let req = Requirement::new("proj-y", "no store");
+        let run = synth_failed_run(&req.id, "r1", "boom");
+        capture_failure_learning_memory(&state, &req, &run).await;
+        // No assertion possible; not panicking is the test.
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_dedupes_same_signature() {
+        // A flapping requirement that re-fails the same way must land
+        // on a single gotcha row, with an occurrence counter, rather
+        // than one fresh row per failed run (the unbounded-noise bug).
+        let state = base_state_with_canned_llm("ignored")
+            .with_user_memory_store(Arc::new(MemoryMemoryStore::new()));
+        let mut req = Requirement::new("proj-dup", "Flaky thing");
+        req.id = "req-dup".into();
+
+        let r1 = synth_failed_run(&req.id, "run-1", "tests panicked at foo.rs");
+        let r2 = synth_failed_run(&req.id, "run-2", "tests panicked at foo.rs");
+        let r3 = synth_failed_run(&req.id, "run-3", "tests panicked at foo.rs");
+        capture_failure_learning_memory(&state, &req, &r1).await;
+        capture_failure_learning_memory(&state, &req, &r2).await;
+        capture_failure_learning_memory(&state, &req, &r3).await;
+
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "three identical failures collapse to one row");
+        let m = &rows[0];
+        assert_eq!(
+            m.attributes.get("occurrences").and_then(|v| v.as_u64()),
+            Some(3),
+            "occurrence counter tracks every repeat"
+        );
+        // Source + last_run_id track the most recent failure.
+        match &m.source {
+            harness_learning::MemorySource::Run { run_id } => assert_eq!(run_id, "run-3"),
+            other => panic!("expected Run source, got {other:?}"),
+        }
+        assert_eq!(
+            m.attributes.get("last_run_id").and_then(|v| v.as_str()),
+            Some("run-3")
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_distinct_signatures_stay_separate() {
+        // Different failure shapes for the same requirement are
+        // genuinely distinct gotchas and must not be merged.
+        let state = base_state_with_canned_llm("ignored")
+            .with_user_memory_store(Arc::new(MemoryMemoryStore::new()));
+        let mut req = Requirement::new("proj-multi", "Two failure modes");
+        req.id = "req-multi".into();
+
+        let a = synth_failed_run(&req.id, "run-a", "compile error in lib.rs");
+        let b = synth_failed_run(&req.id, "run-b", "tests panicked in mod.rs");
+        capture_failure_learning_memory(&state, &req, &a).await;
+        capture_failure_learning_memory(&state, &req, &b).await;
+
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2, "distinct error signatures stay separate rows");
+    }
+
     #[tokio::test]
     async fn failed_run_captures_project_memory_with_provenance() {
         // Verification-only path: failing command marks the run
@@ -3909,5 +4585,191 @@ Do {{ requirement.title }} in {{ issue.state }}.
         runs.upsert(&backdated).await.unwrap();
         let n = tick(&state, &c).await.unwrap();
         assert_eq!(n, 1, "elapsed backoff window must let the row through");
+    }
+
+    // ---- depends_on cycle detection (issue #97) -----------------------
+
+    /// Build a requirement with a known id and dependency list, so the
+    /// graph-shape tests below can wire edges deterministically.
+    fn req_with_deps(id: &str, deps: &[&str]) -> Requirement {
+        let mut r = Requirement::new("proj", id);
+        r.id = id.to_string();
+        r.depends_on = deps.iter().map(|s| s.to_string()).collect();
+        r
+    }
+
+    #[test]
+    fn cycle_detection_flags_self_loop() {
+        let reqs = vec![req_with_deps("a", &["a"])];
+        let blocked = cycle_blocked_requirement_ids(&reqs);
+        assert!(blocked.contains("a"), "self-loop must be flagged");
+    }
+
+    #[test]
+    fn cycle_detection_flags_mutual_cycle_and_dependents() {
+        // a→b, b→a (cycle); c→a (behind the cycle); d standalone.
+        let reqs = vec![
+            req_with_deps("a", &["b"]),
+            req_with_deps("b", &["a"]),
+            req_with_deps("c", &["a"]),
+            req_with_deps("d", &[]),
+        ];
+        let blocked = cycle_blocked_requirement_ids(&reqs);
+        assert!(blocked.contains("a"), "cycle member a flagged");
+        assert!(blocked.contains("b"), "cycle member b flagged");
+        assert!(blocked.contains("c"), "dependent behind cycle flagged");
+        assert!(!blocked.contains("d"), "standalone row not flagged");
+    }
+
+    #[test]
+    fn cycle_detection_ignores_acyclic_and_unknown_deps() {
+        // a→b→done-chain is acyclic; e depends on an unknown
+        // (cross-project / deleted) id, which must NOT count as a
+        // cycle (the unknown-id block is handled by the caller).
+        let reqs = vec![
+            req_with_deps("a", &["b"]),
+            req_with_deps("b", &[]),
+            req_with_deps("e", &["external-id"]),
+        ];
+        let blocked = cycle_blocked_requirement_ids(&reqs);
+        assert!(blocked.is_empty(), "no cycles → empty set, got {blocked:?}");
+    }
+
+    #[tokio::test]
+    async fn tick_surfaces_self_dependency_as_blocked_activity() {
+        let state = wire_stores(base_state_with_canned_llm("done."));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+        let mut req = Requirement::new(&proj.id, "self blocked");
+        req.status = RequirementStatus::Backlog;
+        req.triage_state = TriageState::Approved;
+        req.assignee_id = Some(prof.id.clone());
+        req.depends_on = vec![req.id.clone()];
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 0, "self-dependency must not be picked up");
+
+        let acts = state
+            .activities
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        let blocked: Vec<_> = acts
+            .iter()
+            .filter(|a| a.kind == ActivityKind::Blocked)
+            .collect();
+        assert_eq!(blocked.len(), 1, "exactly one blocked row surfaced");
+        assert_eq!(
+            blocked[0].body.get("reason").and_then(|v| v.as_str()),
+            Some("self_dependency")
+        );
+
+        // A second tick must NOT re-emit (dedup on newest row).
+        let _ = tick(&state, &cfg()).await.unwrap();
+        let acts2 = state
+            .activities
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        let blocked2 = acts2.iter().filter(|a| a.kind == ActivityKind::Blocked).count();
+        assert_eq!(blocked2, 1, "blocked row must not be re-emitted each tick");
+    }
+
+
+    /// Regression (issue #80): a requirement bound to a declarative
+    /// workflow must mint a `RequirementRun` and advance its status, so
+    /// the auto loop's in-flight / retry guards and status filter apply.
+    /// Before the fix the workflow branch returned before any bookkeeping,
+    /// so the same approved row was re-dispatched on every tick forever.
+    #[tokio::test]
+    async fn tick_workflow_requirement_mints_run_and_is_not_re_picked() {
+        use harness_workflow::{WorkflowDefinition, WorkflowStep, WorkflowStepKind};
+
+        let state = wire_stores(base_state_with_canned_llm("workflow step done."))
+            .with_workflows(Arc::new(harness_store::MemoryWorkflowStore::new()));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+
+        // One-step workflow the requirement binds to.
+        let mut def = WorkflowDefinition::new("wf");
+        def.steps.push(WorkflowStep::new(
+            "only step",
+            WorkflowStepKind::Agent {
+                prompt: "do the thing".into(),
+                subagent: None,
+                model: None,
+                output_key: None,
+            },
+        ));
+        state.workflows.as_ref().unwrap().upsert(&def).await.unwrap();
+
+        let mut req = Requirement::new(&proj.id, "workflow-bound");
+        req.workflow_id = Some(def.id.clone());
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        // First tick picks the row exactly once.
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 1, "workflow-bound requirement should be picked once");
+
+        // Wait for the spawned workflow run to advance the requirement
+        // off Backlog (which happens after the run lands terminal).
+        let mut advanced = None;
+        for _ in 0..50 {
+            let saved = state
+                .requirements
+                .as_ref()
+                .unwrap()
+                .get(&req.id)
+                .await
+                .unwrap()
+                .unwrap();
+            if saved.status != RequirementStatus::Backlog {
+                advanced = Some(saved);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let saved = advanced.expect("workflow requirement never advanced off Backlog");
+        // A clean run lands at Review (awaiting acceptance), not eligible
+        // for re-pickup once a completed run exists.
+        assert_eq!(saved.status, RequirementStatus::Review);
+
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 1, "exactly one RequirementRun should be minted");
+        assert_eq!(runs[0].status, RequirementRunStatus::Completed);
+
+        // Second tick must NOT re-dispatch — the core of the bug.
+        let n2 = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n2, 0, "completed workflow row must not be re-picked");
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 1, "no second run may be minted on re-tick");
     }
 }

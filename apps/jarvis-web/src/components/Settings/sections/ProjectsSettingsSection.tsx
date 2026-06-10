@@ -77,7 +77,7 @@ export function ProjectsSettingsSection({ embedded }: { embedded?: boolean } = {
               aria-checked={showArchived}
               className={"settings-switch" + (showArchived ? " on" : "")}
               onClick={() => setShowArchived((v) => !v)}
-              title={showArchived ? "show all" : "hide archived"}
+              title={showArchived ? t("setSecBProjectsShowAll") : t("setSecBProjectsHideArchived")}
             >
               <span className="settings-switch-thumb" />
             </button>
@@ -180,8 +180,8 @@ function ProjectRow({
                 className="settings-btn settings-btn-danger"
                 onClick={async () => {
                   const ok = await confirm({
-                    title: `Archive "${project.name}"?`,
-                    detail: "Bound conversations keep working.",
+                    title: t("setSecBProjectsArchiveConfirm", project.name),
+                    detail: t("setSecBProjectsArchiveDetail"),
                     danger: true,
                     confirmLabel: t("uiConfirmArchiveOk"),
                   });
@@ -211,7 +211,7 @@ function ProjectRow({
             />
           </label>
           <label>
-            <span className="settings-row-hint">instructions</span>
+            <span className="settings-row-hint">{t("setSecBProjectsInstructions")}</span>
             <textarea
               className="settings-input"
               value={instructions}

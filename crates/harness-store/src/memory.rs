@@ -10,7 +10,14 @@ use std::sync::Arc;
 use crate::StoreError;
 use async_trait::async_trait;
 use chrono::Utc;
+use harness_automation::{AutomationStore, AutomationTask};
 use harness_channel::{ChannelBinding, ChannelBindingStore};
+use harness_workflow::{WorkflowDefinition, WorkflowRun, WorkflowStore};
+use harness_learning::{
+    fold_events_into_rows, validate_memory_safe, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore, SkillLifecycle, SkillLifecycleStore, SkillUsageEvent, SkillUsageFilter,
+    SkillUsageRow, SkillUsageStore,
+};
 use harness_core::{
     AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
     ConversationMetadata, ConversationRecord, ConversationStore, Tenant, TenantStore, TodoEvent,
@@ -103,6 +110,116 @@ impl ConversationStore for MemoryConversationStore {
     async fn delete(&self, id: &str) -> Result<bool, BoxError> {
         let mut guard = self.inner.write().await;
         Ok(guard.remove(id).is_some())
+    }
+}
+
+#[derive(Clone)]
+pub struct MemoryAutomationStore {
+    inner: Arc<RwLock<HashMap<String, AutomationTask>>>,
+}
+
+impl Default for MemoryAutomationStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryAutomationStore {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl AutomationStore for MemoryAutomationStore {
+    async fn list(&self) -> Result<Vec<AutomationTask>, BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<AutomationTask> = guard.values().cloned().collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<AutomationTask>, BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn upsert(&self, task: &AutomationTask) -> Result<(), BoxError> {
+        let mut guard = self.inner.write().await;
+        guard.insert(task.id.clone(), task.clone());
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        let mut guard = self.inner.write().await;
+        Ok(guard.remove(id).is_some())
+    }
+}
+
+/// In-process [`WorkflowStore`] holding both definitions and runs in
+/// separate maps. Useful for tests and as the SQL-backend fallback until
+/// a SQL impl lands.
+#[derive(Clone, Default)]
+pub struct MemoryWorkflowStore {
+    defs: Arc<RwLock<HashMap<String, WorkflowDefinition>>>,
+    runs: Arc<RwLock<HashMap<String, WorkflowRun>>>,
+}
+
+impl MemoryWorkflowStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl WorkflowStore for MemoryWorkflowStore {
+    async fn list(&self) -> Result<Vec<WorkflowDefinition>, BoxError> {
+        let guard = self.defs.read().await;
+        let mut rows: Vec<WorkflowDefinition> = guard.values().cloned().collect();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<WorkflowDefinition>, BoxError> {
+        Ok(self.defs.read().await.get(id).cloned())
+    }
+
+    async fn upsert(&self, def: &WorkflowDefinition) -> Result<(), BoxError> {
+        self.defs.write().await.insert(def.id.clone(), def.clone());
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, BoxError> {
+        Ok(self.defs.write().await.remove(id).is_some())
+    }
+
+    async fn list_runs(
+        &self,
+        workflow_id: Option<&str>,
+        requirement_id: Option<&str>,
+    ) -> Result<Vec<WorkflowRun>, BoxError> {
+        let guard = self.runs.read().await;
+        let mut rows: Vec<WorkflowRun> = guard
+            .values()
+            .filter(|r| {
+                workflow_id.map_or(true, |w| r.workflow_id == w)
+                    && requirement_id.map_or(true, |req| r.requirement_id.as_deref() == Some(req))
+            })
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        Ok(rows)
+    }
+
+    async fn get_run(&self, run_id: &str) -> Result<Option<WorkflowRun>, BoxError> {
+        Ok(self.runs.read().await.get(run_id).cloned())
+    }
+
+    async fn upsert_run(&self, run: &WorkflowRun) -> Result<(), BoxError> {
+        self.runs.write().await.insert(run.id.clone(), run.clone());
+        Ok(())
     }
 }
 
@@ -1086,7 +1203,9 @@ impl ChannelBindingStore for MemoryChannelBindingStore {
         channel_chat_id: &str,
     ) -> Result<Option<ChannelBinding>, BoxError> {
         let guard = self.inner.read().await;
-        Ok(guard.get(&channel_binding_key(channel, channel_chat_id)).cloned())
+        Ok(guard
+            .get(&channel_binding_key(channel, channel_chat_id))
+            .cloned())
     }
 
     async fn list_for_channel(&self, channel: &str) -> Result<Vec<ChannelBinding>, BoxError> {
@@ -1130,27 +1249,20 @@ impl MemoryChannelInstanceStore {
 
 #[async_trait]
 impl harness_channel::ChannelInstanceStore for MemoryChannelInstanceStore {
-    async fn upsert(
-        &self,
-        instance: &harness_channel::ChannelInstance,
-    ) -> Result<(), BoxError> {
+    async fn upsert(&self, instance: &harness_channel::ChannelInstance) -> Result<(), BoxError> {
         let mut guard = self.inner.write().await;
         guard.insert(instance.id.clone(), instance.clone());
         Ok(())
     }
 
-    async fn get(
-        &self,
-        id: &str,
-    ) -> Result<Option<harness_channel::ChannelInstance>, BoxError> {
+    async fn get(&self, id: &str) -> Result<Option<harness_channel::ChannelInstance>, BoxError> {
         let guard = self.inner.read().await;
         Ok(guard.get(id).cloned())
     }
 
     async fn list(&self) -> Result<Vec<harness_channel::ChannelInstance>, BoxError> {
         let guard = self.inner.read().await;
-        let mut rows: Vec<harness_channel::ChannelInstance> =
-            guard.values().cloned().collect();
+        let mut rows: Vec<harness_channel::ChannelInstance> = guard.values().cloned().collect();
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(rows)
     }
@@ -1158,6 +1270,226 @@ impl harness_channel::ChannelInstanceStore for MemoryChannelInstanceStore {
     async fn delete(&self, id: &str) -> Result<bool, BoxError> {
         let mut guard = self.inner.write().await;
         Ok(guard.remove(id).is_some())
+    }
+}
+
+/// In-memory [`SkillUsageStore`] for tests and the zero-config reference
+/// path. Events live in a single `Vec` behind an async `RwLock`; ids are
+/// stamped from a monotonic counter so concurrent writes get distinct ids
+/// inside the same nanosecond.
+#[derive(Default, Clone)]
+pub struct MemorySkillUsageStore {
+    inner: Arc<RwLock<Vec<SkillUsageEvent>>>,
+}
+
+impl MemorySkillUsageStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl SkillUsageStore for MemorySkillUsageStore {
+    async fn record_event(
+        &self,
+        mut event: SkillUsageEvent,
+    ) -> Result<SkillUsageEvent, harness_learning::BoxError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        if event.created_at.is_empty() {
+            event.created_at = Utc::now().to_rfc3339();
+        }
+        if event.id.is_empty() {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            event.id = format!("{}-{n:08}", event.created_at);
+        }
+        let mut guard = self.inner.write().await;
+        guard.push(event.clone());
+        Ok(event)
+    }
+
+    async fn list_events(
+        &self,
+        filter: SkillUsageFilter,
+    ) -> Result<Vec<SkillUsageEvent>, harness_learning::BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<SkillUsageEvent> = guard
+            .iter()
+            .filter(|r| {
+                filter.skill_name.as_ref().map_or(true, |n| &r.skill_name == n)
+                    && filter.scope.as_ref().map_or(true, |s| &r.scope == s)
+                    && filter.action.as_ref().map_or(true, |a| &r.action == a)
+                    && filter
+                        .conversation_id
+                        .as_ref()
+                        .map_or(true, |c| r.conversation_id.as_deref() == Some(c.as_str()))
+            })
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        if let Some(limit) = filter.limit {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
+
+    async fn report(
+        &self,
+        filter: SkillUsageFilter,
+    ) -> Result<Vec<SkillUsageRow>, harness_learning::BoxError> {
+        let mut wide = filter.clone();
+        wide.limit = None;
+        let events = self.list_events(wide).await?;
+        Ok(fold_events_into_rows(events))
+    }
+}
+
+/// In-memory [`MemoryStore`] for tests and the zero-config reference
+/// path. Rows live in a `HashMap` keyed by id behind an async `RwLock`.
+#[derive(Default, Clone)]
+pub struct MemoryMemoryStore {
+    inner: Arc<RwLock<HashMap<String, MemoryItem>>>,
+}
+
+impl MemoryMemoryStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl MemoryStore for MemoryMemoryStore {
+    async fn list(
+        &self,
+        filter: MemoryFilter,
+    ) -> Result<Vec<MemoryItem>, harness_learning::BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<MemoryItem> = guard
+            .values()
+            .filter(|r| {
+                filter.scope.as_ref().map_or(true, |s| &r.scope == s)
+                    && filter.kind.as_ref().map_or(true, |k| &r.kind == k)
+                    && filter.pinned.map_or(true, |p| r.pinned == p)
+                    && filter
+                        .tags
+                        .iter()
+                        .all(|req| r.tags.iter().any(|t| t == req))
+            })
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+        if let Some(limit) = filter.limit {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(id).cloned())
+    }
+
+    async fn upsert(
+        &self,
+        mut item: MemoryItem,
+    ) -> Result<MemoryItem, harness_learning::BoxError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let now = Utc::now().to_rfc3339();
+        if item.created_at.is_empty() {
+            item.created_at = now.clone();
+        }
+        item.updated_at = now.clone();
+        if item.id.is_empty() {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            item.id = format!("mem_{now}-{n:08}");
+        }
+        let mut guard = self.inner.write().await;
+        guard.insert(item.id.clone(), item.clone());
+        Ok(item)
+    }
+
+    /// Atomic read-modify-write: the whole get → apply → validate →
+    /// insert sequence runs under a single write-lock acquisition, so it
+    /// serialises against concurrent `patch` (no lost update) and against
+    /// `delete` (which takes the same lock). A `delete` that wins the
+    /// race leaves the id absent, so we return `Ok(None)` instead of
+    /// re-inserting a zombie row.
+    async fn patch(
+        &self,
+        id: &str,
+        patch: MemoryPatch,
+    ) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        let mut guard = self.inner.write().await;
+        let Some(existing) = guard.get(id) else {
+            return Ok(None);
+        };
+        let mut item = existing.clone();
+        patch.apply(&mut item);
+        validate_memory_safe(&item)
+            .map_err(|e| -> harness_learning::BoxError { Box::new(e) })?;
+        item.updated_at = Utc::now().to_rfc3339();
+        guard.insert(item.id.clone(), item.clone());
+        Ok(Some(item))
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, harness_learning::BoxError> {
+        let mut guard = self.inner.write().await;
+        Ok(guard.remove(id).is_some())
+    }
+}
+
+/// In-memory [`SkillLifecycleStore`] for tests / zero-config use.
+/// Keyed by `skill_name`.
+#[derive(Default, Clone)]
+pub struct MemorySkillLifecycleStore {
+    inner: Arc<RwLock<HashMap<String, SkillLifecycle>>>,
+}
+
+impl MemorySkillLifecycleStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl SkillLifecycleStore for MemorySkillLifecycleStore {
+    async fn list(&self) -> Result<Vec<SkillLifecycle>, harness_learning::BoxError> {
+        let guard = self.inner.read().await;
+        let mut rows: Vec<SkillLifecycle> = guard.values().cloned().collect();
+        rows.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
+        Ok(rows)
+    }
+
+    async fn get(
+        &self,
+        skill_name: &str,
+    ) -> Result<Option<SkillLifecycle>, harness_learning::BoxError> {
+        let guard = self.inner.read().await;
+        Ok(guard.get(skill_name).cloned())
+    }
+
+    async fn upsert(
+        &self,
+        mut row: SkillLifecycle,
+    ) -> Result<SkillLifecycle, harness_learning::BoxError> {
+        let now = Utc::now().to_rfc3339();
+        if row.created_at.is_empty() {
+            row.created_at = now.clone();
+        }
+        row.updated_at = now;
+        let mut guard = self.inner.write().await;
+        guard.insert(row.skill_name.clone(), row.clone());
+        Ok(row)
+    }
+
+    async fn delete(&self, skill_name: &str) -> Result<bool, harness_learning::BoxError> {
+        let mut guard = self.inner.write().await;
+        Ok(guard.remove(skill_name).is_some())
     }
 }
 
@@ -1966,11 +2298,7 @@ mod tests {
         assert_eq!(got.channel_user_id.as_deref(), Some("u1"));
 
         // Different chat id under same channel does not collide.
-        assert!(store
-            .lookup("wecom", "wm-group-2")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(store.lookup("wecom", "wm-group-2").await.unwrap().is_none());
         // Different channel + same chat id does not collide either.
         assert!(store
             .lookup("feishu", "wm-group-1")
@@ -1982,8 +2310,7 @@ mod tests {
     #[tokio::test]
     async fn channel_binding_list_orders_newest_first_per_channel() {
         let store = MemoryChannelBindingStore::new();
-        let mut b1 =
-            ChannelBinding::new("wecom", "chat-a", "conv-a", None, Some("Alice".into()));
+        let mut b1 = ChannelBinding::new("wecom", "chat-a", "conv-a", None, Some("Alice".into()));
         // Older — set updated_at to an explicit older RFC-3339 string.
         b1.updated_at = "2026-01-01T00:00:00Z".into();
         store.upsert(&b1).await.unwrap();
@@ -2022,5 +2349,96 @@ mod tests {
         assert!(store.lookup("feishu", "f1").await.unwrap().is_none());
         // The unrelated binding survives.
         assert!(store.lookup("wecom", "g2").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn memory_patch_applies_and_refreshes_updated_at() {
+        use harness_learning::{MemoryKind, MemoryScope};
+        let store = MemoryMemoryStore::new();
+        let saved = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "old",
+                "body",
+            ))
+            .await
+            .unwrap();
+        let patched = store
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    title: Some("new".into()),
+                    pinned: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(patched.title, "new");
+        assert!(patched.pinned);
+        assert_eq!(patched.body, "body", "unspecified fields untouched");
+        assert!(patched.updated_at >= saved.updated_at);
+    }
+
+    #[tokio::test]
+    async fn memory_patch_loses_to_delete_no_resurrection() {
+        use harness_learning::{MemoryFilter, MemoryKind, MemoryScope};
+        let store = MemoryMemoryStore::new();
+        let saved = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "t",
+                "b",
+            ))
+            .await
+            .unwrap();
+        // Delete wins: a patch against the now-missing id must not
+        // re-insert a zombie row.
+        assert!(store.delete(&saved.id).await.unwrap());
+        let out = store
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    title: Some("zombie".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(out.is_none(), "patch on deleted row returns None");
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert!(all.is_empty(), "no row resurrected");
+    }
+
+    #[tokio::test]
+    async fn memory_patch_rejects_empty_body() {
+        use harness_learning::{MemoryKind, MemoryScope};
+        let store = MemoryMemoryStore::new();
+        let saved = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "t",
+                "b",
+            ))
+            .await
+            .unwrap();
+        let err = store
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    body: Some("   ".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("empty"));
+        // Original body untouched — rejected patch leaves no trace.
+        let row = store.get(&saved.id).await.unwrap().unwrap();
+        assert_eq!(row.body, "b");
     }
 }

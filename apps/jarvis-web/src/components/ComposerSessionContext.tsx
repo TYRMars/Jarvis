@@ -183,7 +183,7 @@ export function ComposerSessionContext() {
 
   const workspaceInfo = draftWorkspaceInfo ?? socketWorkspaceInfo ?? baseline;
   const workspacePath = draftWorkspacePath ?? socketWorkspace ?? baseline?.root ?? null;
-  const workspaceName = workspacePath ? lastPathSegment(workspacePath) : "Local";
+  const workspaceName = workspacePath ? lastPathSegment(workspacePath) : t("chatTopWorkspaceLocal");
   const branch = workspaceInfo?.vcs === "git"
     ? workspaceInfo.branch ?? "(detached)"
     : workspaceInfo
@@ -205,8 +205,8 @@ export function ComposerSessionContext() {
       {
         kind: "default",
         path: null,
-        name: "Default workspace",
-        hint: baseline ? shortenPath(baseline.root) : "Server startup root",
+        name: t("chatTopDefaultWorkspace"),
+        hint: baseline ? shortenPath(baseline.root) : t("chatTopServerStartupRoot"),
       },
       ...recent.map<WorkspaceRow>((r) => ({
         kind: "recent",
@@ -438,7 +438,7 @@ export function ComposerSessionContext() {
           <BranchIcon />
           <span>{branch}</span>
           {workspaceInfo?.vcs === "git" && workspaceInfo.dirty ? (
-            <span className="session-dirty-dot" title="dirty worktree" />
+            <span className="session-dirty-dot" title={t("chatTopDirtyWorktree")} />
           ) : null}
         </span>
       )}
@@ -532,7 +532,7 @@ export function ComposerSessionContext() {
                     onMouseEnter={() => setHighlight(i)}
                     onClick={() => void pickWorkspace(row.value)}
                     disabled={busy}
-                    title={`Open ${row.value}`}
+                    title={t("chatTopOpenPath", row.value)}
                   >
                     <PlusIcon />
                     <span>
@@ -580,7 +580,7 @@ export function ComposerSessionContext() {
                       {status?.vcs === "git" && status.dirty ? (
                         <span
                           className="session-dirty-dot"
-                          title="dirty worktree"
+                          title={t("chatTopDirtyWorktree")}
                         />
                       ) : null}
                       {active ? <CheckIcon /> : null}
@@ -623,8 +623,8 @@ export function ComposerSessionContext() {
                         <span
                           role="button"
                           tabIndex={-1}
-                          aria-label={`Remove ${r.name} from recent`}
-                          title="Remove from recent"
+                          aria-label={t("chatTopRemoveFromRecent", r.name)}
+                          title={t("chatTopRemoveFromRecentShort")}
                           className="row-remove"
                           onClick={(e) => void handleRemove(e, r.path!)}
                         >
@@ -698,8 +698,8 @@ export function ComposerSessionContext() {
           >
             <FolderIcon />
             <span>
-              <strong>Switch workspace</strong>
-              <em>Pick the folder Jarvis will read and edit</em>
+              <strong>{t("chatTopSwitchWorkspace")}</strong>
+              <em>{t("chatTopSwitchWorkspaceHint")}</em>
             </span>
           </button>
           <button
@@ -709,8 +709,8 @@ export function ComposerSessionContext() {
           >
             <span className="session-muted-square" aria-hidden="true" />
             <span>
-              <strong>Set project</strong>
-              <em>Attach project instructions to this session</em>
+              <strong>{t("chatTopSetProject")}</strong>
+              <em>{t("chatTopSetProjectHint")}</em>
             </span>
           </button>
         </div>
@@ -776,7 +776,7 @@ function LockedSessionPopover({
                   <BranchIcon />
                   <span>{workspaceInfo.branch ?? "(detached)"}</span>
                   {workspaceInfo.dirty ? (
-                    <span className="session-dirty-dot" title="dirty worktree" />
+                    <span className="session-dirty-dot" title={t("chatTopDirtyWorktree")} />
                   ) : null}
                   {workspaceInfo.head ? (
                     <code>{workspaceInfo.head}</code>

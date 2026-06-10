@@ -180,7 +180,7 @@ function NewLabelForm({
     const trimmedName = name.trim();
     if (!trimmedName) return;
     if (!isValidHex(colour)) {
-      onError("colour must be in #rrggbb form");
+      onError(t("labelsSettingsInvalidColour"));
       return;
     }
     setPending(true);
@@ -274,7 +274,7 @@ function LabelSettingsRow({
 
   const save = async () => {
     if (!isValidHex(colour)) {
-      onError("colour must be in #rrggbb form");
+      onError(t("labelsSettingsInvalidColour"));
       return;
     }
     setPending(true);

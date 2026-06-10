@@ -1,6 +1,8 @@
 # SubAgent 系统 — 默认 SubAgent + Reviewer 自动验收
 
-**状态：** Proposed (v1.0)。Jarvis 当前只有"主 agent loop"一种执行主体；
+**状态：** Adopted (v1.0) —— `harness-subagents` crate 已落地，`subagent.*` 工具、默认四个 SubAgent、Reviewer 自动验收 (`JARVIS_REVIEWER_AUTO_ACCEPT` / `AcceptancePolicy::Subagent` / `requirement.review_verdict`) 均已实现。原始动机段落如下。
+
+Jarvis 当前只有"主 agent loop"一种执行主体；
 所有专门化 (写代码、读文档、评审验收等) 都得在主 agent 的 system prompt
 + 工具集里硬塞，难以扩展，也难以在不同任务间复用便宜模型。本提案在
 `harness-core` 之外新增一个 SubAgent 注册表，默认内置四个 SubAgent

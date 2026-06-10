@@ -189,6 +189,7 @@ pub async fn run(
         label_store,
         channel_instance_store,
         channel_binding_store,
+        automation_store,
     ) = match persistence_url.as_deref() {
         Some(url) => {
             let bundle = harness_store::connect_all(url)
@@ -211,6 +212,7 @@ pub async fn run(
                 Some(bundle.labels),
                 Some(bundle.channel_instances),
                 Some(bundle.channel_bindings),
+                Some(bundle.automations),
             )
         }
         None => {
@@ -218,17 +220,22 @@ pub async fn run(
                 "no persistence URL resolved (HOME unset?); running in-memory \
                  (conversations / TODOs / requirements / runs / activities / profiles / docs / comments / labels / channels / bindings will not survive restart)"
             );
-            (None, None, None, None, None, None, None, None, None, None, None, None)
+            (
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+            )
         }
     };
 
     let observability_url = std::env::var("JARVIS_OBSERVABILITY_STORE_URL")
         .ok()
         .or_else(default_json_observability_url);
+    let observability_max_runs = observability_max_runs();
     let observability_store = match observability_url.as_deref() {
-        Some(url) => match harness_store::connect_observability(url).await {
+        Some(url) => match harness_store::connect_observability_capped(url, observability_max_runs)
+            .await
+        {
             Ok(store) => {
-                info!(url = %url, "local observability store connected");
+                info!(url = %url, max_runs = ?observability_max_runs, "local observability store connected");
                 Some(store)
             }
             Err(e) => {
@@ -260,6 +267,106 @@ pub async fn run(
             warn!("eval store URL not resolved; eval history disabled");
             None
         }
+    };
+
+    // Self-improving-agent — skill-usage telemetry (Phase 0) +
+    // long-term User Memory (Phase 1). Both default under
+    // `<data-dir>/jarvis/learning` (skill usage) and
+    // `<data-dir>/jarvis/memories` (memory); operators can override
+    // with `JARVIS_LEARNING_STORE_URL` / `JARVIS_MEMORY_STORE_URL`.
+    // Disable both with `JARVIS_LEARNING=0`.
+    let learning_disabled = std::env::var("JARVIS_LEARNING")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | "disabled"
+            )
+        })
+        .unwrap_or(false);
+    let (learning_store, memory_store, skill_lifecycle_store) = if learning_disabled {
+        info!(
+            "learning subsystem disabled via JARVIS_LEARNING; skill usage telemetry + memory + lifecycle off"
+        );
+        (None, None, None)
+    } else {
+        let learning_url = std::env::var("JARVIS_LEARNING_STORE_URL")
+            .ok()
+            .or_else(default_json_learning_url);
+        let max_events = learning_max_events();
+        let learning = match learning_url.as_deref() {
+            Some(url) => match harness_store::connect_skill_usage_capped(url, max_events).await {
+                Ok(store) => {
+                    info!(url = %url, "local learning store connected (skill usage telemetry on)");
+                    Some(store)
+                }
+                Err(e) => {
+                    warn!(
+                        url = %url,
+                        error = %e,
+                        "learning store unavailable; skill usage telemetry disabled"
+                    );
+                    None
+                }
+            },
+            None => {
+                warn!("learning store URL not resolved; skill usage telemetry disabled");
+                None
+            }
+        };
+
+        let memory_url = std::env::var("JARVIS_MEMORY_STORE_URL")
+            .ok()
+            .or_else(default_json_memory_url);
+        let memory_max_items = memory_max_items();
+        let memory = match memory_url.as_deref() {
+            Some(url) => match harness_store::connect_memory_capped(url, memory_max_items).await {
+                Ok(store) => {
+                    info!(url = %url, max_items = ?memory_max_items, "local memory store connected (user memories on)");
+                    Some(store)
+                }
+                Err(e) => {
+                    warn!(
+                        url = %url,
+                        error = %e,
+                        "memory store unavailable; /v1/memories will 503"
+                    );
+                    None
+                }
+            },
+            None => {
+                warn!("memory store URL not resolved; /v1/memories will 503");
+                None
+            }
+        };
+
+        // Phase 2 — skill lifecycle store. Reuses the learning data
+        // dir (a dedicated `JARVIS_SKILL_LIFECYCLE_STORE_URL` can
+        // override). Tracks Active / Stale / Archived state per skill.
+        let lifecycle_url = std::env::var("JARVIS_SKILL_LIFECYCLE_STORE_URL")
+            .ok()
+            .or_else(default_json_learning_url);
+        let lifecycle = match lifecycle_url.as_deref() {
+            Some(url) => match harness_store::connect_skill_lifecycle(url).await {
+                Ok(store) => {
+                    info!(url = %url, "local skill-lifecycle store connected (archive/restore on)");
+                    Some(store)
+                }
+                Err(e) => {
+                    warn!(
+                        url = %url,
+                        error = %e,
+                        "skill-lifecycle store unavailable; /v1/skills/*/lifecycle will 503"
+                    );
+                    None
+                }
+            },
+            None => {
+                warn!("skill-lifecycle store URL not resolved; lifecycle routes will 503");
+                None
+            }
+        };
+
+        (learning, memory, lifecycle)
     };
 
     // `JARVIS_DISABLE_TODOS=1` opts out of the persistent TODO board
@@ -316,6 +423,30 @@ pub async fn run(
         )
             as std::sync::Arc<dyn harness_channel::ChannelDispatcher>);
         info!("channel-instance store active (channel.send tool registered)");
+    }
+    // Self-improving-agent Phase 1 — wrap the raw memory store in a
+    // `GuardedMemoryStore` so every write path (REST, tools, the
+    // auto-mode failure-capture path) shares one prompt-injection /
+    // credential validator AND broadcasts on the same channel that
+    // the WS handler subscribes to. Done at the composition root so
+    // none of the downstream code has to know about it.
+    let (memory_store, memory_events): (
+        Option<std::sync::Arc<dyn harness_learning::MemoryStore>>,
+        Option<tokio::sync::broadcast::Sender<harness_learning::MemoryEvent>>,
+    ) = match memory_store {
+        Some(raw) => {
+            let (guarded, tx) = harness_store::GuardedMemoryStore::with_fresh_channel(raw);
+            (
+                Some(std::sync::Arc::new(guarded)
+                    as std::sync::Arc<dyn harness_learning::MemoryStore>),
+                Some(tx),
+            )
+        }
+        None => (None, None),
+    };
+    if let Some(ms) = memory_store.clone() {
+        bcfg.user_memory_store = Some(ms);
+        info!("user memory store active (learning.memory.* tools registered, validator + WS frames on)");
     }
 
     // Snapshot the few flags later code paths still need before
@@ -483,6 +614,11 @@ pub async fn run(
     for (name, built, _) in &extras {
         providers_by_name.insert(name.clone(), built.provider.clone());
     }
+    // Snapshot the raw providers for the optional smart router before
+    // `providers_by_name` is moved into the subagent factory below. The
+    // router delegates to these *un-wrapped* providers, so it can never
+    // recurse into itself when a tier's target names the primary.
+    let providers_for_router = providers_by_name.clone();
     let _subagent_count = crate::subagents::register_builtins(
         &canonical_tools,
         llm.clone(),
@@ -681,9 +817,22 @@ pub async fn run(
         .with_prefix_rule("claude-", "anthropic")
         .with_prefix_rule("gemini-", "google")
         .with_prefix_rule("gpt-5.", "codex");
+    // Smart routing (opt-in via `JARVIS_ROUTER_ENABLED`). When on, the
+    // primary registry entry is a `RoutingProvider` that classifies each
+    // request's difficulty and rewrites the model before delegating to
+    // the right raw provider. Requests that explicitly target a
+    // *different* provider bypass it (the registry routes them past this
+    // entry). When off, the raw primary provider is registered as before.
+    let primary_for_registry: Arc<dyn LlmProvider> = build_smart_router(
+        &provider_name,
+        &model,
+        primary_built.provider.clone(),
+        providers_for_router,
+    )
+    .unwrap_or_else(|| primary_built.provider.clone());
     registry.insert_with_capabilities(
         provider_name.clone(),
-        primary_built.provider.clone(),
+        primary_for_registry,
         primary_built.model.clone(),
         primary_section.models.clone(),
         primary_built.kind.clone(),
@@ -898,6 +1047,20 @@ pub async fn run(
     if let Some(cbs) = channel_binding_store {
         state = state.with_channel_binding_store(cbs);
     }
+    if let Some(autos) = automation_store {
+        state = state.with_automation_store(autos);
+    }
+    // Declarative workflows share the conversation persistence URL so
+    // definitions + runs survive restarts under the JSON backend. SQL
+    // deployments fall back to in-memory inside `connect_workflows`.
+    if let Some(url) = persistence_url.as_deref() {
+        match harness_store::connect_workflows(url).await {
+            Ok(wf) => state = state.with_workflows(wf),
+            Err(e) => {
+                warn!(url = %url, error = %e, "workflow store unavailable; /v1/workflows disabled")
+            }
+        }
+    }
     // Share the same adapter registry the `channel.send` tool uses,
     // so any future runtime adapter registration (tests, custom
     // binaries) stays consistent across the REST surface and the
@@ -908,6 +1071,18 @@ pub async fn run(
     }
     if let Some(es) = eval_store {
         state = state.with_eval_store(es);
+    }
+    if let Some(ls) = learning_store {
+        state = state.with_skill_usage_store(ls);
+    }
+    if let Some(ms) = memory_store {
+        state = state.with_user_memory_store(ms);
+    }
+    if let Some(tx) = memory_events {
+        state = state.with_memory_events(tx);
+    }
+    if let Some(lc) = skill_lifecycle_store {
+        state = state.with_skill_lifecycle_store(lc);
     }
     if let Some(ts) = telemetry {
         state = state.with_telemetry_status(ts);
@@ -1058,6 +1233,22 @@ pub async fn run(
             auto_cfg.reviewer_auto_accept = true;
         }
     }
+    // Global cap on concurrent *manually-dispatched* workflow runs
+    // (`POST /v1/workflows/:id/run`). Mirrors the auto loop's
+    // concurrency cap by default; `JARVIS_WORKFLOW_MAX_CONCURRENT`
+    // overrides. Without this the manual route would fire-and-forget
+    // unbounded `tokio::spawn`s (issue #78).
+    let workflow_max_concurrent = std::env::var("JARVIS_WORKFLOW_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(auto_cfg.max_concurrent_units);
+    state = state.with_workflow_concurrency(workflow_max_concurrent);
+    // Captured before `auto_cfg` is moved into `spawn_auto_mode`; used
+    // as the reaper's default budget unless `JARVIS_WORKFLOW_RUN_TIMEOUT_MS`
+    // overrides.
+    let workflow_run_timeout_ms_default = auto_cfg.run_timeout_ms;
+
     // Build the runtime with the resolved concurrency cap so the
     // semaphore pool size matches what `tick` will enforce. The
     // spawn helper falls back to default capacity when the runtime
@@ -1085,6 +1276,26 @@ pub async fn run(
         );
     }
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
+    harness_server::spawn_automation_scheduler(state.clone());
+    // Stale-run reaper for manually-dispatched + auto workflow runs:
+    // one sweep immediately (reclaiming rows left `Running` by a prior
+    // process crash), then every `JARVIS_WORKFLOW_REAP_SECONDS`. Uses
+    // the auto loop's run-timeout budget unless overridden (issue #78).
+    let workflow_reap_seconds = std::env::var("JARVIS_WORKFLOW_REAP_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(harness_server::DEFAULT_WORKFLOW_REAP_SECONDS);
+    let workflow_run_timeout_ms = std::env::var("JARVIS_WORKFLOW_RUN_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(workflow_run_timeout_ms_default);
+    harness_server::spawn_workflow_reaper(
+        state.clone(),
+        workflow_reap_seconds,
+        workflow_run_timeout_ms,
+    );
     if let (Some(pm), Some(projects), Some(requirements)) = (
         project_memory_runtime,
         state.projects.clone(),
@@ -1255,7 +1466,9 @@ async fn connect_harness_health_sources(
         .ok()
         .or_else(default_json_observability_url);
     let observability = match observability_url.as_deref() {
-        Some(url) => match harness_store::connect_observability(url).await {
+        Some(url) => match harness_store::connect_observability_capped(url, observability_max_runs())
+            .await
+        {
             Ok(store) => {
                 info!(url = %url, "observability store connected for harness.health mcp tool");
                 Some(store)
@@ -1420,6 +1633,14 @@ fn builtins_config_with_workspace(
             .and_then(|s| s.parse().ok())
             .or(cfg.tools.shell_timeout_ms)
             .unwrap_or(defaults.shell_default_timeout_ms),
+        http_max_bytes: std::env::var("JARVIS_HTTP_MAX_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(defaults.http_max_bytes),
+        fs_max_bytes: std::env::var("JARVIS_FS_MAX_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(defaults.fs_max_bytes),
         shell_sandbox: pick_shell_sandbox(cfg),
         shell_limits: pick_shell_limits(),
         ..defaults
@@ -2271,8 +2492,110 @@ fn default_json_observability_url() -> Option<String> {
     Some(format!("json://{}", dir.display()))
 }
 
+/// Resolve the observability `runs/` retention cap from
+/// `JARVIS_OBSERVABILITY_MAX_RUNS`. Returns the value to hand to
+/// [`harness_store::connect_observability_capped`]:
+/// - unset → `Some(DEFAULT_MAX_OBSERVED_RUNS)` (bounded by default so
+///   the store stops leaking one file per tool call),
+/// - `0` / `off` / `unlimited` → `None` (pruning disabled),
+/// - a positive integer → `Some(n)`,
+/// - anything unparseable → the default, with a WARN.
+fn observability_max_runs() -> Option<usize> {
+    match std::env::var("JARVIS_OBSERVABILITY_MAX_RUNS") {
+        Err(_) => Some(harness_store::DEFAULT_MAX_OBSERVED_RUNS),
+        Ok(raw) => {
+            let v = raw.trim();
+            if v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("unlimited")
+                || v == "0"
+            {
+                return None;
+            }
+            match v.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    warn!(
+                        value = %raw,
+                        "JARVIS_OBSERVABILITY_MAX_RUNS not a non-negative integer; using default cap"
+                    );
+                    Some(harness_store::DEFAULT_MAX_OBSERVED_RUNS)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the Memory store retention cap from `JARVIS_MEMORY_MAX_ITEMS`.
+/// Same shape as [`observability_max_runs`]:
+/// - unset → `Some(DEFAULT_MAX_MEMORY_ITEMS)` (bounded by default so the
+///   auto-loop's per-failure gotcha writes can't leak unbounded files),
+/// - `0` / `off` / `unlimited` → `None` (pruning disabled),
+/// - a positive integer → `Some(n)`,
+/// - anything unparseable → the default, with a WARN.
+fn memory_max_items() -> Option<usize> {
+    match std::env::var("JARVIS_MEMORY_MAX_ITEMS") {
+        Err(_) => Some(harness_store::DEFAULT_MAX_MEMORY_ITEMS),
+        Ok(raw) => {
+            let v = raw.trim();
+            if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("unlimited") || v == "0" {
+                return None;
+            }
+            match v.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    warn!(
+                        value = %raw,
+                        "JARVIS_MEMORY_MAX_ITEMS not a non-negative integer; using default cap"
+                    );
+                    Some(harness_store::DEFAULT_MAX_MEMORY_ITEMS)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the skill-usage `events/` retention cap from
+/// `JARVIS_LEARNING_MAX_EVENTS`. Returns the value to hand to
+/// [`harness_store::connect_skill_usage_capped`]:
+/// - unset → `Some(DEFAULT_MAX_SKILL_USAGE_EVENTS)` (bounded by default so
+///   the store stops leaking one file per skill `Listed`/`Viewed`/`Used`),
+/// - `0` / `off` / `unlimited` → `None` (pruning disabled),
+/// - a positive integer → `Some(n)`,
+/// - anything unparseable → the default, with a WARN.
+fn learning_max_events() -> Option<usize> {
+    match std::env::var("JARVIS_LEARNING_MAX_EVENTS") {
+        Err(_) => Some(harness_store::DEFAULT_MAX_SKILL_USAGE_EVENTS),
+        Ok(raw) => {
+            let v = raw.trim();
+            if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("unlimited") || v == "0" {
+                return None;
+            }
+            match v.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    warn!(
+                        value = %raw,
+                        "JARVIS_LEARNING_MAX_EVENTS not a non-negative integer; using default cap"
+                    );
+                    Some(harness_store::DEFAULT_MAX_SKILL_USAGE_EVENTS)
+                }
+            }
+        }
+    }
+}
+
 fn default_json_eval_url() -> Option<String> {
     let dir = dirs_user_data().ok()?.join("evals");
+    Some(format!("json://{}", dir.display()))
+}
+
+fn default_json_learning_url() -> Option<String> {
+    let dir = dirs_user_data().ok()?.join("learning");
+    Some(format!("json://{}", dir.display()))
+}
+
+fn default_json_memory_url() -> Option<String> {
+    let dir = dirs_user_data().ok()?.join("memories");
     Some(format!("json://{}", dir.display()))
 }
 
@@ -2594,6 +2917,63 @@ fn pick_string(flag: Option<&str>, env_var: &str, file: Option<&str>, default: &
 /// form `<provider>/<model>`. Unparseable values fall through with a
 /// WARN — the config either misses a slot, the slot stays empty, and
 /// the caller falls back to its primary provider.
+/// Build the optional smart-routing wrapper from `JARVIS_ROUTER_*` env.
+///
+/// Returns `None` — no wrapping, behaviour identical to today — unless
+/// `JARVIS_ROUTER_ENABLED` is truthy. Tier targets come from
+/// `JARVIS_ROUTER_TIER_{SIMPLE,MEDIUM,COMPLEX,REASONING}` in
+/// `<provider>/<model>` form; any unset/typo'd tier falls through to the
+/// primary `(provider, model)`. `providers` is delegated to by name, and
+/// `fallback` (the primary) backs both unknown-provider targets and the
+/// token estimator. This is the P0 wiring — a zero-cost heuristic
+/// classifier; the LLM judge slots in behind the same call later.
+fn build_smart_router(
+    default_provider: &str,
+    default_model: &str,
+    fallback: Arc<dyn LlmProvider>,
+    providers: std::collections::HashMap<String, Arc<dyn LlmProvider>>,
+) -> Option<Arc<dyn LlmProvider>> {
+    let enabled = std::env::var("JARVIS_ROUTER_ENABLED")
+        .ok()
+        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    let mut config = harness_router::RouterConfig::new(harness_router::ModelRef::new(
+        default_provider,
+        default_model,
+    ));
+    let tiers = [
+        ("JARVIS_ROUTER_TIER_SIMPLE", harness_router::Tier::Simple),
+        ("JARVIS_ROUTER_TIER_MEDIUM", harness_router::Tier::Medium),
+        ("JARVIS_ROUTER_TIER_COMPLEX", harness_router::Tier::Complex),
+        ("JARVIS_ROUTER_TIER_REASONING", harness_router::Tier::Reasoning),
+    ];
+    for (env_name, tier) in tiers {
+        let Some(raw) = std::env::var(env_name).ok().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        match harness_router::ModelRef::parse(&raw) {
+            Some(target) => config = config.with_tier(tier, target),
+            None => warn!(
+                env = env_name,
+                value = %raw,
+                "ignoring router tier — expected `<provider>/<model>` slash form",
+            ),
+        }
+    }
+    info!(
+        tiers = config.tiers.len(),
+        default = %format!("{default_provider}/{default_model}"),
+        "smart router enabled (heuristic classifier) — primary provider auto-tiers by task difficulty",
+    );
+    let classifier = Arc::new(harness_router::HeuristicClassifier::default());
+    Some(Arc::new(harness_router::RoutingProvider::new(
+        fallback, providers, config, classifier,
+    )))
+}
+
 fn build_route_policy(cfg: &Config) -> ModelRoutePolicy {
     fn parse_slot(env_name: &str, file_value: Option<&str>) -> Option<ModelTarget> {
         let raw = pick_string_opt(env_name, file_value)?;

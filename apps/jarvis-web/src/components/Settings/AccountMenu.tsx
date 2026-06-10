@@ -71,7 +71,7 @@ function ThemeRow() {
   return (
     <div className="account-menu-row">
       <span className="account-menu-label">{t("theme")}</span>
-      <div className="mini-switch" role="group" aria-label="Theme">
+      <div className="mini-switch" role="group" aria-label={t("theme")}>
         {(["light", "dark"] as const).map((t2) => (
           <button
             key={t2}
@@ -104,7 +104,7 @@ function LangRow() {
   return (
     <div className="account-menu-row">
       <span className="account-menu-label">{t("language")}</span>
-      <div className="mini-switch" role="group" aria-label="Language">
+      <div className="mini-switch" role="group" aria-label={t("language")}>
         {(["en", "zh"] as const).map((l) => (
           <button
             key={l}

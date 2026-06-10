@@ -1018,6 +1018,45 @@ body.sidebar-closed #input-area {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  /* Anchor for the floating scroll-to-bottom FAB, which sits above
+     the fixed composer. */
+  position: relative;
+}
+
+/* Floating "scroll to bottom" button. Centered horizontally over the
+   chat column and parked just above the composer scrim. Shown only
+   while the user has scrolled up and a turn's worth of messages
+   exists (visibility is driven from React in MessageList). */
+.scroll-to-bottom-btn {
+  position: absolute;
+  left: 50%;
+  /* Clears the fixed composer footer (~bottom 0, padding 42px top). */
+  bottom: 132px;
+  transform: translateX(-50%);
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel-raised);
+  color: var(--text-soft);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  transition: background-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.scroll-to-bottom-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .header-actions {
@@ -1707,6 +1746,51 @@ body.sidebar-closed #input-area {
   color: var(--text-muted);
 }
 
+/* Rotating status verb. `key` on the span remounts it each rotation,
+ * so the fade-in re-fires and the word swap reads as a soft cross. */
+.agent-loading-verb {
+  color: var(--text);
+  font-weight: 500;
+  animation: agent-loading-verb-in 0.4s ease-out;
+}
+
+@keyframes agent-loading-verb-in {
+  from {
+    opacity: 0;
+    transform: translateY(1px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* kbd-style "ESC to stop" affordance, pushed to the trailing edge. */
+.agent-loading-esc-hint {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.agent-loading-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text-soft);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
 .agent-loading-dots {
   display: inline-grid;
   grid-template-columns: repeat(3, 6px);
@@ -1750,6 +1834,10 @@ body.sidebar-closed #input-area {
   .agent-loading-dots span {
     opacity: 0.72;
     transform: none;
+    animation: none;
+  }
+
+  .agent-loading-verb {
     animation: none;
   }
 }
@@ -10936,6 +11024,170 @@ select.settings-input {
   background: rgba(210, 90, 85, 0.1);
 }
 
+/* Composer permission-mode chip: colored dot + label pill that
+   advances the permission mode on click. The dot colour is keyed off
+   the `data-mode` attribute. Sits in the composer-actions row next to
+   the ModeBadge dropdown. */
+.permission-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--panel-hover);
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: 520;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.permission-mode-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel-hover) 78%, var(--text) 8%);
+}
+
+.permission-mode-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.permission-mode-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-soft);
+  flex: 0 0 auto;
+}
+
+.permission-mode-chip[data-mode="ask"] .permission-mode-chip-dot {
+  background: var(--accent-blue, #397fd6);
+}
+.permission-mode-chip[data-mode="accept-edits"] .permission-mode-chip-dot {
+  background: var(--accent-green, #2f9c4a);
+}
+.permission-mode-chip[data-mode="plan"] .permission-mode-chip-dot {
+  background: var(--accent, #d87948);
+}
+.permission-mode-chip[data-mode="auto"] .permission-mode-chip-dot {
+  background: var(--accent-amber, #b88a00);
+}
+.permission-mode-chip[data-mode="bypass"] .permission-mode-chip-dot {
+  background: var(--accent-red, #c94d45);
+}
+
+.permission-mode-chip[data-mode="bypass"] {
+  color: var(--accent-red, #c94d45);
+  background: color-mix(in srgb, var(--accent-red, #c94d45) 12%, var(--panel-hover));
+}
+
+/* Reasoning-effort quick selector: icon button + portal dropdown. */
+.effort-level-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.effort-level-trigger:hover,
+.effort-level-trigger.open {
+  background: var(--panel-hover);
+}
+
+.effort-level-trigger svg {
+  flex: 0 0 auto;
+}
+
+.effort-level-dropdown {
+  position: fixed;
+  z-index: 1000;
+  min-width: 168px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(27, 26, 24, 0.18);
+}
+
+.effort-level-dropdown-heading {
+  padding: 4px 8px 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.effort-level-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-14);
+  text-align: left;
+  cursor: pointer;
+}
+
+.effort-level-option:hover {
+  background: var(--panel-hover);
+}
+
+.effort-level-option.selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.effort-level-option-check {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+/* Hint row below the input: "Press Enter to send" fades out once the
+   textarea has content; slash-command count badge appears only while
+   the palette is open. */
+.composer-hint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 16px;
+  padding: 4px 12px 0 18px;
+}
+
+.input-hint {
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+
+.input-hint.visible {
+  opacity: 1;
+}
+
+.slash-command-count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  font-weight: 520;
+}
+
 .settings-pill.danger {
   color: var(--accent-red, #d25a55);
   border-color: rgba(210, 90, 85, 0.5);
@@ -12079,6 +12331,83 @@ select.settings-input {
 .decision-source-rule[data-bucket="deny"] {
   background: rgba(210, 90, 85, 0.12);
   color: var(--accent-red, #d25a55);
+}
+
+/* Post-hoc grant chip in the tool header. Shares the decision-source
+   chip metrics so it tucks in alongside without disturbing the row.
+   Three states: idle (clickable), granted, error. */
+.grant-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: none;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  background: var(--panel-hover);
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.grant-chip[data-state="idle"]:hover {
+  filter: brightness(1.08);
+}
+
+.grant-chip[data-state="saving"] {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.grant-chip[data-state="granted"] {
+  background: rgba(94, 191, 103, 0.12);
+  color: #4a9b53;
+  cursor: default;
+}
+
+.grant-chip[data-state="error"] {
+  background: rgba(210, 90, 85, 0.12);
+  color: var(--accent-red, #d25a55);
+  cursor: pointer;
+}
+
+/* Rule preview in the ApprovalCard's "remember" block — shows the
+   concrete rule that will be persisted. Read-only (no pointer / hover),
+   distinct neutral-violet palette so it doesn't read as the clickable
+   decision-source chip. */
+.approval-remember-rule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.approval-remember-rule-label {
+  font-size: var(--fs-11);
+  color: var(--text-soft);
+}
+
+.approval-rule-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  background: rgba(180, 170, 200, 0.12);
+  color: #7a7a9d;
+  cursor: default;
+}
+
+/* Batch-approve verdict suffix — appears beside the verdict text when
+   one approve click also resolved sibling pending cards. */
+.approval-batch-feedback {
+  margin-left: 8px;
+  font-size: var(--fs-11);
+  color: #4a9b53;
 }
 
 /* Reconnect-status badge — clickable when disconnected so the user
@@ -15147,11 +15476,16 @@ select.settings-input {
 }
 
 .docs-editor-header {
-  padding: 16px 28px 12px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 16px clamp(20px, 3vw, 48px) 12px;
   border-bottom: 1px solid var(--border-soft);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(10px);
 }
 
 .docs-editor-title-row {
@@ -15163,8 +15497,8 @@ select.settings-input {
 .docs-editor-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: clamp(22px, 2vw, 28px);
+  font-weight: 700;
   color: var(--text);
   background: transparent;
   border: 0;
@@ -15176,6 +15510,8 @@ select.settings-input {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .docs-icon-btn {
@@ -15241,8 +15577,11 @@ select.settings-input {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 4px;
-  padding: 8px 28px 0;
+  padding: 8px clamp(20px, 3vw, 48px) 0;
   align-items: baseline;
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto;
 }
 .docs-outline-item {
   display: inline-flex;
@@ -15422,8 +15761,13 @@ select.settings-input {
 .docs-editor-body {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 16px 28px;
+  padding: 18px clamp(20px, 3vw, 48px);
   overflow-y: auto;
+}
+.docs-editor-body > .block-editor-shell,
+.docs-editor-preview {
+  max-width: 880px;
+  margin: 0 auto;
 }
 .docs-editor-textarea {
   width: 100%;
@@ -15468,7 +15812,7 @@ select.settings-input {
 }
 
 .docs-editor-footer {
-  padding: 8px 28px 12px;
+  padding: 8px clamp(20px, 3vw, 48px) 12px;
   border-top: 1px solid var(--border-soft);
   display: flex;
   justify-content: flex-end;
@@ -16155,7 +16499,7 @@ select.settings-input {
 
 .docs-rail-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 5px 8px;
   border-radius: var(--radius-sm);
@@ -16180,14 +16524,29 @@ select.settings-input {
 .docs-rail-row-pin {
   flex: 0 0 auto;
   color: var(--accent);
-  font-size: 10px;
+  margin-top: 2px;
 }
-.docs-rail-row-title {
+.docs-rail-row-main {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.docs-rail-row-title {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.docs-rail-row-snippet {
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-weight: 400;
 }
 @media (prefers-reduced-motion: reduce) {
   .docs-rail-row,
@@ -23548,6 +23907,229 @@ select.settings-input {
   margin-top: 4px;
 }
 
+/* ---- Workflows (Settings catalogue + requirement-detail timeline) ---- */
+.workflow-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+.workflow-settings-form-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.workflow-settings-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.workflow-settings-step {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.02));
+}
+.workflow-settings-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.workflow-settings-step-row {
+  display: flex;
+  gap: 8px;
+}
+.workflow-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface-3, rgba(255, 255, 255, 0.06));
+  font-size: 12px;
+  font-weight: 600;
+}
+.workflow-settings-form .ui-input,
+.workflow-step-name {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  background: var(--surface, transparent);
+  color: inherit;
+  font: inherit;
+}
+.workflow-settings-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.workflow-settings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.workflow-settings-row {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.workflow-settings-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.workflow-settings-row-title {
+  font-weight: 600;
+}
+.workflow-settings-row-meta {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.workflow-settings-row-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.workflow-settings-row-desc {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.8;
+}
+.workflow-settings-row-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.workflow-step-chip {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-3, rgba(255, 255, 255, 0.06));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.workflow-step-chip-kind {
+  font-style: normal;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+/* requirement-detail binding row */
+.requirement-workflow-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* shared run timeline */
+.workflow-runs-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.workflow-run-item {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.workflow-run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.workflow-run-time {
+  font-size: 11px;
+  opacity: 0.55;
+}
+.workflow-run-error {
+  font-size: 12px;
+  color: var(--danger, #e5534b);
+}
+.workflow-run-badge {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-3, rgba(255, 255, 255, 0.08));
+}
+.workflow-run-badge-succeeded {
+  background: rgba(63, 185, 80, 0.18);
+  color: #3fb950;
+}
+.workflow-run-badge-failed {
+  background: rgba(229, 83, 75, 0.18);
+  color: #e5534b;
+}
+.workflow-run-badge-running {
+  background: rgba(88, 166, 255, 0.18);
+  color: #58a6ff;
+}
+.workflow-run-steps {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.workflow-run-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.workflow-run-step-name {
+  font-weight: 500;
+}
+.workflow-run-step-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+.workflow-run-step-status-failed {
+  color: #e5534b;
+  opacity: 1;
+}
+.workflow-run-step-status-succeeded {
+  color: #3fb950;
+  opacity: 1;
+}
+.workflow-run-step-output {
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.workflow-run-step-err {
+  color: #e5534b;
+}
 /* ========== Compaction marker — inline transcript card emitted
  * by `AgentEvent::MemoryCompacted`. Designed to read as a quiet,
  * non-message-like rail so users skim past it; the disclosure

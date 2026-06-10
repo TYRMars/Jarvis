@@ -12,6 +12,16 @@ export const approvalFrameHandlers: Record<string, (ev: any) => void> = {
   approval_request: (ev) => {
     appStore.getState().pushApprovalRequest(ev.id, ev.name, ev.arguments);
   },
+  // Replay frame for approvals the agent is *still* blocked on,
+  // surfaced after a `Resume` so a reconnecting socket can take
+  // over the prompt. Wire shape: `{id, name, arguments, category}`
+  // — same fields as `approval_request` so the store reducer is
+  // shared. The replay is idempotent: if the store already has the
+  // approval (e.g. it survived in the snapshot replay), pushing it
+  // again is a no-op (same `id`).
+  approval_pending: (ev) => {
+    appStore.getState().pushApprovalRequest(ev.id, ev.name, ev.arguments);
+  },
   approval_decision: (ev) => {
     appStore.getState().setApprovalDecision(
       ev.id,

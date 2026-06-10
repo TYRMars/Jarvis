@@ -151,7 +151,7 @@ export function AppWorkspaceRail() {
   return (
     <aside
       id="workspace-rail"
-      aria-label="Workspace panels"
+      aria-label={t("chatCoreWorkspacePanels")}
     >
       <div className="workspace-rail-shell">
         <div className="workspace-rail-toolbar" aria-label={tx("panelLayoutActions", "Panel layout")}>

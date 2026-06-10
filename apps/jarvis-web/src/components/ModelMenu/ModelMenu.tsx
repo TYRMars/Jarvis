@@ -190,7 +190,7 @@ export function ModelMenu() {
                           <span
                             key={b}
                             className="model-menu-badge"
-                            title={`capability: ${b}`}
+                            title={t("chatTopCapability", b)}
                           >
                             {b}
                           </span>

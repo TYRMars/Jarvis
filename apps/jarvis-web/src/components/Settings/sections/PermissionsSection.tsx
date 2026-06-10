@@ -308,7 +308,7 @@ function RuleRow({
             ))}
           </span>
         ) : (
-          <span className="perm-rule-matchers muted">(any args)</span>
+          <span className="perm-rule-matchers muted">{tx("settingsPermsAnyArgs", "(any args)")}</span>
         )}
       </div>
       <button
@@ -381,7 +381,7 @@ function AddRuleForm() {
           className="settings-input"
           value={tool}
           onChange={(e) => setTool(e.target.value)}
-          placeholder="shell.exec"
+          placeholder={tx("settingsPermsRuleToolPh", "shell.exec")}
         />
       </Row>
 

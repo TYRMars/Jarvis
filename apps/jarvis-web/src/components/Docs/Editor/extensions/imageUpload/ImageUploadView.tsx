@@ -4,6 +4,7 @@
 //   - otherwise -> regular <img> bound to attrs.src
 
 import { NodeViewWrapper, type NodeViewProps } from "@tiptap/react";
+import { t } from "../../../../../utils/i18n";
 
 export function ImageUploadView({ node, editor, selected }: NodeViewProps) {
   const src = String(node.attrs["src"] ?? "");
@@ -22,7 +23,7 @@ export function ImageUploadView({ node, editor, selected }: NodeViewProps) {
       <NodeViewWrapper className={wrapperClass + " is-error"} contentEditable={false}>
         <div className="block-editor-image-error" role="alert">
           <span className="block-editor-image-error-text">
-            上传失败：{uploadError}
+            {t("docsEdImageUploadFailed", uploadError)}
           </span>
           <button
             type="button"
@@ -35,7 +36,7 @@ export function ImageUploadView({ node, editor, selected }: NodeViewProps) {
                 .run();
             }}
           >
-            重试
+            {t("docsEdRetry")}
           </button>
         </div>
       </NodeViewWrapper>
@@ -47,7 +48,7 @@ export function ImageUploadView({ node, editor, selected }: NodeViewProps) {
       <NodeViewWrapper className={wrapperClass} contentEditable={false}>
         <div className="block-editor-image-skeleton" aria-busy>
           <span className="block-editor-image-spinner" aria-hidden />
-          <span className="block-editor-image-skeleton-text">上传中…</span>
+          <span className="block-editor-image-skeleton-text">{t("docsEdUploading")}</span>
         </div>
       </NodeViewWrapper>
     );
@@ -58,7 +59,7 @@ export function ImageUploadView({ node, editor, selected }: NodeViewProps) {
       <NodeViewWrapper className={wrapperClass + " is-empty"} contentEditable={false}>
         <div className="block-editor-image-empty">
           <span aria-hidden>🖼️</span>
-          <span>拖拽图片或粘贴到此处</span>
+          <span>{t("docsEdImageDropHint")}</span>
         </div>
       </NodeViewWrapper>
     );

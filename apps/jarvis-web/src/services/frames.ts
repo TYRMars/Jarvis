@@ -10,12 +10,20 @@
 import { legacyDispatchFrame } from "../hooks/useWebSocket";
 import { frameHandlers } from "./frames/index";
 import { appStore } from "../store/appStore";
+import { observeFrameSeq } from "./chatRuns";
 
 export function handleFrame(ev: any): void {
   handleFrameForConversation(null, ev);
 }
 
 export function handleFrameForConversation(conversationId: string | null, ev: any): void {
+  // Track the high-water `seq` for stream recovery. Effective
+  // conversation id: explicit scoped path wins, else the active
+  // conversation drives the main socket. Frames without a
+  // numeric `seq` (lifecycle / transport-only) are silently
+  // ignored by `observeFrameSeq`.
+  const seqConvId = conversationId ?? appStore.getState().activeId;
+  if (seqConvId) observeFrameSeq(seqConvId, ev?.seq);
   if (conversationId) {
     applyConversationRunHint(conversationId, ev);
   }

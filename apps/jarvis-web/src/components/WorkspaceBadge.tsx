@@ -114,7 +114,7 @@ export function WorkspaceBadge() {
       <button
         type="button"
         className="workspace-badge workspace-badge-loading"
-        title="loading workspace"
+        title={t("chatTopWorkspaceLoading")}
         disabled
       >
         <BadgeIcon />
@@ -129,7 +129,7 @@ export function WorkspaceBadge() {
         <button
           type="button"
           className="workspace-badge workspace-badge-error"
-          title="server didn't pin a workspace root — pick one from Recent or paste a path"
+          title={t("chatTopWorkspaceUnconfiguredHint")}
           onClick={() => setOpen((v) => !v)}
         >
           <BadgeIcon />
@@ -142,11 +142,11 @@ export function WorkspaceBadge() {
         <button
           type="button"
           className="workspace-badge workspace-badge-error"
-          title={`workspace lookup failed: ${state.message}`}
+          title={t("chatTopWorkspaceLookupFailed", state.message)}
           onClick={refreshBaseline}
         >
           <BadgeIcon />
-          <span>retry</span>
+          <span>{t("chatTopRetry")}</span>
         </button>
       );
     }
@@ -155,9 +155,9 @@ export function WorkspaceBadge() {
     const branch = info.vcs === "git" ? info.branch ?? "(detached)" : null;
     const dirty = info.vcs === "git" && info.dirty === true;
     const tooltip = overridden
-      ? `${activePath} (session override)\nbase: ${info.root}`
+      ? t("chatTopWorkspaceOverrideTooltip", activePath ?? "", info.root)
       : info.vcs === "git"
-        ? `${info.root}\n${info.branch ?? "(detached)"} (${info.head ?? "?"})${dirty ? " · dirty" : " · clean"}`
+        ? `${info.root}\n${info.branch ?? "(detached)"} (${info.head ?? "?"})${dirty ? t("chatTopWorkspaceDirtySuffix") : t("chatTopWorkspaceCleanSuffix")}`
         : info.root;
     return (
       <button
@@ -178,7 +178,7 @@ export function WorkspaceBadge() {
             <span className="workspace-badge-sep">·</span>
             <span className="workspace-badge-branch">
               {branch}
-              {dirty && <span className="workspace-badge-dot" aria-label="dirty">●</span>}
+              {dirty && <span className="workspace-badge-dot" aria-label={t("chatTopDirty")}>●</span>}
             </span>
           </>
         )}
@@ -223,7 +223,7 @@ export function WorkspaceBadge() {
                         {shortenPath(r.path)}
                       </span>
                       {isCurrent && (
-                        <span className="workspace-recent-check" aria-label="current">
+                        <span className="workspace-recent-check" aria-label={t("chatTopCurrent")}>
                           ✓
                         </span>
                       )}

@@ -49,7 +49,7 @@ export function WorkspaceRailToggleButton() {
       type="button"
       className="ghost-icon"
       title={t("tasksAndPlan") || "Tasks and plan"}
-      aria-label="Tasks and plan"
+      aria-label={t("wkSpaceTasksAndPlan")}
       aria-expanded={open}
       onClick={(e) => {
         e.stopPropagation();
@@ -74,7 +74,7 @@ export function CloseWorkspaceRailButton() {
       type="button"
       className="ghost-icon rail-icon"
       title={t("close") || "Close"}
-      aria-label="Close"
+      aria-label={t("wkSpaceClose")}
       onClick={() => setOpen(false)}
     >
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -93,7 +93,7 @@ export function ClosePlanCardButton() {
       type="button"
       className="ghost-icon rail-icon"
       title={t("close") || "Close"}
-      aria-label="Close"
+      aria-label={t("wkSpaceClose")}
       onClick={() => setOpen(false)}
     >
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -112,7 +112,7 @@ export function ClearTasksButton() {
       type="button"
       className="ghost-icon rail-icon"
       title={t("clearTasks") || "Clear tasks"}
-      aria-label="Clear tasks"
+      aria-label={t("wkSpaceClearTasks")}
       onClick={() => clearTasks()}
     >
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -131,7 +131,7 @@ export function CloseApprovalsButton() {
       type="button"
       className="ghost-icon panel-close"
       title={t("close") || "Close"}
-      aria-label="Close"
+      aria-label={t("wkSpaceClose")}
       onClick={() => document.body.classList.remove("approvals-open")}
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
