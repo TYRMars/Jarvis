@@ -46,10 +46,13 @@ impl Default for HeuristicClassifier {
     }
 }
 
-/// Substrings that bias a turn toward `Complex`. Matched
-/// case-insensitively against the lowercased message; CJK entries are
-/// unaffected by `to_lowercase` so they match verbatim.
-const COMPLEX_KEYWORDS: &[&str] = &[
+/// ASCII keywords that bias a turn toward `Complex`. Matched
+/// case-insensitively against **whole tokens** of the lowercased message
+/// (split on non-alphanumeric boundaries), so e.g. `"implement"` does not
+/// fire on `"implementation"` / `"implemented"` and `"design"` does not
+/// fire on `"redesigned"` / `"designer"`. Substring matching here mis-routed
+/// trivial turns to the expensive `Complex` tier (see #89).
+const ASCII_COMPLEX_KEYWORDS: &[&str] = &[
     "refactor",
     "architecture",
     "debug",
@@ -58,14 +61,21 @@ const COMPLEX_KEYWORDS: &[&str] = &[
     "optimize",
     "optimise",
     "design",
-    "重构",
-    "架构",
-    "分析",
-    "设计",
-    "优化",
-    "调试",
-    "实现",
 ];
+
+/// CJK keywords that bias a turn toward `Complex`. CJK has no word
+/// boundaries, so these are matched as substrings (`contains`) — and they
+/// are unaffected by `to_lowercase`, so they match verbatim.
+const CJK_COMPLEX_KEYWORDS: &[&str] = &["重构", "架构", "分析", "设计", "优化", "调试", "实现"];
+
+/// Whether `lower` (an already-lowercased message) carries a complexity
+/// keyword: a whole-token ASCII match or a CJK substring match.
+fn has_complex_keyword(lower: &str) -> bool {
+    let ascii_hit = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| ASCII_COMPLEX_KEYWORDS.contains(&token));
+    ascii_hit || CJK_COMPLEX_KEYWORDS.iter().any(|k| lower.contains(k))
+}
 
 #[async_trait]
 impl Classifier for HeuristicClassifier {
@@ -76,10 +86,7 @@ impl Classifier for HeuristicClassifier {
         }
         let chars = text.chars().count();
         let lower = text.to_lowercase();
-        if text.contains("```")
-            || chars >= self.complex_min_chars
-            || COMPLEX_KEYWORDS.iter().any(|k| lower.contains(k))
-        {
+        if text.contains("```") || chars >= self.complex_min_chars || has_complex_keyword(&lower) {
             return Tier::Complex;
         }
         if chars <= self.simple_max_chars {
@@ -131,6 +138,27 @@ mod tests {
         let msg = "Can you explain what this function returns and whether it \
                    handles the empty input case the way a caller would expect";
         assert_eq!(HeuristicClassifier::default().classify(msg).await, Tier::Medium);
+    }
+
+    #[tokio::test]
+    async fn substring_of_keyword_does_not_force_complex() {
+        // "implementation" / "redesigned" contain a keyword as a substring but
+        // are not whole-token matches — they must not be routed to Complex (#89).
+        let msg = "I was reading the implementation notes and the page got \
+                   redesigned, but otherwise everything looked fine to me here";
+        assert_eq!(HeuristicClassifier::default().classify(msg).await, Tier::Medium);
+    }
+
+    #[tokio::test]
+    async fn whole_word_keyword_still_complex() {
+        // Boundary matching must still fire on a standalone keyword token,
+        // including when adjacent to punctuation.
+        assert_eq!(
+            HeuristicClassifier::default()
+                .classify("can you debug, then optimize the loop?")
+                .await,
+            Tier::Complex
+        );
     }
 
     #[tokio::test]

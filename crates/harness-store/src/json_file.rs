@@ -51,7 +51,8 @@ use harness_core::{
     Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
 };
 use harness_learning::{
-    fold_events_into_rows, MemoryFilter, MemoryItem, MemoryStore, SkillLifecycle,
+    fold_events_into_rows, validate_memory_safe, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore, SkillLifecycle,
     SkillLifecycleStore, SkillUsageEvent, SkillUsageFilter, SkillUsageRow, SkillUsageStore,
 };
 use harness_observability::{
@@ -67,7 +68,7 @@ use harness_project::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::error::StoreError;
 
@@ -2026,6 +2027,12 @@ impl EvalStore for JsonFileEvalStore {
 
 // ---------- learning / skill-usage store -----------------------------------
 
+/// Default retention cap for the skill-usage `events/` directory. Telemetry
+/// fires on every skill `Listed`/`Viewed`/`Used`, so without a cap the
+/// directory grows without bound and every `list_events`/`report` read pays
+/// an O(N) full-directory scan. Mirrors [`DEFAULT_MAX_OBSERVED_RUNS`].
+pub const DEFAULT_MAX_SKILL_USAGE_EVENTS: usize = 5000;
+
 /// JSON-file backend for [`SkillUsageStore`]. Each event becomes one file
 /// under `<dir>/events/<id>.json`; ids are synthesized from a UTC RFC-3339
 /// timestamp + a monotonic per-process counter so concurrent writes inside
@@ -2034,6 +2041,7 @@ impl EvalStore for JsonFileEvalStore {
 /// to ship raw between machines.
 pub struct JsonFileSkillUsageStore {
     dir: PathBuf,
+    max_events: Option<usize>,
 }
 
 impl JsonFileSkillUsageStore {
@@ -2041,7 +2049,17 @@ impl JsonFileSkillUsageStore {
         let dir = dir.into();
         ensure_dir(&dir)?;
         ensure_dir(&dir.join("events"))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            max_events: Some(DEFAULT_MAX_SKILL_USAGE_EVENTS),
+        })
+    }
+
+    /// Override the `events/` retention cap. `Some(n)` keeps the newest
+    /// `n` files; `None` disables pruning entirely.
+    pub fn with_max_events(mut self, max_events: Option<usize>) -> Self {
+        self.max_events = max_events;
+        self
     }
 
     fn event_path(&self, id: &str) -> PathBuf {
@@ -2072,6 +2090,9 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
         }
         let bytes = serde_json::to_vec_pretty(&event).map_err(StoreError::from)?;
         atomic_write(&self.event_path(&event.id), &bytes).await?;
+        if let Some(max) = self.max_events {
+            prune_oldest_files(&self.dir.join("events"), max).await;
+        }
         Ok(event)
     }
 
@@ -2111,6 +2132,13 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
 /// through this trait too.
 pub struct JsonFileMemoryStore {
     dir: PathBuf,
+    /// Serialises the read-modify-write of [`MemoryStore::patch`] against
+    /// itself and against [`MemoryStore::delete`] within a single
+    /// process. Without it, two `patch` calls (or a `patch` racing a
+    /// `delete`) would interleave their get/write and lose updates or
+    /// resurrect a removed file. Cross-process atomicity would need an
+    /// OS file lock and is out of scope here.
+    write_lock: Mutex<()>,
 }
 
 impl JsonFileMemoryStore {
@@ -2118,7 +2146,10 @@ impl JsonFileMemoryStore {
         let dir = dir.into();
         ensure_dir(&dir)?;
         ensure_dir(&dir.join("memories"))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            write_lock: Mutex::new(()),
+        })
     }
 
     fn item_path(&self, id: &str) -> PathBuf {
@@ -2177,7 +2208,32 @@ impl MemoryStore for JsonFileMemoryStore {
         Ok(item)
     }
 
+    /// Atomic (in-process) read-modify-write. The `write_lock` is held
+    /// across get → apply → validate → persist, and `delete` takes the
+    /// same lock, so a concurrent `delete` either lands before the
+    /// `get` (we observe the missing file → `Ok(None)`, no resurrection)
+    /// or after the persist (the file is removed). Two `patch` calls
+    /// serialise, so neither loses the other's update.
+    async fn patch(
+        &self,
+        id: &str,
+        patch: MemoryPatch,
+    ) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
+        let Some(mut item) = read_json_optional::<MemoryItem>(&self.item_path(id)).await? else {
+            return Ok(None);
+        };
+        patch.apply(&mut item);
+        validate_memory_safe(&item)
+            .map_err(|e| -> harness_learning::BoxError { Box::new(e) })?;
+        item.updated_at = Utc::now().to_rfc3339();
+        let bytes = serde_json::to_vec_pretty(&item).map_err(StoreError::from)?;
+        atomic_write(&self.item_path(&item.id), &bytes).await?;
+        Ok(Some(item))
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
         match tokio::fs::remove_file(&self.item_path(id)).await {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -3691,6 +3747,81 @@ mod tests {
         let rust_row = rows.iter().find(|r| r.skill_name == "rust").unwrap();
         assert_eq!(rust_row.view_count, 1);
         assert_eq!(rust_row.use_count, 1);
+    }
+
+    fn skill_events_file_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir.join("events"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".json") && !name.ends_with(".json.tmp")
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn skill_usage_events_are_capped_when_max_set() {
+        use harness_learning::{SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent};
+        let dir = tempdir().unwrap();
+        // slack = max/10 = 0, so steady state is exactly `max`.
+        let store = JsonFileSkillUsageStore::open(dir.path())
+            .unwrap()
+            .with_max_events(Some(5));
+        for _ in 0..30 {
+            store
+                .record_event(SkillUsageEvent {
+                    id: String::new(),
+                    skill_name: "rust".into(),
+                    source: SkillSource::Bundled,
+                    action: SkillUsageAction::Used,
+                    scope: SkillScope::workspace("/ws"),
+                    conversation_id: None,
+                    requirement_id: None,
+                    run_id: None,
+                    created_at: String::new(),
+                    attributes: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            skill_events_file_count(dir.path()),
+            5,
+            "events/ must be bounded by the cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_usage_events_unbounded_when_max_none() {
+        use harness_learning::{SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent};
+        let dir = tempdir().unwrap();
+        let store = JsonFileSkillUsageStore::open(dir.path())
+            .unwrap()
+            .with_max_events(None);
+        for _ in 0..12 {
+            store
+                .record_event(SkillUsageEvent {
+                    id: String::new(),
+                    skill_name: "rust".into(),
+                    source: SkillSource::Bundled,
+                    action: SkillUsageAction::Used,
+                    scope: SkillScope::workspace("/ws"),
+                    conversation_id: None,
+                    requirement_id: None,
+                    run_id: None,
+                    created_at: String::new(),
+                    attributes: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            skill_events_file_count(dir.path()),
+            12,
+            "None disables pruning"
+        );
     }
 
     // ---- SkillUsageStore (in-memory) ------------------------------------

@@ -1239,15 +1239,8 @@ async fn drive_one_with_prompt(
                     workflow_id = %wf_id,
                     "auto mode: running bound workflow"
                 );
-                return crate::workflow_runtime::drive_workflow(
-                    state,
-                    &def,
-                    Some(requirement),
-                    workspace_override,
-                    timeout_ms,
-                )
-                .await
-                .map(|_| ());
+                return drive_one_workflow(state, &def, requirement, workspace_override, timeout_ms)
+                    .await;
             }
             Ok(None) => {
                 warn!(
@@ -1594,6 +1587,181 @@ async fn drive_one_with_prompt(
             "run_id": run.id,
             "status": run.status.as_wire(),
             "auto": true,
+        }),
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Drive a requirement bound to a declarative workflow.
+///
+/// The workflow runtime mints its own per-step conversations, but the
+/// auto loop's re-pickup guards (in-flight dedup, retry cap, failure
+/// backoff) and status advancement all key off [`RequirementRun`] rows
+/// and the requirement status. The single-agent path
+/// (`drive_one_with_prompt`) writes those; the workflow path historically
+/// did not, so an approved workflow-bound row was re-dispatched on every
+/// tick forever (issue #80). This wraps the workflow dispatch in the same
+/// bookkeeping:
+///
+/// 1. Advance the requirement off `Backlog` and synthesise the execution
+///    checklist (so a clean run advances `InProgress` → `Review` instead
+///    of staying eligible).
+/// 2. Mint a `Running` [`RequirementRun`] **before** dispatch, so a
+///    workflow that outlives a tick is seen as in-flight and the next
+///    tick skips re-pickup.
+/// 3. Mark the run `Completed` / `Failed` from the workflow outcome and
+///    advance the requirement — letting the existing retry / backoff
+///    guards apply uniformly.
+async fn drive_one_workflow(
+    state: &AppState,
+    def: &harness_workflow::WorkflowDefinition,
+    requirement: &Requirement,
+    workspace_override: Option<PathBuf>,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    let req_store = state
+        .requirements
+        .clone()
+        .ok_or_else(|| "requirement store missing".to_string())?;
+    let run_store = state
+        .requirement_runs
+        .clone()
+        .ok_or_else(|| "run store missing".to_string())?;
+
+    let workspace = workspace_override
+        .clone()
+        .or_else(|| state.workspace_root.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // 1. Advance requirement off Backlog + synthesise the execution
+    //    checklist so completion lands at Review (awaiting acceptance)
+    //    rather than looping. Mirrors drive_one_with_prompt.
+    let mut requirement = requirement.clone();
+    let advanced = requirement.status == RequirementStatus::Backlog;
+    if advanced {
+        requirement.status = RequirementStatus::InProgress;
+        requirement.touch();
+    }
+    requirement.ensure_execution_checklist();
+    req_store
+        .upsert(&requirement)
+        .await
+        .map_err(|e| format!("upsert requirement: {e}"))?;
+
+    // 2. Mint a Running run BEFORE dispatch so `has_inflight` sees a
+    //    workflow that outlives a tick. The run is not tied to a single
+    //    conversation (the workflow links its per-step conversations onto
+    //    the requirement itself), so we mint a synthetic id.
+    let conversation_id = uuid::Uuid::new_v4().to_string();
+    let mut run = RequirementRun::new(requirement.id.clone(), conversation_id);
+    run.status = RequirementRunStatus::Running;
+    run.model = Some(state.agent_template.model.clone());
+    run.push_log(
+        RequirementRunLogLevel::Info,
+        "Auto workflow run started",
+        Some(json!({
+            "workflow_id": def.id,
+            "workspace": workspace.display().to_string(),
+            "project_id": requirement.project_id.clone(),
+        })),
+    );
+    run_store
+        .upsert(&run)
+        .await
+        .map_err(|e| format!("upsert run: {e}"))?;
+
+    record_activity(
+        state,
+        &requirement.id,
+        ActivityKind::RunStarted,
+        ActivityActor::System,
+        json!({
+            "run_id": run.id,
+            "workflow_id": def.id,
+            "auto": true,
+            "workflow": true,
+        }),
+    )
+    .await;
+    if advanced {
+        record_activity(
+            state,
+            &requirement.id,
+            ActivityKind::StatusChange,
+            ActivityActor::System,
+            json!({
+                "from": "backlog",
+                "to": "in_progress",
+                "reason": "auto_workflow_started",
+            }),
+        )
+        .await;
+    }
+
+    // 3. Dispatch. A Failed terminal status surfaces as Err.
+    let outcome = crate::workflow_runtime::drive_workflow(
+        state,
+        def,
+        Some(&requirement),
+        workspace_override,
+        timeout_ms,
+    )
+    .await;
+
+    match outcome {
+        Ok(wf_run) => {
+            run.summary = Some(truncate_one_line(
+                &format!(
+                    "Workflow '{}' completed ({} step(s)).",
+                    def.name,
+                    wf_run.step_results.len()
+                ),
+                240,
+            ));
+            run.push_log(
+                RequirementRunLogLevel::Success,
+                "Workflow completed",
+                Some(json!({
+                    "workflow_run_id": wf_run.id,
+                    "steps": wf_run.step_results.len(),
+                })),
+            );
+            run.finish(RequirementRunStatus::Completed);
+        }
+        Err(e) => {
+            run.push_log(
+                RequirementRunLogLevel::Error,
+                "Workflow failed",
+                Some(json!({ "error": e.clone() })),
+            );
+            run.error = Some(e);
+            run.finish(RequirementRunStatus::Failed);
+        }
+    }
+    if let Err(e) = run_store.upsert(&run).await {
+        warn!(error = %e, "upsert finished workflow run failed");
+    }
+
+    // The workflow linked its step conversations onto the requirement;
+    // reload before advancing so we operate on the durable row.
+    if let Ok(Some(latest)) = req_store.get(&requirement.id).await {
+        requirement = latest;
+    }
+    advance_completed_requirement(state, &req_store, &mut requirement, &run).await;
+    capture_failure_memory(state, &requirement, &run).await;
+    capture_failure_learning_memory(state, &requirement, &run).await;
+    record_activity(
+        state,
+        &requirement.id,
+        ActivityKind::RunFinished,
+        ActivityActor::System,
+        json!({
+            "run_id": run.id,
+            "status": run.status.as_wire(),
+            "auto": true,
+            "workflow": true,
         }),
     )
     .await;
@@ -4335,5 +4503,93 @@ Do {{ requirement.title }} in {{ issue.state }}.
             .unwrap();
         let blocked2 = acts2.iter().filter(|a| a.kind == ActivityKind::Blocked).count();
         assert_eq!(blocked2, 1, "blocked row must not be re-emitted each tick");
+    }
+
+
+    /// Regression (issue #80): a requirement bound to a declarative
+    /// workflow must mint a `RequirementRun` and advance its status, so
+    /// the auto loop's in-flight / retry guards and status filter apply.
+    /// Before the fix the workflow branch returned before any bookkeeping,
+    /// so the same approved row was re-dispatched on every tick forever.
+    #[tokio::test]
+    async fn tick_workflow_requirement_mints_run_and_is_not_re_picked() {
+        use harness_workflow::{WorkflowDefinition, WorkflowStep, WorkflowStepKind};
+
+        let state = wire_stores(base_state_with_canned_llm("workflow step done."))
+            .with_workflows(Arc::new(harness_store::MemoryWorkflowStore::new()));
+        let (proj, prof) = seed_project_and_profile(&state).await;
+
+        // One-step workflow the requirement binds to.
+        let mut def = WorkflowDefinition::new("wf");
+        def.steps.push(WorkflowStep::new(
+            "only step",
+            WorkflowStepKind::Agent {
+                prompt: "do the thing".into(),
+                subagent: None,
+                model: None,
+                output_key: None,
+            },
+        ));
+        state.workflows.as_ref().unwrap().upsert(&def).await.unwrap();
+
+        let mut req = Requirement::new(&proj.id, "workflow-bound");
+        req.workflow_id = Some(def.id.clone());
+        req.assignee_id = Some(prof.id.clone());
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        // First tick picks the row exactly once.
+        let n = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n, 1, "workflow-bound requirement should be picked once");
+
+        // Wait for the spawned workflow run to advance the requirement
+        // off Backlog (which happens after the run lands terminal).
+        let mut advanced = None;
+        for _ in 0..50 {
+            let saved = state
+                .requirements
+                .as_ref()
+                .unwrap()
+                .get(&req.id)
+                .await
+                .unwrap()
+                .unwrap();
+            if saved.status != RequirementStatus::Backlog {
+                advanced = Some(saved);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let saved = advanced.expect("workflow requirement never advanced off Backlog");
+        // A clean run lands at Review (awaiting acceptance), not eligible
+        // for re-pickup once a completed run exists.
+        assert_eq!(saved.status, RequirementStatus::Review);
+
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 1, "exactly one RequirementRun should be minted");
+        assert_eq!(runs[0].status, RequirementRunStatus::Completed);
+
+        // Second tick must NOT re-dispatch — the core of the bug.
+        let n2 = tick(&state, &cfg()).await.unwrap();
+        assert_eq!(n2, 0, "completed workflow row must not be re-picked");
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 1, "no second run may be minted on re-tick");
     }
 }
