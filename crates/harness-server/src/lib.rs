@@ -71,6 +71,7 @@ mod todos_routes;
 mod ui;
 mod verification;
 mod work_overview_routes;
+mod workflow_concurrency;
 mod workflow_routes;
 mod workflow_runtime;
 mod workspace_diff;
@@ -84,6 +85,8 @@ pub use channel_adapter::{ChannelAdapter, ChannelAdapterRegistry, ChannelDispatc
 pub use skill_routes::default_roots as default_skill_roots;
 
 pub use automation_runtime::spawn_automation_scheduler;
+pub use workflow_concurrency::{WorkflowRunGate, DEFAULT_WORKFLOW_MAX_CONCURRENT};
+pub use workflow_runtime::{spawn_workflow_reaper, DEFAULT_WORKFLOW_REAP_SECONDS};
 pub use project_memory::{spawn_project_memory_sync, ProjectMemoryConfig};
 pub use provider_registry::{ProviderEntry, ProviderInfo, ProviderRegistry, RouteError, Routed};
 pub use requirements_routes::sweep_orphan_requirements_on_startup;

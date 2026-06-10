@@ -100,6 +100,13 @@ pub(crate) async fn execute_workflow_run(
 ) -> WorkflowRun {
     let store = state.workflows.clone();
 
+    // Record this run as alive in-process for its whole duration. The
+    // stale-run reaper skips runs in this set, so it never reclaims a
+    // run that is still executing here — only rows orphaned by a crash
+    // (whose liveness set died with the process) age out. The guard
+    // clears the entry on completion *and* on task abort.
+    let _inflight = state.workflow_run_gate.mark_inflight(run.id.clone());
+
     // Base system prompt: a requirement contributes its context manifest
     // (same builder the auto loop uses); ad-hoc runs get a generic frame.
     let workspace = workspace_override
@@ -465,6 +472,113 @@ fn render_template(prompt: &str, prev: Option<&str>, outputs: &Outputs) -> Strin
     out
 }
 
+/// Safety multiplier applied to `run_timeout_ms` before reaping a stuck
+/// `Running` workflow row. A healthy run's *steps* are each wrapped in
+/// `tokio::time::timeout(run_timeout_ms)`, but a multi-step workflow can
+/// legitimately span several step budgets — so we give the whole run 3×
+/// headroom (matching the auto loop's `RUNNING_STALE_MULTIPLIER`) before
+/// declaring it abandoned. Runs still alive in-process are never reaped
+/// regardless of age (the `is_active` check below), so this threshold
+/// only ever bites genuinely orphaned rows.
+const WORKFLOW_RUNNING_STALE_MULTIPLIER: u64 = 3;
+
+/// Default cadence (seconds) for the background stale-run reaper.
+pub const DEFAULT_WORKFLOW_REAP_SECONDS: u64 = 60;
+
+/// Sweep the workflow run store and reclaim runs stuck `Running` /
+/// `Pending` past their wall-clock budget — the orphans left behind when
+/// a process is killed mid-run (issue #78). Such a row would otherwise
+/// stay `Running` forever, since the task that owned it died without
+/// writing a terminal status.
+///
+/// Skips any run still alive in *this* process (present in the
+/// [`WorkflowRunGate`](crate::workflow_concurrency::WorkflowRunGate)
+/// liveness set) — those finalize themselves. Returns the number of rows
+/// reclaimed. No-ops (returns 0) when the workflow store is unconfigured.
+///
+/// Like the auto loop's reaper, orphans are flipped to `Cancelled` (the
+/// neutral "we gave up on this row" state), not `Failed` — we don't know
+/// what happened to the dead task, only that it never finished.
+pub async fn reap_stale_workflow_runs(state: &AppState, timeout_ms: u64) -> usize {
+    let Some(store) = state.workflows.as_ref() else {
+        return 0;
+    };
+    let runs = match store.list_runs(None, None).await {
+        Ok(runs) => runs,
+        Err(e) => {
+            warn!(error = %e, "workflow reaper: list_runs failed; skipping sweep");
+            return 0;
+        }
+    };
+    let timeout_ms = timeout_ms.max(1);
+    let running_threshold_ms = timeout_ms.saturating_mul(WORKFLOW_RUNNING_STALE_MULTIPLIER);
+    let mut reaped = 0;
+    for mut run in runs {
+        let threshold_ms = match run.status {
+            WorkflowRunStatus::Pending => timeout_ms,
+            WorkflowRunStatus::Running => running_threshold_ms,
+            _ => continue,
+        };
+        // Still executing here — leave it alone; it'll finalize itself.
+        if state.workflow_run_gate.is_active(&run.id) {
+            continue;
+        }
+        if !workflow_run_is_stale(&run, threshold_ms) {
+            continue;
+        }
+        let prior = run.status;
+        run.error.get_or_insert_with(|| {
+            "stuck workflow run reclaimed (assumed abandoned after process restart)".to_string()
+        });
+        run.finish(WorkflowRunStatus::Cancelled);
+        if let Err(e) = store.upsert_run(&run).await {
+            warn!(run_id = %run.id, error = %e, "workflow reaper: persist failed");
+            continue;
+        }
+        warn!(
+            run_id = %run.id,
+            prior_status = %prior.as_wire(),
+            threshold_ms,
+            "workflow reaper reclaimed stale in-flight run"
+        );
+        reaped += 1;
+    }
+    reaped
+}
+
+/// `true` when `run`'s age exceeds `threshold_ms`. A run whose
+/// `started_at` doesn't parse is treated as *not* stale (we'd rather
+/// leave a malformed row than reap it on a parse error).
+fn workflow_run_is_stale(run: &WorkflowRun, threshold_ms: u64) -> bool {
+    let Ok(started_at) = chrono::DateTime::parse_from_rfc3339(&run.started_at) else {
+        return false;
+    };
+    let age = chrono::Utc::now().signed_duration_since(started_at.with_timezone(&chrono::Utc));
+    age.num_milliseconds() > threshold_ms as i64
+}
+
+/// Spawn the background workflow stale-run reaper: one sweep immediately
+/// (catching orphans left by a prior process), then every `tick_seconds`.
+/// No-ops without a workflow store. `tick_seconds` and `timeout_ms` are
+/// both clamped to ≥1.
+pub fn spawn_workflow_reaper(state: AppState, tick_seconds: u64, timeout_ms: u64) {
+    if state.workflows.is_none() {
+        return;
+    }
+    let tick_seconds = tick_seconds.max(1);
+    info!(tick_seconds, timeout_ms, "workflow stale-run reaper started");
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(tick_seconds));
+        loop {
+            tick.tick().await;
+            let reaped = reap_stale_workflow_runs(&state, timeout_ms).await;
+            if reaped > 0 {
+                info!(count = reaped, "workflow reaper reclaimed stale runs");
+            }
+        }
+    });
+}
+
 /// The most recent non-empty assistant message text, or `""`.
 fn last_assistant_text(conv: &Conversation) -> String {
     conv.messages
@@ -565,5 +679,92 @@ mod tests {
         let r = single(WorkflowStepResult::failed(&step, None, "boom".into()));
         assert!(r.failed);
         assert_eq!(r.results.len(), 1);
+    }
+
+    struct ReaperStubLlm;
+
+    #[async_trait::async_trait]
+    impl harness_core::LlmProvider for ReaperStubLlm {
+        async fn complete(
+            &self,
+            _: harness_core::ChatRequest,
+        ) -> Result<harness_core::ChatResponse, harness_core::Error> {
+            Err(harness_core::Error::Provider("stub".into()))
+        }
+    }
+
+    fn reaper_state() -> AppState {
+        let cfg = harness_core::AgentConfig::new("stub-model");
+        let agent = Arc::new(harness_core::Agent::new(Arc::new(ReaperStubLlm) as _, cfg));
+        AppState::new(agent).with_workflows(Arc::new(harness_store::MemoryWorkflowStore::new()))
+    }
+
+    fn run_with_age(status: WorkflowRunStatus, age_ms: i64) -> WorkflowRun {
+        let mut run = WorkflowRun::new("wf-1", None);
+        run.status = status;
+        run.started_at = (chrono::Utc::now() - chrono::Duration::milliseconds(age_ms)).to_rfc3339();
+        run
+    }
+
+    #[tokio::test]
+    async fn reaper_reclaims_old_running_run() {
+        let state = reaper_state();
+        let store = state.workflows.clone().unwrap();
+        // Older than timeout × 3.
+        let run = run_with_age(WorkflowRunStatus::Running, 10_000);
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+
+        let reaped = reap_stale_workflow_runs(&state, 1_000).await;
+        assert_eq!(reaped, 1);
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Cancelled);
+        assert!(got.finished_at.is_some());
+        assert!(got.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn reaper_leaves_fresh_running_run() {
+        let state = reaper_state();
+        let store = state.workflows.clone().unwrap();
+        let run = run_with_age(WorkflowRunStatus::Running, 100);
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+
+        let reaped = reap_stale_workflow_runs(&state, 60_000).await;
+        assert_eq!(reaped, 0);
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn reaper_skips_runs_alive_in_process() {
+        let state = reaper_state();
+        let store = state.workflows.clone().unwrap();
+        let run = run_with_age(WorkflowRunStatus::Running, 10_000);
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+        // Mark it alive locally — the reaper must not touch it despite age.
+        let _guard = state.workflow_run_gate.mark_inflight(run_id.clone());
+
+        let reaped = reap_stale_workflow_runs(&state, 1_000).await;
+        assert_eq!(reaped, 0);
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn reaper_ignores_terminal_runs() {
+        let state = reaper_state();
+        let store = state.workflows.clone().unwrap();
+        let mut run = run_with_age(WorkflowRunStatus::Succeeded, 10_000);
+        run.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+
+        let reaped = reap_stale_workflow_runs(&state, 1_000).await;
+        assert_eq!(reaped, 0);
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Succeeded);
     }
 }
