@@ -55,6 +55,12 @@ type Outputs = HashMap<String, String>;
 /// `requirement` binds the run to a kanban card: its manifest seeds the
 /// system prompt, its conversations get linked, and Activity rows are
 /// emitted. Pass `None` for an ad-hoc run.
+///
+/// A workflow whose terminal status is [`WorkflowRunStatus::Failed`]
+/// surfaces as `Err` so the caller (the auto loop) can observe the
+/// failure — otherwise a fully-failed run would be indistinguishable
+/// from success at the orchestration layer, and the loop's retry /
+/// backoff guards (which key off failure signals) would never engage.
 pub(crate) async fn drive_workflow(
     state: &AppState,
     def: &WorkflowDefinition,
@@ -70,7 +76,14 @@ pub(crate) async fn drive_workflow(
     if let Err(e) = store.upsert_run(&run).await {
         warn!(error = %e, workflow_id = %def.id, "workflow: persist running run failed");
     }
-    Ok(execute_workflow_run(state, def, requirement, run, workspace_override, timeout_ms).await)
+    let run = execute_workflow_run(state, def, requirement, run, workspace_override, timeout_ms).await;
+    if run.status == WorkflowRunStatus::Failed {
+        return Err(run
+            .error
+            .clone()
+            .unwrap_or_else(|| "one or more workflow steps failed".to_string()));
+    }
+    Ok(run)
 }
 
 /// Execute `def` against a **pre-minted** `run` (already persisted as
