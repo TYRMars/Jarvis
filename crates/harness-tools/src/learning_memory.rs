@@ -245,11 +245,16 @@ impl Tool for LearningMemoryUpdateTool {
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| -> BoxError { "missing `id`".into() })?;
-        let existing = self
-            .store
-            .get(id)
-            .await?
-            .ok_or_else(|| -> BoxError { format!("no memory with id `{id}`").into() })?;
+        // Reject an explicit empty `title` / `body` up front so the
+        // caller gets a precise message; the store's atomic `patch` also
+        // re-validates (covering the patched-result case) but its error
+        // is generic. Mirrors the non-empty guards on `add`.
+        if let Some("") = args.get("title").and_then(Value::as_str).map(str::trim) {
+            return Err("`title` must be non-empty".into());
+        }
+        if let Some("") = args.get("body").and_then(Value::as_str).map(str::trim) {
+            return Err("`body` must be non-empty".into());
+        }
         let patch = MemoryPatch {
             title: args.get("title").and_then(Value::as_str).map(String::from),
             body: args.get("body").and_then(Value::as_str).map(String::from),
@@ -272,12 +277,14 @@ impl Tool for LearningMemoryUpdateTool {
                 .map(|c| c as f32),
             last_used_at: None,
         };
-        let mut updated = existing;
-        patch.apply(&mut updated);
-        if updated.title.trim().is_empty() {
-            return Err("`title` must be non-empty after patch".into());
-        }
-        let saved = self.store.upsert(updated).await?;
+        // Atomic read-modify-write in the store: this serialises against
+        // concurrent updates (no lost patch) and against `delete` — a row
+        // removed mid-flight yields `None` rather than being resurrected.
+        let saved = self
+            .store
+            .patch(id, patch)
+            .await?
+            .ok_or_else(|| -> BoxError { format!("no memory with id `{id}`").into() })?;
         Ok(serde_json::to_string_pretty(&json!({"item": saved}))?)
     }
 }
@@ -416,6 +423,65 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("title"));
+    }
+
+    #[tokio::test]
+    async fn update_rejects_empty_body() {
+        let store = store();
+        let add = LearningMemoryAddTool::new(store.clone());
+        let upd = LearningMemoryUpdateTool::new(store.clone());
+
+        let out = add
+            .invoke(json!({"title": "t", "body": "b"}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let id = v["item"]["id"].as_str().unwrap().to_string();
+
+        let err = upd
+            .invoke(json!({"id": id, "body": "   "}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("body"));
+    }
+
+    #[tokio::test]
+    async fn update_loses_to_concurrent_delete() {
+        // A row deleted between the agent reading it and patching it must
+        // NOT be resurrected — `update` reports the id is gone and the
+        // store stays empty.
+        let store = store();
+        let add = LearningMemoryAddTool::new(store.clone());
+        let upd = LearningMemoryUpdateTool::new(store.clone());
+        let del = LearningMemoryDeleteTool::new(store.clone());
+        let list = LearningMemoryListTool::new(store.clone());
+
+        let out = add
+            .invoke(json!({"title": "t", "body": "b"}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let id = v["item"]["id"].as_str().unwrap().to_string();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&del.invoke(json!({"id": id})).await.unwrap()).unwrap()
+                ["deleted"],
+            true
+        );
+
+        let err = upd
+            .invoke(json!({"id": id, "title": "zombie"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(&id));
+
+        let out = list.invoke(json!({})).await.unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["items"].as_array().unwrap().len(),
+            0,
+            "deleted row not resurrected by the racing update"
+        );
     }
 
     #[tokio::test]

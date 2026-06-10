@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
 use harness_automation::{AutomationRunStatus, AutomationTask};
 use harness_core::{Conversation, ConversationMetadata, Message};
 use tracing::{info, warn};
@@ -5,6 +8,64 @@ use tracing::{info, warn};
 use crate::state::AppState;
 
 const DEFAULT_TICK_SECONDS: u64 = 5;
+
+/// Wall-clock budget, in milliseconds, after which a task still flagged
+/// `Running` is assumed abandoned and reclaimed. Mirrors the auto loop's
+/// `JARVIS_WORK_RUN_TIMEOUT_MS` (10 min) and the `× 3` safety multiplier it
+/// applies to in-flight `Running` rows so a slow-but-healthy run is never
+/// reaped out from under itself. Overridable via `JARVIS_AUTOMATION_RUN_TIMEOUT_MS`.
+const DEFAULT_RUN_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+const RUNNING_STALE_MULTIPLIER: u64 = 3;
+
+/// Process-wide in-memory reservation set guarding against
+/// double-firing the same automation.
+///
+/// The persisted `last_run_status == Running` flag alone cannot close
+/// the window between a scheduler tick observing a task as due and the
+/// spawned run asynchronously persisting `Running`: a second tick (or a
+/// manual trigger) firing inside that window re-lists the still-due task
+/// and spawns a duplicate run. This set is reserved **synchronously**
+/// before `spawn_automation_run` (mirroring `auto_mode.rs`'s
+/// `active_requirements`), so only one run per automation id can be
+/// in flight at a time regardless of how slow the persisted write is.
+#[derive(Debug, Clone, Default)]
+pub struct AutomationClaims {
+    active: Arc<Mutex<HashSet<String>>>,
+}
+
+impl AutomationClaims {
+    /// Attempt to reserve `id`. Returns `Some(claim)` if the id was not
+    /// already claimed; the reservation is released when the returned
+    /// guard is dropped (i.e. when the spawned run terminates). Returns
+    /// `None` if a run for this id is already in flight, or on lock
+    /// poisoning (fail closed — better to skip than double-fire).
+    pub(crate) fn try_claim(&self, id: &str) -> Option<AutomationRunClaim> {
+        let mut active = self.active.lock().ok()?;
+        if !active.insert(id.to_string()) {
+            return None;
+        }
+        Some(AutomationRunClaim {
+            id: id.to_string(),
+            active: Arc::clone(&self.active),
+        })
+    }
+}
+
+/// RAII reservation handle. Held by the spawned run for its full
+/// lifetime; `Drop` releases the id so the next tick can pick it up.
+#[derive(Debug)]
+pub(crate) struct AutomationRunClaim {
+    id: String,
+    active: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Drop for AutomationRunClaim {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.id);
+        }
+    }
+}
 
 pub fn spawn_automation_scheduler(state: AppState) {
     let Some(store) = state.automations.clone() else {
@@ -15,7 +76,16 @@ pub fn spawn_automation_scheduler(state: AppState) {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_TICK_SECONDS)
         .max(1);
-    info!(tick_seconds, "automation scheduler started");
+    let run_timeout_ms = std::env::var("JARVIS_AUTOMATION_RUN_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_RUN_TIMEOUT_MS)
+        .max(1);
+    let stale_threshold_ms = run_timeout_ms.saturating_mul(RUNNING_STALE_MULTIPLIER);
+    info!(
+        tick_seconds,
+        run_timeout_ms, stale_threshold_ms, "automation scheduler started"
+    );
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(tick_seconds));
         loop {
@@ -28,10 +98,41 @@ pub fn spawn_automation_scheduler(state: AppState) {
                     continue;
                 }
             };
-            for task in tasks {
-                if task.is_due_at(now) {
-                    spawn_automation_run(state.clone(), task, RunTrigger::Schedule);
+            for mut task in tasks {
+                // Reap tasks pinned in `Running` by a lost worker (restart,
+                // cancellation, panic) before evaluating due-ness — without
+                // this they never reschedule again.
+                if task.is_stale_running(now, stale_threshold_ms) {
+                    task.mark_stale_reclaimed(now);
+                    match store.upsert(&task).await {
+                        Ok(()) => warn!(
+                            automation_id = %task.id,
+                            stale_threshold_ms,
+                            "automation reaped stale running task"
+                        ),
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                automation_id = %task.id,
+                                "automation reaper could not persist reclamation"
+                            );
+                            continue;
+                        }
+                    }
                 }
+                if !task.is_due_at(now) {
+                    continue;
+                }
+                // Reserve the id synchronously, before the spawn and
+                // before the tick moves on. If a run is already in
+                // flight (this tick, a prior tick whose `Running` write
+                // hasn't landed yet, or a manual trigger) the claim
+                // fails and we skip — closing the TOCTOU window the
+                // persisted flag alone cannot.
+                let Some(claim) = state.automation_claims.try_claim(&task.id) else {
+                    continue;
+                };
+                spawn_automation_run(state.clone(), task, RunTrigger::Schedule, claim);
             }
         }
     });
@@ -43,11 +144,20 @@ pub(crate) enum RunTrigger {
     Manual,
 }
 
-pub(crate) fn spawn_automation_run(state: AppState, mut task: AutomationTask, trigger: RunTrigger) {
+pub(crate) fn spawn_automation_run(
+    state: AppState,
+    mut task: AutomationTask,
+    trigger: RunTrigger,
+    claim: AutomationRunClaim,
+) {
     let Some(store) = state.automations.clone() else {
         return;
     };
     tokio::spawn(async move {
+        // Hold the reservation for the whole run; dropping it on exit
+        // (success, early-return, or panic-unwind) releases the id for
+        // the next tick.
+        let _claim = claim;
         let now = chrono::Utc::now();
         match trigger {
             RunTrigger::Schedule => task.mark_running(now),
@@ -124,4 +234,26 @@ async fn load_conversation(
 
 pub(crate) fn is_running(task: &AutomationTask) -> bool {
     task.last_run_status == Some(AutomationRunStatus::Running)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_is_exclusive_per_id() {
+        let claims = AutomationClaims::default();
+        let first = claims.try_claim("auto-1").expect("first claim should win");
+        assert!(
+            claims.try_claim("auto-1").is_none(),
+            "an in-flight automation cannot be claimed twice — closes the double-fire window"
+        );
+        // A different id is independent.
+        let _other = claims.try_claim("auto-2").expect("distinct id is claimable");
+        drop(first);
+        assert!(
+            claims.try_claim("auto-1").is_some(),
+            "dropping the claim releases the id for the next tick"
+        );
+    }
 }

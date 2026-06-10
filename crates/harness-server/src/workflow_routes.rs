@@ -17,12 +17,15 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use harness_workflow::{WorkflowDefinition, WorkflowRun, WorkflowStep};
+use harness_workflow::{
+    WorkflowDefinition, WorkflowError, WorkflowRun, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepKind,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::state::AppState;
-use crate::workflow_runtime::execute_workflow_run;
+use crate::workflow_runtime::{execute_workflow_run, fail_run_if_running};
 
 /// Wall-clock budget for a single agent step in a manually dispatched
 /// run. Matches the auto loop's `JARVIS_WORK_RUN_TIMEOUT_MS` default.
@@ -40,6 +43,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/v1/workflows/:id/run", post(run_workflow))
         .route("/v1/workflows/:id/runs", get(list_workflow_runs))
         .route("/v1/workflow-runs/:run_id", get(get_workflow_run))
+        .route("/v1/workflow-runs/:run_id/cancel", post(cancel_workflow_run))
 }
 
 #[derive(Debug, Serialize)]
@@ -108,7 +112,7 @@ async fn create_workflow(
     def.project_id = clean_opt(req.project_id);
     def.steps = normalize_steps(req.steps);
     if let Err(e) = validate_steps(&def) {
-        return bad_request(e);
+        return bad_request(e.to_string());
     }
     match store.upsert(&def).await {
         Ok(()) => (axum::http::StatusCode::CREATED, Json(def)).into_response(),
@@ -156,7 +160,7 @@ async fn patch_workflow(
         def.steps = normalize_steps(steps);
     }
     if let Err(e) = validate_steps(&def) {
-        return bad_request(e);
+        return bad_request(e.to_string());
     }
     def.touch();
     match store.upsert(&def).await {
@@ -211,6 +215,17 @@ async fn run_workflow(
         None => None,
     };
 
+    // Reserve a global concurrency slot *before* minting a run, so a
+    // flood of POSTs is rejected with 429 instead of fanning out into
+    // unbounded background tasks (issue #78). The permit is moved into
+    // the spawned task and released when the run finishes.
+    let Some(permit) = state.workflow_run_gate.try_acquire() else {
+        return too_many_requests(format!(
+            "workflow run concurrency limit reached ({} in flight); retry shortly",
+            state.workflow_run_gate.capacity()
+        ));
+    };
+
     // Mint + persist the Running run synchronously so we can return its
     // id, then execute in the background (à la spawn_automation_run).
     let run = WorkflowRun::new(def.id.clone(), requirement.as_ref().map(|r| r.id.clone()));
@@ -218,19 +233,63 @@ async fn run_workflow(
         return server_error(e.to_string());
     }
     let response_run = run.clone();
+    let run_id = run.id.clone();
+    let panic_run_id = run_id.clone();
     let state2 = state.clone();
-    tokio::spawn(async move {
-        execute_workflow_run(
+    let handle = tokio::spawn(async move {
+        // Hold the slot for the run's lifetime; releasing on drop.
+        let _permit = permit;
+        // Guard the detached executor: a panic anywhere inside
+        // `execute_workflow_run` would otherwise be swallowed by tokio's
+        // default hook and leave the run stuck `Running` forever, since the
+        // terminal-status write lives at the end of the executor.
+        let exec = std::panic::AssertUnwindSafe(execute_workflow_run(
             &state2,
             &def,
             requirement.as_ref(),
             run,
             None,
             DEFAULT_RUN_TIMEOUT_MS,
-        )
-        .await;
+        ));
+        if futures::FutureExt::catch_unwind(exec).await.is_err() {
+            fail_run_if_running(&state2, &panic_run_id, "workflow run panicked").await;
+        }
     });
+    // Register the handle so `POST /v1/workflow-runs/:id/cancel` can
+    // abort this run. Cleared by the run's `InflightGuard` on completion.
+    state
+        .workflow_run_gate
+        .register_handle(run_id, handle.abort_handle());
     (axum::http::StatusCode::ACCEPTED, Json(response_run)).into_response()
+}
+
+/// Cancel an in-flight workflow run: abort the local task (if any) and
+/// flip the persisted row to `Cancelled`. Idempotent on already-terminal
+/// runs (returns the row unchanged). 404 when the run id is unknown.
+async fn cancel_workflow_run(State(state): State<AppState>, Path(run_id): Path<String>) -> Response {
+    let Some(store) = state.workflows.as_ref() else {
+        return unavailable();
+    };
+    let mut run = match store.get_run(&run_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => return run_not_found(),
+        Err(e) => return server_error(e.to_string()),
+    };
+    if run.status.is_terminal() {
+        // Already finished — nothing to abort. Idempotent success.
+        return Json(run).into_response();
+    }
+    // Abort the live task if it's running in this process. A `false`
+    // here just means the run is orphaned (different process / already
+    // ended); we still finalize the row below.
+    state.workflow_run_gate.cancel(&run_id);
+    run.error
+        .get_or_insert_with(|| "run cancelled by operator".to_string());
+    run.finish(WorkflowRunStatus::Cancelled);
+    if let Err(e) = store.upsert_run(&run).await {
+        return server_error(e.to_string());
+    }
+    Json(run).into_response()
 }
 
 async fn list_workflow_runs(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -283,11 +342,26 @@ fn normalize_steps(steps: Vec<WorkflowStep>) -> Vec<WorkflowStep> {
         .collect()
 }
 
-fn validate_steps(def: &WorkflowDefinition) -> Result<(), String> {
+fn validate_steps(def: &WorkflowDefinition) -> Result<(), WorkflowError> {
     if def.agent_step_count() == 0 {
-        return Err("workflow must contain at least one agent step".to_string());
+        return Err(WorkflowError::Empty);
     }
-    Ok(())
+    fn walk(steps: &[WorkflowStep]) -> Result<(), WorkflowError> {
+        for step in steps {
+            match &step.kind {
+                WorkflowStepKind::Agent { prompt, .. } => {
+                    if prompt.trim().is_empty() {
+                        return Err(WorkflowError::EmptyPrompt(step.name.clone()));
+                    }
+                }
+                WorkflowStepKind::Pipeline { steps }
+                | WorkflowStepKind::Phase { steps, .. }
+                | WorkflowStepKind::Parallel { steps, .. } => walk(steps)?,
+            }
+        }
+        Ok(())
+    }
+    walk(&def.steps)
 }
 
 fn clean_opt(value: Option<String>) -> Option<String> {
@@ -317,6 +391,22 @@ fn not_found() -> Response {
     (
         axum::http::StatusCode::NOT_FOUND,
         Json(json!({ "error": "workflow not found" })),
+    )
+        .into_response()
+}
+
+fn run_not_found() -> Response {
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(json!({ "error": "workflow run not found" })),
+    )
+        .into_response()
+}
+
+fn too_many_requests(message: impl Into<String>) -> Response {
+    (
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": message.into() })),
     )
         .into_response()
 }
@@ -421,6 +511,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_rejects_agent_step_with_blank_prompt() {
+        let state = mk_state();
+        let resp = create_workflow(
+            State(state),
+            Json(CreateWorkflowRequest {
+                name: "blank".into(),
+                description: None,
+                project_id: None,
+                steps: vec![agent_step("research", "   ")],
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = read_json(resp).await;
+        assert_eq!(
+            body["error"], "agent step 'research' has an empty prompt",
+            "the error should name the offending step"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_blank_prompt_nested_in_group() {
+        let state = mk_state();
+        let pipeline = WorkflowStep::new(
+            "build",
+            WorkflowStepKind::Pipeline {
+                steps: vec![agent_step("write", "")],
+            },
+        );
+        let resp = create_workflow(
+            State(state),
+            Json(CreateWorkflowRequest {
+                name: "nested".into(),
+                description: None,
+                project_id: None,
+                steps: vec![pipeline],
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = read_json(resp).await;
+        assert_eq!(body["error"], "agent step 'write' has an empty prompt");
+    }
+
+    #[tokio::test]
     async fn run_dispatches_and_persists_running_run() {
         let state = mk_state();
         // Create a definition first.
@@ -453,5 +588,84 @@ mod tests {
         // The Running run was persisted synchronously before the spawn.
         let got = get_workflow_run(State(state), Path(run_id)).await;
         assert_eq!(got.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn cancel_flips_running_run_to_cancelled() {
+        let state = mk_state();
+        let store = state.workflows.clone().unwrap();
+        // Seed a Running run directly (no live task — simulates an
+        // orphan or an already-detached run).
+        let run = WorkflowRun::new("wf-1", None);
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+
+        let resp = cancel_workflow_run(State(state.clone()), Path(run_id.clone())).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = read_json(resp).await;
+        assert_eq!(body["status"], "cancelled");
+        assert!(body["finished_at"].is_string());
+
+        // Persisted as Cancelled.
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_is_idempotent_on_terminal_run() {
+        let state = mk_state();
+        let store = state.workflows.clone().unwrap();
+        let mut run = WorkflowRun::new("wf-1", None);
+        run.finish(WorkflowRunStatus::Succeeded);
+        let run_id = run.id.clone();
+        store.upsert_run(&run).await.unwrap();
+
+        let resp = cancel_workflow_run(State(state.clone()), Path(run_id.clone())).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        // Terminal status is preserved, not overwritten with Cancelled.
+        let got = store.get_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(got.status, WorkflowRunStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn cancel_unknown_run_is_404() {
+        let state = mk_state();
+        let resp = cancel_workflow_run(State(state), Path("nope".to_string())).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_rejects_when_concurrency_exhausted() {
+        // Capacity 1, with the only slot pre-reserved → the route must
+        // 429 instead of spawning, and must not persist a run row.
+        let state = mk_state().with_workflow_concurrency(1);
+        let create = create_workflow(
+            State(state.clone()),
+            Json(CreateWorkflowRequest {
+                name: "ship".into(),
+                description: None,
+                project_id: None,
+                steps: vec![agent_step("research", "look around")],
+            }),
+        )
+        .await;
+        let def = read_json(create).await;
+        let wf_id = def["id"].as_str().unwrap().to_string();
+
+        // Hold the sole permit so the route can't acquire one.
+        let _permit = state.workflow_run_gate.try_acquire().unwrap();
+
+        let resp = run_workflow(
+            State(state.clone()),
+            Path(wf_id),
+            Json(RunWorkflowRequest {
+                requirement_id: None,
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        // No run row was minted for the rejected request.
+        let runs = state.workflows.unwrap().list_runs(None, None).await.unwrap();
+        assert!(runs.is_empty(), "rejected run must not persist a row");
     }
 }

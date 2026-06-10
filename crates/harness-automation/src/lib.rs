@@ -75,6 +75,10 @@ impl AutomationTask {
 
     pub fn mark_manual_run_started(&mut self, now: DateTime<Utc>) {
         self.last_run_at = Some(to_rfc3339(now));
+        // Advance next_run_at the same way the scheduled path does, otherwise the
+        // scheduler sees a non-Running task still due at/before `now` and fires it a
+        // second time (a Once task runs twice; an Interval task re-fires immediately).
+        self.next_run_at = self.schedule.next_after(Some(now), now).map(to_rfc3339);
         self.last_run_status = Some(AutomationRunStatus::Running);
         self.last_error = None;
         self.updated_at = to_rfc3339(now);
@@ -97,6 +101,37 @@ impl AutomationTask {
 
     pub fn recompute_next_run(&mut self, now: DateTime<Utc>) {
         self.next_run_at = self.schedule.next_after(None, now).map(to_rfc3339);
+        self.updated_at = to_rfc3339(now);
+    }
+
+    /// True when a task is still flagged `Running` but its run was started
+    /// long enough ago that the spawned worker must have been lost (process
+    /// restart, tokio cancellation, or a panic between `mark_running` and
+    /// `mark_finished`). `timeout_ms` is a wall-clock budget against
+    /// `last_run_at`; without a reaper such a task pins forever in `Running`
+    /// and `is_due_at` never reschedules it.
+    pub fn is_stale_running(&self, now: DateTime<Utc>, timeout_ms: u64) -> bool {
+        if self.last_run_status != Some(AutomationRunStatus::Running) {
+            return false;
+        }
+        let Some(started) = self.last_run_at.as_deref().and_then(parse_rfc3339) else {
+            // Running with no start timestamp is itself corrupt — reclaim it.
+            return true;
+        };
+        let elapsed = now.signed_duration_since(started);
+        elapsed.num_milliseconds() >= i64::try_from(timeout_ms.max(1)).unwrap_or(i64::MAX)
+    }
+
+    /// Recover a task stuck in `Running` (see [`Self::is_stale_running`]).
+    /// Flips it to `Failed` with an explanatory error and recomputes
+    /// `next_run_at` from the schedule so an interval task resumes ticking
+    /// (and a `Once` task settles as done) rather than pinning forever.
+    pub fn mark_stale_reclaimed(&mut self, now: DateTime<Utc>) {
+        let previous_run_at = self.last_run_at.as_deref().and_then(parse_rfc3339);
+        self.next_run_at = self.schedule.next_after(previous_run_at, now).map(to_rfc3339);
+        self.last_run_status = Some(AutomationRunStatus::Failed);
+        self.last_error =
+            Some("run timed out; reclaimed by automation reaper (assumed abandoned)".to_string());
         self.updated_at = to_rfc3339(now);
     }
 }
@@ -221,5 +256,132 @@ mod tests {
         };
         let now = parse_rfc3339("2026-01-01T00:00:01Z").unwrap();
         assert!(schedule.next_after(Some(now), now).is_none());
+    }
+
+    fn interval_task() -> AutomationTask {
+        AutomationTask::new(NewAutomationTask {
+            title: "t".into(),
+            prompt: "p".into(),
+            schedule: ScheduleSpec::Interval {
+                every_seconds: 60,
+                start_at: None,
+            },
+            status: None,
+            provider: None,
+            model: None,
+            conversation_id: None,
+        })
+    }
+
+    #[test]
+    fn stale_running_detected_only_after_timeout() {
+        let mut task = interval_task();
+        let started = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        task.mark_running(started);
+        // Fresh run, well under the budget → not stale.
+        let soon = parse_rfc3339("2026-01-01T00:00:30Z").unwrap();
+        assert!(!task.is_stale_running(soon, 60_000));
+        // Past the budget → stale.
+        let later = parse_rfc3339("2026-01-01T00:02:00Z").unwrap();
+        assert!(task.is_stale_running(later, 60_000));
+    }
+
+    #[test]
+    fn non_running_status_is_never_stale() {
+        let mut task = interval_task();
+        let now = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        task.mark_finished(now, Ok(()));
+        let later = parse_rfc3339("2026-02-01T00:00:00Z").unwrap();
+        assert!(!task.is_stale_running(later, 1));
+    }
+
+    #[test]
+    fn reclaiming_stale_running_reschedules_interval() {
+        let mut task = interval_task();
+        let started = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        task.mark_running(started);
+        let now = parse_rfc3339("2026-01-01T01:00:00Z").unwrap();
+        task.mark_stale_reclaimed(now);
+        assert_eq!(task.last_run_status, Some(AutomationRunStatus::Failed));
+        assert!(task.last_error.is_some());
+        // Cleared the Running flag and set a future next_run_at → due again.
+        let next = task.next_run_at.as_deref().and_then(parse_rfc3339).unwrap();
+        assert!(next > started);
+        // is_due_at would gate on Running before; now it can fire once due.
+        assert!(!task.is_due_at(now));
+    }
+
+    #[test]
+    fn reclaiming_stale_running_once_does_not_reschedule() {
+        let mut task = AutomationTask::new(NewAutomationTask {
+            title: "t".into(),
+            prompt: "p".into(),
+            schedule: ScheduleSpec::Once {
+                run_at: "2026-01-01T00:00:00Z".into(),
+            },
+            status: None,
+            provider: None,
+            model: None,
+            conversation_id: None,
+        });
+        let started = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        task.mark_running(started);
+        let now = parse_rfc3339("2026-01-01T01:00:00Z").unwrap();
+        task.mark_stale_reclaimed(now);
+        assert!(task.next_run_at.is_none());
+        assert!(!task.is_due_at(now));
+    }
+
+    #[test]
+    fn manual_run_clears_next_run_at_for_once_task() {
+        // A Once task manually run before its run_at must not fire again when run_at arrives.
+        let mut task = AutomationTask::new(NewAutomationTask {
+            title: "once".into(),
+            prompt: "do it".into(),
+            schedule: ScheduleSpec::Once {
+                run_at: "2026-01-01T01:00:00Z".into(),
+            },
+            status: None,
+            provider: None,
+            model: None,
+            conversation_id: None,
+        });
+        assert_eq!(task.next_run_at.as_deref(), Some("2026-01-01T01:00:00.000Z"));
+
+        let now = parse_rfc3339("2026-01-01T00:30:00Z").unwrap();
+        task.mark_manual_run_started(now);
+        task.mark_finished(now, Ok(()));
+
+        // Once finished, the once-task has no next run, so it never re-fires.
+        assert!(task.next_run_at.is_none());
+        let run_at = parse_rfc3339("2026-01-01T01:00:00Z").unwrap();
+        assert!(!task.is_due_at(run_at));
+    }
+
+    #[test]
+    fn manual_run_advances_next_run_at_for_interval_task() {
+        // An Interval task manually run at/past its scheduled time must not re-fire on the next tick.
+        let mut task = AutomationTask::new(NewAutomationTask {
+            title: "interval".into(),
+            prompt: "do it".into(),
+            schedule: ScheduleSpec::Interval {
+                every_seconds: 60,
+                start_at: Some("2026-01-01T00:00:00Z".into()),
+            },
+            status: None,
+            provider: None,
+            model: None,
+            conversation_id: None,
+        });
+
+        let now = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        task.mark_manual_run_started(now);
+        task.mark_finished(now, Ok(()));
+
+        // next_run_at advanced one interval into the future, so it is not due immediately.
+        assert_eq!(task.next_run_at.as_deref(), Some("2026-01-01T00:01:00.000Z"));
+        assert!(!task.is_due_at(now));
+        let next_tick = parse_rfc3339("2026-01-01T00:01:00Z").unwrap();
+        assert!(task.is_due_at(next_tick));
     }
 }

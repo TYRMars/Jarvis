@@ -51,7 +51,8 @@ use harness_core::{
     Tenant, TenantStore, TodoEvent, TodoItem, TodoStore,
 };
 use harness_learning::{
-    fold_events_into_rows, MemoryFilter, MemoryItem, MemoryStore, SkillLifecycle,
+    fold_events_into_rows, validate_memory_safe, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore, SkillLifecycle,
     SkillLifecycleStore, SkillUsageEvent, SkillUsageFilter, SkillUsageRow, SkillUsageStore,
 };
 use harness_observability::{
@@ -67,7 +68,7 @@ use harness_project::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::error::StoreError;
 
@@ -2026,6 +2027,12 @@ impl EvalStore for JsonFileEvalStore {
 
 // ---------- learning / skill-usage store -----------------------------------
 
+/// Default retention cap for the skill-usage `events/` directory. Telemetry
+/// fires on every skill `Listed`/`Viewed`/`Used`, so without a cap the
+/// directory grows without bound and every `list_events`/`report` read pays
+/// an O(N) full-directory scan. Mirrors [`DEFAULT_MAX_OBSERVED_RUNS`].
+pub const DEFAULT_MAX_SKILL_USAGE_EVENTS: usize = 5000;
+
 /// JSON-file backend for [`SkillUsageStore`]. Each event becomes one file
 /// under `<dir>/events/<id>.json`; ids are synthesized from a UTC RFC-3339
 /// timestamp + a monotonic per-process counter so concurrent writes inside
@@ -2034,6 +2041,7 @@ impl EvalStore for JsonFileEvalStore {
 /// to ship raw between machines.
 pub struct JsonFileSkillUsageStore {
     dir: PathBuf,
+    max_events: Option<usize>,
 }
 
 impl JsonFileSkillUsageStore {
@@ -2041,7 +2049,17 @@ impl JsonFileSkillUsageStore {
         let dir = dir.into();
         ensure_dir(&dir)?;
         ensure_dir(&dir.join("events"))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            max_events: Some(DEFAULT_MAX_SKILL_USAGE_EVENTS),
+        })
+    }
+
+    /// Override the `events/` retention cap. `Some(n)` keeps the newest
+    /// `n` files; `None` disables pruning entirely.
+    pub fn with_max_events(mut self, max_events: Option<usize>) -> Self {
+        self.max_events = max_events;
+        self
     }
 
     fn event_path(&self, id: &str) -> PathBuf {
@@ -2072,6 +2090,9 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
         }
         let bytes = serde_json::to_vec_pretty(&event).map_err(StoreError::from)?;
         atomic_write(&self.event_path(&event.id), &bytes).await?;
+        if let Some(max) = self.max_events {
+            prune_oldest_files(&self.dir.join("events"), max).await;
+        }
         Ok(event)
     }
 
@@ -2103,6 +2124,16 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
 
 // ---------- learning / long-term memory store ------------------------------
 
+/// Default ceiling on `memories/*.json` files kept on disk. The store
+/// writes one file per row and `list` rescans the whole directory, so
+/// without a cap auto-captured rows (the auto-loop drops a `gotcha` per
+/// failed run) grow the directory — and every `/v1/memories` read —
+/// without bound. 5000 keeps a generous window for user-curated rows
+/// while bounding disk + scan cost; pinned rows are never pruned.
+/// Override at the composition root via
+/// [`JsonFileMemoryStore::with_max_items`].
+pub const DEFAULT_MAX_MEMORY_ITEMS: usize = 5000;
+
 /// JSON-file backend for [`MemoryStore`]. One file per id under
 /// `<dir>/memories/<id>.json`; ids are synthesised from a UTC RFC-3339
 /// timestamp + a monotonic counter, same pattern as the skill-usage
@@ -2111,6 +2142,16 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
 /// through this trait too.
 pub struct JsonFileMemoryStore {
     dir: PathBuf,
+    /// `Some(n)` caps `memories/` at roughly `n` files (oldest
+    /// non-pinned pruned on `upsert`); `None` disables pruning.
+    max_items: Option<usize>,
+    /// Serialises the read-modify-write of [`MemoryStore::patch`] against
+    /// itself and against [`MemoryStore::delete`] within a single
+    /// process. Without it, two `patch` calls (or a `patch` racing a
+    /// `delete`) would interleave their get/write and lose updates or
+    /// resurrect a removed file. Cross-process atomicity would need an
+    /// OS file lock and is out of scope here.
+    write_lock: Mutex<()>,
 }
 
 impl JsonFileMemoryStore {
@@ -2118,7 +2159,19 @@ impl JsonFileMemoryStore {
         let dir = dir.into();
         ensure_dir(&dir)?;
         ensure_dir(&dir.join("memories"))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            max_items: Some(DEFAULT_MAX_MEMORY_ITEMS),
+            write_lock: Mutex::new(()),
+        })
+    }
+
+    /// Override the `memories/` retention cap. `Some(n)` keeps roughly
+    /// the newest `n` rows (pinned rows are always kept); `None`
+    /// disables pruning entirely (unbounded growth).
+    pub fn with_max_items(mut self, max_items: Option<usize>) -> Self {
+        self.max_items = max_items;
+        self
     }
 
     fn item_path(&self, id: &str) -> PathBuf {
@@ -2174,10 +2227,38 @@ impl MemoryStore for JsonFileMemoryStore {
         }
         let bytes = serde_json::to_vec_pretty(&item).map_err(StoreError::from)?;
         atomic_write(&self.item_path(&item.id), &bytes).await?;
+        if let Some(max) = self.max_items {
+            prune_oldest_memory_items(&self.dir.join("memories"), max).await;
+        }
         Ok(item)
     }
 
+    /// Atomic (in-process) read-modify-write. The `write_lock` is held
+    /// across get → apply → validate → persist, and `delete` takes the
+    /// same lock, so a concurrent `delete` either lands before the
+    /// `get` (we observe the missing file → `Ok(None)`, no resurrection)
+    /// or after the persist (the file is removed). Two `patch` calls
+    /// serialise, so neither loses the other's update.
+    async fn patch(
+        &self,
+        id: &str,
+        patch: MemoryPatch,
+    ) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
+        let Some(mut item) = read_json_optional::<MemoryItem>(&self.item_path(id)).await? else {
+            return Ok(None);
+        };
+        patch.apply(&mut item);
+        validate_memory_safe(&item)
+            .map_err(|e| -> harness_learning::BoxError { Box::new(e) })?;
+        item.updated_at = Utc::now().to_rfc3339();
+        let bytes = serde_json::to_vec_pretty(&item).map_err(StoreError::from)?;
+        atomic_write(&self.item_path(&item.id), &bytes).await?;
+        Ok(Some(item))
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, harness_learning::BoxError> {
+        let _guard = self.write_lock.lock().await;
         match tokio::fs::remove_file(&self.item_path(id)).await {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -2672,6 +2753,55 @@ async fn prune_oldest_files(dir: &Path, max: usize) {
     let to_remove = stamped.len().saturating_sub(max);
     for (_, path) in stamped.into_iter().take(to_remove) {
         let _ = tokio::fs::remove_file(&path).await;
+    }
+}
+
+/// Prune the `memories/` directory down to roughly `max` rows, deleting
+/// the oldest *non-pinned* items first. Pinned rows are user-curated and
+/// are never pruned, so a flood of auto-captured `gotcha` rows can't
+/// evict a hand-pinned preference.
+///
+/// Best-effort: any I/O error short-circuits silently — a flaky prune
+/// must never break the `upsert` that triggered it.
+///
+/// Cheap on the hot path: pass one only *counts* `.json` files and bails
+/// when under `max + max/10`; only past that 10% slack does pass two
+/// read every row to partition pinned vs. not and sort the candidates.
+async fn prune_oldest_memory_items(dir: &Path, max: usize) {
+    let mut count = 0usize;
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".json") && !name.ends_with(".json.tmp") {
+            count += 1;
+        }
+    }
+
+    // Slack so we don't read-and-sort on every append once at steady
+    // state — only when we've drifted `max/10` past the cap.
+    if count <= max.saturating_add(max / 10) {
+        return;
+    }
+
+    let rows: Vec<MemoryItem> = match read_json_records(dir).await {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    // Pinned rows are protected but still consume the budget, so the
+    // total still trends toward `max`. If pinned alone exceeds the cap
+    // we keep them all and prune every non-pinned row.
+    let pinned = rows.iter().filter(|r| r.pinned).count();
+    let keep_non_pinned = max.saturating_sub(pinned);
+    let mut victims: Vec<MemoryItem> = rows.into_iter().filter(|r| !r.pinned).collect();
+    // Oldest first by `updated_at`, so `skip(keep)` keeps the newest.
+    victims.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+    let drop_count = victims.len().saturating_sub(keep_non_pinned);
+    for victim in victims.into_iter().take(drop_count) {
+        let _ = tokio::fs::remove_file(&dir.join(format!("{}.json", encode_id(&victim.id)))).await;
     }
 }
 
@@ -3693,6 +3823,81 @@ mod tests {
         assert_eq!(rust_row.use_count, 1);
     }
 
+    fn skill_events_file_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir.join("events"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".json") && !name.ends_with(".json.tmp")
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn skill_usage_events_are_capped_when_max_set() {
+        use harness_learning::{SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent};
+        let dir = tempdir().unwrap();
+        // slack = max/10 = 0, so steady state is exactly `max`.
+        let store = JsonFileSkillUsageStore::open(dir.path())
+            .unwrap()
+            .with_max_events(Some(5));
+        for _ in 0..30 {
+            store
+                .record_event(SkillUsageEvent {
+                    id: String::new(),
+                    skill_name: "rust".into(),
+                    source: SkillSource::Bundled,
+                    action: SkillUsageAction::Used,
+                    scope: SkillScope::workspace("/ws"),
+                    conversation_id: None,
+                    requirement_id: None,
+                    run_id: None,
+                    created_at: String::new(),
+                    attributes: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            skill_events_file_count(dir.path()),
+            5,
+            "events/ must be bounded by the cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_usage_events_unbounded_when_max_none() {
+        use harness_learning::{SkillScope, SkillSource, SkillUsageAction, SkillUsageEvent};
+        let dir = tempdir().unwrap();
+        let store = JsonFileSkillUsageStore::open(dir.path())
+            .unwrap()
+            .with_max_events(None);
+        for _ in 0..12 {
+            store
+                .record_event(SkillUsageEvent {
+                    id: String::new(),
+                    skill_name: "rust".into(),
+                    source: SkillSource::Bundled,
+                    action: SkillUsageAction::Used,
+                    scope: SkillScope::workspace("/ws"),
+                    conversation_id: None,
+                    requirement_id: None,
+                    run_id: None,
+                    created_at: String::new(),
+                    attributes: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            skill_events_file_count(dir.path()),
+            12,
+            "None disables pruning"
+        );
+    }
+
     // ---- SkillUsageStore (in-memory) ------------------------------------
 
     #[tokio::test]
@@ -3819,6 +4024,89 @@ mod tests {
         );
 
         let _ = store.list(MemoryFilter::default()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_upsert_prunes_oldest_non_pinned_over_cap() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        // Cap of 4: slack is max/10 == 0, so the prune fires once we
+        // exceed 4 files.
+        let store = JsonFileMemoryStore::open(dir.path())
+            .unwrap()
+            .with_max_items(Some(4));
+
+        // One pinned row that must always survive the sweep.
+        store
+            .upsert(
+                MemoryItem::new(MemoryScope::user(), MemoryKind::Preference, "pinned", "keep me")
+                    .pinned(),
+            )
+            .await
+            .unwrap();
+
+        // Insert well past the cap; updated_at is monotonic per upsert
+        // (RFC-3339), so the earliest writes are the prune victims.
+        for i in 0..20 {
+            store
+                .upsert(MemoryItem::new(
+                    MemoryScope::user(),
+                    MemoryKind::Fact,
+                    format!("row-{i}"),
+                    "body",
+                ))
+                .await
+                .unwrap();
+            // Nudge the clock so updated_at strictly orders the rows.
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert!(
+            all.len() <= 4,
+            "row count stays bounded by the cap, got {}",
+            all.len()
+        );
+        // Pinned row is never pruned.
+        assert!(
+            all.iter().any(|r| r.title == "pinned"),
+            "pinned row must survive pruning"
+        );
+        // The newest non-pinned row survives; the oldest is gone.
+        assert!(
+            all.iter().any(|r| r.title == "row-19"),
+            "newest row must be kept"
+        );
+        assert!(
+            !all.iter().any(|r| r.title == "row-0"),
+            "oldest row must be pruned"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_upsert_unbounded_when_cap_disabled() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        let store = JsonFileMemoryStore::open(dir.path())
+            .unwrap()
+            .with_max_items(None);
+        for i in 0..12 {
+            store
+                .upsert(MemoryItem::new(
+                    MemoryScope::user(),
+                    MemoryKind::Fact,
+                    format!("row-{i}"),
+                    "body",
+                ))
+                .await
+                .unwrap();
+        }
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 12, "None disables pruning");
     }
 
     // ---- MemoryStore (in-memory) ----------------------------------------

@@ -121,7 +121,7 @@ not on a stock box). The `make` targets apply it automatically; override with
 
 **Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`). `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
 
-**Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in cargo features), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`).
+**Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in cargo features), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`), `JARVIS_MEMORY_MAX_ITEMS` (long-term Memory store retention cap; default `5000`, `0`/`off`/`unlimited` disables pruning; pinned rows are never pruned).
 
 **Auto/Work mode** (`JARVIS_WORK_MODE` = `off` (default) / `auto`): `JARVIS_WORK_TICK_SECONDS` (`30`), `JARVIS_WORK_MAX_UNITS_PER_TICK` (`1` — per-tick burst), `JARVIS_WORK_MAX_CONCURRENT` (`2` — true global concurrency cap via a Semaphore; independent of the burst budget), `JARVIS_WORK_MAX_RETRIES` (`1`), `JARVIS_WORK_RUN_TIMEOUT_MS` (`600000`), `JARVIS_REVIEWER_AUTO_ACCEPT` (opt into reviewer-subagent dispatch on Review→Done under `Subagent` policy; default off).
 
@@ -130,6 +130,8 @@ not on a stock box). The `make` targets apply it automatically; override with
 **Smart routing** (`harness-router`, opt-in; off = identical to today): `JARVIS_ROUTER_ENABLED` (truthy wraps the primary provider entry in a `RoutingProvider`), `JARVIS_ROUTER_TIER_{SIMPLE,MEDIUM,COMPLEX,REASONING}` (each `<provider>/<model>`; any unset tier falls through to the primary `(provider, model)`). Requests explicitly targeting a *different* provider bypass routing. Distinct from the operator-static `JARVIS_ROUTE_*` slots (`harness-server::ModelRoutePolicy`) consumed by subagents/summariser.
 
 **Worktrees:** `JARVIS_WORKTREE_MODE` (`off`/`per_run`/`per_unit`; auto mode upgrades `off`→`per_run` so the scheduler never mutates the main checkout), `JARVIS_WORKTREE_ROOT` (`.jarvis/worktrees`).
+
+**Workflows** (manual `POST /v1/workflows/:id/run` governance): `JARVIS_WORKFLOW_MAX_CONCURRENT` (global cap on concurrent manually-dispatched runs via a `WorkflowRunGate` semaphore; defaults to `JARVIS_WORK_MAX_CONCURRENT` — over-cap POSTs get `429`), `JARVIS_WORKFLOW_REAP_SECONDS` (`60` — stale-run reaper cadence; flips orphaned `Running`/`Pending` rows left by a crash to `Cancelled`, skipping runs still alive in-process), `JARVIS_WORKFLOW_RUN_TIMEOUT_MS` (reaper budget; defaults to `JARVIS_WORK_RUN_TIMEOUT_MS`, ×3 safety multiplier for `Running`). Cancel an in-flight run via `POST /v1/workflow-runs/:run_id/cancel`.
 
 Passing `--mcp-serve` runs the binary as an MCP server on stdio exposing the local
 ToolRegistry — no LLM/HTTP setup.
@@ -324,9 +326,17 @@ Manual `Start`/drag ignores both gates — they're scheduler-only.
 - `POST /v1/roadmap/import` — same as the `roadmap.import` tool (`{slug?,name?,source_subdir?,prune?}`
   → `ImportSummary`; 503 if stores/workspace-root unset).
 
-**Auto-loop guards** (`auto_mode::tick`, all silent skips): `triage_state == Approved`,
+**Auto-loop guards** (`auto_mode::tick`, mostly silent skips): `triage_state == Approved`,
 `assignee_id.is_some()`, all `depends_on` reach Done (topo sort), no in-flight run, `failed_count <
-max_retries`, and Review rows under `AcceptancePolicy::Human` are skipped.
+max_retries`, and Review rows under `AcceptancePolicy::Human` are skipped. The `depends_on` gate
+distinguishes *permanent* deadlocks from ordinary waiting: a **self-dependency** (a row listing its
+own id) or a **dependency cycle** (`A→B→A`, plus anything transitively behind one) surfaces an
+operator-visible `Blocked` Activity row **once** (deduped on the newest row, reason
+`self_dependency` / `dependency_cycle`) instead of skipping in silence forever. Self-dependency is
+also rejected at requirement create/update time (REST + `requirement.{create,update}` tools).
+Cross-project `depends_on` ids are **not** resolved across stores — author dependencies within a
+single project; an id pointing outside the project is treated as "not yet done" and blocks (a
+silent `debug!` skip, since a deleted-dep block is intended).
 
 **Acceptance policy** (`Requirement.acceptance_policy`): `Subagent` (default) auto-flips Review→Done
 **unless** `JARVIS_REVIEWER_AUTO_ACCEPT` is set, in which case the picker re-picks the Review row,
@@ -341,9 +351,13 @@ prefixed names.
   Plus `/v1/workspace/{list,read,find,diff/*}` (files/search/git) and `/v1/workspace/terminal` (PTY WS);
   `/v1/workspaces` (persisted recent-workspace registry).
 - `/v1/automations` (+ `/:id/run`) — scheduled-task CRUD + on-demand trigger (`automation_runtime`).
-- `/v1/workflows` (+ `/:id`, `/:id/run`, `/:id/runs`, `/v1/workflow-runs/:id`) — declarative
-  multi-step agent workflows (CRUD + dispatch). Bindable to a Requirement via its `workflow_id`;
-  executed by `workflow_runtime::drive_workflow` (also branched into from `auto_mode`). See
+- `/v1/workflows` (+ `/:id`, `/:id/run`, `/:id/runs`, `/v1/workflow-runs/:id`, `/v1/workflow-runs/:id/cancel`) —
+  declarative multi-step agent workflows (CRUD + dispatch + cancel). Bindable to a Requirement via its
+  `workflow_id`; executed by `workflow_runtime::drive_workflow` (also branched into from `auto_mode`).
+  Manual `/run` dispatch is governed by a process-wide `WorkflowRunGate` (`workflow_concurrency.rs`):
+  a global concurrency semaphore (over-cap → `429`), a run-cancel ledger of `AbortHandle`s, and a
+  liveness set the `spawn_workflow_reaper` background sweep consults so it only reclaims orphaned
+  `Running` rows (left by a crash), never live in-process runs. See
   `docs/proposals/declarative-workflows.zh-CN.md`.
 - `/v1/skills` (+ `/:name`, `/reload`, `/:name/lifecycle`, archive/restore) — Skills catalog.
 - `/v1/plugins` (+ `/:name`, `/marketplace`), `/v1/market/{mcp,skills,skills/install}` — plugin/market.

@@ -22,7 +22,7 @@ use axum::{
     Router,
 };
 use harness_learning::{
-    MemoryFilter, MemoryItem, MemoryKind, MemoryPatch, MemoryScope, MemoryStore,
+    MemoryFilter, MemoryItem, MemoryKind, MemoryPatch, MemoryRejection, MemoryScope, MemoryStore,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -172,6 +172,14 @@ async fn create_memory(
     }
     match store.upsert(item).await {
         Ok(saved) => (StatusCode::CREATED, Json(json!({"item": saved}))).into_response(),
+        // The guard's contract (`learning_guard.rs`, `validate_memory_safe`)
+        // specifies validator rejections surface as 400 Bad Request: bad
+        // client input, not a server fault. Mirrors `patch_memory` below.
+        Err(e) if e.downcast_ref::<MemoryRejection>().is_some() => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
         Err(e) => internal_error(e),
     }
 }
@@ -185,28 +193,22 @@ async fn patch_memory(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let existing = match store.get(&id).await {
-        Ok(Some(item)) => item,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "no such memory", "id": id})),
-            )
-                .into_response();
-        }
-        Err(e) => return internal_error(e),
-    };
-    let mut updated = existing;
-    patch.apply(&mut updated);
-    if updated.title.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "title must be non-empty after patch"})),
+    // Atomic read-modify-write in the store — serialises against
+    // concurrent patches and lets `delete` win (no resurrected rows).
+    match store.patch(&id, patch).await {
+        Ok(Some(saved)) => Json(json!({"item": saved})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no such memory", "id": id})),
         )
-            .into_response();
-    }
-    match store.upsert(updated).await {
-        Ok(saved) => Json(json!({"item": saved})).into_response(),
+            .into_response(),
+        // A patched row that fails the safety/non-empty validator is a
+        // bad request, not a server fault — surface it as 400.
+        Err(e) if e.downcast_ref::<MemoryRejection>().is_some() => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
         Err(e) => internal_error(e),
     }
 }
@@ -405,11 +407,12 @@ mod tests {
             .body(Body::from(body.to_string()))
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
-        // We propagate the rejection as 500 today (BoxError →
-        // internal_error helper). The important part is that nothing
-        // landed on disk. The validator's error message names the
-        // rejection class so operators see *why* in the response.
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        // Validator rejections are client errors per the guard's
+        // contract — they must surface as 400 (not 5xx, which would
+        // imply a retryable server fault). Nothing may land on disk,
+        // and the message names the rejection class so operators see
+        // *why* in the response.
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(

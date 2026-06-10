@@ -46,7 +46,7 @@ pub use json_file::{
     JsonFileMemoryStore, JsonFileObservabilityStore, JsonFileProjectStore,
     JsonFileRequirementRunStore, JsonFileRequirementStore, JsonFileSkillLifecycleStore,
     JsonFileSkillUsageStore, JsonFileTenantStore, JsonFileTodoStore, JsonFileWorkflowStore,
-    DEFAULT_MAX_OBSERVED_RUNS,
+    DEFAULT_MAX_MEMORY_ITEMS, DEFAULT_MAX_OBSERVED_RUNS, DEFAULT_MAX_SKILL_USAGE_EVENTS,
 };
 pub use memory::{
     MemoryActivityStore, MemoryAgentProfileStore, MemoryAutomationStore, MemoryChannelBindingStore,
@@ -432,16 +432,51 @@ pub async fn connect_skill_usage(url: &str) -> Result<Arc<dyn SkillUsageStore>, 
     }
 }
 
+/// Like [`connect_skill_usage`], but overrides the `events/` retention
+/// cap. Telemetry fires on every skill `Listed`/`Viewed`/`Used`, so
+/// without a cap the directory grows without bound and every
+/// `list_events`/`report` read pays an O(N) full-directory scan.
+/// `max_events == Some(n)` keeps the newest `n` event files (oldest
+/// pruned on append); `None` disables pruning (the pre-retention
+/// behaviour). The composition root passes the value resolved from
+/// `JARVIS_LEARNING_MAX_EVENTS`.
+pub async fn connect_skill_usage_capped(
+    url: &str,
+    max_events: Option<usize>,
+) -> Result<Arc<dyn SkillUsageStore>, StoreError> {
+    let scheme = url.split(':').next().unwrap_or("");
+    match scheme {
+        "json" => {
+            let path = json_path(url)?;
+            Ok(Arc::new(JsonFileSkillUsageStore::open(path)?.with_max_events(max_events))
+                as Arc<dyn SkillUsageStore>)
+        }
+        other => Err(StoreError::UnsupportedScheme(other.to_string())),
+    }
+}
+
 /// Open the long-term Memory store for a given URL. Phase 1 of the
 /// self-improving-agent proposal ships the JSON-file backend; SQL
 /// backends follow the same scheme-selection convention as the rest
 /// of `harness-store`.
 pub async fn connect_memory(url: &str) -> Result<Arc<dyn MemoryStore>, StoreError> {
+    connect_memory_capped(url, Some(DEFAULT_MAX_MEMORY_ITEMS)).await
+}
+
+/// Like [`connect_memory`] but with an explicit retention cap. `None`
+/// disables pruning (unbounded growth); `Some(n)` keeps roughly the
+/// newest `n` rows (pinned rows are always kept). The composition root
+/// passes the operator-configured value (`JARVIS_MEMORY_MAX_ITEMS`).
+pub async fn connect_memory_capped(
+    url: &str,
+    max_items: Option<usize>,
+) -> Result<Arc<dyn MemoryStore>, StoreError> {
     let scheme = url.split(':').next().unwrap_or("");
     match scheme {
         "json" => {
             let path = json_path(url)?;
-            Ok(Arc::new(JsonFileMemoryStore::open(path)?) as Arc<dyn MemoryStore>)
+            Ok(Arc::new(JsonFileMemoryStore::open(path)?.with_max_items(max_items))
+                as Arc<dyn MemoryStore>)
         }
         other => Err(StoreError::UnsupportedScheme(other.to_string())),
     }

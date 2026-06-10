@@ -276,7 +276,12 @@ pub async fn run(
     // with `JARVIS_LEARNING_STORE_URL` / `JARVIS_MEMORY_STORE_URL`.
     // Disable both with `JARVIS_LEARNING=0`.
     let learning_disabled = std::env::var("JARVIS_LEARNING")
-        .map(|v| matches!(v.as_str(), "0" | "false" | "no"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | "disabled"
+            )
+        })
         .unwrap_or(false);
     let (learning_store, memory_store, skill_lifecycle_store) = if learning_disabled {
         info!(
@@ -287,8 +292,9 @@ pub async fn run(
         let learning_url = std::env::var("JARVIS_LEARNING_STORE_URL")
             .ok()
             .or_else(default_json_learning_url);
+        let max_events = learning_max_events();
         let learning = match learning_url.as_deref() {
-            Some(url) => match harness_store::connect_skill_usage(url).await {
+            Some(url) => match harness_store::connect_skill_usage_capped(url, max_events).await {
                 Ok(store) => {
                     info!(url = %url, "local learning store connected (skill usage telemetry on)");
                     Some(store)
@@ -311,10 +317,11 @@ pub async fn run(
         let memory_url = std::env::var("JARVIS_MEMORY_STORE_URL")
             .ok()
             .or_else(default_json_memory_url);
+        let memory_max_items = memory_max_items();
         let memory = match memory_url.as_deref() {
-            Some(url) => match harness_store::connect_memory(url).await {
+            Some(url) => match harness_store::connect_memory_capped(url, memory_max_items).await {
                 Ok(store) => {
-                    info!(url = %url, "local memory store connected (user memories on)");
+                    info!(url = %url, max_items = ?memory_max_items, "local memory store connected (user memories on)");
                     Some(store)
                 }
                 Err(e) => {
@@ -1226,6 +1233,22 @@ pub async fn run(
             auto_cfg.reviewer_auto_accept = true;
         }
     }
+    // Global cap on concurrent *manually-dispatched* workflow runs
+    // (`POST /v1/workflows/:id/run`). Mirrors the auto loop's
+    // concurrency cap by default; `JARVIS_WORKFLOW_MAX_CONCURRENT`
+    // overrides. Without this the manual route would fire-and-forget
+    // unbounded `tokio::spawn`s (issue #78).
+    let workflow_max_concurrent = std::env::var("JARVIS_WORKFLOW_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(auto_cfg.max_concurrent_units);
+    state = state.with_workflow_concurrency(workflow_max_concurrent);
+    // Captured before `auto_cfg` is moved into `spawn_auto_mode`; used
+    // as the reaper's default budget unless `JARVIS_WORKFLOW_RUN_TIMEOUT_MS`
+    // overrides.
+    let workflow_run_timeout_ms_default = auto_cfg.run_timeout_ms;
+
     // Build the runtime with the resolved concurrency cap so the
     // semaphore pool size matches what `tick` will enforce. The
     // spawn helper falls back to default capacity when the runtime
@@ -1254,6 +1277,25 @@ pub async fn run(
     }
     harness_server::spawn_auto_mode(state.clone(), auto_cfg);
     harness_server::spawn_automation_scheduler(state.clone());
+    // Stale-run reaper for manually-dispatched + auto workflow runs:
+    // one sweep immediately (reclaiming rows left `Running` by a prior
+    // process crash), then every `JARVIS_WORKFLOW_REAP_SECONDS`. Uses
+    // the auto loop's run-timeout budget unless overridden (issue #78).
+    let workflow_reap_seconds = std::env::var("JARVIS_WORKFLOW_REAP_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(harness_server::DEFAULT_WORKFLOW_REAP_SECONDS);
+    let workflow_run_timeout_ms = std::env::var("JARVIS_WORKFLOW_RUN_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|v| v.max(1))
+        .unwrap_or(workflow_run_timeout_ms_default);
+    harness_server::spawn_workflow_reaper(
+        state.clone(),
+        workflow_reap_seconds,
+        workflow_run_timeout_ms,
+    );
     if let (Some(pm), Some(projects), Some(requirements)) = (
         project_memory_runtime,
         state.projects.clone(),
@@ -2477,6 +2519,65 @@ fn observability_max_runs() -> Option<usize> {
                         "JARVIS_OBSERVABILITY_MAX_RUNS not a non-negative integer; using default cap"
                     );
                     Some(harness_store::DEFAULT_MAX_OBSERVED_RUNS)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the Memory store retention cap from `JARVIS_MEMORY_MAX_ITEMS`.
+/// Same shape as [`observability_max_runs`]:
+/// - unset → `Some(DEFAULT_MAX_MEMORY_ITEMS)` (bounded by default so the
+///   auto-loop's per-failure gotcha writes can't leak unbounded files),
+/// - `0` / `off` / `unlimited` → `None` (pruning disabled),
+/// - a positive integer → `Some(n)`,
+/// - anything unparseable → the default, with a WARN.
+fn memory_max_items() -> Option<usize> {
+    match std::env::var("JARVIS_MEMORY_MAX_ITEMS") {
+        Err(_) => Some(harness_store::DEFAULT_MAX_MEMORY_ITEMS),
+        Ok(raw) => {
+            let v = raw.trim();
+            if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("unlimited") || v == "0" {
+                return None;
+            }
+            match v.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    warn!(
+                        value = %raw,
+                        "JARVIS_MEMORY_MAX_ITEMS not a non-negative integer; using default cap"
+                    );
+                    Some(harness_store::DEFAULT_MAX_MEMORY_ITEMS)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the skill-usage `events/` retention cap from
+/// `JARVIS_LEARNING_MAX_EVENTS`. Returns the value to hand to
+/// [`harness_store::connect_skill_usage_capped`]:
+/// - unset → `Some(DEFAULT_MAX_SKILL_USAGE_EVENTS)` (bounded by default so
+///   the store stops leaking one file per skill `Listed`/`Viewed`/`Used`),
+/// - `0` / `off` / `unlimited` → `None` (pruning disabled),
+/// - a positive integer → `Some(n)`,
+/// - anything unparseable → the default, with a WARN.
+fn learning_max_events() -> Option<usize> {
+    match std::env::var("JARVIS_LEARNING_MAX_EVENTS") {
+        Err(_) => Some(harness_store::DEFAULT_MAX_SKILL_USAGE_EVENTS),
+        Ok(raw) => {
+            let v = raw.trim();
+            if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("unlimited") || v == "0" {
+                return None;
+            }
+            match v.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    warn!(
+                        value = %raw,
+                        "JARVIS_LEARNING_MAX_EVENTS not a non-negative integer; using default cap"
+                    );
+                    Some(harness_store::DEFAULT_MAX_SKILL_USAGE_EVENTS)
                 }
             }
         }
