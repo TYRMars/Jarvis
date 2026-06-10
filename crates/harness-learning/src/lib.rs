@@ -135,6 +135,86 @@ impl SkillUsageEvent {
     }
 }
 
+/// Why a [`SkillUsageEvent`] write was refused by
+/// [`sanitize_skill_usage_event`].
+///
+/// `POST /v1/learning/skill-usage` deserializes a client-supplied event and
+/// hands it straight to the store. The client controls `skill_name`, an
+/// arbitrary-size `attributes` blob, and — most dangerously — `created_at`,
+/// the sort key for the entire telemetry surface. Sanitization runs at the
+/// REST boundary (mirroring [`validate_memory_safe`]): higher layers turn
+/// these into a `400 Bad Request`.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum SkillUsageRejection {
+    #[error("skill usage rejected: empty skill_name after trim")]
+    EmptySkillName,
+    #[error("skill usage rejected: skill_name too long ({len} chars > {cap}-char cap)")]
+    SkillNameTooLong { len: usize, cap: usize },
+    #[error("skill usage rejected: attributes blob too large ({size} bytes > {cap}-byte cap)")]
+    AttributesTooLarge { size: usize, cap: usize },
+}
+
+/// Hard cap on `skill_name` length (chars) accepted over the wire. Skill
+/// names are short slugs; anything longer is abuse.
+pub const SKILL_NAME_CAP: usize = 200;
+
+/// Hard cap on the serialized byte size of an event's `attributes` blob.
+/// `attributes` is free-form JSON; without a cap each POST can append a
+/// multi-MB row that is never pruned (storage DoS).
+pub const SKILL_ATTRIBUTES_CAP: usize = 16 * 1024;
+
+/// Sanitize a client-supplied [`SkillUsageEvent`] before it reaches the
+/// store. Two jobs:
+///
+/// 1. **Strip client-controlled identity/ordering fields.** `id` and
+///    `created_at` are blanked so the store re-stamps both server-side.
+///    `created_at` is the ordering key for `list_events` / `report`; a
+///    client-chosen value (a far-future date, a different UTC offset)
+///    reorders and poisons everyone's report. Re-stamping server-side also
+///    normalizes every row to UTC RFC-3339 so the lexicographic comparisons
+///    in [`fold_events_into_rows`] stay sound.
+/// 2. **Enforce size caps** on `skill_name` and `attributes` to prevent a
+///    write-amplification / storage-DoS vector.
+///
+/// Internal emit paths construct events with empty `id`/`created_at` already,
+/// so this is a no-op for them aside from the (cheap) cap checks.
+pub fn sanitize_skill_usage_event(
+    mut event: SkillUsageEvent,
+) -> Result<SkillUsageEvent, SkillUsageRejection> {
+    let name = event.skill_name.trim();
+    if name.is_empty() {
+        return Err(SkillUsageRejection::EmptySkillName);
+    }
+    let len = name.chars().count();
+    if len > SKILL_NAME_CAP {
+        return Err(SkillUsageRejection::SkillNameTooLong {
+            len,
+            cap: SKILL_NAME_CAP,
+        });
+    }
+    event.skill_name = name.to_string();
+
+    if !event.attributes.is_null() {
+        // `to_vec` only fails on non-serializable values, which a
+        // `serde_json::Value` never is — treat the unreachable error as
+        // zero-size rather than leaking it.
+        let size = serde_json::to_vec(&event.attributes)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if size > SKILL_ATTRIBUTES_CAP {
+            return Err(SkillUsageRejection::AttributesTooLarge {
+                size,
+                cap: SKILL_ATTRIBUTES_CAP,
+            });
+        }
+    }
+
+    // Never trust client-supplied identity/ordering — the store stamps both.
+    event.id = String::new();
+    event.created_at = String::new();
+    Ok(event)
+}
+
 /// Aggregated usage stats for a single skill in a given scope. The store
 /// computes this on read so callers don't have to walk the raw event log.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -950,6 +1030,64 @@ mod tests {
         b.scope = SkillScope::project("p1");
         let rows = fold_events_into_rows(vec![a, b]);
         assert_eq!(rows.len(), 2, "user and project scope are different rows");
+    }
+
+    // ---- sanitize_skill_usage_event -------------------------------------
+
+    #[test]
+    fn sanitize_blanks_client_supplied_id_and_created_at() {
+        let mut e = ev("rust", SkillUsageAction::Used, "2099-12-31T00:00:00+05:00");
+        e.id = "attacker-chosen".into();
+        let out = sanitize_skill_usage_event(e).unwrap();
+        assert!(out.id.is_empty(), "client id is dropped, store re-stamps");
+        assert!(
+            out.created_at.is_empty(),
+            "client created_at is dropped so it can't poison ordering"
+        );
+    }
+
+    #[test]
+    fn sanitize_rejects_empty_skill_name() {
+        let e = ev("   ", SkillUsageAction::Viewed, "2026-01-01T00:00:00Z");
+        assert_eq!(
+            sanitize_skill_usage_event(e),
+            Err(SkillUsageRejection::EmptySkillName)
+        );
+    }
+
+    #[test]
+    fn sanitize_trims_skill_name() {
+        let e = ev("  rust  ", SkillUsageAction::Viewed, "2026-01-01T00:00:00Z");
+        let out = sanitize_skill_usage_event(e).unwrap();
+        assert_eq!(out.skill_name, "rust");
+    }
+
+    #[test]
+    fn sanitize_rejects_oversized_skill_name() {
+        let long = "a".repeat(SKILL_NAME_CAP + 1);
+        let e = ev(&long, SkillUsageAction::Viewed, "2026-01-01T00:00:00Z");
+        assert!(matches!(
+            sanitize_skill_usage_event(e),
+            Err(SkillUsageRejection::SkillNameTooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn sanitize_rejects_oversized_attributes() {
+        let mut e = ev("rust", SkillUsageAction::Used, "2026-01-01T00:00:00Z");
+        e.attributes = serde_json::json!({ "blob": "x".repeat(SKILL_ATTRIBUTES_CAP + 1) });
+        assert!(matches!(
+            sanitize_skill_usage_event(e),
+            Err(SkillUsageRejection::AttributesTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn sanitize_accepts_small_attributes() {
+        let mut e = ev("rust", SkillUsageAction::Used, "2026-01-01T00:00:00Z");
+        e.attributes = serde_json::json!({ "duration_ms": 42 });
+        let out = sanitize_skill_usage_event(e).unwrap();
+        assert_eq!(out.attributes, serde_json::json!({ "duration_ms": 42 }));
     }
 
     #[test]

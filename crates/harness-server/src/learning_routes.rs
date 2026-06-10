@@ -26,7 +26,8 @@ use axum::{
     Router,
 };
 use harness_learning::{
-    SkillScope, SkillUsageAction, SkillUsageEvent, SkillUsageFilter, SkillUsageStore,
+    sanitize_skill_usage_event, SkillScope, SkillUsageAction, SkillUsageEvent, SkillUsageFilter,
+    SkillUsageStore,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -158,7 +159,16 @@ async fn record_skill_usage(
         Ok(s) => s,
         Err(r) => return r,
     };
-    match store.record_event(body).await {
+    // Never trust the wire payload: blank client-supplied id/created_at (the
+    // store re-stamps server-side so a malicious created_at can't poison
+    // report ordering) and enforce size caps on skill_name / attributes.
+    let event = match sanitize_skill_usage_event(body) {
+        Ok(e) => e,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response()
+        }
+    };
+    match store.record_event(event).await {
         Ok(event) => (StatusCode::CREATED, Json(json!({"event": event}))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -250,6 +260,62 @@ mod tests {
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn record_ignores_client_supplied_created_at() {
+        let state = test_state();
+        let router = crate::routes::router(state);
+
+        // POST an event with an attacker-chosen far-future created_at.
+        let body = serde_json::json!({
+            "id": "attacker-id",
+            "skill_name": "rust",
+            "source": "user",
+            "action": "used",
+            "scope": {"kind": "user"},
+            "created_at": "2099-12-31T00:00:00+05:00",
+            "attributes": null,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/learning/skill-usage")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let stored = &v["event"];
+        // The store re-stamped both fields server-side — the client values
+        // never made it through.
+        assert_ne!(stored["created_at"], "2099-12-31T00:00:00+05:00");
+        assert_ne!(stored["id"], "attacker-id");
+        assert!(stored["created_at"].as_str().unwrap().ends_with("+00:00"));
+    }
+
+    #[tokio::test]
+    async fn record_rejects_oversized_attributes() {
+        let state = test_state();
+        let router = crate::routes::router(state);
+        let body = serde_json::json!({
+            "id": "",
+            "skill_name": "rust",
+            "source": "user",
+            "action": "used",
+            "scope": {"kind": "user"},
+            "created_at": "",
+            "attributes": { "blob": "x".repeat(32 * 1024) },
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/learning/skill-usage")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
