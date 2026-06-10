@@ -30,6 +30,7 @@
 //! # Ok(()) }
 //! ```
 
+mod connectors_stores;
 mod error;
 mod json_file;
 mod learning_guard;
@@ -37,6 +38,10 @@ mod memory;
 mod permission;
 mod workspace;
 
+pub use connectors_stores::{
+    JsonFileConnectorAccountStore, JsonFileProjectBindingStore, JsonFileRequirementBindingStore,
+    MemoryConnectorAccountStore, MemoryProjectBindingStore, MemoryRequirementBindingStore,
+};
 pub use error::StoreError;
 pub use learning_guard::{GuardedMemoryStore, MEMORY_EVENT_CHANNEL_CAPACITY};
 pub use json_file::{

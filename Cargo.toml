@@ -4,6 +4,7 @@ members = [
     "crates/harness-automation",
     "crates/harness-channel",
     "crates/harness-cloud",
+    "crates/harness-connectors",
     "crates/harness-core",
     "crates/harness-learning",
     "crates/harness-llm",
@@ -49,6 +50,7 @@ harness-skill = { path = "crates/harness-skill" }
 harness-store = { path = "crates/harness-store" }
 harness-subagents = { path = "crates/harness-subagents" }
 harness-cloud = { path = "crates/harness-cloud" }
+harness-connectors = { path = "crates/harness-connectors" }
 harness-tools = { path = "crates/harness-tools" }
 harness-workflow = { path = "crates/harness-workflow" }
 

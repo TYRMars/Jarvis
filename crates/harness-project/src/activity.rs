@@ -98,6 +98,10 @@ pub enum ActivityKind {
     Blocked,
     /// Reserved for Phase 4 — clearing a block.
     Unblocked,
+    /// A project-connector pull imported this requirement or a push
+    /// wrote local state back to the remote tracker.
+    /// Body: `{"connector": "...", "action": "imported"|"pushed", "remote_task_id": "...", ...}`.
+    ConnectorSync,
 }
 
 /// Who triggered an activity.

@@ -37,6 +37,7 @@ mod channels_wecom;
 mod channels_wecom_app;
 mod chat_runs;
 mod comments_routes;
+mod connectors_routes;
 mod conversations;
 mod diagnostics;
 mod diagnostics_routes;

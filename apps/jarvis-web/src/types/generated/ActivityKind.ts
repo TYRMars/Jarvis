@@ -8,4 +8,4 @@
  * Blocked / Unblocked are reserved for Phases 3.6 / 4 when their
  * driving features land.
  */
-export type ActivityKind = "status_change" | "run_started" | "run_finished" | "verification_finished" | "assignee_change" | "comment" | "blocked" | "unblocked";
+export type ActivityKind = "status_change" | "run_started" | "run_finished" | "verification_finished" | "assignee_change" | "comment" | "blocked" | "unblocked" | "connector_sync";

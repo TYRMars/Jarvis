@@ -2046,6 +2046,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-connectors"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "harness-core"
 version = "0.2.0"
 dependencies = [
@@ -2207,6 +2221,7 @@ dependencies = [
  "harness-automation",
  "harness-channel",
  "harness-cloud",
+ "harness-connectors",
  "harness-core",
  "harness-learning",
  "harness-llm",
@@ -2262,6 +2277,7 @@ dependencies = [
  "chrono",
  "harness-automation",
  "harness-channel",
+ "harness-connectors",
  "harness-core",
  "harness-learning",
  "harness-observability",
@@ -2835,6 +2851,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "harness-channel",
+ "harness-connectors",
  "harness-core",
  "harness-learning",
  "harness-llm",

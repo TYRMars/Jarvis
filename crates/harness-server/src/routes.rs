@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
             post(interrupt_chat_run),
         )
         .merge(crate::openapi::router())
+        .merge(crate::connectors_routes::router())
         .merge(conversations::router())
         .merge(projects::router())
         .merge(permissions::router())

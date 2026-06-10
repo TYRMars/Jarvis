@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 harness-channel.workspace = true
+harness-connectors.workspace = true
 harness-core.workspace = true
 harness-learning.workspace = true
 harness-observability.workspace = true

@@ -9,6 +9,7 @@ description = "Pluggable persistence for the agent harness. JSON-file by default
 [dependencies]
 harness-automation.workspace = true
 harness-channel.workspace = true
+harness-connectors.workspace = true
 harness-core.workspace = true
 harness-learning.workspace = true
 harness-observability.workspace = true

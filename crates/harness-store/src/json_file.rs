@@ -2393,7 +2393,7 @@ where
     Ok(Some(value))
 }
 
-async fn read_json_records<T>(dir: &Path) -> Result<Vec<T>, BoxError>
+pub(crate) async fn read_json_records<T>(dir: &Path) -> Result<Vec<T>, BoxError>
 where
     T: DeserializeOwned,
 {
@@ -2654,7 +2654,7 @@ impl harness_channel::ChannelInstanceStore for JsonFileChannelInstanceStore {
     }
 }
 
-fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
+pub(crate) fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
     std::fs::create_dir_all(dir)
         .map_err(|e| StoreError::Other(format!("create {}: {e}", dir.display()).into()))?;
     #[cfg(unix)]
@@ -2666,7 +2666,7 @@ fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), BoxError> {
+pub(crate) async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), BoxError> {
     let tmp = path.with_extension("json.tmp");
     tokio::fs::write(&tmp, bytes).await?;
     #[cfg(unix)]
@@ -2822,7 +2822,7 @@ async fn remove_dir_all_if_exists(dir: &Path) -> std::io::Result<()> {
 /// Percent-encode any byte that isn't `[A-Za-z0-9._-]`. UUIDs and
 /// most random ids pass through unchanged; `:` (used by the
 /// `__memory__.summary:` namespace) becomes `%3A`.
-fn encode_id(id: &str) -> String {
+pub(crate) fn encode_id(id: &str) -> String {
     let mut out = String::with_capacity(id.len());
     for b in id.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_') {

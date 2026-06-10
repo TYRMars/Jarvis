@@ -70,6 +70,18 @@ pub(crate) fn document() -> Value {
 }
 
 fn paths() -> Value {
+    let mut paths = base_paths();
+    if let (Some(base), Some(Value::Object(extra))) =
+        (paths.as_object_mut(), Some(connector_paths()))
+    {
+        for (k, v) in extra {
+            base.insert(k, v);
+        }
+    }
+    paths
+}
+
+fn base_paths() -> Value {
     json!({
         "/health": {
             "get": {
@@ -453,6 +465,123 @@ fn paths() -> Value {
                 "parameters": [ { "$ref": "#/components/parameters/Id" } ],
                 "responses": {
                     "200": { "description": "Deletion result `{ deleted: bool }`" },
+                    "503": { "$ref": "#/components/responses/StoreUnavailable" }
+                }
+            }
+        }
+    })
+}
+
+
+fn connector_paths() -> Value {
+    json!({
+        "/v1/connectors": {
+            "get": {
+                "tags": ["work"],
+                "summary": "List registered project connectors (GitHub Issues, …)",
+                "operationId": "listConnectors",
+                "responses": { "200": { "description": "Connector kinds" } }
+            }
+        },
+        "/v1/connectors/accounts": {
+            "get": {
+                "tags": ["work"],
+                "summary": "List connector accounts (auth_ref names a secret, never a token)",
+                "operationId": "listConnectorAccounts",
+                "responses": {
+                    "200": { "description": "Accounts" },
+                    "503": { "$ref": "#/components/responses/StoreUnavailable" }
+                }
+            }
+        },
+        "/v1/connectors/{connector}/accounts": {
+            "post": {
+                "tags": ["work"],
+                "summary": "Create a connector account",
+                "operationId": "createConnectorAccount",
+                "parameters": [ { "name": "connector", "in": "path", "required": true, "schema": { "type": "string" } } ],
+                "requestBody": { "required": true, "content": { "application/json": {
+                    "schema": { "type": "object", "properties": {
+                        "display_name": { "type": "string" },
+                        "auth_ref": { "type": "string", "description": "NAME of the secret (e.g. GITHUB_TOKEN); raw tokens are rejected" }
+                    }, "required": ["display_name", "auth_ref"] }
+                } } },
+                "responses": {
+                    "201": { "description": "Created" },
+                    "400": { "description": "auth_ref looks like a raw token" },
+                    "404": { "description": "Unknown connector" },
+                    "503": { "$ref": "#/components/responses/StoreUnavailable" }
+                }
+            }
+        },
+        "/v1/connectors/{connector}/projects": {
+            "get": {
+                "tags": ["work"],
+                "summary": "List remote projects visible to an account",
+                "operationId": "listConnectorRemoteProjects",
+                "parameters": [
+                    { "name": "connector", "in": "path", "required": true, "schema": { "type": "string" } },
+                    { "name": "account_id", "in": "query", "required": true, "schema": { "type": "string" } }
+                ],
+                "responses": {
+                    "200": { "description": "Remote projects" },
+                    "404": { "description": "Unknown connector/account" },
+                    "502": { "description": "Remote API failure" },
+                    "503": { "$ref": "#/components/responses/StoreUnavailable" }
+                }
+            }
+        },
+        "/v1/connectors/{connector}/import": {
+            "post": {
+                "tags": ["work"],
+                "summary": "Bind a remote project and run the initial issue import",
+                "operationId": "importConnectorProject",
+                "parameters": [ { "name": "connector", "in": "path", "required": true, "schema": { "type": "string" } } ],
+                "requestBody": { "required": true, "content": { "application/json": {
+                    "schema": { "type": "object", "properties": {
+                        "account_id": { "type": "string" },
+                        "remote_project_id": { "type": "string", "description": "GitHub: owner/repo" },
+                        "project_id": { "type": "string", "nullable": true },
+                        "name": { "type": "string", "nullable": true }
+                    }, "required": ["account_id", "remote_project_id"] }
+                } } },
+                "responses": {
+                    "201": { "description": "Binding + import summary" },
+                    "409": { "description": "Remote project already bound" },
+                    "503": { "$ref": "#/components/responses/StoreUnavailable" }
+                }
+            }
+        },
+        "/v1/project-bindings/{id}/sync": {
+            "post": {
+                "tags": ["work"],
+                "summary": "Re-pull a bound remote project (idempotent upsert; local status never clobbered)",
+                "operationId": "syncProjectBinding",
+                "parameters": [ { "$ref": "#/components/parameters/Id" } ],
+                "responses": {
+                    "200": { "description": "Sync summary" },
+                    "404": { "description": "Unknown binding" },
+                    "503": { "$ref": "#/components/responses/StoreUnavailable" }
+                }
+            }
+        },
+        "/v1/requirement-bindings/{id}/push": {
+            "post": {
+                "tags": ["work"],
+                "summary": "Write back to the remote issue (close/reopen and/or comment; 409 on remote drift unless force)",
+                "operationId": "pushRequirementBinding",
+                "parameters": [ { "$ref": "#/components/parameters/Id" } ],
+                "requestBody": { "required": true, "content": { "application/json": {
+                    "schema": { "type": "object", "properties": {
+                        "action": { "type": "string", "enum": ["close", "reopen"], "nullable": true },
+                        "comment": { "type": "string", "nullable": true },
+                        "force": { "type": "boolean", "default": false }
+                    } }
+                } } },
+                "responses": {
+                    "200": { "description": "Updated binding" },
+                    "400": { "description": "Empty push" },
+                    "409": { "description": "Remote changed since last sync" },
                     "503": { "$ref": "#/components/responses/StoreUnavailable" }
                 }
             }
