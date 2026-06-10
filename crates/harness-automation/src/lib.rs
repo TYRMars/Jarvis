@@ -75,6 +75,10 @@ impl AutomationTask {
 
     pub fn mark_manual_run_started(&mut self, now: DateTime<Utc>) {
         self.last_run_at = Some(to_rfc3339(now));
+        // Advance next_run_at the same way the scheduled path does, otherwise the
+        // scheduler sees a non-Running task still due at/before `now` and fires it a
+        // second time (a Once task runs twice; an Interval task re-fires immediately).
+        self.next_run_at = self.schedule.next_after(Some(now), now).map(to_rfc3339);
         self.last_run_status = Some(AutomationRunStatus::Running);
         self.last_error = None;
         self.updated_at = to_rfc3339(now);
@@ -221,5 +225,58 @@ mod tests {
         };
         let now = parse_rfc3339("2026-01-01T00:00:01Z").unwrap();
         assert!(schedule.next_after(Some(now), now).is_none());
+    }
+
+    #[test]
+    fn manual_run_clears_next_run_at_for_once_task() {
+        // A Once task manually run before its run_at must not fire again when run_at arrives.
+        let mut task = AutomationTask::new(NewAutomationTask {
+            title: "once".into(),
+            prompt: "do it".into(),
+            schedule: ScheduleSpec::Once {
+                run_at: "2026-01-01T01:00:00Z".into(),
+            },
+            status: None,
+            provider: None,
+            model: None,
+            conversation_id: None,
+        });
+        assert_eq!(task.next_run_at.as_deref(), Some("2026-01-01T01:00:00.000Z"));
+
+        let now = parse_rfc3339("2026-01-01T00:30:00Z").unwrap();
+        task.mark_manual_run_started(now);
+        task.mark_finished(now, Ok(()));
+
+        // Once finished, the once-task has no next run, so it never re-fires.
+        assert!(task.next_run_at.is_none());
+        let run_at = parse_rfc3339("2026-01-01T01:00:00Z").unwrap();
+        assert!(!task.is_due_at(run_at));
+    }
+
+    #[test]
+    fn manual_run_advances_next_run_at_for_interval_task() {
+        // An Interval task manually run at/past its scheduled time must not re-fire on the next tick.
+        let mut task = AutomationTask::new(NewAutomationTask {
+            title: "interval".into(),
+            prompt: "do it".into(),
+            schedule: ScheduleSpec::Interval {
+                every_seconds: 60,
+                start_at: Some("2026-01-01T00:00:00Z".into()),
+            },
+            status: None,
+            provider: None,
+            model: None,
+            conversation_id: None,
+        });
+
+        let now = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        task.mark_manual_run_started(now);
+        task.mark_finished(now, Ok(()));
+
+        // next_run_at advanced one interval into the future, so it is not due immediately.
+        assert_eq!(task.next_run_at.as_deref(), Some("2026-01-01T00:01:00.000Z"));
+        assert!(!task.is_due_at(now));
+        let next_tick = parse_rfc3339("2026-01-01T00:01:00Z").unwrap();
+        assert!(task.is_due_at(next_tick));
     }
 }

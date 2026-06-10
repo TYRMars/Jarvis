@@ -195,7 +195,17 @@ async fn run_automation_now(State(state): State<AppState>, Path(id): Path<String
         )
             .into_response();
     }
-    spawn_automation_run(state, task.clone(), RunTrigger::Manual);
+    // Reserve synchronously so a manual trigger can't race a just-spawned
+    // scheduled run (whose persisted `Running` flag may not have landed
+    // yet). A failed claim means a run is already in flight.
+    let Some(claim) = state.automation_claims.try_claim(&task.id) else {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({ "error": "automation is already running" })),
+        )
+            .into_response();
+    };
+    spawn_automation_run(state, task.clone(), RunTrigger::Manual, claim);
     (axum::http::StatusCode::ACCEPTED, Json(task)).into_response()
 }
 
