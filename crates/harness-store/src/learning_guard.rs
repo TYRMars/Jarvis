@@ -20,7 +20,8 @@
 
 use async_trait::async_trait;
 use harness_learning::{
-    validate_memory_safe, BoxError, MemoryEvent, MemoryFilter, MemoryItem, MemoryStore,
+    validate_memory_safe, BoxError, MemoryEvent, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -75,7 +76,16 @@ impl MemoryStore for GuardedMemoryStore {
         self.inner.get(id).await
     }
 
-    async fn upsert(&self, item: MemoryItem) -> Result<MemoryItem, BoxError> {
+    async fn upsert(&self, mut item: MemoryItem) -> Result<MemoryItem, BoxError> {
+        // Enforce the per-field TITLE_CAP / BODY_CAP at the store
+        // boundary. A `MemoryItem` deserialized straight from a REST
+        // body never passes through `MemoryItem::new`, so without this
+        // an oversized title/body would slip past the per-field caps —
+        // only the combined 8 KiB check inside `validate_memory_safe`
+        // would catch the pathological case. Clamp BEFORE validating so
+        // the safety scan and combined-size check run on exactly what we
+        // persist (and the model later sees in the system prompt).
+        item.clamp_fields();
         // Validation happens BEFORE persistence — a rejected write
         // must leave no on-disk trace. Audit-log every rejection at
         // WARN so operators see the pattern; the spec calls out
@@ -96,6 +106,20 @@ impl MemoryStore for GuardedMemoryStore {
             item: Box::new(saved.clone()),
         });
         Ok(saved)
+    }
+
+    async fn patch(&self, id: &str, patch: MemoryPatch) -> Result<Option<MemoryItem>, BoxError> {
+        // Atomicity + validation live in the inner store's `patch` (the
+        // read-modify-write must happen under the inner write lock, so we
+        // can't intercept the post-apply row here). We only fan out the
+        // broadcast event on a successful patch, mirroring `upsert`.
+        let result = self.inner.patch(id, patch).await?;
+        if let Some(saved) = &result {
+            let _ = self.events.send(MemoryEvent::Upserted {
+                item: Box::new(saved.clone()),
+            });
+        }
+        Ok(result)
     }
 
     async fn delete(&self, id: &str) -> Result<bool, BoxError> {
@@ -156,6 +180,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn patch_broadcasts_upserted_and_loses_to_delete() {
+        use harness_learning::MemoryPatch;
+        let inner: Arc<dyn MemoryStore> = Arc::new(MemoryMemoryStore::new());
+        let (guard, tx) = GuardedMemoryStore::with_fresh_channel(inner.clone());
+        let mut rx = tx.subscribe();
+        let saved = guard.upsert(safe_item()).await.unwrap();
+        let _ = rx.recv().await.unwrap(); // drain the upsert event
+
+        let patched = guard
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    pinned: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert!(!patched.pinned);
+        match rx.recv().await.unwrap() {
+            MemoryEvent::Upserted { item } => assert_eq!(item.id, saved.id),
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Delete wins: a patch against the removed id returns None and
+        // emits no event.
+        assert!(guard.delete(&saved.id).await.unwrap());
+        let _ = rx.recv().await.unwrap(); // drain the delete event
+        let gone = guard
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    title: Some("zombie".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(gone.is_none(), "patch on deleted row returns None");
+        let timed_out =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(timed_out.is_err(), "no event for a no-op patch");
+    }
+
+    #[tokio::test]
     async fn upsert_rejects_prompt_injection_and_does_not_persist() {
         let inner: Arc<dyn MemoryStore> = Arc::new(MemoryMemoryStore::new());
         let (guard, _tx) = GuardedMemoryStore::with_fresh_channel(inner.clone());
@@ -173,6 +243,30 @@ mod tests {
             .await
             .unwrap();
         assert!(all.is_empty(), "rejected write must not persist");
+    }
+
+    #[tokio::test]
+    async fn upsert_clamps_oversized_title_and_body_from_raw_item() {
+        // A MemoryItem deserialized from a REST body (or hand-built) never
+        // passes through `MemoryItem::new`, so its title/body can exceed the
+        // per-field caps. The guard must clamp at the store boundary so the
+        // persisted row — and the system prompt that later reads it — stays
+        // within TITLE_CAP / BODY_CAP.
+        let inner: Arc<dyn MemoryStore> = Arc::new(MemoryMemoryStore::new());
+        let (guard, _tx) = GuardedMemoryStore::with_fresh_channel(inner.clone());
+        let mut raw = safe_item();
+        raw.title = "a".repeat(MemoryItem::TITLE_CAP + 50);
+        raw.body = "b".repeat(MemoryItem::BODY_CAP + 100);
+
+        let saved = guard.upsert(raw).await.unwrap();
+        assert_eq!(saved.title.chars().count(), MemoryItem::TITLE_CAP);
+        assert_eq!(saved.body.chars().count(), MemoryItem::BODY_CAP + 1);
+        assert!(saved.body.ends_with('…'));
+
+        // And the persisted row reflects the clamp, not the raw input.
+        let stored = inner.get(&saved.id).await.unwrap().unwrap();
+        assert_eq!(stored.title.chars().count(), MemoryItem::TITLE_CAP);
+        assert_eq!(stored.body.chars().count(), MemoryItem::BODY_CAP + 1);
     }
 
     #[tokio::test]

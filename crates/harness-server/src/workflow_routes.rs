@@ -17,12 +17,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use harness_workflow::{WorkflowDefinition, WorkflowRun, WorkflowStep};
+use harness_workflow::{
+    WorkflowDefinition, WorkflowError, WorkflowRun, WorkflowStep, WorkflowStepKind,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::state::AppState;
-use crate::workflow_runtime::execute_workflow_run;
+use crate::workflow_runtime::{execute_workflow_run, fail_run_if_running};
 
 /// Wall-clock budget for a single agent step in a manually dispatched
 /// run. Matches the auto loop's `JARVIS_WORK_RUN_TIMEOUT_MS` default.
@@ -108,7 +110,7 @@ async fn create_workflow(
     def.project_id = clean_opt(req.project_id);
     def.steps = normalize_steps(req.steps);
     if let Err(e) = validate_steps(&def) {
-        return bad_request(e);
+        return bad_request(e.to_string());
     }
     match store.upsert(&def).await {
         Ok(()) => (axum::http::StatusCode::CREATED, Json(def)).into_response(),
@@ -156,7 +158,7 @@ async fn patch_workflow(
         def.steps = normalize_steps(steps);
     }
     if let Err(e) = validate_steps(&def) {
-        return bad_request(e);
+        return bad_request(e.to_string());
     }
     def.touch();
     match store.upsert(&def).await {
@@ -218,17 +220,24 @@ async fn run_workflow(
         return server_error(e.to_string());
     }
     let response_run = run.clone();
+    let run_id = run.id.clone();
     let state2 = state.clone();
     tokio::spawn(async move {
-        execute_workflow_run(
+        // Guard the detached executor: a panic anywhere inside
+        // `execute_workflow_run` would otherwise be swallowed by tokio's
+        // default hook and leave the run stuck `Running` forever, since the
+        // terminal-status write lives at the end of the executor.
+        let exec = std::panic::AssertUnwindSafe(execute_workflow_run(
             &state2,
             &def,
             requirement.as_ref(),
             run,
             None,
             DEFAULT_RUN_TIMEOUT_MS,
-        )
-        .await;
+        ));
+        if futures::FutureExt::catch_unwind(exec).await.is_err() {
+            fail_run_if_running(&state2, &run_id, "workflow run panicked").await;
+        }
     });
     (axum::http::StatusCode::ACCEPTED, Json(response_run)).into_response()
 }
@@ -283,11 +292,26 @@ fn normalize_steps(steps: Vec<WorkflowStep>) -> Vec<WorkflowStep> {
         .collect()
 }
 
-fn validate_steps(def: &WorkflowDefinition) -> Result<(), String> {
+fn validate_steps(def: &WorkflowDefinition) -> Result<(), WorkflowError> {
     if def.agent_step_count() == 0 {
-        return Err("workflow must contain at least one agent step".to_string());
+        return Err(WorkflowError::Empty);
     }
-    Ok(())
+    fn walk(steps: &[WorkflowStep]) -> Result<(), WorkflowError> {
+        for step in steps {
+            match &step.kind {
+                WorkflowStepKind::Agent { prompt, .. } => {
+                    if prompt.trim().is_empty() {
+                        return Err(WorkflowError::EmptyPrompt(step.name.clone()));
+                    }
+                }
+                WorkflowStepKind::Pipeline { steps }
+                | WorkflowStepKind::Phase { steps, .. }
+                | WorkflowStepKind::Parallel { steps, .. } => walk(steps)?,
+            }
+        }
+        Ok(())
+    }
+    walk(&def.steps)
 }
 
 fn clean_opt(value: Option<String>) -> Option<String> {
@@ -418,6 +442,51 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_agent_step_with_blank_prompt() {
+        let state = mk_state();
+        let resp = create_workflow(
+            State(state),
+            Json(CreateWorkflowRequest {
+                name: "blank".into(),
+                description: None,
+                project_id: None,
+                steps: vec![agent_step("research", "   ")],
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = read_json(resp).await;
+        assert_eq!(
+            body["error"], "agent step 'research' has an empty prompt",
+            "the error should name the offending step"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_blank_prompt_nested_in_group() {
+        let state = mk_state();
+        let pipeline = WorkflowStep::new(
+            "build",
+            WorkflowStepKind::Pipeline {
+                steps: vec![agent_step("write", "")],
+            },
+        );
+        let resp = create_workflow(
+            State(state),
+            Json(CreateWorkflowRequest {
+                name: "nested".into(),
+                description: None,
+                project_id: None,
+                steps: vec![pipeline],
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = read_json(resp).await;
+        assert_eq!(body["error"], "agent step 'write' has an empty prompt");
     }
 
     #[tokio::test]
