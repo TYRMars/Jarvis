@@ -76,7 +76,16 @@ impl MemoryStore for GuardedMemoryStore {
         self.inner.get(id).await
     }
 
-    async fn upsert(&self, item: MemoryItem) -> Result<MemoryItem, BoxError> {
+    async fn upsert(&self, mut item: MemoryItem) -> Result<MemoryItem, BoxError> {
+        // Enforce the per-field TITLE_CAP / BODY_CAP at the store
+        // boundary. A `MemoryItem` deserialized straight from a REST
+        // body never passes through `MemoryItem::new`, so without this
+        // an oversized title/body would slip past the per-field caps —
+        // only the combined 8 KiB check inside `validate_memory_safe`
+        // would catch the pathological case. Clamp BEFORE validating so
+        // the safety scan and combined-size check run on exactly what we
+        // persist (and the model later sees in the system prompt).
+        item.clamp_fields();
         // Validation happens BEFORE persistence — a rejected write
         // must leave no on-disk trace. Audit-log every rejection at
         // WARN so operators see the pattern; the spec calls out
@@ -234,6 +243,30 @@ mod tests {
             .await
             .unwrap();
         assert!(all.is_empty(), "rejected write must not persist");
+    }
+
+    #[tokio::test]
+    async fn upsert_clamps_oversized_title_and_body_from_raw_item() {
+        // A MemoryItem deserialized from a REST body (or hand-built) never
+        // passes through `MemoryItem::new`, so its title/body can exceed the
+        // per-field caps. The guard must clamp at the store boundary so the
+        // persisted row — and the system prompt that later reads it — stays
+        // within TITLE_CAP / BODY_CAP.
+        let inner: Arc<dyn MemoryStore> = Arc::new(MemoryMemoryStore::new());
+        let (guard, _tx) = GuardedMemoryStore::with_fresh_channel(inner.clone());
+        let mut raw = safe_item();
+        raw.title = "a".repeat(MemoryItem::TITLE_CAP + 50);
+        raw.body = "b".repeat(MemoryItem::BODY_CAP + 100);
+
+        let saved = guard.upsert(raw).await.unwrap();
+        assert_eq!(saved.title.chars().count(), MemoryItem::TITLE_CAP);
+        assert_eq!(saved.body.chars().count(), MemoryItem::BODY_CAP + 1);
+        assert!(saved.body.ends_with('…'));
+
+        // And the persisted row reflects the clamp, not the raw input.
+        let stored = inner.get(&saved.id).await.unwrap().unwrap();
+        assert_eq!(stored.title.chars().count(), MemoryItem::TITLE_CAP);
+        assert_eq!(stored.body.chars().count(), MemoryItem::BODY_CAP + 1);
     }
 
     #[tokio::test]
