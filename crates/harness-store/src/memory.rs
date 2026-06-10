@@ -14,8 +14,9 @@ use harness_automation::{AutomationStore, AutomationTask};
 use harness_channel::{ChannelBinding, ChannelBindingStore};
 use harness_workflow::{WorkflowDefinition, WorkflowRun, WorkflowStore};
 use harness_learning::{
-    fold_events_into_rows, MemoryFilter, MemoryItem, MemoryStore, SkillLifecycle,
-    SkillLifecycleStore, SkillUsageEvent, SkillUsageFilter, SkillUsageRow, SkillUsageStore,
+    fold_events_into_rows, validate_memory_safe, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore, SkillLifecycle, SkillLifecycleStore, SkillUsageEvent, SkillUsageFilter,
+    SkillUsageRow, SkillUsageStore,
 };
 use harness_core::{
     AgentProfile, AgentProfileEvent, AgentProfileStore, BoxError, Conversation,
@@ -1412,6 +1413,30 @@ impl MemoryStore for MemoryMemoryStore {
         Ok(item)
     }
 
+    /// Atomic read-modify-write: the whole get → apply → validate →
+    /// insert sequence runs under a single write-lock acquisition, so it
+    /// serialises against concurrent `patch` (no lost update) and against
+    /// `delete` (which takes the same lock). A `delete` that wins the
+    /// race leaves the id absent, so we return `Ok(None)` instead of
+    /// re-inserting a zombie row.
+    async fn patch(
+        &self,
+        id: &str,
+        patch: MemoryPatch,
+    ) -> Result<Option<MemoryItem>, harness_learning::BoxError> {
+        let mut guard = self.inner.write().await;
+        let Some(existing) = guard.get(id) else {
+            return Ok(None);
+        };
+        let mut item = existing.clone();
+        patch.apply(&mut item);
+        validate_memory_safe(&item)
+            .map_err(|e| -> harness_learning::BoxError { Box::new(e) })?;
+        item.updated_at = Utc::now().to_rfc3339();
+        guard.insert(item.id.clone(), item.clone());
+        Ok(Some(item))
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, harness_learning::BoxError> {
         let mut guard = self.inner.write().await;
         Ok(guard.remove(id).is_some())
@@ -2324,5 +2349,96 @@ mod tests {
         assert!(store.lookup("feishu", "f1").await.unwrap().is_none());
         // The unrelated binding survives.
         assert!(store.lookup("wecom", "g2").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn memory_patch_applies_and_refreshes_updated_at() {
+        use harness_learning::{MemoryKind, MemoryScope};
+        let store = MemoryMemoryStore::new();
+        let saved = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "old",
+                "body",
+            ))
+            .await
+            .unwrap();
+        let patched = store
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    title: Some("new".into()),
+                    pinned: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(patched.title, "new");
+        assert!(patched.pinned);
+        assert_eq!(patched.body, "body", "unspecified fields untouched");
+        assert!(patched.updated_at >= saved.updated_at);
+    }
+
+    #[tokio::test]
+    async fn memory_patch_loses_to_delete_no_resurrection() {
+        use harness_learning::{MemoryFilter, MemoryKind, MemoryScope};
+        let store = MemoryMemoryStore::new();
+        let saved = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "t",
+                "b",
+            ))
+            .await
+            .unwrap();
+        // Delete wins: a patch against the now-missing id must not
+        // re-insert a zombie row.
+        assert!(store.delete(&saved.id).await.unwrap());
+        let out = store
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    title: Some("zombie".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(out.is_none(), "patch on deleted row returns None");
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert!(all.is_empty(), "no row resurrected");
+    }
+
+    #[tokio::test]
+    async fn memory_patch_rejects_empty_body() {
+        use harness_learning::{MemoryKind, MemoryScope};
+        let store = MemoryMemoryStore::new();
+        let saved = store
+            .upsert(MemoryItem::new(
+                MemoryScope::user(),
+                MemoryKind::Fact,
+                "t",
+                "b",
+            ))
+            .await
+            .unwrap();
+        let err = store
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    body: Some("   ".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("empty"));
+        // Original body untouched — rejected patch leaves no trace.
+        let row = store.get(&saved.id).await.unwrap().unwrap();
+        assert_eq!(row.body, "b");
     }
 }

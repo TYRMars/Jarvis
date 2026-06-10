@@ -646,6 +646,40 @@ pub trait MemoryStore: Send + Sync {
     /// caller a follow-up `get` to learn the assigned id.
     async fn upsert(&self, item: MemoryItem) -> Result<MemoryItem, BoxError>;
 
+    /// Atomically apply `patch` to the row identified by `id`.
+    ///
+    /// This is the read-modify-write primitive that a naive
+    /// `get` → mutate → `upsert` cannot provide: callers doing the latter
+    /// race each other (lost updates) and race a concurrent `delete`
+    /// (the in-flight `upsert` resurrects the just-removed row — a
+    /// "zombie"). Implementations MUST perform the get → apply →
+    /// validate → persist sequence under whatever mutual exclusion they
+    /// use for `upsert` / `delete`, so that:
+    ///
+    /// - two concurrent `patch` calls serialise (no lost update), and
+    /// - a `delete` that lands first wins — `patch` then observes the
+    ///   missing row and returns `Ok(None)` **without** re-inserting it.
+    ///
+    /// Returns:
+    /// - `Ok(Some(updated))` — the row existed and was patched + persisted
+    ///   (`updated_at` refreshed),
+    /// - `Ok(None)` — no row with `id` (never created, or concurrently
+    ///   deleted); nothing is written,
+    /// - `Err(_)` — the patched row failed [`validate_memory_safe`]
+    ///   (empty title/body, prompt-injection, etc.); nothing is written.
+    ///
+    /// The default implementation is a **non-atomic fallback** for
+    /// external impls — in-tree stores override it to hold their write
+    /// lock across the whole sequence.
+    async fn patch(&self, id: &str, patch: MemoryPatch) -> Result<Option<MemoryItem>, BoxError> {
+        let Some(mut item) = self.get(id).await? else {
+            return Ok(None);
+        };
+        patch.apply(&mut item);
+        validate_memory_safe(&item).map_err(|e| -> BoxError { Box::new(e) })?;
+        Ok(Some(self.upsert(item).await?))
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, BoxError>;
 }
 

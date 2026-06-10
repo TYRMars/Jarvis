@@ -20,7 +20,8 @@
 
 use async_trait::async_trait;
 use harness_learning::{
-    validate_memory_safe, BoxError, MemoryEvent, MemoryFilter, MemoryItem, MemoryStore,
+    validate_memory_safe, BoxError, MemoryEvent, MemoryFilter, MemoryItem, MemoryPatch,
+    MemoryStore,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -98,6 +99,20 @@ impl MemoryStore for GuardedMemoryStore {
         Ok(saved)
     }
 
+    async fn patch(&self, id: &str, patch: MemoryPatch) -> Result<Option<MemoryItem>, BoxError> {
+        // Atomicity + validation live in the inner store's `patch` (the
+        // read-modify-write must happen under the inner write lock, so we
+        // can't intercept the post-apply row here). We only fan out the
+        // broadcast event on a successful patch, mirroring `upsert`.
+        let result = self.inner.patch(id, patch).await?;
+        if let Some(saved) = &result {
+            let _ = self.events.send(MemoryEvent::Upserted {
+                item: Box::new(saved.clone()),
+            });
+        }
+        Ok(result)
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, BoxError> {
         let deleted = self.inner.delete(id).await?;
         if deleted {
@@ -153,6 +168,52 @@ mod tests {
         assert!(!guard.delete(&saved.id).await.unwrap());
         let err = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
         assert!(err.is_err(), "no event expected for missing id");
+    }
+
+    #[tokio::test]
+    async fn patch_broadcasts_upserted_and_loses_to_delete() {
+        use harness_learning::MemoryPatch;
+        let inner: Arc<dyn MemoryStore> = Arc::new(MemoryMemoryStore::new());
+        let (guard, tx) = GuardedMemoryStore::with_fresh_channel(inner.clone());
+        let mut rx = tx.subscribe();
+        let saved = guard.upsert(safe_item()).await.unwrap();
+        let _ = rx.recv().await.unwrap(); // drain the upsert event
+
+        let patched = guard
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    pinned: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert!(!patched.pinned);
+        match rx.recv().await.unwrap() {
+            MemoryEvent::Upserted { item } => assert_eq!(item.id, saved.id),
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Delete wins: a patch against the removed id returns None and
+        // emits no event.
+        assert!(guard.delete(&saved.id).await.unwrap());
+        let _ = rx.recv().await.unwrap(); // drain the delete event
+        let gone = guard
+            .patch(
+                &saved.id,
+                MemoryPatch {
+                    title: Some("zombie".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(gone.is_none(), "patch on deleted row returns None");
+        let timed_out =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(timed_out.is_err(), "no event for a no-op patch");
     }
 
     #[tokio::test]
