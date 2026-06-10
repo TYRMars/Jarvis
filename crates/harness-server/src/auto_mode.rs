@@ -2378,6 +2378,61 @@ async fn capture_failure_learning_memory(
         return;
     }
     let body = render_failure_memory_body(run);
+    let signature = failure_signature(run);
+    let req_tag = format!("requirement:{}", requirement.id);
+    let sig_tag = format!("error-sig:{signature}");
+
+    // Dedupe by (requirement_id, error-signature): a flapping
+    // requirement that re-fails the same way must not spawn a fresh
+    // gotcha row per attempt (that is the unbounded-noise half of the
+    // bug). If a matching row already exists, refresh it in place and
+    // bump an occurrence counter instead of inserting a duplicate.
+    let existing = store
+        .list(harness_learning::MemoryFilter {
+            scope: Some(harness_learning::MemoryScope::project(
+                requirement.project_id.clone(),
+            )),
+            kind: Some(harness_learning::MemoryKind::Gotcha),
+            tags: vec![req_tag.clone(), sig_tag.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+
+    if let Some(mut row) = existing.into_iter().next() {
+        let occurrences = row
+            .attributes
+            .get("occurrences")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+            + 1;
+        row.body = body;
+        row.source = harness_learning::MemorySource::Run {
+            run_id: run.id.clone(),
+        };
+        row.attributes = json!({
+            "occurrences": occurrences,
+            "last_run_id": run.id,
+            "error_signature": signature,
+        });
+        match store.upsert(row).await {
+            Ok(saved) => debug!(
+                run_id = %run.id,
+                memory_id = %saved.id,
+                occurrences,
+                project_id = %requirement.project_id,
+                "auto mode: failure deduped into existing learning memory row"
+            ),
+            Err(e) => warn!(
+                run_id = %run.id,
+                project_id = %requirement.project_id,
+                error = %e,
+                "auto mode: learning memory dedup update failed"
+            ),
+        }
+        return;
+    }
+
     let mut item = harness_learning::MemoryItem::new(
         harness_learning::MemoryScope::project(requirement.project_id.clone()),
         harness_learning::MemoryKind::Gotcha,
@@ -2389,8 +2444,14 @@ async fn capture_failure_learning_memory(
     });
     // Tag with the requirement id so the future Memory UI can offer
     // "show all gotchas for this requirement" without a separate
-    // index.
-    item = item.with_tag(format!("requirement:{}", requirement.id));
+    // index, and with the error signature so the next failure of the
+    // same shape lands on this row instead of a fresh one.
+    item = item.with_tag(req_tag).with_tag(sig_tag);
+    item.attributes = json!({
+        "occurrences": 1u64,
+        "last_run_id": run.id,
+        "error_signature": signature,
+    });
     // Lower confidence than user-typed rows — these are auto-derived
     // signals; the reviewer fork may consolidate them later.
     item.confidence = 0.7;
@@ -2410,6 +2471,59 @@ async fn capture_failure_learning_memory(
             "auto mode: learning memory capture failed"
         ),
     }
+}
+
+/// Stable fingerprint of *how* a run failed, used to dedupe gotcha
+/// rows. Built from the first line of the run error plus the set of
+/// non-zero-exit verification commands (command + exit code) — the
+/// bits that identify a recurring failure — and deliberately excludes
+/// volatile detail (stderr bodies, timestamps) so the same failure
+/// hashes identically across retries. FNV-1a keeps it stable forever
+/// (unlike `DefaultHasher`, whose output isn't guaranteed across Rust
+/// versions) since the value is persisted in a tag.
+fn failure_signature(run: &RequirementRun) -> String {
+    let mut basis = String::new();
+    if let Some(err) = run
+        .error
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let first = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+        basis.push_str(first);
+        basis.push('\n');
+    }
+    if let Some(verification) = run.verification.as_ref() {
+        let mut cmds: Vec<String> = verification
+            .command_results
+            .iter()
+            .filter(|cr| cr.exit_code != Some(0))
+            .map(|cr| {
+                format!(
+                    "{}#{}",
+                    cr.command.trim(),
+                    cr.exit_code.map(|c| c.to_string()).unwrap_or_default()
+                )
+            })
+            .collect();
+        cmds.sort();
+        cmds.dedup();
+        basis.push_str(&cmds.join("\n"));
+    }
+    let basis = basis.trim();
+    let basis = if basis.is_empty() { "no-detail" } else { basis };
+    format!("{:016x}", fnv1a64(basis.as_bytes()))
+}
+
+/// 64-bit FNV-1a. Tiny, dependency-free, and deterministic across
+/// builds — exactly what a persisted dedup key needs.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn render_failure_memory_body(run: &RequirementRun) -> String {
@@ -4212,6 +4326,72 @@ Do {{ requirement.title }} in {{ issue.state }}.
         let run = synth_failed_run(&req.id, "r1", "boom");
         capture_failure_learning_memory(&state, &req, &run).await;
         // No assertion possible; not panicking is the test.
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_dedupes_same_signature() {
+        // A flapping requirement that re-fails the same way must land
+        // on a single gotcha row, with an occurrence counter, rather
+        // than one fresh row per failed run (the unbounded-noise bug).
+        let state = base_state_with_canned_llm("ignored")
+            .with_user_memory_store(Arc::new(MemoryMemoryStore::new()));
+        let mut req = Requirement::new("proj-dup", "Flaky thing");
+        req.id = "req-dup".into();
+
+        let r1 = synth_failed_run(&req.id, "run-1", "tests panicked at foo.rs");
+        let r2 = synth_failed_run(&req.id, "run-2", "tests panicked at foo.rs");
+        let r3 = synth_failed_run(&req.id, "run-3", "tests panicked at foo.rs");
+        capture_failure_learning_memory(&state, &req, &r1).await;
+        capture_failure_learning_memory(&state, &req, &r2).await;
+        capture_failure_learning_memory(&state, &req, &r3).await;
+
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "three identical failures collapse to one row");
+        let m = &rows[0];
+        assert_eq!(
+            m.attributes.get("occurrences").and_then(|v| v.as_u64()),
+            Some(3),
+            "occurrence counter tracks every repeat"
+        );
+        // Source + last_run_id track the most recent failure.
+        match &m.source {
+            harness_learning::MemorySource::Run { run_id } => assert_eq!(run_id, "run-3"),
+            other => panic!("expected Run source, got {other:?}"),
+        }
+        assert_eq!(
+            m.attributes.get("last_run_id").and_then(|v| v.as_str()),
+            Some("run-3")
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_failure_learning_memory_distinct_signatures_stay_separate() {
+        // Different failure shapes for the same requirement are
+        // genuinely distinct gotchas and must not be merged.
+        let state = base_state_with_canned_llm("ignored")
+            .with_user_memory_store(Arc::new(MemoryMemoryStore::new()));
+        let mut req = Requirement::new("proj-multi", "Two failure modes");
+        req.id = "req-multi".into();
+
+        let a = synth_failed_run(&req.id, "run-a", "compile error in lib.rs");
+        let b = synth_failed_run(&req.id, "run-b", "tests panicked in mod.rs");
+        capture_failure_learning_memory(&state, &req, &a).await;
+        capture_failure_learning_memory(&state, &req, &b).await;
+
+        let rows = state
+            .learning_memory
+            .as_ref()
+            .unwrap()
+            .list(harness_learning::MemoryFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2, "distinct error signatures stay separate rows");
     }
 
     #[tokio::test]

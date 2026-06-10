@@ -317,10 +317,11 @@ pub async fn run(
         let memory_url = std::env::var("JARVIS_MEMORY_STORE_URL")
             .ok()
             .or_else(default_json_memory_url);
+        let memory_max_items = memory_max_items();
         let memory = match memory_url.as_deref() {
-            Some(url) => match harness_store::connect_memory(url).await {
+            Some(url) => match harness_store::connect_memory_capped(url, memory_max_items).await {
                 Ok(store) => {
-                    info!(url = %url, "local memory store connected (user memories on)");
+                    info!(url = %url, max_items = ?memory_max_items, "local memory store connected (user memories on)");
                     Some(store)
                 }
                 Err(e) => {
@@ -2518,6 +2519,35 @@ fn observability_max_runs() -> Option<usize> {
                         "JARVIS_OBSERVABILITY_MAX_RUNS not a non-negative integer; using default cap"
                     );
                     Some(harness_store::DEFAULT_MAX_OBSERVED_RUNS)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the Memory store retention cap from `JARVIS_MEMORY_MAX_ITEMS`.
+/// Same shape as [`observability_max_runs`]:
+/// - unset → `Some(DEFAULT_MAX_MEMORY_ITEMS)` (bounded by default so the
+///   auto-loop's per-failure gotcha writes can't leak unbounded files),
+/// - `0` / `off` / `unlimited` → `None` (pruning disabled),
+/// - a positive integer → `Some(n)`,
+/// - anything unparseable → the default, with a WARN.
+fn memory_max_items() -> Option<usize> {
+    match std::env::var("JARVIS_MEMORY_MAX_ITEMS") {
+        Err(_) => Some(harness_store::DEFAULT_MAX_MEMORY_ITEMS),
+        Ok(raw) => {
+            let v = raw.trim();
+            if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("unlimited") || v == "0" {
+                return None;
+            }
+            match v.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    warn!(
+                        value = %raw,
+                        "JARVIS_MEMORY_MAX_ITEMS not a non-negative integer; using default cap"
+                    );
+                    Some(harness_store::DEFAULT_MAX_MEMORY_ITEMS)
                 }
             }
         }

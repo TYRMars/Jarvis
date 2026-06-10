@@ -2124,6 +2124,16 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
 
 // ---------- learning / long-term memory store ------------------------------
 
+/// Default ceiling on `memories/*.json` files kept on disk. The store
+/// writes one file per row and `list` rescans the whole directory, so
+/// without a cap auto-captured rows (the auto-loop drops a `gotcha` per
+/// failed run) grow the directory — and every `/v1/memories` read —
+/// without bound. 5000 keeps a generous window for user-curated rows
+/// while bounding disk + scan cost; pinned rows are never pruned.
+/// Override at the composition root via
+/// [`JsonFileMemoryStore::with_max_items`].
+pub const DEFAULT_MAX_MEMORY_ITEMS: usize = 5000;
+
 /// JSON-file backend for [`MemoryStore`]. One file per id under
 /// `<dir>/memories/<id>.json`; ids are synthesised from a UTC RFC-3339
 /// timestamp + a monotonic counter, same pattern as the skill-usage
@@ -2132,6 +2142,9 @@ impl SkillUsageStore for JsonFileSkillUsageStore {
 /// through this trait too.
 pub struct JsonFileMemoryStore {
     dir: PathBuf,
+    /// `Some(n)` caps `memories/` at roughly `n` files (oldest
+    /// non-pinned pruned on `upsert`); `None` disables pruning.
+    max_items: Option<usize>,
     /// Serialises the read-modify-write of [`MemoryStore::patch`] against
     /// itself and against [`MemoryStore::delete`] within a single
     /// process. Without it, two `patch` calls (or a `patch` racing a
@@ -2148,8 +2161,17 @@ impl JsonFileMemoryStore {
         ensure_dir(&dir.join("memories"))?;
         Ok(Self {
             dir,
+            max_items: Some(DEFAULT_MAX_MEMORY_ITEMS),
             write_lock: Mutex::new(()),
         })
+    }
+
+    /// Override the `memories/` retention cap. `Some(n)` keeps roughly
+    /// the newest `n` rows (pinned rows are always kept); `None`
+    /// disables pruning entirely (unbounded growth).
+    pub fn with_max_items(mut self, max_items: Option<usize>) -> Self {
+        self.max_items = max_items;
+        self
     }
 
     fn item_path(&self, id: &str) -> PathBuf {
@@ -2205,6 +2227,9 @@ impl MemoryStore for JsonFileMemoryStore {
         }
         let bytes = serde_json::to_vec_pretty(&item).map_err(StoreError::from)?;
         atomic_write(&self.item_path(&item.id), &bytes).await?;
+        if let Some(max) = self.max_items {
+            prune_oldest_memory_items(&self.dir.join("memories"), max).await;
+        }
         Ok(item)
     }
 
@@ -2728,6 +2753,55 @@ async fn prune_oldest_files(dir: &Path, max: usize) {
     let to_remove = stamped.len().saturating_sub(max);
     for (_, path) in stamped.into_iter().take(to_remove) {
         let _ = tokio::fs::remove_file(&path).await;
+    }
+}
+
+/// Prune the `memories/` directory down to roughly `max` rows, deleting
+/// the oldest *non-pinned* items first. Pinned rows are user-curated and
+/// are never pruned, so a flood of auto-captured `gotcha` rows can't
+/// evict a hand-pinned preference.
+///
+/// Best-effort: any I/O error short-circuits silently — a flaky prune
+/// must never break the `upsert` that triggered it.
+///
+/// Cheap on the hot path: pass one only *counts* `.json` files and bails
+/// when under `max + max/10`; only past that 10% slack does pass two
+/// read every row to partition pinned vs. not and sort the candidates.
+async fn prune_oldest_memory_items(dir: &Path, max: usize) {
+    let mut count = 0usize;
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".json") && !name.ends_with(".json.tmp") {
+            count += 1;
+        }
+    }
+
+    // Slack so we don't read-and-sort on every append once at steady
+    // state — only when we've drifted `max/10` past the cap.
+    if count <= max.saturating_add(max / 10) {
+        return;
+    }
+
+    let rows: Vec<MemoryItem> = match read_json_records(dir).await {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    // Pinned rows are protected but still consume the budget, so the
+    // total still trends toward `max`. If pinned alone exceeds the cap
+    // we keep them all and prune every non-pinned row.
+    let pinned = rows.iter().filter(|r| r.pinned).count();
+    let keep_non_pinned = max.saturating_sub(pinned);
+    let mut victims: Vec<MemoryItem> = rows.into_iter().filter(|r| !r.pinned).collect();
+    // Oldest first by `updated_at`, so `skip(keep)` keeps the newest.
+    victims.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+    let drop_count = victims.len().saturating_sub(keep_non_pinned);
+    for victim in victims.into_iter().take(drop_count) {
+        let _ = tokio::fs::remove_file(&dir.join(format!("{}.json", encode_id(&victim.id)))).await;
     }
 }
 
@@ -3950,6 +4024,89 @@ mod tests {
         );
 
         let _ = store.list(MemoryFilter::default()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_upsert_prunes_oldest_non_pinned_over_cap() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        // Cap of 4: slack is max/10 == 0, so the prune fires once we
+        // exceed 4 files.
+        let store = JsonFileMemoryStore::open(dir.path())
+            .unwrap()
+            .with_max_items(Some(4));
+
+        // One pinned row that must always survive the sweep.
+        store
+            .upsert(
+                MemoryItem::new(MemoryScope::user(), MemoryKind::Preference, "pinned", "keep me")
+                    .pinned(),
+            )
+            .await
+            .unwrap();
+
+        // Insert well past the cap; updated_at is monotonic per upsert
+        // (RFC-3339), so the earliest writes are the prune victims.
+        for i in 0..20 {
+            store
+                .upsert(MemoryItem::new(
+                    MemoryScope::user(),
+                    MemoryKind::Fact,
+                    format!("row-{i}"),
+                    "body",
+                ))
+                .await
+                .unwrap();
+            // Nudge the clock so updated_at strictly orders the rows.
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert!(
+            all.len() <= 4,
+            "row count stays bounded by the cap, got {}",
+            all.len()
+        );
+        // Pinned row is never pruned.
+        assert!(
+            all.iter().any(|r| r.title == "pinned"),
+            "pinned row must survive pruning"
+        );
+        // The newest non-pinned row survives; the oldest is gone.
+        assert!(
+            all.iter().any(|r| r.title == "row-19"),
+            "newest row must be kept"
+        );
+        assert!(
+            !all.iter().any(|r| r.title == "row-0"),
+            "oldest row must be pruned"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_upsert_unbounded_when_cap_disabled() {
+        use harness_learning::{
+            MemoryFilter, MemoryItem, MemoryKind, MemoryScope, MemoryStore,
+        };
+        let dir = tempdir().unwrap();
+        let store = JsonFileMemoryStore::open(dir.path())
+            .unwrap()
+            .with_max_items(None);
+        for i in 0..12 {
+            store
+                .upsert(MemoryItem::new(
+                    MemoryScope::user(),
+                    MemoryKind::Fact,
+                    format!("row-{i}"),
+                    "body",
+                ))
+                .await
+                .unwrap();
+        }
+        let all = store.list(MemoryFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 12, "None disables pruning");
     }
 
     // ---- MemoryStore (in-memory) ----------------------------------------
