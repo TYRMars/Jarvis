@@ -292,8 +292,9 @@ pub async fn run(
         let learning_url = std::env::var("JARVIS_LEARNING_STORE_URL")
             .ok()
             .or_else(default_json_learning_url);
+        let max_events = learning_max_events();
         let learning = match learning_url.as_deref() {
-            Some(url) => match harness_store::connect_skill_usage(url).await {
+            Some(url) => match harness_store::connect_skill_usage_capped(url, max_events).await {
                 Ok(store) => {
                     info!(url = %url, "local learning store connected (skill usage telemetry on)");
                     Some(store)
@@ -2482,6 +2483,36 @@ fn observability_max_runs() -> Option<usize> {
                         "JARVIS_OBSERVABILITY_MAX_RUNS not a non-negative integer; using default cap"
                     );
                     Some(harness_store::DEFAULT_MAX_OBSERVED_RUNS)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the skill-usage `events/` retention cap from
+/// `JARVIS_LEARNING_MAX_EVENTS`. Returns the value to hand to
+/// [`harness_store::connect_skill_usage_capped`]:
+/// - unset → `Some(DEFAULT_MAX_SKILL_USAGE_EVENTS)` (bounded by default so
+///   the store stops leaking one file per skill `Listed`/`Viewed`/`Used`),
+/// - `0` / `off` / `unlimited` → `None` (pruning disabled),
+/// - a positive integer → `Some(n)`,
+/// - anything unparseable → the default, with a WARN.
+fn learning_max_events() -> Option<usize> {
+    match std::env::var("JARVIS_LEARNING_MAX_EVENTS") {
+        Err(_) => Some(harness_store::DEFAULT_MAX_SKILL_USAGE_EVENTS),
+        Ok(raw) => {
+            let v = raw.trim();
+            if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("unlimited") || v == "0" {
+                return None;
+            }
+            match v.parse::<usize>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    warn!(
+                        value = %raw,
+                        "JARVIS_LEARNING_MAX_EVENTS not a non-negative integer; using default cap"
+                    );
+                    Some(harness_store::DEFAULT_MAX_SKILL_USAGE_EVENTS)
                 }
             }
         }
