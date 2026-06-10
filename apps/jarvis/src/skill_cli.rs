@@ -105,8 +105,11 @@ async fn list(args: ListArgs, cfg: Option<&Config>) -> Result<()> {
             .lines()
             .next()
             .unwrap_or("");
-        let trimmed = if desc.len() > 60 {
-            format!("{}…", &desc[..60])
+        // Truncate by char count, not byte index — skill descriptions in
+        // this repo are Chinese, and a raw byte slice panics when byte 60
+        // splits a multibyte char.
+        let trimmed = if desc.chars().count() > 60 {
+            format!("{}…", desc.chars().take(60).collect::<String>())
         } else {
             desc.to_string()
         };

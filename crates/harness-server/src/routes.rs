@@ -2871,12 +2871,20 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     None => std::future::pending::<Result<harness_learning::MemoryEvent, ()>>().await,
                 }
             } => {
-                // The enum is `#[serde(tag = "type")]` with snake_case
-                // variant names → serialising the event directly
-                // gives us the exact wire shape we want.
-                if let Ok(payload) = serde_json::to_string(&ev) {
-                    let _ = ws_tx.send(WsMessage::Text(payload)).await;
-                }
+                // `MemoryEvent` serialises with bare `#[serde(tag = "type")]`
+                // snake_case variant names (`upserted`/`deleted`), but the
+                // Web UI dispatcher keys on `memory_upserted`/`memory_deleted`
+                // (see domainFrames.ts). Wrap each variant in the documented
+                // envelope so the frame actually matches a handler.
+                let frame = match ev {
+                    harness_learning::MemoryEvent::Upserted { item } => {
+                        json!({ "type": "memory_upserted", "item": item })
+                    }
+                    harness_learning::MemoryEvent::Deleted { id } => {
+                        json!({ "type": "memory_deleted", "id": id })
+                    }
+                };
+                let _ = ws_tx.send(WsMessage::Text(frame.to_string())).await;
             }
             // ---- native HITL tool → server ----
             Some(p) = pending_hitl_rx.recv() => {

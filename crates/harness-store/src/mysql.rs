@@ -118,15 +118,22 @@ async fn migrate(pool: &MySqlPool) -> Result<(), StoreError> {
     .await?
         > 0;
     if !has_workspaces {
-        sqlx::query("ALTER TABLE projects ADD COLUMN workspaces TEXT NOT NULL")
+        // Add the column nullable first: under strict SQL mode (MySQL 8
+        // default STRICT_TRANS_TABLES) an `ADD COLUMN ... TEXT NOT NULL`
+        // with no default aborts on a populated table because TEXT has no
+        // implicit default. So add it nullable, backfill, then tighten to
+        // NOT NULL — this works across MySQL 5.7/8.x regardless of sql_mode.
+        sqlx::query("ALTER TABLE projects ADD COLUMN workspaces TEXT")
             .execute(pool)
             .await?;
-        // Backfill so the NOT NULL constraint is satisfied for legacy rows.
         sqlx::query(
             "UPDATE projects SET workspaces = '[]' WHERE workspaces IS NULL OR workspaces = ''",
         )
         .execute(pool)
         .await?;
+        sqlx::query("ALTER TABLE projects MODIFY COLUMN workspaces TEXT NOT NULL")
+            .execute(pool)
+            .await?;
     }
     let has_columns: bool = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS

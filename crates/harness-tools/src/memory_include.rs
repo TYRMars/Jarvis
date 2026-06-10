@@ -45,7 +45,7 @@ const GIT_TIMEOUT_MS: u64 = 60_000;
 /// `ext::` / `fd::` transports (which execute arbitrary commands and
 /// are honoured by default for a directly-invoked clone) can never
 /// fire from attacker-controlled memory content.
-const GIT_ALLOW_PROTOCOL: &str = "https:ssh:git:file";
+pub(crate) const GIT_ALLOW_PROTOCOL: &str = "https:ssh:git:file";
 
 /// Reject git URLs that could lead to command execution or option
 /// smuggling before they ever reach `git clone`.
