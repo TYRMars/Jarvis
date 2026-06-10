@@ -8,6 +8,7 @@ description = "Smart model routing: classify task difficulty and pick a (provide
 
 [dependencies]
 async-trait.workspace = true
+futures.workspace = true
 harness-core.workspace = true
 tracing.workspace = true
 
