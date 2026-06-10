@@ -1087,6 +1087,34 @@ pub async fn run(
     if let Some(ts) = telemetry {
         state = state.with_telemetry_status(ts);
     }
+
+    // Project connectors (GitHub Issues first). The connector itself is
+    // always registered — accounts are what gate remote calls — and the
+    // secret resolver is the env, read here in the composition root
+    // only. Binding stores live next to the other JSON stores.
+    state = state.with_connector(Arc::new(harness_connectors::GitHubConnector::new()));
+    state = state.with_connector_secrets(Arc::new(|name: &str| std::env::var(name).ok()));
+    match dirs_user_data() {
+        Ok(base) => {
+            let dir = base.join("connectors");
+            match (
+                harness_store::JsonFileConnectorAccountStore::open(&dir),
+                harness_store::JsonFileProjectBindingStore::open(&dir),
+                harness_store::JsonFileRequirementBindingStore::open(&dir),
+            ) {
+                (Ok(accounts), Ok(pbs), Ok(rbs)) => {
+                    info!(dir = %dir.display(), "connector binding stores connected");
+                    state = state.with_connector_stores(
+                        Arc::new(accounts),
+                        Arc::new(pbs),
+                        Arc::new(rbs),
+                    );
+                }
+                _ => warn!(dir = %dir.display(), "connector stores unavailable; /v1/connectors binds will 503"),
+            }
+        }
+        Err(e) => warn!(error = %e, "no data dir; connector stores disabled"),
+    }
     // Project-scoped long-term memory. The auto loop captures
     // `gotcha` rows from failed runs and prepends recent rows into
     // the next run's system prompt. We unconditionally wire an

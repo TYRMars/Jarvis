@@ -109,6 +109,9 @@ pub struct TelemetryStatus {
 /// This keeps Agent construction per-request cheap (just an `Arc`
 /// shuffle) while letting different turns target different
 /// providers within the same process.
+/// Resolves a connector `auth_ref` (secret name) to the secret value.
+pub type ConnectorSecretResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub providers: Arc<ProviderRegistry>,
@@ -400,6 +403,20 @@ pub struct AppState {
     /// `JARVIS_WORKFLOW_MAX_CONCURRENT` via
     /// [`with_workflow_concurrency`](Self::with_workflow_concurrency).
     pub workflow_run_gate: crate::workflow_concurrency::WorkflowRunGate,
+    /// Registered project connectors (GitHub Issues, …). Empty when the
+    /// feature is unwired — `/v1/connectors` then lists nothing.
+    pub connectors: Vec<Arc<dyn harness_connectors::ProjectConnector>>,
+    /// Connector account rows (`auth_ref` names a secret; never a token).
+    pub connector_accounts: Option<Arc<dyn harness_connectors::ConnectorAccountStore>>,
+    /// Project ↔ remote-project bindings.
+    pub connector_project_bindings: Option<Arc<dyn harness_connectors::ProjectBindingStore>>,
+    /// Requirement ↔ remote-issue bindings.
+    pub connector_requirement_bindings:
+        Option<Arc<dyn harness_connectors::RequirementBindingStore>>,
+    /// Resolves a [`harness_connectors::ConnectorAccount::auth_ref`] to
+    /// the actual secret. Injected by the composition root (the only
+    /// layer allowed to read `std::env`); `None` disables remote calls.
+    pub connector_secrets: Option<ConnectorSecretResolver>,
 }
 
 /// Snapshot of the memory + sync configuration the binary
@@ -471,6 +488,11 @@ impl AppState {
             automation_claims: crate::automation_runtime::AutomationClaims::default(),
             workflows: None,
             workflow_run_gate: crate::workflow_concurrency::WorkflowRunGate::default(),
+            connectors: Vec::new(),
+            connector_accounts: None,
+            connector_project_bindings: None,
+            connector_requirement_bindings: None,
+            connector_secrets: None,
         }
     }
 
@@ -536,6 +558,11 @@ impl AppState {
             automation_claims: crate::automation_runtime::AutomationClaims::default(),
             workflows: None,
             workflow_run_gate: crate::workflow_concurrency::WorkflowRunGate::default(),
+            connectors: Vec::new(),
+            connector_accounts: None,
+            connector_project_bindings: None,
+            connector_requirement_bindings: None,
+            connector_secrets: None,
         }
     }
 
@@ -549,6 +576,35 @@ impl AppState {
     /// project halves of the same backend are wired up together.
     pub fn with_project_store(mut self, projects: Arc<dyn ProjectStore>) -> Self {
         self.projects = Some(projects);
+        self
+    }
+
+    /// Register a project connector implementation.
+    pub fn with_connector(
+        mut self,
+        connector: Arc<dyn harness_connectors::ProjectConnector>,
+    ) -> Self {
+        self.connectors.push(connector);
+        self
+    }
+
+    /// Attach the three connector binding stores together (they only
+    /// make sense as a set).
+    pub fn with_connector_stores(
+        mut self,
+        accounts: Arc<dyn harness_connectors::ConnectorAccountStore>,
+        project_bindings: Arc<dyn harness_connectors::ProjectBindingStore>,
+        requirement_bindings: Arc<dyn harness_connectors::RequirementBindingStore>,
+    ) -> Self {
+        self.connector_accounts = Some(accounts);
+        self.connector_project_bindings = Some(project_bindings);
+        self.connector_requirement_bindings = Some(requirement_bindings);
+        self
+    }
+
+    /// Inject the secret resolver used to turn `auth_ref` into a token.
+    pub fn with_connector_secrets(mut self, resolver: ConnectorSecretResolver) -> Self {
+        self.connector_secrets = Some(resolver);
         self
     }
 
