@@ -156,7 +156,7 @@ pub fn snapshot_project_memory(
         let bytes = content.len();
         let content = if bytes > MAX_MANAGED_FILE_BYTES {
             let mut truncated = content;
-            truncated.truncate(MAX_MANAGED_FILE_BYTES);
+            truncate_on_char_boundary(&mut truncated, MAX_MANAGED_FILE_BYTES);
             truncated
                 .push_str("\n\n> WARNING: file truncated while loading memory management view.");
             truncated
@@ -499,10 +499,25 @@ fn append_file_section(out: &mut String, name: &str, content: &str) {
 fn read_limited(path: &Path, max_bytes: usize) -> std::io::Result<String> {
     let mut s = std::fs::read_to_string(path)?;
     if s.len() > max_bytes {
-        s.truncate(max_bytes);
+        truncate_on_char_boundary(&mut s, max_bytes);
         s.push_str("\n\n> WARNING: file truncated while loading project memory.");
     }
     Ok(s)
+}
+
+/// Truncate `s` to at most `max_bytes`, rounding the cut point **down** to the
+/// nearest UTF-8 char boundary. `String::truncate` panics when `max_bytes`
+/// splits a multi-byte char (common in the CJK project-memory files), so we
+/// never hand it an interior index.
+fn truncate_on_char_boundary(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s.truncate(cut);
 }
 
 fn write_atomic(path: &Path, body: &str) -> Result<(), BoxError> {
@@ -597,5 +612,33 @@ mod tests {
         assert!(kanban.contains("Freeze on 2026-05-05"));
         assert!(calendar.contains("2026-05-05"));
         assert!(calendar.contains("2026-05-06"));
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_does_not_panic_on_multibyte() {
+        // Each CJK char is 3 bytes in UTF-8; cap at 7 lands inside the third
+        // char, which would panic under String::truncate.
+        let mut s = "你好世界".to_string();
+        truncate_on_char_boundary(&mut s, 7);
+        assert_eq!(s, "你好");
+        assert!(s.len() <= 7);
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_is_noop_when_within_cap() {
+        let mut s = "短".to_string();
+        truncate_on_char_boundary(&mut s, 1024);
+        assert_eq!(s, "短");
+    }
+
+    #[test]
+    fn read_limited_truncates_cjk_without_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("memory.md");
+        // 12 CJK chars = 36 bytes; cap at 10 falls mid-char.
+        std::fs::write(&path, "一二三四五六七八九十十一").unwrap();
+        let out = read_limited(&path, 10).unwrap();
+        assert!(out.starts_with("一二三"));
+        assert!(out.contains("WARNING: file truncated"));
     }
 }
