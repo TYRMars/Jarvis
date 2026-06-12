@@ -417,6 +417,13 @@ pub struct AppState {
     /// the actual secret. Injected by the composition root (the only
     /// layer allowed to read `std::env`); `None` disables remote calls.
     pub connector_secrets: Option<ConnectorSecretResolver>,
+    /// Process-wide per-requirement write locks. The requirement / todo
+    /// REST handlers hold the lock for a requirement id across their
+    /// whole read-modify-write so concurrent PATCHes to the same row
+    /// can't clobber each other (the lost-update race in issue #121).
+    /// Always present (cheap `Arc` clone); keyed so writes to different
+    /// requirements still run in parallel.
+    pub requirement_locks: crate::requirement_locks::RequirementLocks,
 }
 
 /// Snapshot of the memory + sync configuration the binary
@@ -493,6 +500,7 @@ impl AppState {
             connector_project_bindings: None,
             connector_requirement_bindings: None,
             connector_secrets: None,
+            requirement_locks: crate::requirement_locks::RequirementLocks::default(),
         }
     }
 
@@ -563,6 +571,7 @@ impl AppState {
             connector_project_bindings: None,
             connector_requirement_bindings: None,
             connector_secrets: None,
+            requirement_locks: crate::requirement_locks::RequirementLocks::default(),
         }
     }
 

@@ -56,6 +56,7 @@ mod project_binder;
 mod project_memory;
 mod projects;
 mod provider_registry;
+mod requirement_locks;
 mod requirements_routes;
 mod roadmap_routes;
 mod route_policy;

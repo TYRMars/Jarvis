@@ -440,6 +440,9 @@ async fn update_requirement(
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Serialize with any concurrent writer to this requirement so the
+    // read-modify-write below can't lose a sibling's change (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -571,6 +574,8 @@ async fn approve_requirement(State(state): State<AppState>, Path(id): Path<Strin
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Serialize with any concurrent writer to this requirement (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -629,6 +634,8 @@ async fn reject_requirement(
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Serialize with any concurrent writer to this requirement (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -814,6 +821,8 @@ async fn link_conversation(
     if conv_id.is_empty() {
         return bad_request("`conversation_id` must not be blank");
     }
+    // Serialize with any concurrent writer to this requirement (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -906,6 +915,8 @@ async fn create_requirement_todo(
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Serialize with any concurrent writer to this requirement (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -999,6 +1010,10 @@ async fn update_requirement_todo(
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Hold the per-requirement lock across the whole read-modify-write
+    // so two PATCHes to sibling todos of the same requirement can't
+    // each persist a stale snapshot and drop the other's change (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -1101,6 +1116,8 @@ async fn batch_update_requirement_todos(
         Some(status) => status,
         None => return bad_request(format!("unknown todo status `{}`", body.status)),
     };
+    // Serialize with any concurrent writer to this requirement (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -1163,6 +1180,8 @@ async fn delete_requirement_todo(
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Serialize with any concurrent writer to this requirement (#121).
+    let _req_guard = state.requirement_locks.lock(&id).await;
     let mut item = match store.get(&id).await {
         Ok(Some(item)) => item,
         Ok(None) => {
@@ -1210,6 +1229,9 @@ async fn delete_requirement(State(state): State<AppState>, Path(id): Path<String
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Serialize with any concurrent writer so a delete can't interleave
+    // with an in-flight read-modify-write that would resurrect the row.
+    let _req_guard = state.requirement_locks.lock(&id).await;
     match store.delete(&id).await {
         Ok(true) => Json(json!({ "deleted": true })).into_response(),
         Ok(false) => (
@@ -2539,6 +2561,133 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A [`RequirementStore`] that sleeps inside `get`, widening the
+    /// read-modify-write window so a missing per-requirement lock
+    /// deterministically loses updates. Delegates everything else to an
+    /// inner [`MemoryRequirementStore`].
+    struct SlowGetStore {
+        inner: MemoryRequirementStore,
+        get_delay: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl RequirementStore for SlowGetStore {
+        async fn list(
+            &self,
+            project_id: &str,
+        ) -> Result<Vec<Requirement>, harness_project::store::BoxError> {
+            self.inner.list(project_id).await
+        }
+        async fn get(
+            &self,
+            id: &str,
+        ) -> Result<Option<Requirement>, harness_project::store::BoxError> {
+            let item = self.inner.get(id).await?;
+            tokio::time::sleep(self.get_delay).await;
+            Ok(item)
+        }
+        async fn upsert(
+            &self,
+            item: &Requirement,
+        ) -> Result<(), harness_project::store::BoxError> {
+            self.inner.upsert(item).await
+        }
+        async fn delete(&self, id: &str) -> Result<bool, harness_project::store::BoxError> {
+            self.inner.delete(id).await
+        }
+        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<harness_project::RequirementEvent> {
+            self.inner.subscribe()
+        }
+    }
+
+    /// Regression for #121: firing one concurrent single-todo PATCH per
+    /// todo must persist *every* update, not a last-write-wins subset.
+    /// The store delays `get` so all N handlers would read the same
+    /// initial snapshot without the per-requirement lock; the lock
+    /// serializes them so each writes on top of the previous.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_single_todo_patches_do_not_clobber() {
+        let store: Arc<dyn RequirementStore> = Arc::new(SlowGetStore {
+            inner: MemoryRequirementStore::new(),
+            get_delay: std::time::Duration::from_millis(20),
+        });
+        let state = base_state().with_requirement_store(store);
+        let app = app(state);
+
+        // Seed a requirement with several todos.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/projects/p1/requirements")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"ship","todos":[{"title":"a"},{"title":"b"},{"title":"c"},{"title":"d"},{"title":"e"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let v = read_json(resp).await;
+        let id = v["id"].as_str().unwrap().to_string();
+        let todo_ids: Vec<String> = v["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect();
+
+        // Fan out one PATCH per todo, all in flight at once — the exact
+        // shape that lost updates before the lock.
+        let mut handles = Vec::new();
+        for todo_id in &todo_ids {
+            let app = app.clone();
+            let id = id.clone();
+            let todo_id = todo_id.clone();
+            handles.push(tokio::spawn(async move {
+                let resp = app
+                    .oneshot(
+                        Request::builder()
+                            .method("PATCH")
+                            .uri(format!("/v1/requirements/{id}/todos/{todo_id}"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(r#"{"status":"passed"}"#))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Every todo must be persisted as passed — none clobbered.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/requirements/{id}/todos"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = read_json(resp).await;
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), todo_ids.len());
+        for item in items {
+            assert_eq!(
+                item["status"], "passed",
+                "todo {} was clobbered by a concurrent PATCH",
+                item["id"]
+            );
+        }
     }
 
     #[tokio::test]
