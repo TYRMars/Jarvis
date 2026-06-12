@@ -2822,10 +2822,22 @@ async fn remove_dir_all_if_exists(dir: &Path) -> std::io::Result<()> {
 /// Percent-encode any byte that isn't `[A-Za-z0-9._-]`. UUIDs and
 /// most random ids pass through unchanged; `:` (used by the
 /// `__memory__.summary:` namespace) becomes `%3A`.
+///
+/// `.` is normally kept verbatim, but the whole-string ids `.` and `..`
+/// are an exception: `encode_id` output is used directly as a directory
+/// path component (e.g. `requirements/<encode_id(project_id)>`), so a `.`
+/// component would resolve to the bucket itself and `..` to its parent —
+/// a one-level partition escape. For those two ids every `.` is
+/// percent-escaped (`%2E` / `%2E%2E`) so the result is an inert filename.
+/// The escape still round-trips through `decode_id`.
 pub(crate) fn encode_id(id: &str) -> String {
+    // Whole-string `.`/`..` are the only `.` sequences that act as path
+    // traversal; escaping just those keeps every existing filename (UUIDs,
+    // `__memory__.summary:<hash>`, workspace paths) byte-for-byte stable.
+    let escape_dot = id == "." || id == "..";
     let mut out = String::with_capacity(id.len());
     for b in id.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_') {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_') || (b == b'.' && !escape_dot) {
             out.push(b as char);
         } else {
             use std::fmt::Write;
@@ -3053,6 +3065,25 @@ mod tests {
             let dec = decode_id(&enc).expect("decode");
             assert_eq!(dec, raw, "round trip failed for {raw:?}");
         }
+    }
+
+    #[test]
+    fn encode_id_neutralizes_path_traversal() {
+        // `.`/`..` would otherwise be emitted verbatim and used as a directory
+        // component, escaping the partition (`requirements/..` = base). They
+        // must encode to inert filenames containing no `.` path segment.
+        assert_eq!(encode_id("."), "%2E");
+        assert_eq!(encode_id(".."), "%2E%2E");
+        assert!(!Path::new(&encode_id("..")).components().any(|c| {
+            matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)
+        }));
+        // Still round-trips so callers can recover the original id.
+        for raw in [".", ".."] {
+            assert_eq!(decode_id(&encode_id(raw)).as_deref(), Some(raw));
+        }
+        // Dots elsewhere in an id are untouched — no migration of existing files.
+        assert_eq!(encode_id("v1.2.3"), "v1.2.3");
+        assert_eq!(encode_id("__memory__.summary:abc"), "__memory__.summary%3Aabc");
     }
 
     async fn first_record(store: &JsonFileConversationStore) -> ConversationRecord {
