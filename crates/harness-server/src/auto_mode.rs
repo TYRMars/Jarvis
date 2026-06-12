@@ -1433,6 +1433,8 @@ async fn drive_one_with_prompt(
             }),
         )
         .await;
+        // Tear down the per-run worktree once verification has read it.
+        cleanup_run_worktree(state, &run_store, &workspace, &mut run).await;
         return Ok(());
     }
 
@@ -1591,7 +1593,63 @@ async fn drive_one_with_prompt(
     )
     .await;
 
+    // Tear down the per-run worktree on the terminal path (success /
+    // failure / timeout) once the agent loop and any verification have
+    // finished reading it.
+    cleanup_run_worktree(state, &run_store, &workspace, &mut run).await;
+
     Ok(())
+}
+
+/// Tear down the per-run git worktree minted at the top of
+/// [`drive_one_with_prompt`] (issue #118).
+///
+/// Auto-mode upgrades `off`→`per_run`, so every pickup mints a fresh
+/// `<worktree_root>/<run_id>` checkout — but, unlike the interactive
+/// `DELETE /v1/runs/:id/worktree` route, the loop never removed it. An
+/// unattended loop (default 30s tick) therefore filled the disk with
+/// full checkouts under `.jarvis/worktrees/`. The orphan reaper
+/// (`diagnostics.rs`) couldn't help either: it only reclaims trees
+/// whose run row is *gone*, and persisted auto-runs keep their row.
+///
+/// Mirror the manual route — `git worktree remove --force`, then clear
+/// the `worktree_path` field — and call this on every terminal path.
+/// Best-effort: a removal failure is logged WARN and the row keeps its
+/// `worktree_path` so a later manual cleanup can still reclaim it.
+/// `repo` is the source workspace the worktree was minted from.
+async fn cleanup_run_worktree(
+    state: &AppState,
+    run_store: &Arc<dyn harness_project::RequirementRunStore>,
+    repo: &Path,
+    run: &mut RequirementRun,
+) {
+    let Some(path) = run.worktree_path.clone() else {
+        return;
+    };
+    let Some(root) = state.worktree_root.clone() else {
+        return;
+    };
+    match worktree::remove_worktree(repo, &root, Path::new(&path)).await {
+        Ok(()) => {
+            run.worktree_path = None;
+            run.push_log(
+                RequirementRunLogLevel::Info,
+                "Worktree removed",
+                Some(json!({ "path": path })),
+            );
+            if let Err(e) = run_store.upsert(run).await {
+                warn!(error = %e, run_id = %run.id, "worktree removed on disk but run upsert failed");
+            }
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                run_id = %run.id,
+                path = %path,
+                "auto mode: worktree cleanup failed; leaving for manual reclaim"
+            );
+        }
+    }
 }
 
 /// Drive a requirement bound to a declarative workflow.
@@ -3386,6 +3444,100 @@ Do {{ requirement.title }} in {{ issue.state }}.
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("project workspace verification did not finish within 1s");
+    }
+
+    /// Regression for issue #118: auto-mode minted a fresh
+    /// `<worktree_root>/<run_id>` worktree on every `PerRun` pickup but
+    /// never removed it, so an unattended loop filled the disk. After a
+    /// run reaches a terminal state the worktree must be torn down and
+    /// the run row's `worktree_path` cleared.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn auto_run_removes_per_run_worktree_when_finished() {
+        // A git repo with one commit — a worktree needs a HEAD to
+        // detach from, and a clean checkout to pass the safety gate.
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.invalid"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.path().join("seed.txt"), "hello").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--no-gpg-sign", "-m", "seed"]);
+
+        let wt_root = tempfile::tempdir().unwrap();
+        let state = base_state_with_canned_llm("done");
+        let state = wire_stores(state).with_worktree_config(
+            WorktreeMode::PerRun,
+            Some(wt_root.path().to_path_buf()),
+            false,
+        );
+
+        let proj = Project::new("Worktree Leak", "instructions");
+        state.projects.as_ref().unwrap().save(&proj).await.unwrap();
+        let req = Requirement::new(&proj.id, "do some work");
+        state
+            .requirements
+            .as_ref()
+            .unwrap()
+            .upsert(&req)
+            .await
+            .unwrap();
+
+        drive_one(
+            &state,
+            &req,
+            Some(repo.path().to_path_buf()),
+            DEFAULT_RUN_TIMEOUT_MS,
+        )
+        .await
+        .unwrap();
+
+        let runs = state
+            .requirement_runs
+            .as_ref()
+            .unwrap()
+            .list_for_requirement(&req.id)
+            .await
+            .unwrap();
+        let run = runs
+            .iter()
+            .find(|r| r.status.is_terminal())
+            .expect("a terminal run row");
+        assert_eq!(run.status, RequirementRunStatus::Completed);
+        // Confirm a worktree was actually minted (else the assertions
+        // below are vacuous) and then torn down.
+        assert!(
+            run.logs.iter().any(|l| l.message == "Worktree created"),
+            "expected a worktree to have been created"
+        );
+        assert!(
+            run.logs.iter().any(|l| l.message == "Worktree removed"),
+            "expected the worktree to be removed on the terminal path"
+        );
+        // Field cleared and the on-disk tree gone — nothing left to leak.
+        assert!(
+            run.worktree_path.is_none(),
+            "worktree_path should be cleared after cleanup"
+        );
+        let leftover: Vec<_> = std::fs::read_dir(wt_root.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "worktree root should be empty after cleanup, found {leftover:?}"
+        );
     }
 
     #[tokio::test]
