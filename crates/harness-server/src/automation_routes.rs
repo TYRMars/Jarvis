@@ -221,6 +221,13 @@ fn validate_schedule(schedule: &ScheduleSpec) -> Result<(), &'static str> {
             if *every_seconds == 0 {
                 return Err("schedule.interval.every_seconds must be greater than zero");
             }
+            // Cap the interval at ~10 years. Beyond a sane upper bound the value is
+            // almost certainly a mistake, and very large intervals push the next-run
+            // arithmetic toward the edge of chrono's representable range.
+            const MAX_EVERY_SECONDS: u64 = 60 * 60 * 24 * 366 * 10;
+            if *every_seconds > MAX_EVERY_SECONDS {
+                return Err("schedule.interval.every_seconds is too large (max ~10 years)");
+            }
             if start_at
                 .as_deref()
                 .is_some_and(|value| parse_rfc3339(value).is_none())
@@ -349,6 +356,29 @@ mod tests {
                 prompt: "Run".into(),
                 schedule: ScheduleSpec::Once {
                     run_at: "not-a-date".into(),
+                },
+                status: None,
+                provider: None,
+                model: None,
+                conversation_id: None,
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_oversized_interval() {
+        let state =
+            mk_state().with_automation_store(Arc::new(harness_store::MemoryAutomationStore::new()));
+        let resp = create_automation(
+            State(state),
+            Json(CreateAutomationRequest {
+                title: "Huge".into(),
+                prompt: "Run".into(),
+                schedule: ScheduleSpec::Interval {
+                    every_seconds: u64::MAX,
+                    start_at: None,
                 },
                 status: None,
                 provider: None,

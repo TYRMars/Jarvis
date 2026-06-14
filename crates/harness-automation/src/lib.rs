@@ -179,16 +179,33 @@ impl ScheduleSpec {
                 every_seconds,
                 start_at,
             } => {
-                let seconds = (*every_seconds).max(1);
-                let interval = Duration::seconds(seconds as i64);
-                let mut next = previous_run_at
-                    .map(|t| t + interval)
-                    .or_else(|| start_at.as_deref().and_then(parse_rfc3339))
-                    .unwrap_or(now + interval);
-                while next <= now {
-                    next += interval;
+                // Clamp to a sane positive range before the i64 conversion so a
+                // value above `i64::MAX` can't wrap to a *negative* Duration (which
+                // would otherwise march `next` further into the past forever). The
+                // route validator also caps this, but library code must stay total
+                // even for a value that slipped past it (e.g. a deserialised row).
+                let seconds = i64::try_from((*every_seconds).max(1)).unwrap_or(i64::MAX);
+                // `Duration::seconds` itself panics outside chrono's range, so build
+                // every Duration through the fallible `try_seconds`.
+                let interval = Duration::try_seconds(seconds)?;
+                let base = previous_run_at
+                    .or_else(|| start_at.as_deref().and_then(parse_rfc3339));
+                let Some(base) = base else {
+                    // No anchor (no prior run, no start_at): first fire one interval out.
+                    return now.checked_add_signed(interval);
+                };
+                if base > now {
+                    return Some(base);
                 }
-                Some(next)
+                // Advance to the first tick strictly after `now` with arithmetic
+                // instead of an unbounded loop, and checked math so a far-past
+                // anchor or a huge interval can neither hang nor panic.
+                let elapsed = now.signed_duration_since(base).num_seconds();
+                let steps = elapsed / seconds + 1;
+                let offset = steps
+                    .checked_mul(seconds)
+                    .and_then(Duration::try_seconds)?;
+                base.checked_add_signed(offset)
             }
         }
     }
@@ -247,6 +264,44 @@ mod tests {
         let now = parse_rfc3339("2026-01-01T00:03:30Z").unwrap();
         let next = schedule.next_after(None, now).unwrap();
         assert_eq!(to_rfc3339(next), "2026-01-01T00:04:00.000Z");
+    }
+
+    #[test]
+    fn interval_far_past_start_does_not_hang() {
+        // A 1s interval anchored years in the past must not iterate once per
+        // elapsed second — it should land on the first tick after `now` directly.
+        let schedule = ScheduleSpec::Interval {
+            every_seconds: 1,
+            start_at: Some("2000-01-01T00:00:00Z".into()),
+        };
+        let now = parse_rfc3339("2026-06-14T00:00:00Z").unwrap();
+        let next = schedule.next_after(None, now).unwrap();
+        assert_eq!(to_rfc3339(next), "2026-06-14T00:00:01.000Z");
+    }
+
+    #[test]
+    fn interval_huge_every_seconds_does_not_wrap_or_loop() {
+        // Above i64::MAX the old `as i64` cast wrapped negative and the loop
+        // marched into the past forever. It must now terminate with a future tick.
+        let schedule = ScheduleSpec::Interval {
+            every_seconds: u64::MAX,
+            start_at: Some("2026-01-01T00:00:00Z".into()),
+        };
+        let now = parse_rfc3339("2026-06-14T00:00:00Z").unwrap();
+        // Clamped to i64::MAX seconds → arithmetic overflows the chrono range and
+        // returns None rather than panicking or hanging.
+        assert!(schedule.next_after(None, now).is_none());
+    }
+
+    #[test]
+    fn interval_no_anchor_fires_one_interval_out() {
+        let schedule = ScheduleSpec::Interval {
+            every_seconds: 60,
+            start_at: None,
+        };
+        let now = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        let next = schedule.next_after(None, now).unwrap();
+        assert_eq!(to_rfc3339(next), "2026-01-01T00:01:00.000Z");
     }
 
     #[test]
