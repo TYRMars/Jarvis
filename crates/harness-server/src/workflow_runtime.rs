@@ -411,14 +411,19 @@ impl Ctx {
         })
         .await;
 
+        // Persist the final conversation in every terminal branch — success,
+        // error, and timeout. The error/timeout step results still attach
+        // `conversation_id`, so without this re-save the failure drill-down
+        // would show only the initial system + user envelope and discard all
+        // the tool calls / assistant turns that led up to the failure.
+        if let Some(store) = self.state.store.as_ref() {
+            if let Err(e) = store.save_envelope(&conversation_id, &conv_for_run, &metadata).await {
+                warn!(error = %e, "workflow: re-save conversation failed");
+            }
+        }
+
         match result {
             Ok(Ok(_)) => {
-                if let Some(store) = self.state.store.as_ref() {
-                    if let Err(e) = store.save_envelope(&conversation_id, &conv_for_run, &metadata).await
-                    {
-                        warn!(error = %e, "workflow: re-save conversation failed");
-                    }
-                }
                 let output = last_assistant_text(&conv_for_run);
                 let mut acc = ExecResult {
                     last_output: Some(output.clone()),
@@ -766,5 +771,136 @@ mod tests {
         assert_eq!(reaped, 0);
         let got = store.get_run(&run_id).await.unwrap().unwrap();
         assert_eq!(got.status, WorkflowRunStatus::Succeeded);
+    }
+
+    /// Two-step LLM: first reply asks for one tool call, the second errors —
+    /// modelling an agent that fails *after* producing tool calls / assistant
+    /// turns.
+    struct FailAfterToolLlm {
+        iter: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl harness_core::LlmProvider for FailAfterToolLlm {
+        async fn complete(
+            &self,
+            _: harness_core::ChatRequest,
+        ) -> Result<harness_core::ChatResponse, harness_core::Error> {
+            use std::sync::atomic::Ordering;
+            if self.iter.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(harness_core::ChatResponse {
+                    message: Message::Assistant {
+                        content: None,
+                        tool_calls: vec![harness_core::ToolCall {
+                            id: "call_1".into(),
+                            name: "noop".into(),
+                            arguments: serde_json::json!({}),
+                        }],
+                        reasoning_content: None,
+                        cache: None,
+                    },
+                    finish_reason: harness_core::FinishReason::ToolCalls,
+                    response_id: None,
+                    usage: None,
+                })
+            } else {
+                // The assistant tool-call turn + tool result are already in the
+                // conversation by now; this error drives the `Ok(Err(_))` branch.
+                Err(harness_core::Error::Provider("boom".into()))
+            }
+        }
+    }
+
+    struct NoopTool;
+
+    #[async_trait::async_trait]
+    impl harness_core::Tool for NoopTool {
+        fn name(&self) -> &str {
+            "noop"
+        }
+        fn description(&self) -> &str {
+            "no-op test tool"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn invoke(
+            &self,
+            _: serde_json::Value,
+        ) -> Result<String, harness_core::BoxError> {
+            Ok("noop-result".into())
+        }
+    }
+
+    /// Regression (issue #131): when the agent loop fails, the partial
+    /// conversation — the tool calls / assistant turns produced before the
+    /// failure — must be re-saved under the step's `conversation_id`, not left
+    /// as the bare initial system + user envelope. Otherwise the failure
+    /// drill-down is empty exactly when it's most useful.
+    #[tokio::test]
+    async fn error_path_resaves_partial_conversation() {
+        use harness_core::ConversationStore;
+        use std::sync::atomic::AtomicUsize;
+
+        let mut registry = harness_core::ToolRegistry::new();
+        registry.register(NoopTool);
+        let cfg = harness_core::AgentConfig::new("stub-model").with_tools(registry);
+        let agent = Arc::new(harness_core::Agent::new(
+            Arc::new(FailAfterToolLlm {
+                iter: AtomicUsize::new(0),
+            }) as _,
+            cfg,
+        ));
+        let store = Arc::new(harness_store::MemoryConversationStore::new());
+        let state = AppState::new(agent).with_store(store.clone());
+
+        let ctx = Ctx {
+            state,
+            workspace: std::env::temp_dir(),
+            base_system: "sys".into(),
+            project_id: None,
+            timeout_ms: 30_000,
+            sem: Arc::new(Semaphore::new(1)),
+        };
+
+        let step = WorkflowStep::new(
+            "s",
+            WorkflowStepKind::Agent {
+                prompt: "go".into(),
+                subagent: None,
+                model: None,
+                output_key: None,
+            },
+        );
+
+        let result = ctx
+            .exec_agent(&step, "go", None, None, None, None, &Outputs::new())
+            .await;
+
+        // The step failed but still references a conversation id.
+        assert!(result.failed);
+        let cid = result.results[0]
+            .conversation_id
+            .clone()
+            .expect("failed step keeps its conversation id");
+
+        // The persisted envelope must include the assistant tool-call turn and
+        // the tool result produced before the failure — not just system + user.
+        let conv = store
+            .load(&cid)
+            .await
+            .unwrap()
+            .expect("conversation persisted");
+        assert!(
+            conv.messages.len() > 2,
+            "partial conversation should be re-saved on the error path, got {} messages",
+            conv.messages.len()
+        );
+        assert!(
+            conv.messages
+                .iter()
+                .any(|m| matches!(m, Message::Tool { .. })),
+            "tool result produced before the failure must be persisted"
+        );
     }
 }
