@@ -420,15 +420,22 @@ impl Ctx {
                     }
                 }
                 let output = last_assistant_text(&conv_for_run);
+                // An agent step can succeed yet end on a tool call (or
+                // empty/whitespace content), leaving `output` blank. Threading
+                // `Some("")` downstream would clobber a real prior `prev` in
+                // `exec_sequential` and record an empty `output_key` binding,
+                // silently blanking `{{ prev }}` / `{{ outputs.* }}` for later
+                // steps. `thread_agent_output` drops empty outputs so an empty
+                // handoff can't erase a real value.
+                let (last_output, binding) =
+                    thread_agent_output(&output, output_key, &step.name);
                 let mut acc = ExecResult {
-                    last_output: Some(output.clone()),
+                    last_output,
                     ..Default::default()
                 };
                 acc.results
-                    .push(WorkflowStepResult::ok(step, Some(conversation_id), output.clone()));
-                if let Some(key) = output_key {
-                    acc.produced.push((key.to_string(), output));
-                }
+                    .push(WorkflowStepResult::ok(step, Some(conversation_id), output));
+                acc.produced.extend(binding);
                 acc
             }
             Ok(Err(e)) => single(WorkflowStepResult::failed(
@@ -593,6 +600,33 @@ fn last_assistant_text(conv: &Conversation) -> String {
         .unwrap_or_default()
 }
 
+/// Decide how a successful agent step's `output` flows downstream.
+///
+/// Returns the value to thread as `{{ prev }}` and the optional
+/// `output_key` binding. An empty `output` (a step that ended on a tool
+/// call, or produced only whitespace) is dropped from both so it can't
+/// blank out a real prior `prev` or record an empty `outputs.*` entry —
+/// the silent data loss described in the workflow handoff bug. A dropped
+/// `output_key` binding is logged so the operator can see the gap.
+fn thread_agent_output(
+    output: &str,
+    output_key: Option<&str>,
+    step_name: &str,
+) -> (Option<String>, Option<(String, String)>) {
+    if output.is_empty() {
+        if let Some(key) = output_key {
+            warn!(
+                step = %step_name,
+                output_key = %key,
+                "workflow: agent step produced empty output; skipping output_key binding"
+            );
+        }
+        return (None, None);
+    }
+    let binding = output_key.map(|key| (key.to_string(), output.to_string()));
+    (Some(output.to_string()), binding)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,6 +713,45 @@ mod tests {
         let r = single(WorkflowStepResult::failed(&step, None, "boom".into()));
         assert!(r.failed);
         assert_eq!(r.results.len(), 1);
+    }
+
+    #[test]
+    fn thread_agent_output_threads_non_empty() {
+        let (prev, binding) = thread_agent_output("FINDINGS", Some("research"), "step");
+        assert_eq!(prev.as_deref(), Some("FINDINGS"));
+        assert_eq!(
+            binding,
+            Some(("research".to_string(), "FINDINGS".to_string()))
+        );
+    }
+
+    #[test]
+    fn thread_agent_output_drops_empty_so_prev_survives() {
+        // An empty output must not thread downstream or record a binding —
+        // otherwise it clobbers a real prior `prev` / `outputs.*` value.
+        let (prev, binding) = thread_agent_output("", Some("research"), "step");
+        assert_eq!(prev, None);
+        assert_eq!(binding, None);
+    }
+
+    #[test]
+    fn thread_agent_output_empty_without_key_is_noop() {
+        let (prev, binding) = thread_agent_output("", None, "step");
+        assert_eq!(prev, None);
+        assert_eq!(binding, None);
+    }
+
+    #[test]
+    fn exec_result_threading_keeps_prev_across_empty_step() {
+        // Mirror `exec_sequential`'s threading: an empty middle step yields
+        // `last_output: None`, so the prior real `prev` is preserved for the
+        // step that follows.
+        let mut prev = Some("REAL".to_string());
+        let (mid, _) = thread_agent_output("", None, "middle");
+        if mid.is_some() {
+            prev = mid;
+        }
+        assert_eq!(prev.as_deref(), Some("REAL"));
     }
 
     struct ReaperStubLlm;
