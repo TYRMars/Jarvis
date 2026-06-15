@@ -1,0 +1,556 @@
+{
+  "results": {
+    "initialize": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {
+          "tools": {}
+        },
+        "serverInfo": {
+          "name": "rmcp",
+          "version": "1.5.0"
+        },
+        "instructions": "Jarvis harness exposing its local ToolRegistry over MCP."
+      }
+    },
+    "tools_list": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "tools": [
+          {
+            "name": "ask.text",
+            "description": "Ask the human operator a text-based question. Use when you need missing information, a confirmation, or a choice instead of guessing.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "description": "Optional context, proposed action, or question details.",
+                  "type": "string"
+                },
+                "default_value": {
+                  "description": "Optional prefilled text or default choice value.",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "How the text prompt should be rendered. Defaults to input.",
+                  "enum": [
+                    "input",
+                    "confirm",
+                    "choice",
+                    "review"
+                  ],
+                  "type": "string"
+                },
+                "multiline": {
+                  "description": "For kind=input, whether a multiline editor is preferred. Defaults to true.",
+                  "type": "boolean"
+                },
+                "options": {
+                  "description": "Required for kind=choice. Each string is used as both label and value.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "description": "Short prompt title.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "code.grep",
+            "description": "Search files under the tool root for lines matching a regex. Respects .gitignore / .ignore / hidden-file filters. Optional `path` (relative subdir) and `glob` (e.g. `*.rs`) narrow the search. Returns `path:lineno: line` triples, capped by `max_results` and total bytes. Lines longer than 240 chars are truncated.",
+            "inputSchema": {
+              "properties": {
+                "case_insensitive": {
+                  "description": "Case-insensitive match. Defaults to false.",
+                  "type": "boolean"
+                },
+                "glob": {
+                  "description": "Optional gitignore-style glob, e.g. `*.rs` or `src/**/*.ts`.",
+                  "type": "string"
+                },
+                "max_results": {
+                  "description": "Cap on number of matching lines returned.",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "path": {
+                  "description": "Optional subdirectory under the root.",
+                  "type": "string"
+                },
+                "pattern": {
+                  "description": "Rust-flavoured regex (https://docs.rs/regex).",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "echo",
+            "description": "Echo the `text` argument back verbatim. Useful for testing the tool loop.",
+            "inputSchema": {
+              "properties": {
+                "text": {
+                  "description": "Text to echo.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "exit_plan",
+            "description": "End Plan Mode by submitting your proposed plan to the user. Pass the full plan as `plan` (markdown is fine \u2014 bullet steps, file paths, expected diffs). The agent's turn stops immediately after this call; the user reviews the plan and either accepts (choosing the next mode \u2014 ask / accept-edits / auto) or asks you to refine. **Only available in Plan Mode.**",
+            "inputSchema": {
+              "properties": {
+                "plan": {
+                  "description": "The complete plan you want the user to review. Markdown formatting recommended.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "plan"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "fs.edit",
+            "description": "Replace `old_string` with `new_string` in a file under the tool root. By default `old_string` must occur exactly once; pass `replace_all = true` to replace every occurrence.",
+            "inputSchema": {
+              "properties": {
+                "new_string": {
+                  "description": "Replacement text.",
+                  "type": "string"
+                },
+                "old_string": {
+                  "description": "Exact text to replace.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Relative path under the root.",
+                  "type": "string"
+                },
+                "replace_all": {
+                  "description": "Replace every occurrence instead of requiring uniqueness. Defaults to false.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "old_string",
+                "new_string"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "fs.find",
+            "description": "Find files under the tool root whose path matches a gitignore-style glob (e.g. `**/*.rs` or `src/**/*.ts`). Respects .gitignore / .ignore / hidden-file filters. Optional `path` (relative subdir) narrows the search. Returns one relative file path per line, capped by `max_results`.",
+            "inputSchema": {
+              "properties": {
+                "glob": {
+                  "description": "Gitignore-style glob, e.g. `**/*.rs` or `src/**/*.ts`.",
+                  "type": "string"
+                },
+                "max_results": {
+                  "description": "Cap on number of file paths returned.",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "path": {
+                  "description": "Optional subdirectory under the root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "glob"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "fs.list",
+            "description": "List entries in a directory under the tool root. Returns a JSON array of {name, kind: 'file'|'dir'|'other'} objects.",
+            "inputSchema": {
+              "properties": {
+                "path": {
+                  "description": "Relative directory path under the root. Defaults to the root itself.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "fs.read",
+            "description": "Read a UTF-8 text file located under the tool's root directory. `path` is relative; `..` and absolute paths are rejected. Files larger than the configured byte limit are truncated.",
+            "inputSchema": {
+              "properties": {
+                "path": {
+                  "description": "Relative path under the root.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "git.diff",
+            "description": "Show diffs in the repository at the tool root. By default returns the unstaged worktree diff. Set `staged: true` for the index diff. Provide `from` (and optionally `to`) to diff between revisions (`from..to`, or `from` alone meaning `from..HEAD`). Optional `path` narrows the diff to a single file or directory.",
+            "inputSchema": {
+              "properties": {
+                "from": {
+                  "description": "Base revision (sha, branch, or tag). When set, diffs `from..to` (or `from..HEAD` if `to` omitted).",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Optional path to scope the diff to (relative to the repo root).",
+                  "type": "string"
+                },
+                "staged": {
+                  "description": "If true, show the staged (index) diff. Mutually exclusive with `from`/`to`.",
+                  "type": "boolean"
+                },
+                "stat_only": {
+                  "description": "If true, return `--stat` summary instead of the full patch.",
+                  "type": "boolean"
+                },
+                "to": {
+                  "description": "Target revision. Only used when `from` is set.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "git.log",
+            "description": "Recent commit history of the repo at the tool root. Returns one commit per line in `<short-sha> <subject>` form by default. Set `format: \"full\"` for author + date + body. Optional `limit` (default 20, hard cap 200), `revision` (branch / sha / range), and `path` (file or directory) narrow the result.",
+            "inputSchema": {
+              "properties": {
+                "format": {
+                  "description": "`short` (default): one-line per commit. `full`: include author/date/body.",
+                  "enum": [
+                    "short",
+                    "full"
+                  ],
+                  "type": "string"
+                },
+                "limit": {
+                  "description": "Number of commits to return. Default 20.",
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "path": {
+                  "description": "Optional path to filter commits by (file or directory).",
+                  "type": "string"
+                },
+                "revision": {
+                  "description": "Branch, sha, or range to walk (e.g. `main`, `abc123..HEAD`).",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "git.show",
+            "description": "Show a single commit (metadata + patch) by sha or ref. Set `metadata_only: true` to skip the diff and return only author / date / subject / body. Optional `path` scopes the diff to a single file.",
+            "inputSchema": {
+              "properties": {
+                "metadata_only": {
+                  "description": "If true, omit the patch body.",
+                  "type": "boolean"
+                },
+                "path": {
+                  "description": "Optional path to scope the diff to.",
+                  "type": "string"
+                },
+                "revision": {
+                  "description": "Commit sha, branch tip, tag, or `HEAD~N`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "revision"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "git.status",
+            "description": "Show working-tree status of the repository at the tool root. Uses `git status --porcelain=v1 --branch` so output is stable and compact: each changed file appears on its own line prefixed with a two-letter index/worktree status code.",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            }
+          },
+          {
+            "name": "harness.health",
+            "description": "Return Jarvis harness health as JSON for MCP clients. Includes capability scores, signal confidence, observed tool/SubAgent health, recent failure evidence, and concrete optimisation actions. Read-only.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "include_evidence": {
+                  "description": "Include recent failed eval/run/tool examples. Defaults to true.",
+                  "type": "boolean"
+                },
+                "limit": {
+                  "description": "Maximum rows to read per local store. Defaults to 2000.",
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "http.fetch",
+            "description": "Fetch an HTTP(S) URL. Returns status, response headers, and body. Supports GET and POST. Body is truncated if very large.",
+            "inputSchema": {
+              "properties": {
+                "body": {
+                  "description": "Optional request body (POST only).",
+                  "type": "string"
+                },
+                "headers": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Optional request headers.",
+                  "type": "object"
+                },
+                "method": {
+                  "description": "HTTP method. Defaults to GET.",
+                  "enum": [
+                    "GET",
+                    "POST"
+                  ],
+                  "type": "string"
+                },
+                "url": {
+                  "description": "Absolute http(s) URL.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "plan.update",
+            "description": "Publish the agent's current plan as a structured checklist. Each call REPLACES the previous plan snapshot \u2014 send every step you want the user to see, not just the changed ones. Use `id` (short kebab-case) to identify steps, `title` for the headline, and `status` \u2208 {pending, in_progress, completed, cancelled}. Optional `note` is a one-line annotation (e.g. \"blocked: missing fixture\").",
+            "inputSchema": {
+              "properties": {
+                "items": {
+                  "items": {
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "pending",
+                          "in_progress",
+                          "completed",
+                          "cancelled"
+                        ],
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "status"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "items"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "project.checks",
+            "description": "Suggest project-appropriate test / lint / build commands based on the manifests present in the workspace. Read-only \u2014 returns a JSON list of `{manifest, kind, command, why}` entries. Does NOT execute anything; pair with `shell.exec` (approval-gated) to actually run a suggested command.",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            }
+          },
+          {
+            "name": "shell.exec",
+            "description": "Run a shell command (`sh -c` on unix, `cmd /C` on windows). `cwd` is relative to the tool root; absolute paths and `..` are rejected. Returns exit code, stdout, and stderr (each truncated). Killed after `timeout_ms` (default 30000).",
+            "inputSchema": {
+              "properties": {
+                "command": {
+                  "description": "Shell command line passed to `sh -c` / `cmd /C`.",
+                  "type": "string"
+                },
+                "cwd": {
+                  "description": "Optional working directory, relative to the tool root.",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "description": "Timeout in milliseconds. Defaults to 30000.",
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "name": "time.now",
+            "description": "Returns the current UTC time as {unix: <seconds>, iso: <RFC3339>}.",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            }
+          },
+          {
+            "name": "triage.scan_candidates",
+            "description": "Surface candidate follow-up requirements from passive workspace signals. v1.0 source: `todo_comments` (TODO / FIXME / XXX / HACK markers in source files). Returns a list of `{title, description, source, path, line}` rows; the agent then decides which to commit into the Triage queue via `requirement.create(triage_state=\"proposed_by_scan\")`. Read-only \u2014 does NOT itself write requirements. Optional `path` narrows the scan to a subdirectory; `limit` caps the result count (default 50, max 200).",
+            "inputSchema": {
+              "properties": {
+                "limit": {
+                  "description": "Cap on candidates returned (default 50, max 200).",
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "path": {
+                  "description": "Optional subdirectory under the workspace to scan. Sandboxed \u2014 absolute paths and `..` rejected.",
+                  "type": "string"
+                },
+                "sources": {
+                  "description": "Which signal sources to include. Defaults to all known sources. Unknown source names are silently ignored so a future build adding a source doesn't break older callers.",
+                  "items": {
+                    "enum": [
+                      "todo_comments"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "name": "workspace.context",
+            "description": "Compact JSON snapshot of the current workspace: root path, VCS state (branch / dirty / HEAD when git), agent instruction files (AGENTS.md / CLAUDE.md / README.md), package manifests (Cargo.toml / package.json / pyproject.toml / go.mod / \u2026), and a shallow top-level directory listing. Read-only, no source file contents \u2014 call `fs.read` for those.",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            }
+          }
+        ]
+      }
+    },
+    "workspace.context": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"branch\": \"feat/chat_spec\",\n  \"dirty\": true,\n  \"head\": \"c2e3926\",\n  \"instructions\": [\n    \"AGENTS.md\"\n  ],\n  \"manifest\": [],\n  \"root\": \"/Users/zhangjianan/Documents/GitHub/Jarvis/output/jarvis-auto-test/servlet-fixture\",\n  \"tools_root_top_level\": [\n    \"AGENTS.md\",\n    \"src\"\n  ],\n  \"vcs\": \"git\"\n}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    "triage.scan_candidates": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"candidates\":[{\"description\":\"Source: `AGENTS.md:9`\\n\\n```\\n`\\n```\",\"line\":9,\"path\":\"AGENTS.md\",\"source\":\"todo_comment\",\"title\":\"TODO: `\"},{\"description\":\"Source: `src/main/java/com/example/servlet/LoginServlet.java:21`\\n\\n```\\nmarker so triage.scan_candidates surfaces a candidate\\n```\",\"line\":21,\"path\":\"src/main/java/com/example/servlet/LoginServlet.java\",\"source\":\"todo_comment\",\"title\":\"TODO: marker so triage.scan_candidates surfaces a candidate\"},{\"description\":\"Source: `src/main/java/com/example/servlet/LoginServlet.java:26`\\n\\n```\\nhardcoded secret\\n```\",\"line\":26,\"path\":\"src/main/java/com/example/servlet/LoginServlet.java\",\"source\":\"todo_comment\",\"title\":\"FIXME: hardcoded secret\"},{\"description\":\"Source: `src/main/java/com/example/servlet/LoginServlet.java:34`\\n\\n```\\nadd input validation before reaching the DB\\n```\",\"line\":34,\"path\":\"src/main/java/com/example/servlet/LoginServlet.java\",\"source\":\"todo_comment\",\"title\":\"TODO: add input validation before reaching the DB\"}],\"count\":4,\"sources\":[\"todo_comments\"]}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    "code.grep": {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "AGENTS.md:9: 1. `triage.scan_candidates` walks the source tree and surfaces the `TODO`\nAGENTS.md:28: | `srv-secret-leak`  | DB password hardcoded in source           | `LoginServlet.java:18`        | `grep -RE 'hunter2'` (none) |\nAGENTS.md:29: | `srv-resource-leak`| `Connection/Statement/ResultSet` not closed| `LoginServlet.java:31-48`    | `mvn spotbugs:check`     |\nsrc/main/java/com/example/servlet/LoginServlet.java:7: import java.sql.Statement;\nsrc/main/java/com/example/servlet/LoginServlet.java:17: //   - SQL injection (string concat into Statement)\nsrc/main/java/com/example/servlet/LoginServlet.java:20: //   - Resources not closed (Connection / Statement / ResultSet)\nsrc/main/java/com/example/servlet/LoginServlet.java:21: //   - TODO marker so triage.scan_candidates surfaces a candidate\nsrc/main/java/com/example/servlet/LoginServlet.java:26:     private static final String DB_PASS = \"hunter2\";  // FIXME: hardcoded secret\nsrc/main/java/com/example/servlet/LoginServlet.java:34:         // TODO: add input validation before reaching the DB\nsrc/main/java/com/example/servlet/LoginServlet.java:37:             Statement st = conn.createStatement();\n"
+          }
+        ],
+        "isError": false
+      }
+    },
+    "project.checks": {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"suggestions\": []\n}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    "harness.health": {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"actions\": [\n    {\n      \"key\": \"stabilize_delivery_gate\",\n      \"metric\": \"completed 0/terminal 0\",\n      \"next_steps\": [\n        \"\u4e3a\u5931\u8d25\u6700\u591a\u7684 RequirementRun \u8865\u660e\u786e\u9a8c\u6536\u6761\u4ef6\",\n        \"\u628a verification failed/timeout \u7684\u9519\u8bef\u6587\u672c\u5f52\u7c7b\",\n        \"\u65b0\u589e regression eval \u8986\u76d6\u5df2\u4fee\u590d\u5931\u8d25\"\n      ],\n      \"priority\": 1,\n      \"title\": \"\u4f18\u5148\u7a33\u5b9a\u4ea4\u4ed8\u95ed\u73af\",\n      \"tone\": \"danger\",\n      \"why\": \"\u4ea4\u4ed8\u5206\u4f4e\u65f6\uff0c\u65b0\u589e\u80fd\u529b\u4f1a\u653e\u5927\u4e0d\u786e\u5b9a\u6027\u3002\u5148\u8ba9 run \u80fd\u5b8c\u6210\u3001\u9a8c\u8bc1\u80fd\u901a\u8fc7\u3001\u5931\u8d25\u80fd\u5f52\u56e0\u3002\"\n    },\n    {\n      \"key\": \"reduce_timeout_and_iteration_failures\",\n      \"metric\": \"timeout_like 0, max_iteration_like 0\",\n      \"next_steps\": [\n        \"\u628a\u957f\u4efb\u52a1\u62c6\u6210\u53ef\u9a8c\u8bc1\u7684\u5b50 Requirement\",\n        \"\u4e3a\u81ea\u52a8\u8c03\u5ea6\u589e\u52a0 max-iteration \u524d\u7684\u4e2d\u95f4\u4fdd\u5b58\u70b9\",\n        \"\u5ba1\u8ba1\u8017\u65f6\u6700\u9ad8\u7684 agent/tool/subagent span\"\n      ],\n      \"priority\": 2,\n      \"title\": \"\u6536\u655b\u89c4\u5212\u6267\u884c\u5931\u8d25\",\n      \"tone\": \"warn\",\n      \"why\": \"timeout/max-iteration \u901a\u5e38\u8bf4\u660e\u62c6\u89e3\u7c92\u5ea6\u3001\u505c\u6b62\u6761\u4ef6\u6216\u5de5\u5177\u7b49\u5f85\u7b56\u7565\u4e0d\u7a33\u5b9a\u3002\"\n    },\n    {\n      \"key\": \"tune_tools_and_subagents\",\n      \"metric\": \"tools 5, subagents 0\",\n      \"next_steps\": [\n        \"\u4fee\u590d\u9519\u8bef\u6700\u591a\u7684 tool schema/timeout/recoverable error text\",\n        \"\u4e3a Claude Code/Codex delegation \u52a0 smoke eval\",\n        \"\u8bb0\u5f55\u6bcf\u6b21 SubAgent \u7684\u8f93\u5165\u76ee\u6807\u3001\u9000\u51fa\u539f\u56e0\u548c\u4ea7\u7269\u8bc1\u636e\"\n      ],\n      \"priority\": 3,\n      \"title\": \"\u4f18\u5316\u5de5\u5177\u4e0e SubAgent \u8c03\u7528\",\n      \"tone\": \"warn\",\n      \"why\": \"\u5de5\u5177\u548c SubAgent \u662f harness \u653e\u5927\u80fd\u529b\u7684\u4e3b\u8981\u8def\u5f84\uff0c\u5931\u8d25\u7387\u6216\u4e0d\u53ef\u89c1\u4f1a\u76f4\u63a5\u5f71\u54cd\u65b9\u5411\u5224\u65ad\u3002\"\n    },\n    {\n      \"key\": \"sharpen_task_acceptance\",\n      \"metric\": \"capability eval cases 0\",\n      \"next_steps\": [\n        \"\u65b0\u589e ambiguous/constraint/acceptance \u7c7b capability eval\",\n        \"\u628a\u7528\u6237\u9700\u6c42\u62c6\u6210 objective\u3001constraints\u3001acceptance \u4e09\u6bb5\u8bb0\u5f55\",\n        \"\u7528\u771f\u5b9e\u5931\u8d25\u6848\u4f8b\u751f\u6210\u6700\u5c0f\u590d\u73b0 eval\"\n      ],\n      \"priority\": 4,\n      \"title\": \"\u5f3a\u5316\u4efb\u52a1\u7406\u89e3\u4e0e\u9a8c\u6536\u8868\u8fbe\",\n      \"tone\": \"warn\",\n      \"why\": \"\u7406\u89e3\u529b\u4e0d\u8db3\u65f6\uff0c\u540e\u7eed\u89c4\u5212\u548c\u5de5\u5177\u8c03\u7528\u5373\u4f7f\u6210\u529f\u4e5f\u53ef\u80fd\u4ea4\u4ed8\u9519\u76ee\u6807\u3002\"\n    },\n    {\n      \"key\": \"fill_signal_gaps\",\n      \"metric\": \"sample_count 5\",\n      \"next_steps\": [\n        \"\u4fdd\u6301 JARVIS_OBSERVABILITY_STORE_URL \u4e0e JARVIS_EVAL_STORE_URL \u5f00\u542f\",\n        \"\u8dd1\u4e00\u7ec4\u8986\u76d6\u81ea\u52a8\u8c03\u5ea6\u3001\u5de5\u5177\u8c03\u7528\u3001SubAgent \u59d4\u6d3e\u7684\u771f\u5b9e\u6848\u4f8b\",\n        \"\u628a\u6700\u8fd1\u5931\u8d25 run \u8f6c\u6210 eval baseline\"\n      ],\n      \"priority\": 5,\n      \"title\": \"\u8865\u9f50\u89c2\u6d4b\u6837\u672c\",\n      \"tone\": \"neutral\",\n      \"why\": \"\u6837\u672c\u4e0d\u8db3\u4f1a\u8ba9\u4f18\u5316\u65b9\u5411\u504f\u5411\u4e2a\u6848\uff1b\u81f3\u5c11\u9700\u8981 run\u3001tool\u3001SubAgent\u3001eval \u56db\u7c7b\u4fe1\u53f7\u3002\"\n    }\n  ],\n  \"confidence\": 0.16305384988110813,\n  \"dimensions\": [\n    {\n      \"confidence\": 0.2347975438287957,\n      \"drivers\": [\n        {\n          \"detail\": \"Repeatable eval cases targeting task comprehension\",\n          \"key\": \"capability_eval_pass_rate\",\n          \"label\": \"Capability eval pass rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.4\n        },\n        {\n          \"detail\": \"Requirement runs whose verification checks passed\",\n          \"key\": \"verification_pass_rate\",\n          \"label\": \"Verification pass rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.25\n        },\n        {\n          \"detail\": \"Terminal requirement runs that reached completed\",\n          \"key\": \"completion_rate\",\n          \"label\": \"Completion rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.2\n        },\n        {\n          \"detail\": \"Eval cases not classified as instruction, constraint, or acceptance misses\",\n          \"key\": \"misunderstanding_free_rate\",\n          \"label\": \"Misunderstanding-free rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.15\n        }\n      ],\n      \"key\": \"task_understanding\",\n      \"label\": \"Task understanding\",\n      \"score\": 50,\n      \"summary\": \"Goal, constraints, and acceptance criteria comprehension\"\n    },\n    {\n      \"confidence\": 0.07826584794293188,\n      \"drivers\": [\n        {\n          \"detail\": \"Runs that leave pending/running and settle into a terminal state\",\n          \"key\": \"terminal_rate\",\n          \"label\": \"Terminal-state rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.25\n        },\n        {\n          \"detail\": \"Terminal requirement runs that completed successfully\",\n          \"key\": \"completion_rate\",\n          \"label\": \"Execution completion rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.3\n        },\n        {\n          \"detail\": \"Runs that did not hit timeout or max-iteration boundaries\",\n          \"key\": \"timeout_free_rate\",\n          \"label\": \"Timeout/max-iteration avoidance\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.25\n        },\n        {\n          \"detail\": \"Observed Jarvis agent runs marked successful\",\n          \"key\": \"agent_success_rate\",\n          \"label\": \"Observed agent success\",\n          \"score\": 80,\n          \"value\": 0.8,\n          \"weight\": 0.2\n        }\n      ],\n      \"key\": \"planning_execution\",\n      \"label\": \"Planning execution\",\n      \"score\": 56,\n      \"summary\": \"Decomposition, sequencing, and terminal-state discipline\"\n    },\n    {\n      \"confidence\": 0.2347975438287957,\n      \"drivers\": [\n        {\n          \"detail\": \"Observed tool calls that completed without error\",\n          \"key\": \"tool_success_rate\",\n          \"label\": \"Tool success rate\",\n          \"score\": 80,\n          \"value\": 0.8,\n          \"weight\": 0.35\n        },\n        {\n          \"detail\": \"Delegated worker runs that completed successfully\",\n          \"key\": \"subagent_success_rate\",\n          \"label\": \"SubAgent success rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.25\n        },\n        {\n          \"detail\": \"Agent run success after using available capabilities\",\n          \"key\": \"agent_recovery_rate\",\n          \"label\": \"Agent recovery proxy\",\n          \"score\": 80,\n          \"value\": 0.8,\n          \"weight\": 0.2\n        },\n        {\n          \"detail\": \"P95 latency converted into an efficiency score\",\n          \"key\": \"latency_efficiency\",\n          \"label\": \"Latency efficiency\",\n          \"score\": 100,\n          \"value\": 1.0,\n          \"weight\": 0.1\n        },\n        {\n          \"detail\": \"Whether SubAgent paths are exercised and successful\",\n          \"key\": \"delegation_visibility\",\n          \"label\": \"Delegation visibility\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.1\n        }\n      ],\n      \"key\": \"capability_invocation\",\n      \"label\": \"Capability invocation\",\n      \"score\": 72,\n      \"summary\": \"Tool and SubAgent selection effectiveness\"\n    },\n    {\n      \"confidence\": 0.1043544639239092,\n      \"drivers\": [\n        {\n          \"detail\": \"Terminal requirement runs that reached completed\",\n          \"key\": \"completion_rate\",\n          \"label\": \"Completion rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.35\n        },\n        {\n          \"detail\": \"Attached verification results that passed\",\n          \"key\": \"verification_pass_rate\",\n          \"label\": \"Verification pass rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.3\n        },\n        {\n          \"detail\": \"Regression suites that still pass\",\n          \"key\": \"regression_eval_pass_rate\",\n          \"label\": \"Regression eval pass rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.2\n        },\n        {\n          \"detail\": \"Terminal runs with attached verification evidence\",\n          \"key\": \"verification_coverage\",\n          \"label\": \"Verification coverage\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.1\n        },\n        {\n          \"detail\": \"Terminal runs not marked failed or cancelled\",\n          \"key\": \"failure_free_rate\",\n          \"label\": \"Failure-free terminal rate\",\n          \"score\": 50,\n          \"value\": null,\n          \"weight\": 0.05\n        }\n      ],\n      \"key\": \"task_delivery\",\n      \"label\": \"Task delivery\",\n      \"score\": 50,\n      \"summary\": \"Verifiable completed work production\"\n    }\n  ],\n  \"evidence\": [],\n  \"generated_at\": \"2026-06-12T19:11:36.901582+00:00\",\n  \"overall_score\": 57,\n  \"primary_focus\": \"task_understanding\",\n  \"rules\": {\n    \"confidence\": \"ln(sample_count + 1) / ln(31) multiplied by available signal coverage\",\n    \"dimension_weights\": {\n      \"capability_invocation\": {\n        \"agent_recovery_rate\": 0.2,\n        \"delegation_visibility\": 0.1,\n        \"latency_efficiency\": 0.1,\n        \"subagent_success_rate\": 0.25,\n        \"tool_success_rate\": 0.35\n      },\n      \"planning_execution\": {\n        \"agent_success_rate\": 0.2,\n        \"completion_rate\": 0.3,\n        \"terminal_rate\": 0.25,\n        \"timeout_free_rate\": 0.25\n      },\n      \"task_delivery\": {\n        \"completion_rate\": 0.35,\n        \"failure_free_rate\": 0.05,\n        \"regression_eval_pass_rate\": 0.2,\n        \"verification_coverage\": 0.1,\n        \"verification_pass_rate\": 0.3\n      },\n      \"task_understanding\": {\n        \"capability_eval_pass_rate\": 0.4,\n        \"completion_rate\": 0.2,\n        \"misunderstanding_free_rate\": 0.15,\n        \"verification_pass_rate\": 0.25\n      }\n    },\n    \"overall\": \"average(task_understanding, planning_execution, capability_invocation, task_delivery); capped at 69 when task_delivery < 60\",\n    \"scale\": \"0-100\"\n  },\n  \"sample_count\": 5,\n  \"signals\": {\n    \"agent_runs\": 0,\n    \"agent_success_rate\": null,\n    \"cancelled_requirement_runs\": 0,\n    \"completed_requirement_runs\": 0,\n    \"completion_rate\": null,\n    \"error_hotspots\": [\n      {\n        \"errors\": 1,\n        \"name\": \"ask.text\"\n      }\n    ],\n    \"eval_cases\": 0,\n    \"eval_pass_rate\": null,\n    \"failed_requirement_runs\": 0,\n    \"observed_runs\": 5,\n    \"p95_latency_ms\": 129,\n    \"requirement_runs\": 0,\n    \"subagent_runs\": 0,\n    \"subagent_success_rate\": null,\n    \"terminal_requirement_runs\": 0,\n    \"tool_runs\": 5,\n    \"tool_success_rate\": 0.8,\n    \"verification_pass_rate\": null,\n    \"verification_passed\": 0,\n    \"verified_requirement_runs\": 0\n  },\n  \"sources\": {\n    \"evals\": {\n      \"configured\": true,\n      \"rows\": 0\n    },\n    \"observability\": {\n      \"configured\": true,\n      \"rows\": 5\n    },\n    \"requirement_runs\": {\n      \"configured\": true,\n      \"rows\": 0\n    }\n  },\n  \"tool\": \"harness.health\"\n}"
+          }
+        ],
+        "isError": false
+      }
+    }
+  },
+  "stderr_tail": ""
+}

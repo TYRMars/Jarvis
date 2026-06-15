@@ -1,0 +1,149 @@
+{
+  "" : {
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Jarvis-primary.dia",
+    "emit-module-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Jarvis-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Jarvis-primary-emit-module.dia",
+    "pch" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Jarvis-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Jarvis-primary.swiftdeps"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/JarvisApp.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisApp~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/ChatMessage.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatMessage~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/Conversation.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/Conversation~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/JSONValue.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JSONValue~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/ServerEvent.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerEvent~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Networking/ChatSocket.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatSocket~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Networking/JarvisAPI.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/JarvisAPI~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Networking/ServerConfig.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ServerConfig~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/ViewModels/ChatViewModel.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatViewModel~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/ViewModels/ConversationListViewModel.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListViewModel~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/ApprovalSheet.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ApprovalSheet~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/ChatView.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ChatView~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/ConversationListView.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/ConversationListView~partial.swiftmodule"
+  },
+  "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/SettingsView.swift" : {
+    "const-values" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView.swiftconstvalues",
+    "dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView.d",
+    "diagnostics" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView.dia",
+    "index-unit-output-path" : "/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView.o",
+    "llvm-bc" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView.bc",
+    "object" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView.o",
+    "swift-dependencies" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView.swiftdeps",
+    "swiftmodule" : "/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/build/Build/Intermediates.noindex/JarvisiOS.build/Debug-iphonesimulator/Jarvis.build/Objects-normal/arm64/SettingsView~partial.swiftmodule"
+  }
+}
