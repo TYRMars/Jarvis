@@ -530,14 +530,23 @@ impl ChatRunRegistry {
                 let state = guard
                     .entry(conversation_id.to_string())
                     .or_insert_with(|| make_state(conversation_id, status, now));
-                state.record.status = status;
+                // Terminal stickiness: once a run has reached a terminal
+                // status (`terminated_at` stamped on the first terminal
+                // transition), a late or out-of-order event must not
+                // resurrect it. Skip the status/tool/error writes — but
+                // not the fresh-insert case, where `terminated_at` is
+                // still `None` even if `status` itself is terminal, so the
+                // first terminal frame's `last_error` is preserved.
+                if state.terminated_at.is_none() {
+                    state.record.status = status;
+                    if let Some(tool) = current_tool {
+                        state.record.current_tool = tool;
+                    }
+                    if let Some(err) = last_error {
+                        state.record.last_error = err;
+                    }
+                }
                 state.record.updated_at = now;
-                if let Some(tool) = current_tool {
-                    state.record.current_tool = tool;
-                }
-                if let Some(err) = last_error {
-                    state.record.last_error = err;
-                }
                 became_terminal = status.is_terminal() && state.mark_terminal(now);
             }
             if became_terminal {
@@ -575,13 +584,23 @@ impl ChatRunRegistry {
                 )
             });
 
+            // Terminal stickiness: a buffered frame (e.g. a `ToolEnd`
+            // emitted before a `tokio` task abort took effect, or an
+            // `Error` arriving after `Done`) must not flip the status off
+            // a terminal state. The frame is still appended below so the
+            // event log stays complete; only the status/tool/error fields
+            // are frozen. The fresh-insert case (`terminated_at` is
+            // `None`) still writes through, so an immediate terminal frame
+            // records its `last_error`.
             if let Some((next_status, current_tool, last_error)) = status {
-                state.record.status = next_status;
-                if let Some(tool) = current_tool {
-                    state.record.current_tool = tool;
-                }
-                if let Some(err) = last_error {
-                    state.record.last_error = err;
+                if state.terminated_at.is_none() {
+                    state.record.status = next_status;
+                    if let Some(tool) = current_tool {
+                        state.record.current_tool = tool;
+                    }
+                    if let Some(err) = last_error {
+                        state.record.last_error = err;
+                    }
                 }
             }
 
@@ -847,6 +866,57 @@ mod tests {
         assert_eq!(rows[0].latest_seq, 1);
         assert_eq!(rows[0].last_error.as_deref(), Some("boom"));
         assert!(registry.list(true).is_empty());
+    }
+
+    #[test]
+    fn terminal_status_is_sticky_against_late_frame() {
+        // A run reaches a terminal status, then a buffered/out-of-order
+        // frame arrives (the classic case: a `ToolEnd` emitted before a
+        // `tokio` task abort took effect). The status must NOT revert to
+        // a non-terminal one — that would resurrect the run and re-block
+        // `try_start` for the conversation.
+        let registry = ChatRunRegistry::default();
+        registry.start("c1");
+        registry.cancelled(Some("c1")); // update() path -> Cancelled (terminal)
+
+        // Late buffered frame routed through push_frame() with a
+        // non-terminal status.
+        registry.frame(
+            Some("c1"),
+            Some(ChatRunStatus::Running),
+            serde_json::json!({ "type": "tool_end" }),
+        );
+
+        let rows = registry.list(false);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, ChatRunStatus::Cancelled);
+        assert!(!registry.is_active("c1"));
+        // The frame is still appended so the event log stays complete.
+        let events = registry.events("c1", 0);
+        assert!(events.iter().any(|e| e.frame["type"] == "tool_end"));
+    }
+
+    #[test]
+    fn terminal_record_is_not_downgraded_by_out_of_order_frame() {
+        // `Error` arriving after `Done`: the completed record must keep
+        // its status and must not gain a `last_error`. Then the update()
+        // path is exercised too (a late `Running`).
+        let registry = ChatRunRegistry::default();
+        registry.start("c1");
+        registry.frame(Some("c1"), Some(ChatRunStatus::Completed), serde_json::json!({ "type": "done" }));
+
+        registry.event(
+            Some("c1"),
+            &AgentEvent::Error {
+                message: "late boom".into(),
+            },
+        );
+        registry.running(Some("c1")); // update() path, also must be ignored
+
+        let rows = registry.list(false);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, ChatRunStatus::Completed);
+        assert_eq!(rows[0].last_error, None);
     }
 
     #[test]
