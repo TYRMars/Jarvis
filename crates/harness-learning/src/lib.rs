@@ -576,6 +576,23 @@ pub struct MemoryItem {
     pub attributes: Value,
 }
 
+/// Clamp a raw `confidence` into the documented `[0.0, 1.0]` range.
+///
+/// `f32::clamp` alone is not enough: it passes `NaN` through unchanged
+/// (`NaN < min` and `NaN > max` are both false), so a malformed value
+/// would survive and poison the confidence-based archival sweep. We map
+/// `NaN` to the construction default (`1.0`, same as [`MemoryItem::new`]);
+/// `±inf` clamp to the bounds as usual. Centralised here so every write
+/// path ([`MemoryItem::clamp_fields`] + [`MemoryPatch::apply`]) shares one
+/// definition.
+pub fn clamp_confidence(c: f32) -> f32 {
+    if c.is_nan() {
+        1.0
+    } else {
+        c.clamp(0.0, 1.0)
+    }
+}
+
 impl MemoryItem {
     /// Hard cap on `title` length in chars. Anything past this is silently
     /// truncated by [`MemoryItem::new`] so the UI list never tears.
@@ -614,13 +631,16 @@ impl MemoryItem {
     }
 
     /// Re-apply the per-field [`TITLE_CAP`](Self::TITLE_CAP) /
-    /// [`BODY_CAP`](Self::BODY_CAP) truncation in place. [`MemoryItem::new`]
-    /// runs this for freshly-built rows, but a `MemoryItem` deserialized
-    /// straight from a REST body (or hand-constructed) never passes through
-    /// `new` — so the store boundary calls this before persisting to keep the
-    /// documented invariant (title ≤ `TITLE_CAP`, body ≤ `BODY_CAP` plus an
-    /// ellipsis) true for *every* write path. Idempotent: a row already within
-    /// the caps is left untouched.
+    /// [`BODY_CAP`](Self::BODY_CAP) truncation and the `confidence` range
+    /// clamp in place. [`MemoryItem::new`] runs this for freshly-built rows,
+    /// but a `MemoryItem` deserialized straight from a REST body (or
+    /// hand-constructed) never passes through `new` — so the store boundary
+    /// calls this before persisting to keep the documented invariants
+    /// (title ≤ `TITLE_CAP`, body ≤ `BODY_CAP` plus an ellipsis,
+    /// `confidence ∈ [0.0, 1.0]`) true for *every* write path. Without the
+    /// confidence clamp an out-of-range / NaN / inf value from a raw POST body
+    /// would land on disk and poison the confidence-based archival logic.
+    /// Idempotent: a row already within the caps is left untouched.
     pub fn clamp_fields(&mut self) {
         if self.title.chars().count() > Self::TITLE_CAP {
             self.title = self.title.chars().take(Self::TITLE_CAP).collect();
@@ -628,6 +648,7 @@ impl MemoryItem {
         if self.body.chars().count() > Self::BODY_CAP {
             self.body = self.body.chars().take(Self::BODY_CAP).collect::<String>() + "…";
         }
+        self.confidence = clamp_confidence(self.confidence);
     }
 
     /// Builder shortcut: tag the row.
@@ -701,7 +722,7 @@ impl MemoryPatch {
             item.pinned = pinned;
         }
         if let Some(c) = self.confidence {
-            item.confidence = c.clamp(0.0, 1.0);
+            item.confidence = clamp_confidence(c);
         }
         if let Some(ts) = &self.last_used_at {
             item.last_used_at = Some(ts.clone());
@@ -1328,6 +1349,53 @@ mod tests {
             ..Default::default()
         }
         .apply(&mut m);
+        assert_eq!(m.confidence, 0.0);
+    }
+
+    #[test]
+    fn memory_patch_normalises_non_finite_confidence() {
+        let mut m = MemoryItem::new(MemoryScope::user(), MemoryKind::Fact, "t", "b");
+        MemoryPatch {
+            confidence: Some(f32::NAN),
+            ..Default::default()
+        }
+        .apply(&mut m);
+        assert_eq!(m.confidence, 1.0, "NaN maps to the construction default");
+        MemoryPatch {
+            confidence: Some(f32::INFINITY),
+            ..Default::default()
+        }
+        .apply(&mut m);
+        assert_eq!(m.confidence, 1.0);
+        MemoryPatch {
+            confidence: Some(f32::NEG_INFINITY),
+            ..Default::default()
+        }
+        .apply(&mut m);
+        assert_eq!(m.confidence, 0.0);
+    }
+
+    #[test]
+    fn clamp_confidence_handles_range_and_non_finite() {
+        assert_eq!(clamp_confidence(0.5), 0.5);
+        assert_eq!(clamp_confidence(2.5), 1.0);
+        assert_eq!(clamp_confidence(-1.0), 0.0);
+        assert_eq!(clamp_confidence(f32::INFINITY), 1.0);
+        assert_eq!(clamp_confidence(f32::NEG_INFINITY), 0.0);
+        assert_eq!(clamp_confidence(f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn clamp_fields_clamps_out_of_range_confidence() {
+        let mut m = MemoryItem::new(MemoryScope::user(), MemoryKind::Fact, "t", "b");
+        m.confidence = 9.0;
+        m.clamp_fields();
+        assert_eq!(m.confidence, 1.0);
+        m.confidence = f32::NAN;
+        m.clamp_fields();
+        assert_eq!(m.confidence, 1.0);
+        m.confidence = -3.0;
+        m.clamp_fields();
         assert_eq!(m.confidence, 0.0);
     }
 

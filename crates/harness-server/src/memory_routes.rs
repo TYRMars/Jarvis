@@ -144,12 +144,19 @@ async fn get_memory(State(layer): State<LearningLayer>, Path(id): Path<String>) 
 
 async fn create_memory(
     State(layer): State<LearningLayer>,
-    Json(item): Json<MemoryItem>,
+    Json(mut item): Json<MemoryItem>,
 ) -> Response {
     let store = match store(&layer) {
         Ok(s) => s,
         Err(r) => return r,
     };
+    // A `MemoryItem` deserialized straight from the request body never
+    // passes through `MemoryItem::new`, so normalise it here: clamp the
+    // title/body caps and the `confidence` range (incl. NaN/inf) before it
+    // can reach the store. In production the `GuardedMemoryStore` re-runs
+    // this, but the clamp must not depend on the wrapper being present —
+    // an unclamped confidence otherwise feeds the archival logic.
+    item.clamp_fields();
     // Phase 1 surface: REST only accepts User-scope writes. Project /
     // Workspace scopes still go through their existing per-domain APIs
     // (`/v1/projects/:id/memories`, etc.) until the unified-memory
@@ -421,6 +428,42 @@ mod tests {
         );
         let all = inner.list(harness_learning::MemoryFilter::default()).await.unwrap();
         assert!(all.is_empty(), "rejected write must leave no on-disk trace");
+    }
+
+    /// `create_memory` deserializes a raw `MemoryItem` from the body; an
+    /// out-of-range `confidence` must be clamped to `[0.0, 1.0]` before it
+    /// lands on disk, independent of whether the store is `GuardedMemoryStore`
+    /// (here it is the bare in-memory store). Without the clamp the unclamped
+    /// value would feed the confidence-based archival logic.
+    #[tokio::test]
+    async fn post_clamps_out_of_range_confidence() {
+        let router = crate::routes::router(test_state());
+        let body = json!({
+            "id": "",
+            "scope": {"kind": "user"},
+            "kind": "fact",
+            "title": "t",
+            "body": "b",
+            "source": {"kind": "user"},
+            "confidence": 7.5,
+            "created_at": "",
+            "updated_at": "",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/memories")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            v["item"]["confidence"].as_f64().unwrap(),
+            1.0,
+            "out-of-range confidence must be clamped before persisting: {v:?}"
+        );
     }
 
     #[tokio::test]
