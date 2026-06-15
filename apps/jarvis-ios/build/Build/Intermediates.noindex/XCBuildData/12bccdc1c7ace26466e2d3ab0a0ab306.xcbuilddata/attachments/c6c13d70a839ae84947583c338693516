@@ -1,0 +1,14 @@
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/ApprovalSheet.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/ChatMessage.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Networking/ChatSocket.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/ChatView.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/ViewModels/ChatViewModel.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/Conversation.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/ConversationListView.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/ViewModels/ConversationListViewModel.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/JSONValue.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Networking/JarvisAPI.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/JarvisApp.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Networking/ServerConfig.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Models/ServerEvent.swift
+/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis-ios/Sources/Views/SettingsView.swift

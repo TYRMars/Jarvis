@@ -45,6 +45,7 @@ Status legend in each doc's header:
 | [chat-sidebar-project-groups.zh-CN.md](chat-sidebar-project-groups.zh-CN.md) | 侧边栏按项目分组 + 运行态指示 | Adopted — `ConvoList` project grouping + per-group expand + run-status spinner |
 | [otel-native-eval-harness.zh-CN.md](otel-native-eval-harness.zh-CN.md) | OTel 原生 trace 埋点 + Eval 评测看板 | In progress — span emission (`jarvis.agent.run` / `gen_ai.tool.call`) + ObservabilityStore + `/v1/observability/*` + `/v1/evals/*` read side; eval suite **runner/grader** + `jarvis eval` CLI pending |
 | [subagents.zh-CN.md](subagents.zh-CN.md) | SubAgent 体系（review / claude_code / codex / reader / batch） | Adopted — SubAgent trait + 4 built-ins + batch + recursion guard + reviewer auto-accept |
+| [nodejs-rewrite.zh-CN.md](nodejs-rewrite.zh-CN.md) | 用 Node.js/TS 重写服务端 + CLI（绞杀者迁移）；桌面 Tauri→Electron；Web/iOS 保留。执行清单见 [tasklist](nodejs-rewrite-tasklist.zh-CN.md) | Proposed — not started |
 
 ## Product Alignment Audit
 

@@ -1,0 +1,48 @@
+   Compiling harness-server v0.2.0 (/Users/zhangjianan/Documents/GitHub/Jarvis/crates/harness-server)
+   Compiling jarvis v0.2.0 (/Users/zhangjianan/Documents/GitHub/Jarvis/apps/jarvis)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 30.18s
+     Running `target/debug/jarvis`
+[2m2026-06-10T16:10:13.262001Z[0m [32m INFO[0m [2mjarvis[0m[2m:[0m loaded config file [3mconfig_path[0m[2m=[0m/Users/zhangjianan/.jarvis/config.json
+[2m2026-06-10T16:10:13.270228Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m conversation + project + todo + requirement + run + activity + agent_profile + doc + comment + label + channel-instance + channel-binding store connected [3murl[0m[2m=[0mjson:///Users/zhangjianan/.local/share/jarvis/conversations
+[2m2026-06-10T16:10:13.271626Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m local observability store connected [3murl[0m[2m=[0mjson:///Users/zhangjianan/.local/share/jarvis/observability [3mmax_runs[0m[2m=[0mSome(2000)
+[2m2026-06-10T16:10:13.272030Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m local eval store connected [3murl[0m[2m=[0mjson:///Users/zhangjianan/.local/share/jarvis/evals
+[2m2026-06-10T16:10:13.272335Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m local learning store connected (skill usage telemetry on) [3murl[0m[2m=[0mjson:///Users/zhangjianan/.local/share/jarvis/learning
+[2m2026-06-10T16:10:13.272633Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m local memory store connected (user memories on) [3murl[0m[2m=[0mjson:///Users/zhangjianan/.local/share/jarvis/memories
+[2m2026-06-10T16:10:13.272699Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m local skill-lifecycle store connected (archive/restore on) [3murl[0m[2m=[0mjson:///Users/zhangjianan/.local/share/jarvis/learning
+[2m2026-06-10T16:10:13.273285Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m persistent TODO store active (todo.* tools registered)
+[2m2026-06-10T16:10:13.273456Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m persistent project store active (project.* tools registered)
+[2m2026-06-10T16:10:13.273484Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m persistent doc store active (doc.* tools registered)
+[2m2026-06-10T16:10:13.273495Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m persistent requirement + activity stores active (requirement.* tools registered)
+[2m2026-06-10T16:10:13.273507Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m project + requirement stores both active (roadmap.import tool registered)
+[2m2026-06-10T16:10:13.275528Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m channel-instance store active (channel.send tool registered)
+[2m2026-06-10T16:10:13.275605Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m user memory store active (learning.memory.* tools registered, validator + WS frames on)
+[2m2026-06-10T16:10:13.288702Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m workspace root resolved [3mworkspace[0m[2m=[0m/Users/zhangjianan/Documents/GitHub/Jarvis
+[2m2026-06-10T16:10:13.291351Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m codex provider enabled (subject to ChatGPT Terms of Service) [3mendpoint[0m[2m=[0mhttps://chatgpt.com/backend-api/codex/responses
+[2m2026-06-10T16:10:13.299394Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m tools registered [3mprovider[0m[2m=[0mcodex [3mmodel[0m[2m=[0mgpt-5.4-mini [3mregistered[0m[2m=[0m55 [3mmcp_servers[0m[2m=[0m0
+[2m2026-06-10T16:10:13.728715Z[0m [32m INFO[0m [2mjarvis::subagents[0m[2m:[0m subagent.claude_code registered (claude CLI probe ok)
+[2m2026-06-10T16:10:13.728796Z[0m [32m INFO[0m [2mjarvis::subagents[0m[2m:[0m subagent.batch registered (parallel sub-agent dispatch enabled) [3mmax_concurrency[0m[2m=[0m3
+[2m2026-06-10T16:10:13.728875Z[0m [32m INFO[0m [2mjarvis::subagents[0m[2m:[0m subagents registered as `subagent.*` tools [3mcount[0m[2m=[0m5
+[2m2026-06-10T16:10:13.732071Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m loaded project instructions (AGENTS.md / JARVIS.md / CLAUDE.md / .jarvis) [3mbytes[0m[2m=[0m8244 [3mcap[0m[2m=[0m8192
+[2m2026-06-10T16:10:13.732469Z[0m [33m WARN[0m [2mjarvis::serve[0m[2m:[0m project instructions exceeded cap — output truncated. Set JARVIS_PROJECT_CONTEXT_BYTES=<n> or [agent].project_context_max_bytes to raise (default lowered to 8 KiB to keep system prompt focused). [3mcap[0m[2m=[0m8192
+[2m2026-06-10T16:10:13.732995Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m loaded project memory prompt [3mbytes[0m[2m=[0m980 [3mdir[0m[2m=[0m.jarvis/memory
+[2m2026-06-10T16:10:13.733192Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m system prompt assembled [3mslots[0m[2m=[0m[("base", 4202), ("runtime_inject", 9224)] [3mtotal_bytes[0m[2m=[0m13428
+[2m2026-06-10T16:10:14.311088Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m summarising memory enabled [3mmemory_tokens[0m[2m=[0m2000 [3msummary_model[0m[2m=[0mgpt-5.4-mini [3mpersisted[0m[2m=[0mtrue [3mrouted[0m[2m=[0mfalse
+[2m2026-06-10T16:10:14.311173Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m approval gate enabled [3mapproval_mode[0m[2m=[0mauto
+[2m2026-06-10T16:10:14.312351Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m providers registered [3mprimary[0m[2m=[0mcodex [3mactive[0m[2m=[0mcodex=gpt-5.4-mini,kimi=kimi-k2-thinking,kimi-code=kimi-k2.6,ollama=llama3.1
+[2m2026-06-10T16:10:14.315877Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m permission store ready [3mmode[0m[2m=[0mauto [3muser_path[0m[2m=[0mSome("/Users/zhangjianan/.config/jarvis/permissions.json") [3mproject_path[0m[2m=[0mSome("/Users/zhangjianan/Documents/GitHub/Jarvis/.jarvis/permissions.json")
+[2m2026-06-10T16:10:14.318418Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m skill catalog loaded [3mskills[0m[2m=[0m4
+[2m2026-06-10T16:10:14.320649Z[0m [32m INFO[0m [2mharness_plugin::manager[0m[2m:[0m plugin reattached [3mplugin[0m[2m=[0mcode-review-pack
+{"level":30,"time":1781107830042,"name":"gitnexus","repoCount":1,"repos":["Jarvis"],"msg":"GitNexus: MCP server starting"}
+[2m2026-06-10T16:10:30.053049Z[0m [32m INFO[0m [1mserve_inner[0m[2m:[0m [2mrmcp::service[0m[2m:[0m Service initialized as client [3mpeer_info[0m[2m=[0mSome(InitializeResult { protocol_version: ProtocolVersion("2025-11-25"), capabilities: ServerCapabilities { experimental: None, extensions: None, logging: None, completions: None, prompts: Some(PromptsCapability { list_changed: None }), resources: Some(ResourcesCapability { subscribe: None, list_changed: None }), tools: Some(ToolsCapability { list_changed: None }), tasks: None }, server_info: Implementation { name: "gitnexus", title: None, version: "1.6.7", description: None, icons: None, website_url: None }, instructions: None })
+[2m2026-06-10T16:10:30.059146Z[0m [32m INFO[0m [2mharness_mcp::manager[0m[2m:[0m mcp server added [3mprefix[0m[2m=[0mgitnexus [3mcount[0m[2m=[0m13
+[2m2026-06-10T16:10:30.059402Z[0m [32m INFO[0m [2mharness_plugin::manager[0m[2m:[0m plugin reattached [3mplugin[0m[2m=[0mgitnexus
+[2m2026-06-10T16:10:30.060151Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m plugin manager ready [3mplugins[0m[2m=[0m2 [3mdir[0m[2m=[0m/Users/zhangjianan/.config/jarvis/plugins
+[2m2026-06-10T16:10:30.062212Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m workspaces store ready [3mrecent[0m[2m=[0m9
+[2m2026-06-10T16:10:30.103474Z[0m [32m INFO[0m [2mharness_server::auto_mode[0m[2m:[0m auto mode loop starting (runtime-toggleable) [3mtick_s[0m[2m=[0m30 [3mmax_units[0m[2m=[0m1 [3mmax_concurrent[0m[2m=[0m2 [3mmax_retries[0m[2m=[0m3 [3mrun_timeout_ms[0m[2m=[0m600000 [3minitial_enabled[0m[2m=[0mfalse
+[2m2026-06-10T16:10:30.105851Z[0m [32m INFO[0m [2mharness_server::automation_runtime[0m[2m:[0m automation scheduler started [3mtick_seconds[0m[2m=[0m5
+[2m2026-06-10T16:10:30.106373Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m project memory sync active (kanban.md + calendar.md update after board mutations)
+[2m2026-06-10T16:10:30.106394Z[0m [32m INFO[0m [2mjarvis::serve[0m[2m:[0m jarvis listening [3maddr[0m[2m=[0m0.0.0.0:7001
+[2m2026-06-10T16:58:11.653030Z[0m [32m INFO[0m [2mharness_server::routes[0m[2m:[0m ws client frame [3mkind[0m[2m=[0m"resume" [3min_flight[0m[2m=[0mfalse
+[2m2026-06-10T17:06:05.793289Z[0m [32m INFO[0m [2mharness_server::routes[0m[2m:[0m ws client frame [3mkind[0m[2m=[0m"configure" [3min_flight[0m[2m=[0mfalse
+[2m2026-06-10T17:06:05.795366Z[0m [32m INFO[0m [2mharness_server::routes[0m[2m:[0m ws client frame [3mkind[0m[2m=[0m"set_mode" [3min_flight[0m[2m=[0mfalse
+[2m2026-06-10T17:06:05.796528Z[0m [32m INFO[0m [2mharness_server::routes[0m[2m:[0m ws client frame [3mkind[0m[2m=[0m"accept_plan" [3min_flight[0m[2m=[0mfalse

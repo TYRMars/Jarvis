@@ -1,0 +1,49 @@
+# XcodeGen project description for the Jarvis iPhone client.
+#
+#   brew install xcodegen
+#   cd apps/jarvis-ios && xcodegen generate
+#   open JarvisiOS.xcodeproj
+#
+# The app talks to a running `jarvis serve` instance over HTTP + WebSocket
+# (default port 7001). See README.md for connection setup.
+name: JarvisiOS
+options:
+  bundleIdPrefix: dev.jarvis
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+targets:
+  Jarvis:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    # Shared scheme so `xcodebuild -scheme Jarvis` works headlessly.
+    scheme:
+      testTargets: []
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: Jarvis
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # The dev server speaks plain http/ws on the LAN; allow non-TLS
+        # local traffic. Tighten this before any store distribution.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: >-
+          Jarvis connects to your Jarvis server on the local network.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.jarvis.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
+        GENERATE_INFOPLIST_FILE: false
+        CODE_SIGN_STYLE: Automatic
+        # Set your team for device builds:  DEVELOPMENT_TEAM: ABCDE12345

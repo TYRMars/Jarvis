@@ -26,6 +26,7 @@ import {
   subscribeRequirementActivities,
   subscribeRequirementRuns,
   updateRequirement,
+  updateRequirementTodo,
   verifyRunByCommands,
 } from "../../services/requirements";
 import { pickedRouting } from "../../services/socket";
@@ -733,10 +734,35 @@ function RequirementTodosSection({
 }) {
   const todos = requirement.todos ?? [];
   const [sectionOpen, setSectionOpen] = useState(true);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setSectionOpen(true);
   }, [todos.length]);
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    setSelected(new Set(todos.map((t) => t.id)));
+  };
+
+  const clearSelection = () => setSelected(new Set());
+
+  const batchSetStatus = (status: RequirementTodoStatus) => {
+    selected.forEach((id) => {
+      void updateRequirementTodo(requirement.id, id, { status });
+    });
+    clearSelection();
+  };
+
+  const hasSelection = selected.size > 0;
 
   return (
     <details
@@ -754,17 +780,51 @@ function RequirementTodosSection({
         <span className="requirement-detail-todos-count">{todos.length}</span>
       </summary>
       {todos.length === 0 ? (
-        <p className="requirement-detail-empty">{t("reqTodoEmpty")}</p>
+        <div className="requirement-detail-todo-empty-state">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+          </svg>
+          <p>{t("reqTodoEmpty")}</p>
+        </div>
       ) : (
-        <ul className="requirement-detail-todo-list">
-          {todos.map((todo) => (
-            <RequirementTodoRow
-              key={todo.id}
-              todo={todo}
-              onHandleTodo={onHandleTodo}
-            />
-          ))}
-        </ul>
+        <>
+          <div className="requirement-detail-todo-toolbar">
+            <label className="requirement-detail-todo-select-all">
+              <input
+                type="checkbox"
+                checked={hasSelection && selected.size === todos.length}
+                onChange={(e) => (e.target.checked ? selectAll() : clearSelection())}
+                ref={(el) => {
+                  if (el) el.indeterminate = hasSelection && selected.size < todos.length;
+                }}
+              />
+              <span>{t("reqTodoSelectAll", "Select all")}</span>
+            </label>
+            {hasSelection && (
+              <div className="requirement-detail-todo-batch-bar">
+                <span className="requirement-detail-todo-batch-count">{selected.size}</span>
+                <button type="button" className="batch-btn" onClick={() => batchSetStatus("passed")}>{t("reqTodoBatchPass", "Pass")}</button>
+                <button type="button" className="batch-btn" onClick={() => batchSetStatus("pending")}>{t("reqTodoBatchPending", "Pending")}</button>
+                <button type="button" className="batch-btn batch-btn-fail" onClick={() => batchSetStatus("failed")}>{t("reqTodoBatchFail", "Fail")}</button>
+                <button type="button" className="batch-btn batch-btn-skip" onClick={() => batchSetStatus("skipped")}>{t("reqTodoBatchSkip", "Skip")}</button>
+                <button type="button" className="batch-btn batch-btn-clear" onClick={clearSelection}>{t("reqTodoBatchClear", "Clear")}</button>
+              </div>
+            )}
+          </div>
+          <ul className="requirement-detail-todo-list">
+            {todos.map((todo) => (
+              <RequirementTodoRow
+                key={todo.id}
+                todo={todo}
+                requirementId={requirement.id}
+                selected={selected.has(todo.id)}
+                onToggleSelect={() => toggleSelect(todo.id)}
+                onHandleTodo={onHandleTodo}
+              />
+            ))}
+          </ul>
+        </>
       )}
     </details>
   );
@@ -772,9 +832,15 @@ function RequirementTodosSection({
 
 function RequirementTodoRow({
   todo,
+  requirementId,
+  selected,
+  onToggleSelect,
   onHandleTodo,
 }: {
   todo: RequirementTodo;
+  requirementId: string;
+  selected: boolean;
+  onToggleSelect: () => void;
   onHandleTodo: (todo: RequirementTodo) => void;
 }) {
   const [injected, setInjected] = useState(false);
@@ -785,25 +851,47 @@ function RequirementTodoRow({
     window.setTimeout(() => setInjected(false), 1400);
   };
 
+  const cycleStatus = () => {
+    const order: RequirementTodoStatus[] = ["pending", "running", "passed", "failed", "skipped", "blocked"];
+    const idx = order.indexOf(todo.status);
+    const next = order[(idx + 1) % order.length];
+    void updateRequirementTodo(requirementId, todo.id, { status: next });
+  };
+
   return (
-    <li className={"requirement-detail-todo todo-status-" + todo.status}>
-      <div className="requirement-detail-todo-summary">
-        <span className={"requirement-detail-todo-status status-" + todo.status}>
-          {todoStatusGlyph(todo.status)} {t(`reqTodoStatus_${todo.status}`)}
-        </span>
-        <strong>{todo.title}</strong>
-        <span className="requirement-detail-todo-kind">
-          {t(`reqTodoKind_${todo.kind}`)}
-        </span>
+    <li className={"requirement-detail-todo todo-status-" + todo.status + (selected ? " is-selected" : "")}>
+      <input
+        type="checkbox"
+        className="requirement-detail-todo-checkbox"
+        checked={selected}
+        onChange={onToggleSelect}
+        aria-label={t("reqTodoSelectAria", todo.title)}
+      />
+      <button
+        type="button"
+        className={"requirement-detail-todo-status status-" + todo.status}
+        onClick={cycleStatus}
+        title={t("reqTodoCycleStatusTitle", "Click to cycle status")}
+      >
+        <span className="requirement-detail-todo-status-glyph">{todoStatusGlyph(todo.status)}</span>
+        <span>{t(`reqTodoStatus_${todo.status}`)}</span>
+      </button>
+      <div className="requirement-detail-todo-body">
+        <div className="requirement-detail-todo-title-row">
+          <strong>{todo.title}</strong>
+          <span className={"requirement-detail-todo-kind kind-" + todo.kind}>
+            {t(`reqTodoKind_${todo.kind}`)}
+          </span>
+        </div>
+        {todo.command && (
+          <code className="requirement-detail-todo-command">{todo.command}</code>
+        )}
+        {todo.evidence?.note && (
+          <span className="requirement-detail-todo-evidence">
+            {todo.evidence.note}
+          </span>
+        )}
       </div>
-      {todo.command && (
-        <code className="requirement-detail-todo-command">{todo.command}</code>
-      )}
-      {todo.evidence?.note && (
-        <span className="requirement-detail-todo-evidence">
-          {todo.evidence.note}
-        </span>
-      )}
       <div className="requirement-detail-todo-actions">
         <button
           type="button"
@@ -823,8 +911,9 @@ function RequirementTodoRow({
 
 function todoStatusGlyph(status: RequirementTodoStatus): string {
   if (status === "passed") return "✓";
-  if (status === "failed" || status === "blocked") return "×";
-  if (status === "running") return "…";
+  if (status === "failed") return "✗";
+  if (status === "blocked") return "⊘";
+  if (status === "running") return "⟳";
   if (status === "skipped") return "−";
   return "○";
 }
