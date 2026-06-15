@@ -268,7 +268,7 @@ impl ChatRunRegistry {
         // is the "give me everything" case — only fails when the
         // very first event (seq 1) is gone, which by definition
         // means events have been dropped.
-        if state.first_seq > 1 && after + 1 < state.first_seq {
+        if state.first_seq > 1 && after < state.first_seq - 1 {
             return Some(Err(ResumeError::Evicted {
                 first_available_seq: state.first_seq,
             }));
@@ -1065,6 +1065,32 @@ mod tests {
             registry.subscribe("c1", 0).expect("active"),
             Err(ResumeError::Evicted { .. })
         ));
+    }
+
+    #[test]
+    fn subscribe_with_max_after_does_not_overflow() {
+        // Regression: a client-supplied `after_seq = u64::MAX` must not
+        // overflow `after + 1` (panic in debug, wrap-to-0 + spurious
+        // Evicted in release). A cursor at or past the latest seq has
+        // seen everything, so it should resolve to an empty Ok snapshot,
+        // never Evicted.
+        let registry = ChatRunRegistry::default();
+        registry.start("c1");
+        for i in 0..MAX_EVENTS_PER_RUN + 200 {
+            registry.event(
+                Some("c1"),
+                &AgentEvent::Delta {
+                    content: format!("d{i}"),
+                },
+            );
+        }
+        // first_seq is now 201 (lost 1..=200) — the branch that does the
+        // arithmetic is reachable.
+        let outcome = registry.subscribe("c1", u64::MAX).expect("active");
+        match outcome {
+            Ok((snapshot, _rx, _window)) => assert!(snapshot.is_empty()),
+            Err(e) => panic!("expected empty Ok for max cursor, got {e:?}"),
+        }
     }
 
     fn fake_approval(tool_call_id: &str) -> ApprovalRequest {
