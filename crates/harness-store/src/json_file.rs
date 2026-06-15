@@ -258,7 +258,7 @@ impl AutomationStore for JsonFileAutomationStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -401,7 +401,7 @@ async fn read_json_dir<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>, BoxErr
     while let Some(entry) = read_dir.next_entry().await? {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+        if !is_json_data_file(&name_str) {
             continue;
         }
         let bytes = match tokio::fs::read(entry.path()).await {
@@ -550,7 +550,7 @@ async fn scan_projects(dir: &Path) -> Result<Vec<Project>, BoxError> {
             Some(n) => n,
             None => continue,
         };
-        if !name.ends_with(".json") || name.ends_with(".json.tmp") {
+        if !is_json_data_file(name) {
             continue;
         }
         let bytes = match tokio::fs::read(&path).await {
@@ -638,7 +638,7 @@ impl TodoStore for JsonFileTodoStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -771,7 +771,7 @@ impl RequirementStore for JsonFileRequirementStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -919,7 +919,7 @@ impl RequirementRunStore for JsonFileRequirementRunStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -969,7 +969,7 @@ impl RequirementRunStore for JsonFileRequirementRunStore {
                 let path = run_entry.path();
                 let name = run_entry.file_name();
                 let name_str = name.to_string_lossy();
-                if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+                if !is_json_data_file(&name_str) {
                     continue;
                 }
                 let bytes = match tokio::fs::read(&path).await {
@@ -1050,7 +1050,7 @@ impl AgentProfileStore for JsonFileAgentProfileStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -1157,7 +1157,7 @@ impl ActivityStore for JsonFileActivityStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -1243,7 +1243,7 @@ impl JsonFileCommentStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -1423,7 +1423,7 @@ impl JsonFileLabelStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -1608,7 +1608,7 @@ impl DocStore for JsonFileDocStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -1682,7 +1682,7 @@ impl DocStore for JsonFileDocStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -1749,7 +1749,7 @@ impl JsonFileTenantStore {
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+            if !is_json_data_file(&name_str) {
                 continue;
             }
             let bytes = match tokio::fs::read(&path).await {
@@ -2666,8 +2666,19 @@ pub(crate) fn ensure_dir(dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Monotonic per-process counter feeding the unique temp-file suffix in
+/// [`atomic_write`]. Combined with the PID it keeps two concurrent writers
+/// of the *same* id from sharing a `.tmp` path (which would otherwise let
+/// the second `rename` fail with `NotFound` or produce torn content).
+static WRITE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), BoxError> {
-    let tmp = path.with_extension("json.tmp");
+    // Unique temp name per write — `<id>.json.<pid>.<nonce>.tmp`. The
+    // extension stays `tmp` (not `json`), so every directory scan that
+    // gates on `is_json_data_file` keeps excluding it regardless of nonce.
+    let nonce = WRITE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let suffix = format!("json.{}.{nonce}.tmp", std::process::id());
+    let tmp = path.with_extension(suffix);
     tokio::fs::write(&tmp, bytes).await?;
     #[cfg(unix)]
     {
@@ -2675,8 +2686,21 @@ pub(crate) async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), BoxErr
         let perm = std::fs::Permissions::from_mode(0o600);
         let _ = tokio::fs::set_permissions(&tmp, perm).await;
     }
-    tokio::fs::rename(&tmp, path).await?;
+    // On failure, clean up our own temp file so unique names can't leak.
+    if let Err(e) = tokio::fs::rename(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(Box::new(e));
+    }
     Ok(())
+}
+
+/// True only for committed `<id>.json` data files. Temp files written by
+/// [`atomic_write`] carry a unique `<id>.json.<pid>.<nonce>.tmp` name whose
+/// extension is `tmp`, so an extension check excludes them regardless of the
+/// nonce — keeping every directory scan in sync with the writer. Use this
+/// everywhere instead of matching the literal `.json.tmp` suffix.
+fn is_json_data_file(name: &str) -> bool {
+    Path::new(name).extension().is_some_and(|e| e == "json")
 }
 
 // ---------- cascade-delete helpers ----------
@@ -2695,7 +2719,7 @@ async fn collect_dir_ids(dir: &Path) -> Vec<String> {
     while let Ok(Some(entry)) = rd.next_entry().await {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if !name_str.ends_with(".json") || name_str.ends_with(".json.tmp") {
+        if !is_json_data_file(&name_str) {
             continue;
         }
         let bytes = match tokio::fs::read(entry.path()).await {
@@ -2731,7 +2755,7 @@ async fn prune_oldest_files(dir: &Path, max: usize) {
     while let Ok(Some(entry)) = rd.next_entry().await {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.ends_with(".json") || name.ends_with(".json.tmp") {
+        if !is_json_data_file(&name) {
             continue;
         }
         paths.push(entry.path());
@@ -2780,7 +2804,7 @@ async fn prune_oldest_memory_items(dir: &Path, max: usize) {
     while let Ok(Some(entry)) = rd.next_entry().await {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.ends_with(".json") && !name.ends_with(".json.tmp") {
+        if is_json_data_file(&name) {
             count += 1;
         }
     }
@@ -3038,6 +3062,62 @@ mod tests {
         let rows = store.list(10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "good");
+    }
+
+    #[tokio::test]
+    async fn atomic_write_concurrent_same_id_no_error_no_tear() {
+        // Regression: a deterministic shared `.tmp` path let two concurrent
+        // writers of the same id clobber each other's temp file — the second
+        // `rename` failed with NotFound or the final file was torn. The unique
+        // per-write temp name must make every write succeed and leave the file
+        // equal to exactly one writer's bytes.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("same-id.json");
+
+        const WRITERS: usize = 32;
+        let payloads: Vec<Vec<u8>> = (0..WRITERS)
+            .map(|i| format!("{{\"writer\":{i}}}").into_bytes())
+            .collect();
+
+        let mut handles = Vec::new();
+        for bytes in payloads.clone() {
+            let path = path.clone();
+            handles.push(tokio::spawn(async move {
+                atomic_write(&path, &bytes).await
+            }));
+        }
+        for h in handles {
+            // No writer may observe a spurious error.
+            h.await.unwrap().expect("atomic_write should not error");
+        }
+
+        // The file must be intact and byte-identical to one writer's payload.
+        let final_bytes = tokio::fs::read(&path).await.unwrap();
+        assert!(
+            payloads.contains(&final_bytes),
+            "final file is torn: {:?}",
+            String::from_utf8_lossy(&final_bytes)
+        );
+
+        // No temp files may be left behind.
+        let leftover: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftover.is_empty(), "leaked temp files: {leftover:?}");
+    }
+
+    #[test]
+    fn is_json_data_file_excludes_unique_temp_names() {
+        assert!(is_json_data_file("foo.json"));
+        assert!(is_json_data_file("__memory__.summary%3Aabc.json"));
+        // Old and new temp shapes alike are excluded by the extension check.
+        assert!(!is_json_data_file("foo.json.tmp"));
+        assert!(!is_json_data_file("foo.json.12345.7.tmp"));
+        assert!(!is_json_data_file("foo.txt"));
+        assert!(!is_json_data_file("noext"));
     }
 
     #[test]
@@ -4187,9 +4267,10 @@ mod tests {
     }
 
     // A failed flush must leave the in-memory state untouched so memory never
-    // diverges from disk (issue #52). We force the flush to fail by occupying
-    // the `atomic_write` temp path with a directory, which makes the temp-file
-    // write error out.
+    // diverges from disk (issue #52). We force the flush to fail by replacing
+    // the destination file with a directory, so `atomic_write`'s final rename
+    // errors out (the temp name is now unique per write, so blocking a fixed
+    // `.json.tmp` path no longer reliably injects a failure).
     #[tokio::test]
     async fn channel_binding_rolls_back_on_flush_failure() {
         let dir = tempdir().unwrap();
@@ -4199,9 +4280,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Block the temp-file write: atomic_write targets `<path>.tmp`.
-        let tmp = dir.path().join("channel_bindings.json.tmp");
-        std::fs::create_dir(&tmp).unwrap();
+        // Block the flush: replace the destination file with a directory so
+        // atomic_write's rename onto it fails.
+        let target = dir.path().join("channel_bindings.json");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::create_dir(&target).unwrap();
 
         // Overwriting an existing key must fail at flush and roll back.
         let err = store
@@ -4221,7 +4304,7 @@ mod tests {
         assert!(store.lookup("feishu", "f1").await.unwrap().is_none());
 
         // Unblock and confirm a subsequent write commits cleanly.
-        std::fs::remove_dir(&tmp).unwrap();
+        std::fs::remove_dir(&target).unwrap();
         store
             .upsert(&ChannelBinding::new("wecom", "g1", "conv-new", None, None))
             .await
