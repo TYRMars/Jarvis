@@ -27,7 +27,7 @@ function tick(): Promise<void> {
 }
 
 // A shared contract both backends must satisfy.
-function contractTests(name: string, make: (dir: string) => Promise<ProjectMemoryStore>): void {
+export function contractTests(name: string, make: (dir: string) => Promise<ProjectMemoryStore>): void {
   test(`${name}: upsert/get round-trips`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

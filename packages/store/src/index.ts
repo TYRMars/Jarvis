@@ -12,6 +12,22 @@ export { JsonFileConversationStore, encodeId, atomicWrite, ensureDir } from "./j
 export { MemoryConversationStore } from "./memory.ts";
 export { connect, connectAll, makeMemoryStores, type StoreBundle } from "./connect.ts";
 
+// ---------- SQLite backends (better-sqlite3, P6.7) ----------
+export {
+  openSqlite,
+  resolveSqlitePath,
+  SqliteConversationStore,
+  SqliteProjectStore,
+  SqliteRequirementStore,
+  SqliteRequirementRunStore,
+  SqliteActivityStore,
+  SqliteCommentStore,
+  SqliteLabelStore,
+  SqliteDocStore,
+  SqliteProjectMemoryStore,
+  SqliteWorkflowStore,
+} from "./sqlite.ts";
+
 // ---------- domain-store backends ----------
 export { JsonFileProjectStore, MemoryProjectStore } from "./project-store.ts";
 export {

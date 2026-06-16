@@ -24,7 +24,7 @@ function act(requirementId: string, createdAt: string, body: unknown = {}): Acti
   return a;
 }
 
-function contract(name: string, make: (dir: string) => Promise<ActivityStore>): void {
+export function contract(name: string, make: (dir: string) => Promise<ActivityStore>): void {
   test(`${name}: append then list (newest-first)`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

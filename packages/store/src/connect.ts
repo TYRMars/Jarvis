@@ -20,6 +20,19 @@ import { JsonFileLabelStore, MemoryLabelStore } from "./label-store.ts";
 import { JsonFileDocStore, MemoryDocStore } from "./doc-store.ts";
 import { JsonFileProjectMemoryStore, MemoryProjectMemoryStore } from "./project-memory-store.ts";
 import { JsonFileWorkflowStore, MemoryWorkflowStore } from "./workflow-store.ts";
+import {
+  openSqlite,
+  SqliteActivityStore,
+  SqliteCommentStore,
+  SqliteConversationStore,
+  SqliteDocStore,
+  SqliteLabelStore,
+  SqliteProjectMemoryStore,
+  SqliteProjectStore,
+  SqliteRequirementRunStore,
+  SqliteRequirementStore,
+  SqliteWorkflowStore,
+} from "./sqlite.ts";
 import type {
   ActivityStore,
   CommentStore,
@@ -56,7 +69,12 @@ export async function connect(url: string): Promise<ConversationStore> {
   switch (scheme) {
     case "json":
       return JsonFileConversationStore.open(jsonPath(url));
-    case "sqlite":
+    case "sqlite": {
+      // One shared `Database` handle (created if missing); `connect` hands back
+      // only the conversation store, but the migration provisions every table.
+      const db = openSqlite(url);
+      return new SqliteConversationStore(db);
+    }
     case "postgres":
     case "postgresql":
     case "mysql":
@@ -117,7 +135,24 @@ export async function connectAll(url: string): Promise<StoreBundle> {
         workflows,
       };
     }
-    case "sqlite":
+    case "sqlite": {
+      // Every store shares ONE `Database` handle — essential for
+      // `sqlite::memory:`, where each connection is a distinct database. The
+      // single migrate() (inside `openSqlite`) provisions all tables.
+      const db = openSqlite(url);
+      return {
+        conversations: new SqliteConversationStore(db),
+        projects: new SqliteProjectStore(db),
+        requirements: new SqliteRequirementStore(db),
+        requirementRuns: new SqliteRequirementRunStore(db),
+        activities: new SqliteActivityStore(db),
+        comments: new SqliteCommentStore(db),
+        labels: new SqliteLabelStore(db),
+        docs: new SqliteDocStore(db),
+        projectMemory: new SqliteProjectMemoryStore(db),
+        workflows: new SqliteWorkflowStore(db),
+      };
+    }
     case "postgres":
     case "postgresql":
     case "mysql":

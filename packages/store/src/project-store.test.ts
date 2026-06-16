@@ -28,7 +28,7 @@ async function tick(): Promise<void> {
   await new Promise((r) => setTimeout(r, 5));
 }
 
-function contract(name: string, make: (dir: string) => Promise<ProjectStore>): void {
+export function contract(name: string, make: (dir: string) => Promise<ProjectStore>): void {
   test(`${name}: save/load round-trips; missing → undefined`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

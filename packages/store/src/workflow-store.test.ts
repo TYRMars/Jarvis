@@ -37,7 +37,7 @@ function withStartedAt(r: WorkflowRun, iso: string): WorkflowRun {
 }
 
 // A shared contract both backends must satisfy.
-function contractTests(name: string, make: (dir: string) => Promise<WorkflowStore>): void {
+export function contractTests(name: string, make: (dir: string) => Promise<WorkflowStore>): void {
   test(`${name}: definition CRUD round-trips`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

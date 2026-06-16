@@ -12,6 +12,7 @@ import {
   type TriageState,
 } from "@jarvis/project";
 import { JsonFileRequirementStore, MemoryRequirementStore } from "./requirement-store.ts";
+import type { SqliteRequirementStore } from "./sqlite.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "jarvis-requirement-store-"));
@@ -36,9 +37,9 @@ function requirement(projectId: string, title: string, triage?: TriageState): Re
 // methods we test below (`subscribe`, `listByTriageState`) are present on both
 // concrete classes even though only `subscribe` is on the trait, so the
 // contract is typed against the concrete union.
-type Backend = JsonFileRequirementStore | MemoryRequirementStore;
+type Backend = JsonFileRequirementStore | MemoryRequirementStore | SqliteRequirementStore;
 
-function contract(name: string, make: (dir: string) => Promise<Backend>): void {
+export function contract(name: string, make: (dir: string) => Promise<Backend>): void {
   test(`${name}: upsert/get round-trips; missing → undefined`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

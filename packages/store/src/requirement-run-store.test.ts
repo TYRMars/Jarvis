@@ -35,7 +35,7 @@ function run(requirementId: string, conversationId = "c1"): RequirementRun {
   return newRequirementRun(requirementId, conversationId);
 }
 
-function contract(name: string, make: (dir: string) => Promise<RequirementRunStore>): void {
+export function contract(name: string, make: (dir: string) => Promise<RequirementRunStore>): void {
   test(`${name}: upsert/get round-trips; missing → undefined`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

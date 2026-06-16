@@ -98,6 +98,15 @@ export interface AppState {
 
   /** Pinned workspace root (for roadmap import + workspace probes). */
   workspaceRoot?: string;
+
+  /**
+   * Absolute path to the built web SPA directory (containing `index.html`).
+   * When set, `buildServer` serves it at `/` with a React-Router-aware SPA
+   * fallback (see ui.ts), registered LAST so it only catches unmatched paths.
+   * Absent → no static UI is served (the Rust binary always bakes `dist/` in;
+   * here the composition root supplies the path, or omits it for API-only).
+   */
+  webDistDir?: string;
 }
 
 /**

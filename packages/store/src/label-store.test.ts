@@ -20,7 +20,7 @@ function label(projectId: string, name: string, colour = "#aabbcc"): Label {
   return newLabel(projectId, name, colour);
 }
 
-function contract(name: string, make: (dir: string) => Promise<LabelStore>): void {
+export function contract(name: string, make: (dir: string) => Promise<LabelStore>): void {
   test(`${name}: create then list-for-project, sorted case-insensitively by name`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
@@ -93,6 +93,21 @@ function contract(name: string, make: (dir: string) => Promise<LabelStore>): voi
 
       const missing = label("p1", "Nope");
       assert.equal(await store.update(missing), false);
+    });
+  });
+
+  test(`${name}: update with a mismatched project_id is a no-op (false, row untouched)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const l = label("p1", "Keep", "#111111");
+      await store.create(l);
+      // Right id, wrong project_id — the store keys on (id, project_id), so this
+      // must resolve to false and leave the row's name/colour intact.
+      const patch: Label = { ...l, project_id: "WRONG", name: "Renamed", colour: "#222222" };
+      assert.equal(await store.update(patch), false);
+      const got = await store.get(l.id);
+      assert.equal(got?.name, "Keep", "name must not change on a mismatched-project update");
+      assert.equal(got?.colour, "#111111");
     });
   });
 

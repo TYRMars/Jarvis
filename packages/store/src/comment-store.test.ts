@@ -30,7 +30,7 @@ function top(requirementId: string, createdAt: string, body = "hi"): Comment {
   return c;
 }
 
-function contract(name: string, make: (dir: string) => Promise<CommentStore>): void {
+export function contract(name: string, make: (dir: string) => Promise<CommentStore>): void {
   test(`${name}: create then list (oldest-first / chat order)`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
@@ -119,6 +119,20 @@ function contract(name: string, make: (dir: string) => Promise<CommentStore>): v
 
       const missing = top("r1", "2026-06-16T10:00:00.000Z");
       assert.equal(await store.update(missing), false);
+    });
+  });
+
+  test(`${name}: update with a mismatched requirement_id is a no-op (false, row untouched)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const c = top("r1", "2026-06-16T10:00:00.000Z", "v1");
+      await store.create(c);
+      // Right id, wrong requirement_id — the store keys on (id, requirement_id),
+      // so this must resolve to false and leave the row body intact.
+      const patch: Comment = { ...c, requirement_id: "WRONG", body: "hacked" };
+      assert.equal(await store.update(patch), false);
+      const [row] = await store.listForRequirement("r1");
+      assert.equal(row?.body, "v1", "body must not change on a mismatched-requirement update");
     });
   });
 

@@ -25,8 +25,9 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-// A shared contract both backends must satisfy.
-function contractTests(name: string, make: (dir: string) => Promise<ConversationStore>): void {
+// A shared contract every backend must satisfy. Exported so the SQLite
+// backend (sqlite.test.ts) can run the IDENTICAL suite against itself.
+export function contractTests(name: string, make: (dir: string) => Promise<ConversationStore>): void {
   test(`${name}: save/load round-trips`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
@@ -138,8 +139,10 @@ test("connect: json:// opens a JSON-file store", async () => {
   });
 });
 
-test("connect: SQL schemes throw (P6), unknown schemes throw", async () => {
-  await assert.rejects(() => connect("sqlite:./x.db"), StoreError);
+test("connect: still-unsupported SQL schemes throw, unknown schemes throw", async () => {
+  // `sqlite:` is supported now (see sqlite.test.ts); postgres/mysql remain P6.
+  await assert.rejects(() => connect("postgres://localhost/db"), StoreError);
+  await assert.rejects(() => connect("mysql://localhost/db"), StoreError);
   await assert.rejects(() => connect("redis://localhost"), StoreError);
 });
 

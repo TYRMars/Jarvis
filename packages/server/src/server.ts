@@ -28,6 +28,7 @@ import { registerAgentProfilesRoutes } from "./agent-profiles-routes.ts";
 import { registerTodosRoutes } from "./todos-routes.ts";
 import { registerChannelsInboundRoutes } from "./channels-inbound-routes.ts";
 import { registerWorkspaceRoutes } from "./workspace-routes.ts";
+import { registerUiRoutes } from "./ui.ts";
 import type { AppState } from "./state.ts";
 
 /** Build the Fastify app with all P2 routes wired. Awaits the WS plugin. */
@@ -61,6 +62,13 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerTodosRoutes(app, state);
   registerChannelsInboundRoutes(app, state);
   registerWorkspaceRoutes(app, state);
+
+  // LAST: the SPA static + fallback catch-all. Registered after every /v1 +
+  // /health + WS route so its not-found handler only fires on unmatched paths
+  // (mirrors the Rust `.fallback(spa_fallback)` wiring order).
+  if (state.webDistDir != null) {
+    registerUiRoutes(app, { distDir: state.webDistDir });
+  }
 
   await app.ready();
   return app;
