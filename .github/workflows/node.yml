@@ -1,0 +1,67 @@
+name: Node
+
+# CI for the Node/TS rewrite under packages/*. Mirrors the local gate
+# (`pnpm -r typecheck` + `pnpm lint` + `pnpm -r test`) — the Node analogue of
+# the Rust workflow's "clippy is the gate". Scoped via `paths` so Rust-only
+# changes don't pay for it. See docs/proposals/nodejs-rewrite-tasklist.zh-CN.md.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig.base.json"
+      - "eslint.config.js"
+      - ".github/workflows/node.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig.base.json"
+      - "eslint.config.js"
+      - ".github/workflows/node.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm must be on PATH before setup-node so its `cache: pnpm` works.
+      # The pnpm version is read from the root package.json `packageManager`.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # >=22.6 for stable `--experimental-strip-types` (the package test
+          # scripts run .ts directly with no build step).
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # A few store / git / worktree tests `git init` a temp repo and commit;
+      # a fresh CI runner has no git identity, so set one.
+      - name: Configure git identity (for git/worktree tests)
+        run: |
+          git config --global user.email "ci@jarvis.local"
+          git config --global user.name "Jarvis CI"
+
+      # The gate, in the same order as the local `make`-style checks.
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm -r test
