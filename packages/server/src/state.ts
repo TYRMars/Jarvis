@@ -122,6 +122,15 @@ export interface AppState {
   workspaceRoot?: string;
 
   /**
+   * Optional shell override for the workspace terminal PTY
+   * (`/v1/workspace/terminal/ws`). The Rust module reads `$SHELL`; the Node
+   * server never touches process.env, so the composition root may supply an
+   * explicit shell here. Absent -> a hardcoded default (`/bin/bash` if present
+   * else `/bin/sh` on posix, `cmd.exe` on Windows).
+   */
+  terminalShell?: string;
+
+  /**
    * Persisted recent-workspaces registry (the chat-header "Recent folders"
    * dropdown). The `/v1/workspaces` routes 503 when absent. Distinct from
    * `workspaceRoot`, which is the single pinned root for fs/git probes.

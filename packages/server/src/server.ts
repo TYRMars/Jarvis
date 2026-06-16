@@ -28,6 +28,7 @@ import { registerAgentProfilesRoutes } from "./agent-profiles-routes.ts";
 import { registerTodosRoutes } from "./todos-routes.ts";
 import { registerChannelsInboundRoutes } from "./channels-inbound-routes.ts";
 import { registerWorkspaceRoutes } from "./workspace-routes.ts";
+import { registerWorkspaceTerminalRoutes } from "./workspace-terminal-routes.ts";
 import { registerWorkspacesRoutes } from "./workspaces-routes.ts";
 import { registerConnectorsRoutes } from "./connectors-routes.ts";
 import { registerTasksRoutes } from "./tasks-routes.ts";
@@ -65,6 +66,7 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerTodosRoutes(app, state);
   registerChannelsInboundRoutes(app, state);
   registerWorkspaceRoutes(app, state);
+  registerWorkspaceTerminalRoutes(app, state);
   registerWorkspacesRoutes(app, state);
   registerConnectorsRoutes(app, state);
   registerTasksRoutes(app, state);
