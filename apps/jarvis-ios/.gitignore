@@ -2,6 +2,9 @@
 JarvisiOS.xcodeproj/
 Generated/
 
+# Xcode build output / DerivedData — machine-specific, regenerated on every build.
+build/
+
 # Xcode user state
 xcuserdata/
 DerivedData/
