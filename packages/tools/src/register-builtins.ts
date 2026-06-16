@@ -34,6 +34,7 @@ import { HttpFetchTool, HTTP_DEFAULT_MAX_BYTES } from "./http.ts";
 import { FsPatchTool } from "./patch.ts";
 import { registerDocTools } from "./doc-tools.ts";
 import { registerLearningMemoryTools } from "./learning-memory-tools.ts";
+import { registerMemoryTools } from "./memory-tools.ts";
 import { PlanUpdateTool } from "./plan-update.ts";
 import { registerRequirementTools } from "./requirement-tools.ts";
 import { ShellExecTool, SHELL_DEFAULT_TIMEOUT_MS } from "./shell.ts";
@@ -148,6 +149,26 @@ export interface BuiltinsConfig {
    */
   learningMemory?: LearningMemoryStore;
   /**
+   * Workspace root for the agent's `memory.*` markdown-memory family
+   * (`memory.{list,read,write,delete}` + the include-directive tools). When
+   * supplied — or, when omitted, falling back to `fsRoot` — the family is
+   * registered with this directory as the workspace scope
+   * (`<root>/.jarvis/memory/`). The mutating tools (`write` / `delete` /
+   * `include_add` / `include_remove` / `include_refresh`) are approval-gated;
+   * `list` / `read` / `include_list` are read-only. Distinct from the row-based
+   * `learning.memory.*` surface (`learningMemory`).
+   */
+  memoryWorkspaceRoot?: string;
+  /**
+   * Optional user-scope root for the `memory.*` family (parent of
+   * `.jarvis/memory/`, usually the operator's home directory). When present,
+   * `scope: "user"` writes land here and the combined `memory.list` shows the
+   * user section; when absent, user scope is disabled — user-scope writes error
+   * cleanly. Has no effect unless a workspace root (`memoryWorkspaceRoot` or
+   * `fsRoot`) is available.
+   */
+  memoryUserRoot?: string;
+  /**
    * Persistent workspace TODO board store (from `@jarvis/todo`). The `todo.*`
    * tool family (`list` / `add` / `update` / `delete`) is registered only when
    * this store is present. All four are ungated (`read`-category) — matching
@@ -239,6 +260,23 @@ export function registerBuiltins(registry: ToolRegistry, config: BuiltinsConfig 
   // `MemoryStore` is present. `learning.memory.delete` is approval-gated.
   if (config.learningMemory !== undefined) {
     registerLearningMemoryTools(registry, { memory: config.learningMemory });
+  }
+
+  // Agent `memory.*` markdown-memory family: filesystem-based, no store. Needs
+  // only a workspace root. Registered when an explicit memory workspace root is
+  // configured (`memoryWorkspaceRoot`), or when an explicit `fsRoot` is — the
+  // memory tree lives under that root's `.jarvis/memory/`. We deliberately
+  // DON'T register on the bare `"."` default so a config that supplies neither
+  // root never silently exposes a memory tree in the process CWD. The user
+  // scope is enabled only when `memoryUserRoot` is present.
+  const memoryWorkspaceRoot = config.memoryWorkspaceRoot ?? config.fsRoot;
+  if (memoryWorkspaceRoot !== undefined) {
+    registerMemoryTools(
+      registry,
+      config.memoryUserRoot !== undefined
+        ? { workspaceRoot: memoryWorkspaceRoot, userRoot: config.memoryUserRoot }
+        : { workspaceRoot: memoryWorkspaceRoot },
+    );
   }
 
   // Store-backed `todo.*` family: registered when the `TodoStore` is present.

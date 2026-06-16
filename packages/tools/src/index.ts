@@ -96,6 +96,43 @@ export {
 } from "./learning-memory-tools.ts";
 export type { LearningMemoryToolStores } from "./learning-memory-tools.ts";
 
+// Agent `memory.*` markdown-memory tools (`memory.{list,read,write,delete}` +
+// the include-directive tools `memory.{include_add,include_list,include_remove,
+// include_refresh}`). Filesystem-based, no store — two scopes (workspace under
+// `<workspaceRoot>/.jarvis/memory/`, optional user under `<userRoot>/...`).
+// Registered conditionally by `registerBuiltins` when a memory workspace root
+// is available; the mutating tools are approval-gated. Distinct from the
+// row-based `learning.memory.*` surface.
+export {
+  MemoryListTool,
+  MemoryReadTool,
+  MemoryWriteTool,
+  MemoryDeleteTool,
+  MemoryIncludeAddTool,
+  MemoryIncludeListTool,
+  MemoryIncludeRemoveTool,
+  MemoryIncludeRefreshTool,
+  registerMemoryTools,
+  renderCombinedList,
+  readIndex,
+  indexPath,
+  validateSlug,
+  validateGitUrl,
+  parseIncludeTarget,
+  parseIncludeDirectives,
+  addIncludeLine,
+  removeIncludeLine,
+  directiveAsWire,
+  directiveLabel,
+  resolveInclude,
+  refreshGitCache,
+  MEMORY_DIR,
+  MAX_ENTRY_BYTES,
+  MAX_INDEX_BYTES,
+  MAX_INDEX_LINES,
+} from "./memory-tools.ts";
+export type { MemoryToolsConfig, MemoryScope, IncludeDirective } from "./memory-tools.ts";
+
 // Store-backed persistent workspace TODO board tools (`todo.{list,add,update,
 // delete}`). Registered conditionally by `registerBuiltins` when the `todos`
 // TodoStore is supplied; all four are ungated (`read`-category) — `todo.delete`

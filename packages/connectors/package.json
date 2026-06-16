@@ -1,0 +1,17 @@
+{
+  "name": "@jarvis/connectors",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Project-connector layer — import / sync / push project items to external trackers (GitHub Issues). Connector value types + GitHub client + ConnectorStore. Depends on @jarvis/core + @jarvis/project + @jarvis/store.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/project": "workspace:*",
+    "@jarvis/store": "workspace:*"
+  }
+}

@@ -48,6 +48,18 @@ importers:
         specifier: workspace:*
         version: link:../store
 
+  packages/connectors:
+    dependencies:
+      '@jarvis/core':
+        specifier: workspace:*
+        version: link:../core
+      '@jarvis/project':
+        specifier: workspace:*
+        version: link:../project
+      '@jarvis/store':
+        specifier: workspace:*
+        version: link:../store
+
   packages/core: {}
 
   packages/jarvis-app:
