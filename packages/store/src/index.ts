@@ -48,3 +48,11 @@ export {
   MemoryProjectMemoryStore,
 } from "./project-memory-store.ts";
 export { JsonFileWorkflowStore, MemoryWorkflowStore } from "./workflow-store.ts";
+export {
+  JsonFileWorkspaceStore,
+  MemoryWorkspaceStore,
+  SqliteWorkspaceStore,
+  MAX_RECENT,
+  type WorkspaceEntry,
+  type WorkspaceStore,
+} from "./workspace-store.ts";

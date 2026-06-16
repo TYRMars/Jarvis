@@ -2,7 +2,7 @@
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
 import type { Agent, Approver } from "@jarvis/core";
-import type { ConversationStore } from "@jarvis/store";
+import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
   ActivityStore,
   CommentStore,
@@ -120,6 +120,13 @@ export interface AppState {
 
   /** Pinned workspace root (for roadmap import + workspace probes). */
   workspaceRoot?: string;
+
+  /**
+   * Persisted recent-workspaces registry (the chat-header "Recent folders"
+   * dropdown). The `/v1/workspaces` routes 503 when absent. Distinct from
+   * `workspaceRoot`, which is the single pinned root for fs/git probes.
+   */
+  workspaces?: WorkspaceStore;
 
   /**
    * Absolute path to the built web SPA directory (containing `index.html`).

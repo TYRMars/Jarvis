@@ -212,6 +212,18 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_requirement ON workflow_runs(requirement_id);
+
+    CREATE TABLE IF NOT EXISTS workspace_recent (
+      path         TEXT PRIMARY KEY,
+      name         TEXT NOT NULL,
+      last_used_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workspace_recent_used ON workspace_recent(last_used_at);
+
+    CREATE TABLE IF NOT EXISTS workspace_bindings (
+      conversation_id TEXT PRIMARY KEY,
+      path            TEXT NOT NULL
+    );
   `);
 }
 

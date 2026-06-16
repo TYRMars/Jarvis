@@ -275,6 +275,7 @@ export async function buildAppState(
     docs: stores.docs,
     projectMemory: stores.projectMemory,
     workflows: stores.workflows,
+    workspaces: stores.workspaces,
     subagents: toolBundle.subagents,
     workspaceRoot: config.fsRoot,
     ...(config.webDistDir !== undefined ? { webDistDir: config.webDistDir } : {}),

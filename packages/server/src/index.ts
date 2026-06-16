@@ -147,6 +147,7 @@ export { registerPluginsRoutes } from "./plugins-routes.ts";
 export { registerAgentProfilesRoutes } from "./agent-profiles-routes.ts";
 export { registerTodosRoutes } from "./todos-routes.ts";
 export { registerWorkspaceRoutes } from "./workspace-routes.ts";
+export { registerWorkspacesRoutes } from "./workspaces-routes.ts";
 export { registerConnectorsRoutes } from "./connectors-routes.ts";
 export {
   type TaskKind,

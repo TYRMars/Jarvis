@@ -27,6 +27,7 @@ import {
   SqliteWorkflowStore,
   resolveSqlitePath,
 } from "./sqlite.ts";
+import { SqliteWorkspaceStore } from "./workspace-store.ts";
 
 // Import the exported contract suites — the same ones json-file / memory run.
 import { contractTests as conversationContract } from "./store.test.ts";
@@ -39,6 +40,7 @@ import { contract as labelContract } from "./label-store.test.ts";
 import { contractTests as docContract } from "./doc-store.test.ts";
 import { contractTests as projectMemoryContract } from "./project-memory-store.test.ts";
 import { contractTests as workflowContract } from "./workflow-store.test.ts";
+import { contract as workspaceContract } from "./workspace-store.test.ts";
 
 // Each contract's `make(dir)` gets a per-test temp dir; we open an on-disk
 // SQLite DB inside it so the suites run against a durable file (not just
@@ -57,6 +59,7 @@ labelContract("sqlite", (dir) => Promise.resolve(SqliteLabelStore.open(dbUrl(dir
 docContract("sqlite", (dir) => Promise.resolve(SqliteDocStore.open(dbUrl(dir))));
 projectMemoryContract("sqlite", (dir) => Promise.resolve(SqliteProjectMemoryStore.open(dbUrl(dir))));
 workflowContract("sqlite", (dir) => Promise.resolve(SqliteWorkflowStore.open(dbUrl(dir))));
+workspaceContract("sqlite", (dir) => Promise.resolve(SqliteWorkspaceStore.open(dbUrl(dir))));
 
 // ---------- sqlite::memory: round-trips (no temp dir needed) ----------
 
@@ -147,12 +150,16 @@ test("connectAll: sqlite:<path> yields the full StoreBundle on one file", async 
     await bundle.projects.save(p);
     const run = newWorkflowRun("wf-1", "req-1");
     await bundle.workflows.upsertRun(run);
+    await bundle.workspaces.touch("/work/beta", "Beta");
+    await bundle.workspaces.bind("c-1", "/work/beta");
 
-    // Reopen and confirm both families survived to disk.
+    // Reopen and confirm the families survived to disk.
     const reopened = await connectAll(url);
     assert.equal((await reopened.projects.findBySlug("beta"))?.id, p.id);
     assert.equal((await reopened.workflows.getRun(run.id))?.workflow_id, "wf-1");
     assert.equal((await reopened.workflows.listRuns("wf-1", "req-1")).length, 1);
+    assert.equal((await reopened.workspaces.get("/work/beta"))?.name, "Beta");
+    assert.equal(await reopened.workspaces.lookup("c-1"), "/work/beta");
   });
 });
 
