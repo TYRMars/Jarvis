@@ -7,7 +7,28 @@
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**"] },
+  {
+    // The Node/TS rewrite lives under packages/** (and apps/** once ported).
+    // Everything else in this repo is the Rust workspace, build output, or
+    // legacy tooling — keep it out of the linter entirely.
+    ignores: [
+      "**/dist/**",
+      "**/node_modules/**",
+      "target/**",
+      "crates/**",
+      "apps/**",
+      "clients/**",
+      "examples/**",
+      "scripts/**",
+      "infra/**",
+      "output/**",
+      ".jarvis/**",
+      ".claude/**",
+      ".gitnexus/**",
+      ".playwright-cli/**",
+      ".playwright-mcp/**",
+    ],
+  },
   {
     files: ["packages/**/*.ts"],
     languageOptions: { parser: tseslint.parser },
@@ -18,9 +39,16 @@ export default tseslint.config(
           object: "process",
           property: "env",
           message:
-            "Library packages must not read process.env — wire config through the apps/jarvis composition root.",
+            "Library packages must not read process.env — wire config through the composition root.",
         },
       ],
     },
+  },
+  {
+    // The composition roots are the SOLE place allowed to read process.env —
+    // they parse env into config and inject it into the library packages
+    // (mirrors the Rust rule that only apps/jarvis reads std::env).
+    files: ["packages/jarvis-app/**/*.ts", "packages/jarvis-cli/**/*.ts"],
+    rules: { "no-restricted-properties": "off" },
   },
 );

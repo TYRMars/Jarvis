@@ -1,0 +1,19 @@
+{
+  "name": "@jarvis/store",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ConversationStore backends. P2: JSON-file (default, zero deps) + in-memory (tests). connect(url) picks the backend by URL scheme. SQL backends (sqlite/postgres/mysql) land in P6.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/project": "workspace:*",
+    "@jarvis/workflow": "workspace:*"
+  }
+}

@@ -1,6 +1,27 @@
 # Node.js 重写 · 执行任务清单
 
-**状态：** Proposed（未开始）
+**状态：** P0–P7 基本完成，端到端可运行（`jarvis serve` / `jarvis mcp-serve` / `jarvis-cli`）。
+全量 typecheck + eslint + test 绿：**21 个包，1617 测试**。
+**框架定档（0.6）：** 纯 Fastify（NestJS 装饰器与现 `node --experimental-strip-types`
++ `erasableSyntaxOnly` 工具链不兼容，留待将来若需 DI 再换）。
+
+**已落地的包（packages/，括号内为测试数）：**
+- 运行时核心：`core`(21)、`llm`(156，OpenAI/Anthropic/Google/Responses+Codex/capability/fallback/profile 全 provider)、
+  `router`(24)、`memory`(41，SlidingWindow + Summarizing)、`store`(156，全域 JSON+内存后端 + connectAll)、
+  `tools`(227，echo/time/http/grep/git/workspace/fs.*/shell + requirement.*/doc.*/learning.memory.*/todo.* 条件工具 + registerBuiltins)、
+  `mcp`(28，client+server stdio)。
+- Work/Project 域：`project`(75)、`workflow`(20)；`server` 内含 kanban CRUD + 审计时间线 + auto_mode 调度器（全守卫）+ workflow 执行引擎 + worktree。
+- 周边域：`channel`(49)、`skill`(75)、`learning`(84)、`automation`(36)、`observability`(31)、`subagents`(60)、`plugin`(28)、`agent-profile`(29)、`todo`(30)。
+- HTTP 服务：`server`(405) — chat completions/SSE/WS（per-socket ChannelApprover）+ conversations CRUD +
+  projects/requirements(approve/reject/runs/review)/comments/labels/work + skills/automation/observability/diagnostics/
+  provider-admin/learning/subagents/channels(CRUD+inbound 签名校验+oauth)/doc/memories/permissions/plugins/agent-profiles/todos/workspace(files/find/diff)。
+- 组合根：`jarvis-app`(17，env 解析 + 装配全部 provider/store/tool + serve/mcp-serve/init/login/status/workspace 子命令 + 系统提示切换 + 项目上下文加载) 与 `jarvis-cli`(25，REPL + `--no-interactive` 管道)。
+
+**真正延后（明确未做）：** terminal PTY（需 `node-pty`）；`memory.*` agent-markdown 记忆工具 + git/iCloud 同步；
+GitHub connectors；tasks 路由；market 实时 HTTP 拉取；SQL 后端（P6.7，sqlite/postgres/mysql，JSON 后端已覆盖功能）；
+前端 base-URL 切换 + `shared-types`（P7.9，属客户端改线）；Electron（P7.6–7.8）/ iOS（P7.10）客户端；
+P8 下线 Rust（当前 Rust 与 Node 并存，不单方面删除）。
+
 **配套：** [nodejs-rewrite.zh-CN.md](nodejs-rewrite.zh-CN.md)（设计与策略）。本文件是
 其路线图的**可执行展开**——每个顶层任务可直接建一个 issue。
 
@@ -38,13 +59,13 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 
 > 目标：monorepo 跑起来 + 全量代理回 Rust，前端切到 Node 端口全绿。
 
-- [ ] **0.1** 初始化 pnpm workspace + Turborepo + 根 `tsconfig`/`eslint`/`prettier` `size:M` `area:infra`
-- [ ] **0.2** 共享 vitest 配置 + CI workflow（typecheck / lint / test，对标 `make lint`） `size:M` `area:infra`
-- [ ] **0.3** ESLint 规则：库包禁 `process.env`（`no-restricted-globals`），仅 `apps/jarvis` 白名单 `size:S` `area:infra`
+- [x] **0.1** 初始化 pnpm workspace + 根 `tsconfig`/`eslint` `size:M` `area:infra`（用 node `--experimental-strip-types` 取代 Turbo/vitest；`prettier` 暂缺）
+- [ ] **0.2** 共享测试配置（已落地 node:test）+ **CI workflow**（typecheck / lint / test，对标 `make lint`）仍待补 `size:M` `area:infra`
+- [x] **0.3** ESLint 规则：库包禁 `process.env`（`no-restricted-properties`），仅 `apps/jarvis` 白名单 `size:S` `area:infra`
 - [ ] **0.4** 建 `packages/shared-types` 骨架（zod schema + `z.infer` 导出） `size:S` `area:infra`
-- [ ] **0.5** `server` 空壳：`/health` + **反向代理中间件**把 `/v1/*` 全转 Rust `size:M` `area:server` `risk:high`
+- [ ] **0.5** `server` 空壳：`/health` + **反向代理中间件**把 `/v1/*` 全转 Rust `size:M` `area:server` `risk:high`（`/health` 已有；代理中间件待补）
   - ↳ 验收：前端 base URL 指向 Node 端口，所有页面行为与直连 Rust 一致
-- [ ] **0.6** 框架选型 spike：Nest-on-Fastify vs 纯 Fastify 各搭最小骨架对比并定档 `size:M` `area:server`
+- [x] **0.6** 框架选型 spike → **定档纯 Fastify**（理由见状态栏） `size:M` `area:server`
 
 ---
 
@@ -52,18 +73,18 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 
 > 目标：agent loop + 通道 + 审批门，全部不变量有测试。这是整个项目的地基。
 
-- [ ] **1.1** `Message` / `Conversation` 类型 + 序列化（对齐 OpenAI wire、externally-tagged role） `size:M`
-- [ ] **1.2** `Tool` 接口 + `ToolRegistry`（namespaced、同名覆盖语义） `size:S`
-- [ ] **1.3** `LlmProvider` 接口（`complete` + `completeStream`） `size:S`
-- [ ] **1.4** `Memory` 接口（`compact`） `size:S`
-- [ ] **1.5** `Approver` 接口 + `AlwaysApprove` / `AlwaysDeny` / `ChannelApprover` `size:M`
-- [ ] **1.6** plan / progress / approval 通道（per-invocation，AsyncIterable 或事件总线） `size:M` `risk:high`
-- [ ] **1.7** `Agent.run`（阻塞循环：complete → 派发工具 → loop 到非 ToolCalls / max_iter） `size:L` `risk:high`
-- [ ] **1.8** `Agent.runStream`（async generator → `AgentEvent`：Delta / ToolStart / ToolEnd / Done / Error） `size:L` `risk:high`
-  - ↳ 验收：恰好一个 `Done`（携带完整 `Conversation`）或一个 `Error`
-- [ ] **1.9** 不变量测试套件 `size:M` `risk:high`
-  - ↳ 工具错误捕获转文本 `tool error: {e}`；首调前按需注入 system prompt；审批 Deny 写合成 `tool denied` 消息
-- [ ] **1.10** 测试夹具：假 provider + echo 工具 `size:S`
+- [x] **1.1** `Message` / `Conversation` 类型 + 序列化（对齐 OpenAI wire、externally-tagged role） `size:M`
+- [x] **1.2** `Tool` 接口 + `ToolRegistry`（namespaced、同名覆盖语义） `size:S`
+- [x] **1.3** `LlmProvider` 接口（`complete` + `completeStream`） `size:S`
+- [x] **1.4** `Memory` 接口（`compact`） `size:S`
+- [x] **1.5** `Approver` 接口 + `AlwaysApprove` / `AlwaysDeny` / `ChannelApprover` `size:M`
+- [x] **1.6** plan / progress / approval 通道（per-invocation，`AsyncLocalStorage`） `size:M` `risk:high`
+- [x] **1.7** `Agent.run`（阻塞循环：complete → 派发工具 → loop 到非 ToolCalls / max_iter） `size:L` `risk:high`
+- [x] **1.8** `Agent.runStream`（async generator → `AgentEvent`：Delta / ToolStart / ToolEnd / Done / Error） `size:L` `risk:high`
+  - ↳ 验收：恰好一个 `Done`（携带完整 `Conversation`）或一个 `Error` ✅
+- [x] **1.9** 不变量测试套件 `size:M` `risk:high`
+  - ↳ 工具错误捕获转文本 `tool error: {e}`；首调前按需注入 system prompt；审批 Deny 写合成 `tool denied` 消息 ✅
+- [x] **1.10** 测试夹具：假 provider + echo 工具 `size:S`
 
 ---
 
@@ -71,17 +92,17 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 
 > 目标：聊天全链路走 Node，摘掉 chat 相关代理。
 
-- [ ] **2.1** `llm`：OpenAI provider（`complete` + SSE 流；arguments JSON-string；`StreamAccumulator` 按 index 重组） `size:L` `area:llm` `risk:high`
+- [x] **2.1** `llm`：OpenAI provider（`complete` + SSE 流；arguments JSON-string；`StreamAccumulator` 按 index 重组；工具名 sanitize/restore；`prompt_cache_key`） `size:L` `area:llm` `risk:high`
 - [ ] **2.2** `llm`：Anthropic provider（system 上提；`tool_use`/`tool_result` 块；`max_tokens` 必填；typed SSE） `size:L` `area:llm` `risk:high`
-- [ ] **2.3** `memory`：`SlidingWindowMemory` + turn 分组不变量（不拆 tool 对、保留 system/最近轮） `size:M` `area:memory`
-- [ ] **2.4** `store`：`connect(url)` + JSON-file `ConversationStore`（`__memory__.` 过滤、原子 tmp+rename、文件名百分号编码） `size:M` `area:store`
-- [ ] **2.5** `server`：`POST /v1/chat/completions`（阻塞 → `{message,iterations,history}`） `size:M` `area:server`
-- [ ] **2.6** `server`：`POST /v1/chat/completions/stream`（SSE，每 `data:` 一个 `AgentEvent`） `size:M` `area:server` `risk:high`
-- [ ] **2.7** `server`：`GET /v1/chat/ws`（多轮 + per-socket `ChannelApprover` + 帧协议 user/reset/resume/new/approve/deny） `size:L` `area:server` `risk:high`
-  - ↳ 验收：turn-in-progress 守卫、未知 approval id 报错、persisted 模式存 `Done.conversation`
-- [ ] **2.8** `server`：持久化会话 CRUD（`/v1/conversations*`，503-when-unconfigured） `size:M` `area:server`
-- [ ] **2.9** token 估算（`js-tiktoken`）接入 memory `size:S` `area:memory`
-- [ ] **2.10** 前端聊天页切 Node + 摘 chat 代理 + 黄金样本对齐 `size:M` `area:web` `risk:high`
+- [x] **2.3** `memory`：`SlidingWindowMemory` + turn 分组不变量（不拆 tool 对、保留 system/最近轮、cache-breakpoint 感知） `size:M` `area:memory`
+- [x] **2.4** `store`：`connect(url)` + JSON-file + 内存 `ConversationStore`（原子 tmp+rename、文件名百分号编码；`__` 内部 id 由 server 层过滤） `size:M` `area:store`
+- [x] **2.5** `server`：`POST /v1/chat/completions`（阻塞 → `{message,iterations,history}`） `size:M` `area:server`
+- [x] **2.6** `server`：`POST /v1/chat/completions/stream`（SSE，每 `data:` 一个 `AgentEvent`） `size:M` `area:server` `risk:high`
+- [x] **2.7** `server`：`GET /v1/chat/ws`（多轮 + per-socket `ChannelApprover` + 帧协议 user/reset/resume/new/approve/deny） `size:L` `area:server` `risk:high`
+  - ↳ 验收：turn-in-progress 守卫、未知 approval id 报错、persisted 模式存 `Done.conversation` ✅（其余 Rust 已演进的帧如 fork/hitl/skills 留待后续）
+- [x] **2.8** `server`：持久化会话 CRUD（`/v1/conversations*`，503-when-unconfigured、`__` 内部 id 拒绝/隐藏） `size:M` `area:server`
+- [~] **2.9** token 估算接入 memory `size:S` `area:memory`（char-ratio + json-aware 估算器已落地并接入；`js-tiktoken` 精确估算器留作后续可插拔精度提升）
+- [ ] **2.10** 前端聊天页切 Node + 摘 chat 代理 + 黄金样本对齐 `size:M` `area:web` `risk:high`（待 apps/* 纳入 workspace + 代理层就绪）
 
 ---
 

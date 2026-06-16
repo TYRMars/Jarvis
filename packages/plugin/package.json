@@ -1,0 +1,21 @@
+{
+  "name": "@jarvis/plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Plugin packaging — plugin.json manifests bundling skills + MCP servers; install/uninstall via PluginManager.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/channel": "workspace:*",
+    "@jarvis/core": "workspace:*",
+    "@jarvis/mcp": "workspace:*",
+    "@jarvis/skill": "workspace:*",
+    "@jarvis/store": "workspace:*"
+  }
+}

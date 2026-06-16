@@ -1,0 +1,17 @@
+{
+  "name": "@jarvis/memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Short-term Memory implementations + the TokenEstimator surface. P2: SlidingWindowMemory (turn-grouped, token-budgeted) + char-ratio / json-aware estimators. SummarizingMemory lands in P6.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@jarvis/project",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Project domain value types + *Store traits — Project / Requirement / RequirementRun / VerificationPlan / Activity / Comment / Label / DocProject / DocDraft / ProjectMemory. The 'Work' feature (kanban + audit timeline). Depends on @jarvis/core (Usage type).",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "@jarvis/core": "workspace:*" }
+}

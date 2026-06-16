@@ -1,0 +1,13 @@
+{
+  "name": "@jarvis/workflow",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Declarative multi-step agent Workflows — WorkflowDefinition / WorkflowStep (Agent/Pipeline/Phase/Parallel) / WorkflowRun + WorkflowStore. Bindable to a Requirement. Depends on @jarvis/core only.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "@jarvis/core": "workspace:*" }
+}

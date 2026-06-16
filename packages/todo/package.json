@@ -1,0 +1,18 @@
+{
+  "name": "@jarvis/todo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Workspace TODO board — TodoItem + TodoStore (the persistent kanban distinct from the per-turn plan channel).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/store": "workspace:*"
+  }
+}

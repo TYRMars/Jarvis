@@ -1,0 +1,16 @@
+{
+  "name": "@jarvis/observability",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Eval* + Observed* value types + ObservabilityStore / EvalStore traits + JSON/memory backends.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/store": "workspace:*"
+  }
+}
