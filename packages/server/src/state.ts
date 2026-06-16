@@ -29,6 +29,19 @@ import type {
 import type { AutomationStore } from "@jarvis/automation";
 import type { EvalStore, ObservabilityStore } from "@jarvis/observability";
 import type { SubAgentRegistry, SubAgentRunStore } from "@jarvis/subagents";
+import type {
+  ConnectorAccountStore,
+  ProjectBindingStore,
+  ProjectConnector,
+  RequirementBindingStore,
+} from "@jarvis/connectors";
+
+/**
+ * Resolves a connector account's secret reference (e.g. an env-var name or
+ * keychain id) to the actual token. Supplied by the composition root so the
+ * server/library never reads process.env. Returns undefined when unresolved.
+ */
+export type ConnectorSecretResolver = (ref: string) => Promise<string | undefined>;
 
 export interface AppState {
   /**
@@ -95,6 +108,15 @@ export interface AppState {
   evals?: EvalStore;
   subagents?: SubAgentRegistry;
   subagentRuns?: SubAgentRunStore;
+
+  // ---- Project connectors (GitHub Issues import/sync/push) ----
+  connectorAccounts?: ConnectorAccountStore;
+  connectorProjectBindings?: ProjectBindingStore;
+  connectorRequirementBindings?: RequirementBindingStore;
+  /** Configured connector instances (e.g. a GitHubConnector), keyed by id(). */
+  connectors?: ProjectConnector[];
+  /** Resolves a connector account's secret ref → token. */
+  connectorSecrets?: ConnectorSecretResolver;
 
   /** Pinned workspace root (for roadmap import + workspace probes). */
   workspaceRoot?: string;

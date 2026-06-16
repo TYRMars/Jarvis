@@ -28,6 +28,8 @@ import { registerAgentProfilesRoutes } from "./agent-profiles-routes.ts";
 import { registerTodosRoutes } from "./todos-routes.ts";
 import { registerChannelsInboundRoutes } from "./channels-inbound-routes.ts";
 import { registerWorkspaceRoutes } from "./workspace-routes.ts";
+import { registerConnectorsRoutes } from "./connectors-routes.ts";
+import { registerTasksRoutes } from "./tasks-routes.ts";
 import { registerUiRoutes } from "./ui.ts";
 import type { AppState } from "./state.ts";
 
@@ -62,6 +64,8 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerTodosRoutes(app, state);
   registerChannelsInboundRoutes(app, state);
   registerWorkspaceRoutes(app, state);
+  registerConnectorsRoutes(app, state);
+  registerTasksRoutes(app, state);
 
   // LAST: the SPA static + fallback catch-all. Registered after every /v1 +
   // /health + WS route so its not-found handler only fires on unmatched paths

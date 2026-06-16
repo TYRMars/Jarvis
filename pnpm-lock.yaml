@@ -223,6 +223,9 @@ importers:
       '@jarvis/channel':
         specifier: workspace:*
         version: link:../channel
+      '@jarvis/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core

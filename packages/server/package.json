@@ -17,6 +17,7 @@
     "@jarvis/agent-profile": "workspace:*",
     "@jarvis/automation": "workspace:*",
     "@jarvis/channel": "workspace:*",
+    "@jarvis/connectors": "workspace:*",
     "@jarvis/core": "workspace:*",
     "@jarvis/learning": "workspace:*",
     "@jarvis/observability": "workspace:*",
