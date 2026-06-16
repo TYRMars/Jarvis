@@ -19,7 +19,7 @@
 
 **真正延后（明确未做）：** terminal PTY（需 `node-pty`）；`memory.*` agent-markdown 记忆工具 + git/iCloud 同步；
 GitHub connectors；tasks 路由；market 实时 HTTP 拉取；SQL 后端（P6.7，sqlite/postgres/mysql，JSON 后端已覆盖功能）；
-前端 base-URL 切换 + `shared-types`（P7.9，属客户端改线）；Electron（P7.6–7.8）/ iOS（P7.10）客户端；
+`shared-types`（替 `ts_rs` codegen，P7.9 余项，属客户端改线 — base-URL 切换已完成，见下）；Electron（P7.6–7.8）/ iOS（P7.10）客户端；
 P8 下线 Rust（当前 Rust 与 Node 并存，不单方面删除）。
 
 **配套：** [nodejs-rewrite.zh-CN.md](nodejs-rewrite.zh-CN.md)（设计与策略）。本文件是
@@ -205,7 +205,7 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 - [ ] **7.6** Electron：主进程内嵌 `server` 包 + `loadFile(dist)` + 窗口 `1280×860` `size:L` `area:desktop`
 - [ ] **7.7** Electron：preload bridge + ipc（替 `@tauri-apps/api`）+ 前端 `services/desktop.ts` 适配 `size:M` `area:desktop`
 - [ ] **7.8** `electron-builder` 打包（macOS dmg/zip）+ release CI `size:M` `area:desktop`
-- [ ] **7.9** Web：base URL 切换 + `types/generated` → `shared-types` + 删 `ts-codegen` `size:M` `area:web`
+- [~] **7.9** Web：base URL 切换 ✅（`VITE_BACKEND_URL` 驱动 dev 代理 + `api.ts` 默认源，运行时 `localStorage jarvis.apiOrigin` / `setApiOriginOverride` 仍可热切；`@jarvis/jarvis-app` 经 `JARVIS_WEB_DIST` 服务构建好的 SPA）。余项：`types/generated` → `shared-types` + 删 `ts-codegen`（更大的前端改线，延后） `size:M` `area:web`
 - [ ] **7.10** iOS：base URL 切换 + `/v1` 契约 smoke test `size:S` `area:ios`
 
 ---

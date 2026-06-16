@@ -102,6 +102,13 @@ export interface JarvisConfig {
   addr: string;
   /** Resolved workspace root for fs.* / git.* / shell cwd. */
   fsRoot: string;
+  /**
+   * Directory of the built web SPA to serve at `/` (JARVIS_WEB_DIST). When
+   * set, `serve` serves it with the react-router SPA fallback; absent →
+   * API-only (no static UI). The Rust binary always bakes `dist/` in; here
+   * the operator points at `apps/jarvis-web/dist` after `npm run build`.
+   */
+  webDistDir?: string;
   /** Auto-load AGENTS.md / CLAUDE.md / AGENT.md into the system prompt. */
   includeProjectContext: boolean;
   /** Cap on injected project-context bytes. */
@@ -283,6 +290,7 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
 
     addr: firstNonEmpty(env, "JARVIS_ADDR") ?? "0.0.0.0:7001",
     fsRoot: firstNonEmpty(env, "JARVIS_FS_ROOT") ?? ".",
+    webDistDir: firstNonEmpty(env, "JARVIS_WEB_DIST"),
     includeProjectContext: !truthy(env.JARVIS_NO_PROJECT_CONTEXT),
     projectContextMaxBytes: parseIntOr(env.JARVIS_PROJECT_CONTEXT_BYTES, 8 * 1024),
     codingPromptAuto: true,
