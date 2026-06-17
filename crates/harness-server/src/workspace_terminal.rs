@@ -17,6 +17,11 @@
 //! same way the diff/files endpoints do) or `AppState::workspace_root`
 //! when absent. `503` when no root resolves.
 //!
+//! Access control: the WS upgrade enforces a same-origin `Origin`
+//! check (`origin_allowed`) so a cross-site page cannot hijack the
+//! handshake into a drive-by shell, and a global concurrency cap
+//! (`MAX_CONCURRENT_TERMINALS`) bounds live PTY sessions.
+//!
 //! The shell is picked from `$SHELL`; we fall back to `/bin/zsh` then
 //! `/bin/bash` then `/bin/sh` on Unix, and `cmd.exe` on Windows. The
 //! child inherits the server's environment except `TERM` is forced to
@@ -25,6 +30,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::{
@@ -32,7 +38,7 @@ use axum::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::get,
     Router,
@@ -115,18 +121,110 @@ fn resolve_workspace(
     })
 }
 
+/// Cross-site WebSocket hijacking (CSWSH) guard.
+///
+/// WebSocket upgrades are **not** subject to the browser same-origin
+/// policy, so without this check any web page the user happens to
+/// visit could open `ws://<host>/v1/workspace/terminal/ws`, stream
+/// shell commands into the victim's PTY, and read the output back —
+/// i.e. drive-by remote code execution on the machine running the
+/// server.
+///
+/// Policy:
+/// - `Origin` present → its authority (host[:port]) must equal the
+///   request's `Host` header. The web UI is baked into this server and
+///   served from the same origin, so legitimate browser connections
+///   always match; a cross-origin page does not.
+/// - `Origin` absent → allowed. Browsers always send `Origin` on a WS
+///   handshake, so its absence means a non-browser client (CLI / test
+///   / curl) for which the same-origin policy is irrelevant anyway —
+///   those are gated by the network bind, not by `Origin`.
+fn origin_allowed(headers: &HeaderMap) -> bool {
+    let origin = match headers.get(header::ORIGIN) {
+        Some(o) => o,
+        None => return true,
+    };
+    let origin = match origin.to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    // `Origin` is `scheme://host[:port]` with no path; strip the
+    // scheme down to the authority and be defensive about any trailing
+    // path bytes.
+    let authority = match origin.split_once("://") {
+        Some((_scheme, rest)) => rest.split('/').next().unwrap_or(""),
+        None => return false,
+    };
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    !authority.is_empty() && authority.eq_ignore_ascii_case(host)
+}
+
+/// Max concurrent web-terminal sessions. Each live session owns a real
+/// OS process plus a PTY master fd; without a ceiling a flood of
+/// connections could exhaust processes / file descriptors (DoS).
+const MAX_CONCURRENT_TERMINALS: usize = 8;
+static ACTIVE_TERMINALS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard for a terminal slot — decrements the active counter on
+/// drop so the slot is reclaimed however the session ends (clean
+/// close, error, or panic).
+struct TerminalSlot;
+
+impl Drop for TerminalSlot {
+    fn drop(&mut self) {
+        ACTIVE_TERMINALS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Reserve one of the [`MAX_CONCURRENT_TERMINALS`] slots, or `None`
+/// when the cap is already reached.
+fn try_acquire_slot() -> Option<TerminalSlot> {
+    let prev = ACTIVE_TERMINALS.fetch_add(1, Ordering::SeqCst);
+    if prev >= MAX_CONCURRENT_TERMINALS {
+        ACTIVE_TERMINALS.fetch_sub(1, Ordering::SeqCst);
+        None
+    } else {
+        Some(TerminalSlot)
+    }
+}
+
 async fn terminal_ws(
     ws: WebSocketUpgrade,
     State(workspace): State<WorkspaceLayer>,
     Query(q): Query<TerminalQuery>,
+    headers: HeaderMap,
 ) -> Response {
+    if !origin_allowed(&headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "cross-origin terminal connection refused" })),
+        )
+            .into_response();
+    }
     let root = match resolve_workspace(&workspace, q.root.as_deref()) {
         Ok(r) => r,
         Err(r) => return r,
     };
-    let cols = q.cols.unwrap_or(80);
-    let rows = q.rows.unwrap_or(24);
+    let slot = match try_acquire_slot() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({ "error": "too many active terminal sessions" })),
+            )
+                .into_response();
+        }
+    };
+    // `cols`/`rows` are `u16`, so they're already bounded to
+    // `0..=0xffff`; just reject the degenerate `0` by clamping to 1.
+    let cols = q.cols.unwrap_or(80).max(1);
+    let rows = q.rows.unwrap_or(24).max(1);
     ws.on_upgrade(move |sock| async move {
+        // Hold the slot for the lifetime of the session.
+        let _slot = slot;
         if let Err(e) = run_terminal(sock, root, cols, rows).await {
             tracing::warn!(error = %e, "terminal session ended with error");
         }
@@ -256,9 +354,12 @@ async fn run_terminal(
                     }
                     Ok(ClientFrame::Resize { cols, rows }) => {
                         let m = master_for_recv.lock().await;
+                        // `u16` already bounds these to `0..=0xffff`;
+                        // clamp the degenerate `0` up to 1 so a resize
+                        // never collapses a dimension.
                         let _ = m.resize(PtySize {
-                            rows,
-                            cols,
+                            rows: rows.max(1),
+                            cols: cols.max(1),
                             pixel_width: 0,
                             pixel_height: 0,
                         });
@@ -292,4 +393,90 @@ async fn run_terminal(
     let _ = child.kill();
     let _ = reader_handle.await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    fn headers_with(origin: Option<&str>, host: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(o) = origin {
+            h.insert(header::ORIGIN, HeaderValue::from_str(o).unwrap());
+        }
+        if let Some(host) = host {
+            h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn same_origin_allowed() {
+        let h = headers_with(Some("http://localhost:7001"), Some("localhost:7001"));
+        assert!(origin_allowed(&h));
+    }
+
+    #[test]
+    fn cross_origin_rejected() {
+        // The CSWSH / drive-by-RCE case: a different site opening the WS.
+        let h = headers_with(Some("http://evil.example"), Some("localhost:7001"));
+        assert!(!origin_allowed(&h));
+    }
+
+    #[test]
+    fn cross_origin_same_host_different_port_rejected() {
+        let h = headers_with(Some("http://localhost:9999"), Some("localhost:7001"));
+        assert!(!origin_allowed(&h));
+    }
+
+    #[test]
+    fn missing_origin_allowed_for_non_browser_clients() {
+        // CLI / test / curl never send Origin; SOP is irrelevant to them.
+        let h = headers_with(None, Some("localhost:7001"));
+        assert!(origin_allowed(&h));
+    }
+
+    #[test]
+    fn host_comparison_is_case_insensitive() {
+        let h = headers_with(Some("http://LocalHost:7001"), Some("localhost:7001"));
+        assert!(origin_allowed(&h));
+    }
+
+    #[test]
+    fn https_origin_authority_matches_host() {
+        let h = headers_with(Some("https://example.com"), Some("example.com"));
+        assert!(origin_allowed(&h));
+    }
+
+    #[test]
+    fn malformed_origin_rejected() {
+        let h = headers_with(Some("not-a-url"), Some("localhost:7001"));
+        assert!(!origin_allowed(&h));
+    }
+
+    #[test]
+    fn null_origin_rejected() {
+        // Sandboxed iframes / some redirects send `Origin: null`.
+        let h = headers_with(Some("null"), Some("localhost:7001"));
+        assert!(!origin_allowed(&h));
+    }
+
+    #[test]
+    fn concurrency_slots_cap_and_release() {
+        // Exhaust the cap, confirm the next acquire fails, then confirm
+        // dropping a guard frees a slot. Serialized via the global
+        // counter — reset to a known baseline first.
+        ACTIVE_TERMINALS.store(0, Ordering::SeqCst);
+        let mut slots = Vec::new();
+        for _ in 0..MAX_CONCURRENT_TERMINALS {
+            slots.push(try_acquire_slot().expect("under cap"));
+        }
+        assert!(try_acquire_slot().is_none(), "cap should reject overflow");
+        drop(slots.pop());
+        assert!(try_acquire_slot().is_some(), "freed slot is reusable");
+        // Clean up so we don't leak counter state into other tests.
+        slots.clear();
+        ACTIVE_TERMINALS.store(0, Ordering::SeqCst);
+    }
 }
