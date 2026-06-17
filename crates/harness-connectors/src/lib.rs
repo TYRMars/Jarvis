@@ -47,9 +47,26 @@ pub enum ConnectorError {
     /// or pass `force`.
     #[error("remote conflict: remote updated at {remote_updated_at}")]
     Conflict { remote_updated_at: String },
+    /// The remote throttled us (HTTP 429 or a 403 secondary/abuse rate
+    /// limit). This is a **transient** condition — distinct from
+    /// [`Auth`](ConnectorError::Auth) so callers don't rotate a valid
+    /// token in response to a throttle. `retry_after` carries the
+    /// server-advertised cooldown in seconds when present.
+    #[error("connector rate limited (retry_after={retry_after:?}s)")]
+    RateLimited { retry_after: Option<u64> },
     /// Transport / decode / unexpected-shape failures.
     #[error("connector error: {0}")]
     Other(String),
+}
+
+impl ConnectorError {
+    /// Whether the failure is transient and the same call may succeed on
+    /// retry. Only throttles ([`RateLimited`](ConnectorError::RateLimited))
+    /// qualify today — auth/not-found/conflict/other are all terminal for
+    /// the caller.
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, ConnectorError::RateLimited { .. })
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -375,6 +392,19 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         assert!(json.contains("GITHUB_TOKEN"));
         assert_eq!(a.connector, "github");
+    }
+
+    #[test]
+    fn only_rate_limited_is_retryable() {
+        assert!(ConnectorError::RateLimited { retry_after: Some(30) }.is_retryable());
+        assert!(ConnectorError::RateLimited { retry_after: None }.is_retryable());
+        assert!(!ConnectorError::Auth("nope".into()).is_retryable());
+        assert!(!ConnectorError::NotFound("gone".into()).is_retryable());
+        assert!(!ConnectorError::Other("boom".into()).is_retryable());
+        assert!(!ConnectorError::Conflict {
+            remote_updated_at: "2026-06-17T00:00:00Z".into()
+        }
+        .is_retryable());
     }
 
     #[test]

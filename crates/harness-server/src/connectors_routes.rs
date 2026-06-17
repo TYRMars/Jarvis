@@ -127,6 +127,7 @@ fn connector_error(e: ConnectorError) -> Response {
         ConnectorError::Auth(_) => StatusCode::BAD_GATEWAY,
         ConnectorError::NotFound(_) => StatusCode::NOT_FOUND,
         ConnectorError::Conflict { .. } => StatusCode::CONFLICT,
+        ConnectorError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         ConnectorError::Other(_) => StatusCode::BAD_GATEWAY,
     };
     (status, Json(json!({"error": e.to_string()}))).into_response()

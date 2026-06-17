@@ -6,6 +6,8 @@
 //! base URL is injectable so tests (and GHES deployments) can point it
 //! at a stub server.
 
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::{
@@ -19,6 +21,12 @@ const PER_PAGE: usize = 100;
 /// Hard cap on pages per pull — 1 000 issues. Beyond that a cursor-based
 /// incremental pull (Phase 5) is the right tool, not a bigger loop.
 const MAX_PAGES: usize = 10;
+/// How many times `send` re-issues a request after a rate-limit response
+/// before giving up and surfacing [`ConnectorError::RateLimited`].
+const MAX_RETRIES: u32 = 3;
+/// Upper bound on any single backoff sleep, so a hostile/garbage
+/// `Retry-After` can't park a pull for minutes.
+const MAX_BACKOFF_SECS: u64 = 60;
 
 pub struct GitHubConnector {
     http: reqwest::Client,
@@ -59,19 +67,116 @@ impl GitHubConnector {
             .header("user-agent", "jarvis-connector")
     }
 
+    /// Issue a request, retrying on rate-limit responses with backoff that
+    /// honours `Retry-After` when present. Non-throttle errors return
+    /// immediately. The builder is cloned per attempt (every request we
+    /// make has a cloneable body), so a `try_clone` miss degrades to a
+    /// single shot rather than a panic.
     async fn send(&self, req: reqwest::RequestBuilder) -> Result<Value, ConnectorError> {
+        let mut attempt: u32 = 0;
+        loop {
+            let Some(this_try) = req.try_clone() else {
+                return self.send_once(req).await;
+            };
+            match self.send_once(this_try).await {
+                Err(ConnectorError::RateLimited { retry_after }) if attempt < MAX_RETRIES => {
+                    tokio::time::sleep(backoff_delay(attempt, retry_after)).await;
+                    attempt += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn send_once(&self, req: reqwest::RequestBuilder) -> Result<Value, ConnectorError> {
         let resp = req
             .send()
             .await
             .map_err(|e| ConnectorError::Other(format!("github request failed: {e}")))?;
         let status = resp.status();
+        // Snapshot the rate-limit headers before `json()` consumes the body.
+        let remaining = header_str(resp.headers(), "x-ratelimit-remaining");
+        let retry_after = header_str(resp.headers(), "retry-after");
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         match status.as_u16() {
             200..=299 => Ok(body),
-            401 | 403 => Err(ConnectorError::Auth(github_message(&body, status))),
-            404 => Err(ConnectorError::NotFound(github_message(&body, status))),
-            _ => Err(ConnectorError::Other(github_message(&body, status))),
+            code => Err(classify_error(
+                code,
+                remaining.as_deref(),
+                retry_after.as_deref(),
+                &body,
+                status,
+            )),
         }
+    }
+}
+
+fn header_str(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+/// GitHub returns **403 for both** authorization failures and
+/// secondary/abuse rate limits, and **429** for primary/secondary limits.
+/// A response is a throttle when the status is 429, or when a 403 carries
+/// rate-limit signals: a `Retry-After` header (secondary/abuse) or
+/// `x-ratelimit-remaining: 0` (primary limit exhausted). A bare 403 is a
+/// genuine auth failure.
+fn is_rate_limited(status: u16, remaining: Option<&str>, retry_after: Option<&str>) -> bool {
+    if status == 429 {
+        return true;
+    }
+    if status == 403 {
+        if retry_after.is_some() {
+            return true;
+        }
+        if remaining.map(|r| r.trim() == "0").unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse GitHub's `Retry-After` (delta-seconds) into a bounded cooldown.
+/// GitHub sends an integer number of seconds; anything non-numeric (e.g.
+/// an HTTP-date) is ignored so the caller falls back to exponential
+/// backoff.
+fn parse_retry_after(retry_after: Option<&str>) -> Option<u64> {
+    retry_after
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|s| s.min(MAX_BACKOFF_SECS))
+}
+
+/// Backoff for retry attempt `attempt` (0-based): honour the server's
+/// `Retry-After` when given, else exponential 1s, 2s, 4s … capped.
+fn backoff_delay(attempt: u32, retry_after: Option<u64>) -> Duration {
+    let secs = match retry_after {
+        Some(s) => s.min(MAX_BACKOFF_SECS),
+        None => (1u64 << attempt.min(6)).min(MAX_BACKOFF_SECS),
+    };
+    Duration::from_secs(secs)
+}
+
+/// Map a non-2xx GitHub response to a [`ConnectorError`], distinguishing a
+/// retryable throttle from a permanent auth/not-found/other failure.
+fn classify_error(
+    status: u16,
+    remaining: Option<&str>,
+    retry_after: Option<&str>,
+    body: &Value,
+    status_full: reqwest::StatusCode,
+) -> ConnectorError {
+    if is_rate_limited(status, remaining, retry_after) {
+        return ConnectorError::RateLimited {
+            retry_after: parse_retry_after(retry_after),
+        };
+    }
+    match status {
+        401 | 403 => ConnectorError::Auth(github_message(body, status_full)),
+        404 => ConnectorError::NotFound(github_message(body, status_full)),
+        _ => ConnectorError::Other(github_message(body, status_full)),
     }
 }
 
@@ -355,6 +460,87 @@ mod tests {
             "pull_request": {"url": "…"}
         });
         assert!(parse_issue(&pr).is_none(), "PRs must be excluded from pulls");
+    }
+
+    #[test]
+    fn rate_limit_detection_distinguishes_throttle_from_auth() {
+        // 429 is always a throttle, headers or not.
+        assert!(is_rate_limited(429, None, None));
+        // 403 + Retry-After => secondary/abuse limit, not auth.
+        assert!(is_rate_limited(403, None, Some("30")));
+        // 403 + exhausted primary budget => throttle.
+        assert!(is_rate_limited(403, Some("0"), None));
+        assert!(is_rate_limited(403, Some(" 0 "), None));
+        // Bare 403 (no rate-limit signal) is a genuine auth failure.
+        assert!(!is_rate_limited(403, Some("57"), None));
+        assert!(!is_rate_limited(403, None, None));
+        // 401 is always auth.
+        assert!(!is_rate_limited(401, None, None));
+        // Unrelated statuses are never throttles.
+        assert!(!is_rate_limited(404, None, None));
+        assert!(!is_rate_limited(500, None, None));
+    }
+
+    #[test]
+    fn classify_error_maps_each_kind() {
+        use serde_json::json;
+        let st = |c: u16| reqwest::StatusCode::from_u16(c).unwrap();
+        let body = json!({"message": "bad"});
+
+        // 429 → retryable RateLimited carrying the parsed Retry-After.
+        let e = classify_error(429, None, Some("12"), &body, st(429));
+        assert!(matches!(e, ConnectorError::RateLimited { retry_after: Some(12) }));
+        assert!(e.is_retryable());
+
+        // 403 rate-limit → RateLimited, NOT Auth (the bug this fixes).
+        let e = classify_error(403, Some("0"), None, &body, st(403));
+        assert!(matches!(e, ConnectorError::RateLimited { retry_after: None }));
+
+        // Bare 403 → Auth.
+        assert!(matches!(
+            classify_error(403, None, None, &body, st(403)),
+            ConnectorError::Auth(_)
+        ));
+        // 401 → Auth.
+        assert!(matches!(
+            classify_error(401, None, None, &body, st(401)),
+            ConnectorError::Auth(_)
+        ));
+        // 404 → NotFound.
+        assert!(matches!(
+            classify_error(404, None, None, &body, st(404)),
+            ConnectorError::NotFound(_)
+        ));
+        // Anything else → Other.
+        assert!(matches!(
+            classify_error(500, None, None, &body, st(500)),
+            ConnectorError::Other(_)
+        ));
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_and_ignores_dates() {
+        assert_eq!(parse_retry_after(Some("30")), Some(30));
+        assert_eq!(parse_retry_after(Some("  5 ")), Some(5));
+        // Capped at the backoff ceiling.
+        assert_eq!(parse_retry_after(Some("9999")), Some(MAX_BACKOFF_SECS));
+        // HTTP-date / garbage / absent → None (fall back to exponential).
+        assert_eq!(parse_retry_after(Some("Wed, 21 Oct 2026 07:28:00 GMT")), None);
+        assert_eq!(parse_retry_after(Some("")), None);
+        assert_eq!(parse_retry_after(None), None);
+    }
+
+    #[test]
+    fn backoff_is_exponential_then_capped_and_honours_retry_after() {
+        // Server-advertised cooldown wins.
+        assert_eq!(backoff_delay(0, Some(15)), Duration::from_secs(15));
+        assert_eq!(backoff_delay(3, Some(99)), Duration::from_secs(MAX_BACKOFF_SECS));
+        // No Retry-After → 1, 2, 4, 8 …
+        assert_eq!(backoff_delay(0, None), Duration::from_secs(1));
+        assert_eq!(backoff_delay(1, None), Duration::from_secs(2));
+        assert_eq!(backoff_delay(2, None), Duration::from_secs(4));
+        // Large attempt counts stay bounded.
+        assert_eq!(backoff_delay(20, None), Duration::from_secs(MAX_BACKOFF_SECS));
     }
 
     #[test]
