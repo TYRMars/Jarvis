@@ -378,6 +378,61 @@ async fn import_remote_project(
         &req.remote_project_id,
     );
 
+    // Persist the binding *before* importing child rows (claim/commit
+    // ordering). Two payoffs over the old "upsert the binding last" flow:
+    //   * the dup guard now has a durable parent to observe, and
+    //   * a mid-import failure leaves a recoverable parent — a retry is
+    //     refused by the guard and recovery is an idempotent `sync`,
+    //     instead of orphaning requirement rows under a binding id that
+    //     was never written (which a retry would then re-import as
+    //     duplicates under a fresh binding id).
+    if let Err(e) = cx.project_bindings.upsert(&binding).await {
+        return internal_error(e);
+    }
+
+    // The dup guard above is a read-then-act with no lock, so two
+    // concurrent imports of the same (connector, remote project) can both
+    // pass it. Resolve that race now that both claims are durable: the
+    // lexicographically-smallest binding id wins, every other claimant
+    // drops its own row and 409s. Only the winner reaches `pull_into`, so
+    // the remote rows are never raced into two projects.
+    match cx.project_bindings.list(None).await {
+        Ok(all) => {
+            let winner = all
+                .iter()
+                .filter(|b| {
+                    b.connector == cx.connector.id()
+                        && b.remote_project_id == req.remote_project_id
+                })
+                .min_by(|a, b| a.id.cmp(&b.id));
+            if let Some(winner) = winner {
+                if winner.id != binding.id {
+                    let lost = (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": "remote project already bound",
+                            "binding_id": winner.id,
+                            "project_id": winner.project_id,
+                        })),
+                    )
+                        .into_response();
+                    if let Err(e) = cx.project_bindings.delete(&binding.id).await {
+                        warn!(error = %e, binding_id = %binding.id,
+                            "failed to drop losing import claim");
+                    }
+                    return lost;
+                }
+            }
+        }
+        Err(e) => {
+            if let Err(del) = cx.project_bindings.delete(&binding.id).await {
+                warn!(error = %del, binding_id = %binding.id,
+                    "failed to drop import claim after a failed dup re-check");
+            }
+            return internal_error(e);
+        }
+    }
+
     let summary = match pull_into(
         &state,
         &cx,
@@ -391,6 +446,9 @@ async fn import_remote_project(
         Err(r) => return r,
     };
 
+    // Commit the advanced sync cursor / touch timestamp. The binding row
+    // already exists from the claim above, so a failure here no longer
+    // orphans the requirements imported by `pull_into`.
     if let Err(e) = cx.project_bindings.upsert(&binding).await {
         return internal_error(e);
     }
@@ -746,6 +804,7 @@ mod tests {
     use axum::http::Request;
     use harness_connectors::{PullResult, PushAction, PushResult, RemoteProject};
     use harness_core::{Agent, AgentConfig, ChatRequest, ChatResponse, Error, LlmProvider};
+    use harness_project::{ProjectStore, RequirementStore};
     use harness_store::{
         MemoryActivityStore, MemoryConnectorAccountStore, MemoryProjectBindingStore,
         MemoryProjectStore, MemoryRequirementBindingStore, MemoryRequirementStore,
@@ -1088,6 +1147,106 @@ mod tests {
         assert!(
             acts.iter().any(|a| a.kind == ActivityKind::ConnectorSync),
             "push must leave an audit row"
+        );
+    }
+
+    /// Wraps `MemoryProjectBindingStore` but fails the first `upsert`
+    /// (the import's claim) so we can prove a claim failure aborts before
+    /// any child rows are written.
+    struct ClaimFailsBindingStore {
+        inner: MemoryProjectBindingStore,
+        upserts: Mutex<usize>,
+    }
+
+    impl ClaimFailsBindingStore {
+        fn new() -> Self {
+            Self {
+                inner: MemoryProjectBindingStore::new(),
+                upserts: Mutex::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl harness_connectors::ProjectBindingStore for ClaimFailsBindingStore {
+        async fn upsert(&self, binding: &ProjectBinding) -> Result<(), harness_core::BoxError> {
+            let first = {
+                let mut n = self.upserts.lock().unwrap();
+                *n += 1;
+                *n == 1
+            };
+            if first {
+                return Err("simulated claim upsert failure".into());
+            }
+            self.inner.upsert(binding).await
+        }
+        async fn get(&self, id: &str) -> Result<Option<ProjectBinding>, harness_core::BoxError> {
+            self.inner.get(id).await
+        }
+        async fn list(
+            &self,
+            project_id: Option<&str>,
+        ) -> Result<Vec<ProjectBinding>, harness_core::BoxError> {
+            self.inner.list(project_id).await
+        }
+        async fn delete(&self, id: &str) -> Result<bool, harness_core::BoxError> {
+            self.inner.delete(id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn import_aborts_cleanly_when_binding_claim_fails() {
+        // The binding is now persisted (claimed) *before* `pull_into`
+        // writes any requirements. A claim failure must therefore leave
+        // zero requirement rows behind — the old "upsert binding last"
+        // flow would have committed the requirements first and orphaned
+        // them under a binding id that never landed.
+        let mock = Arc::new(MockConnector::new(vec![
+            issue("1", "open thing", RemoteIssueState::Open),
+            issue("2", "closed thing", RemoteIssueState::Closed),
+        ]));
+        let projects = Arc::new(MemoryProjectStore::new());
+        let requirements = Arc::new(MemoryRequirementStore::new());
+        let project = Project::new("target", "desc");
+        let project_id = project.id.clone();
+        projects.save(&project).await.unwrap();
+
+        let state = AppState::new(Arc::new(Agent::new(
+            Arc::new(StubLlm) as Arc<dyn LlmProvider>,
+            AgentConfig::new("stub-model"),
+        )))
+        .with_project_store(projects)
+        .with_requirement_store(requirements.clone())
+        .with_activity_store(Arc::new(MemoryActivityStore::new()))
+        .with_connector(mock)
+        .with_connector_stores(
+            Arc::new(MemoryConnectorAccountStore::new()),
+            Arc::new(ClaimFailsBindingStore::new()),
+            Arc::new(MemoryRequirementBindingStore::new()),
+        )
+        .with_connector_secrets(Arc::new(|name: &str| {
+            (name == "MOCK_TOKEN").then(|| "secret".to_string())
+        }));
+
+        let router = crate::routes::router(state);
+        let account_id = setup_account(&router).await;
+
+        let (status, _) = post_json(
+            &router,
+            "/v1/connectors/mock/import",
+            json!({
+                "account_id": account_id,
+                "remote_project_id": "acme/demo",
+                "project_id": project_id,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+
+        let rows = requirements.list(&project_id).await.unwrap();
+        assert!(
+            rows.is_empty(),
+            "a failed binding claim must not orphan requirements: {rows:?}"
         );
     }
 }
