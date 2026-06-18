@@ -52,7 +52,12 @@ export function registerWorkspacesRoutes(app: FastifyInstance, state: AppState):
       const canonical = await store.touch(body.path);
       return reply.send({ path: canonical, recent: await store.listRecent() });
     } catch (e) {
-      return reply.code(400).send({ error: errorText(e) });
+      // Input validation already passed above (`path` is a string), and
+      // `touch` is a pure upsert — the only failures left are backend/I-O
+      // faults (disk write, SQLite error), which are 500-class. Returning
+      // 400 here would mislabel an infra failure as bad client input and is
+      // inconsistent with the sibling GET/DELETE handlers, which return 500.
+      return reply.code(500).send({ error: errorText(e) });
     }
   };
   app.post("/v1/workspaces", touch);
