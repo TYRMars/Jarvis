@@ -110,6 +110,16 @@ test("buildAppState + buildServer boots and serves health + a chat completion", 
     assert.equal(health.statusCode, 200);
     assert.deepEqual(health.json(), { status: "ok" });
 
+    // The model-picker catalog is wired through buildAppState → AppState → route.
+    const providers = await app.inject({ method: "GET", url: "/v1/providers" });
+    assert.equal(providers.statusCode, 200);
+    const pbody = providers.json() as {
+      default: string;
+      providers: Array<{ name: string; default_model: string; is_default: boolean }>;
+    };
+    assert.equal(pbody.default, config.provider);
+    assert.ok(pbody.providers.some((p) => p.is_default && p.name === config.provider));
+
     const chat = await app.inject({
       method: "POST",
       url: "/v1/chat/completions",

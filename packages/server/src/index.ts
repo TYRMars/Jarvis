@@ -1,5 +1,11 @@
 // @jarvis/server — Fastify HTTP server (chat + conversations).
-export { type AppState, type ConnectorSecretResolver, isInternalId } from "./state.ts";
+export {
+  type AppState,
+  type ConnectorSecretResolver,
+  type ProviderCatalog,
+  type ProviderListEntry,
+  isInternalId,
+} from "./state.ts";
 export { type ServeOptions, buildServer, serve } from "./server.ts";
 export { registerChatRoutes } from "./chat-routes.ts";
 export { registerConversationsRoutes } from "./conversations-routes.ts";

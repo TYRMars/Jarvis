@@ -21,7 +21,7 @@ import { assistantText, defaultCompleteStream } from "@jarvis/core";
 
 import { loadConfig, defaultModel, type ProviderKind } from "./config.ts";
 import { parseCliArgs } from "./main.ts";
-import { buildMemory } from "./state.ts";
+import { buildMemory, buildProviderCatalog } from "./state.ts";
 import { ConversationSummaryStore, persistKey } from "./summary-store.ts";
 
 const ALL_KINDS: ProviderKind[] = [
@@ -158,4 +158,24 @@ test("buildMemory: summary mode without a store still builds (no persistence)", 
   });
   const mem = buildMemory(cfg, new StubProvider());
   assert.ok(mem instanceof SummarizingMemory);
+});
+
+test("buildProviderCatalog: single is_default entry for the configured provider", () => {
+  const cfg = loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MODEL: "gpt-4o-mini" });
+  const cat = buildProviderCatalog(cfg);
+  assert.equal(cat.default, "openai");
+  assert.equal(cat.providers.length, 1);
+  const p = cat.providers[0]!;
+  assert.equal(p.name, "openai");
+  assert.equal(p.default_model, "gpt-4o-mini");
+  assert.equal(p.is_default, true);
+  // the configured default model is always offered, even if not in the catalog
+  assert.ok(p.models.includes("gpt-4o-mini"));
+});
+
+test("buildProviderCatalog: a non-catalog model is still offered as default_model", () => {
+  const cfg = loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MODEL: "some-custom-model-xyz" });
+  const cat = buildProviderCatalog(cfg);
+  assert.equal(cat.providers[0]!.default_model, "some-custom-model-xyz");
+  assert.ok(cat.providers[0]!.models.includes("some-custom-model-xyz"));
 });

@@ -43,6 +43,27 @@ import type {
  */
 export type ConnectorSecretResolver = (ref: string) => Promise<string | undefined>;
 
+/**
+ * One entry in the read-only `GET /v1/providers` catalog that drives the client
+ * model picker. Mirrors `harness_server::ProviderInfo` (snake_case wire keys);
+ * both the web (`data.providers`) and iOS (`ProvidersResponse`) clients decode it.
+ */
+export interface ProviderListEntry {
+  name: string;
+  default_model: string;
+  models: string[];
+  is_default: boolean;
+  /** Canonical provider kind; omitted when unknown. */
+  kind?: string;
+}
+
+/** Read-only provider/model catalog returned by `GET /v1/providers`. */
+export interface ProviderCatalog {
+  /** The default provider name (top-level `default` field). */
+  default: string | null;
+  providers: ProviderListEntry[];
+}
+
 export interface AppState {
   /**
    * Build an Agent for one request. The optional `approver` is the per-socket
@@ -145,6 +166,14 @@ export interface AppState {
    * here the composition root supplies the path, or omits it for API-only).
    */
   webDistDir?: string;
+
+  /**
+   * Read-only provider/model catalog for the client model picker, served by
+   * `GET /v1/providers`. The composition root builds it from the configured
+   * provider + its capability catalog. Absent → an empty catalog is returned
+   * (never 503; an empty list is a valid "no providers" answer).
+   */
+  providerCatalog?: ProviderCatalog;
 }
 
 /**

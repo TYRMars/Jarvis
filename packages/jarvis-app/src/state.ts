@@ -21,7 +21,7 @@ import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider,
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
-import type { AppState } from "@jarvis/server";
+import type { AppState, ProviderCatalog } from "@jarvis/server";
 import type {
   ActivityStore,
   DocStore,
@@ -32,6 +32,7 @@ import type { MemoryStore as LearningMemoryStore } from "@jarvis/learning";
 
 import type { JarvisConfig } from "./config.ts";
 import { buildToolRegistry, codingMode } from "./tools.ts";
+import { capabilityCatalog } from "./provider.ts";
 import type { McpClient } from "@jarvis/mcp";
 import type { SubAgentRegistry } from "@jarvis/subagents";
 import { ConversationSummaryStore } from "./summary-store.ts";
@@ -197,6 +198,33 @@ export function buildMemory(
 }
 
 /**
+ * Build the read-only provider/model catalog for `GET /v1/providers` (the client
+ * model picker). In the env-driven setup exactly one provider is configured, so
+ * the catalog is a single `is_default` entry: the configured provider, its
+ * default model, and the model list from its capability catalog (the configured
+ * model is always included even if the catalog doesn't list it). Mirrors the
+ * shape of Rust's `list_providers` (`{ default, providers }`).
+ */
+export function buildProviderCatalog(config: JarvisConfig): ProviderCatalog {
+  const catalogModels = capabilityCatalog(config.provider).map((c) => c.model);
+  const models = catalogModels.includes(config.model)
+    ? catalogModels
+    : [config.model, ...catalogModels];
+  return {
+    default: config.provider,
+    providers: [
+      {
+        name: config.provider,
+        default_model: config.model,
+        models,
+        is_default: true,
+        kind: config.provider,
+      },
+    ],
+  };
+}
+
+/**
  * Assemble the {@link AppState}. The `createAgent` factory rebuilds a fresh
  * Agent per request from a SNAPSHOT of the canonical tool registry (so a
  * per-socket approver can be supplied without mutating shared state), with the
@@ -278,6 +306,7 @@ export async function buildAppState(
     workspaces: stores.workspaces,
     subagents: toolBundle.subagents,
     workspaceRoot: config.fsRoot,
+    providerCatalog: buildProviderCatalog(config),
     ...(config.webDistDir !== undefined ? { webDistDir: config.webDistDir } : {}),
     ...(deps.learningMemory !== undefined ? { learningMemory: deps.learningMemory } : {}),
   };
