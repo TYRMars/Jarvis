@@ -47,6 +47,11 @@ jobs:
           cache: "pnpm"
 
       - name: Install
+        # @jarvis/desktop pulls in Electron; we only need its TYPES for the
+        # typecheck gate, not the ~200 MB runtime binary (packaged separately in
+        # node-desktop-release.yml on macOS runners).
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: pnpm install --frozen-lockfile
 
       # A few store / git / worktree tests `git init` a temp repo and commit;

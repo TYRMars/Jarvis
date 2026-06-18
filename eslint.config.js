@@ -13,6 +13,7 @@ export default tseslint.config(
     // legacy tooling — keep it out of the linter entirely.
     ignores: [
       "**/dist/**",
+      "**/out/**",
       "**/node_modules/**",
       "target/**",
       "crates/**",
@@ -47,8 +48,14 @@ export default tseslint.config(
   {
     // The composition roots are the SOLE place allowed to read process.env —
     // they parse env into config and inject it into the library packages
-    // (mirrors the Rust rule that only apps/jarvis reads std::env).
-    files: ["packages/jarvis-app/**/*.ts", "packages/jarvis-cli/**/*.ts"],
+    // (mirrors the Rust rule that only apps/jarvis reads std::env). The Electron
+    // main process (@jarvis/desktop) is also a composition root: it derives the
+    // embedded-server env from process.env before handing it to loadConfig.
+    files: [
+      "packages/jarvis-app/**/*.ts",
+      "packages/jarvis-cli/**/*.ts",
+      "packages/desktop/**/*.ts",
+    ],
     rules: { "no-restricted-properties": "off" },
   },
 );
