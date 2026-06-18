@@ -31,6 +31,10 @@ import { serve } from "@jarvis/server";
  * `fastify` dependency, since it is only reachable transitively via @jarvis/server. */
 type ServerHandle = Awaited<ReturnType<typeof serve>>;
 
+/** One MCP child-process client — derived from buildAppState's return type so we
+ * need no direct `@jarvis/mcp` dependency (it is bundled transitively). */
+type McpClient = Awaited<ReturnType<typeof buildAppState>>["mcpClients"][number];
+
 import type { DesktopStatus, ServerKind } from "../shared/ipc.ts";
 import { LogBuffer } from "./logs.ts";
 import os from "node:os";
@@ -60,6 +64,8 @@ export class ServerManager {
   private readonly baseEnv: NodeJS.ProcessEnv;
 
   private app: ServerHandle | null = null;
+  /** Live MCP child processes owned by the current embedded server (if any). */
+  private mcpClients: McpClient[] = [];
   private apiOrigin: string = DEFAULT_EXTERNAL_ORIGIN;
   private kind: ServerKind = "stopped";
   private workspace: string | null = null;
@@ -115,7 +121,7 @@ export class ServerManager {
     return await this.status();
   }
 
-  /** Close the embedded server (no-op when reusing an external one). */
+  /** Close the embedded server + its MCP children (no-op for an external one). */
   async stop(): Promise<void> {
     if (this.app !== null) {
       this.logs.push("Stopping embedded Jarvis server");
@@ -125,6 +131,16 @@ export class ServerManager {
         this.logs.push(`Error closing embedded server: ${errMessage(e)}`);
       }
       this.app = null;
+    }
+    // Kill any MCP child processes the embedded server spawned, so a restart
+    // doesn't leak them (buildAppState hands ownership back to us).
+    if (this.mcpClients.length > 0) {
+      await Promise.all(
+        this.mcpClients.map((c) =>
+          c.shutdown().catch((e) => this.logs.push(`Error closing MCP client: ${errMessage(e)}`)),
+        ),
+      );
+      this.mcpClients = [];
     }
     if (this.kind !== "stopped") this.kind = "stopped";
   }
@@ -177,7 +193,8 @@ export class ServerManager {
 
       const provider = await buildProvider(config);
       const stores = await openStores(config);
-      const { state } = await buildAppState(config, { provider, stores });
+      const { state, mcpClients } = await buildAppState(config, { provider, stores });
+      this.mcpClients = mcpClients;
       const { host, port: listenPort } = parseAddr(config.addr);
 
       this.app = await serve({ host, port: listenPort }, state);
