@@ -2,7 +2,7 @@
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
 import type { Agent, Approver } from "@jarvis/core";
-import type { ConversationStore } from "@jarvis/store";
+import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
   ActivityStore,
   CommentStore,
@@ -29,6 +29,19 @@ import type {
 import type { AutomationStore } from "@jarvis/automation";
 import type { EvalStore, ObservabilityStore } from "@jarvis/observability";
 import type { SubAgentRegistry, SubAgentRunStore } from "@jarvis/subagents";
+import type {
+  ConnectorAccountStore,
+  ProjectBindingStore,
+  ProjectConnector,
+  RequirementBindingStore,
+} from "@jarvis/connectors";
+
+/**
+ * Resolves a connector account's secret reference (e.g. an env-var name or
+ * keychain id) to the actual token. Supplied by the composition root so the
+ * server/library never reads process.env. Returns undefined when unresolved.
+ */
+export type ConnectorSecretResolver = (ref: string) => Promise<string | undefined>;
 
 export interface AppState {
   /**
@@ -96,8 +109,33 @@ export interface AppState {
   subagents?: SubAgentRegistry;
   subagentRuns?: SubAgentRunStore;
 
+  // ---- Project connectors (GitHub Issues import/sync/push) ----
+  connectorAccounts?: ConnectorAccountStore;
+  connectorProjectBindings?: ProjectBindingStore;
+  connectorRequirementBindings?: RequirementBindingStore;
+  /** Configured connector instances (e.g. a GitHubConnector), keyed by id(). */
+  connectors?: ProjectConnector[];
+  /** Resolves a connector account's secret ref → token. */
+  connectorSecrets?: ConnectorSecretResolver;
+
   /** Pinned workspace root (for roadmap import + workspace probes). */
   workspaceRoot?: string;
+
+  /**
+   * Optional shell override for the workspace terminal PTY
+   * (`/v1/workspace/terminal/ws`). The Rust module reads `$SHELL`; the Node
+   * server never touches process.env, so the composition root may supply an
+   * explicit shell here. Absent -> a hardcoded default (`/bin/bash` if present
+   * else `/bin/sh` on posix, `cmd.exe` on Windows).
+   */
+  terminalShell?: string;
+
+  /**
+   * Persisted recent-workspaces registry (the chat-header "Recent folders"
+   * dropdown). The `/v1/workspaces` routes 503 when absent. Distinct from
+   * `workspaceRoot`, which is the single pinned root for fs/git probes.
+   */
+  workspaces?: WorkspaceStore;
 
   /**
    * Absolute path to the built web SPA directory (containing `index.html`).

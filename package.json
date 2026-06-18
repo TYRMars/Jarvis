@@ -9,7 +9,8 @@
   "scripts": {
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "postinstall": "node scripts/fix-node-pty.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -18,6 +19,9 @@
     "typescript-eslint": "^8.0.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3"]
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "node-pty"
+    ]
   }
 }

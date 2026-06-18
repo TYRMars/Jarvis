@@ -21,6 +21,12 @@ import { JsonFileDocStore, MemoryDocStore } from "./doc-store.ts";
 import { JsonFileProjectMemoryStore, MemoryProjectMemoryStore } from "./project-memory-store.ts";
 import { JsonFileWorkflowStore, MemoryWorkflowStore } from "./workflow-store.ts";
 import {
+  JsonFileWorkspaceStore,
+  MemoryWorkspaceStore,
+  SqliteWorkspaceStore,
+  type WorkspaceStore,
+} from "./workspace-store.ts";
+import {
   openSqlite,
   SqliteActivityStore,
   SqliteCommentStore,
@@ -61,6 +67,7 @@ export interface StoreBundle {
   docs: DocStore;
   projectMemory: ProjectMemoryStore;
   workflows: WorkflowStore;
+  workspaces: WorkspaceStore;
 }
 
 /** Open the conversation store for `url`. Throws StoreError on an unknown scheme. */
@@ -91,7 +98,8 @@ export async function connect(url: string): Promise<ConversationStore> {
  * SAME base dir, namespacing its own subdir (`conversations` flat under the
  * base, `projects/`, `requirements/`, `requirement_runs/`, `activities/`,
  * `comments/`, `labels/`, `docs/`, `project-memories/`, `workflows/` +
- * `workflow_runs/`). SQL schemes throw (deferred to P6).
+ * `workflow_runs/`, plus a flat `workspaces.json` for the recent-folders
+ * registry). SQL schemes throw (deferred to P6).
  */
 export async function connectAll(url: string): Promise<StoreBundle> {
   const scheme = url.split(":", 1)[0] ?? "";
@@ -110,6 +118,7 @@ export async function connectAll(url: string): Promise<StoreBundle> {
         docs,
         projectMemory,
         workflows,
+        workspaces,
       ] = await Promise.all([
         JsonFileConversationStore.open(base),
         JsonFileProjectStore.open(base),
@@ -121,6 +130,7 @@ export async function connectAll(url: string): Promise<StoreBundle> {
         JsonFileDocStore.open(base),
         JsonFileProjectMemoryStore.open(base),
         JsonFileWorkflowStore.open(base),
+        JsonFileWorkspaceStore.open(base),
       ]);
       return {
         conversations,
@@ -133,6 +143,7 @@ export async function connectAll(url: string): Promise<StoreBundle> {
         docs,
         projectMemory,
         workflows,
+        workspaces,
       };
     }
     case "sqlite": {
@@ -151,6 +162,7 @@ export async function connectAll(url: string): Promise<StoreBundle> {
         docs: new SqliteDocStore(db),
         projectMemory: new SqliteProjectMemoryStore(db),
         workflows: new SqliteWorkflowStore(db),
+        workspaces: new SqliteWorkspaceStore(db),
       };
     }
     case "postgres":
@@ -180,6 +192,7 @@ export function makeMemoryStores(): StoreBundle {
     docs: new MemoryDocStore(),
     projectMemory: new MemoryProjectMemoryStore(),
     workflows: new MemoryWorkflowStore(),
+    workspaces: new MemoryWorkspaceStore(),
   };
 }
 
