@@ -3,6 +3,15 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import pkg from "./package.json" with { type: "json" };
 
+// Backend origin the SPA talks to. Defaults to the loopback :7001 both the
+// Rust `harness-server` and the Node `@jarvis/jarvis-app serve` listen on.
+// Override with `VITE_BACKEND_URL=http://127.0.0.1:7002` to point the dev
+// proxy + the dev/file-origin fallback at a different backend (e.g. run the
+// Node server on a second port and flip the SPA to it during the migration).
+// Production builds are served same-origin by whichever backend bundles
+// `dist/`, so this only affects `vite dev` and non-same-origin previews.
+const BACKEND_URL = process.env.VITE_BACKEND_URL || "http://127.0.0.1:7001";
+
 export default defineConfig({
   // Mounted at the server root since the UI moved off `/ui/`. Leave
   // `base` at the default "/" so vite emits absolute asset paths
@@ -24,6 +33,9 @@ export default defineConfig({
     // `define` does naive substitution — bare `pkg.version` would
     // produce `0.1.0` as JS code, not a string literal.
     __APP_VERSION__: JSON.stringify(pkg.version),
+    // Build-time backend origin, read by services/api.ts for the
+    // dev/file-origin fallback. Same naive-substitution caveat as above.
+    __BACKEND_URL__: JSON.stringify(BACKEND_URL),
   },
   optimizeDeps: {
     include: ["lottie-web", "lottie-web/build/player/lottie_svg"],
@@ -40,8 +52,8 @@ export default defineConfig({
     // Production builds are served same-origin from the Rust binary
     // (via `include_dir!`), so this only kicks in during `vite dev`.
     proxy: {
-      "/v1": { target: "http://127.0.0.1:7001", changeOrigin: true, ws: true },
-      "/health": { target: "http://127.0.0.1:7001", changeOrigin: true },
+      "/v1": { target: BACKEND_URL, changeOrigin: true, ws: true },
+      "/health": { target: BACKEND_URL, changeOrigin: true },
     },
   },
 });

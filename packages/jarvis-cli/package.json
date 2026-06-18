@@ -1,0 +1,24 @@
+{
+  "name": "@jarvis/jarvis-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Terminal coding-agent: drives @jarvis/core Agent in-process (no HTTP). REPL + --no-interactive pipe mode. The composition root for the CLI (reads env).",
+  "bin": {
+    "jarvis-cli": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/main.ts",
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/llm": "workspace:*",
+    "@jarvis/memory": "workspace:*",
+    "@jarvis/store": "workspace:*",
+    "@jarvis/tools": "workspace:*",
+    "@jarvis/mcp": "workspace:*",
+    "@jarvis/router": "workspace:*"
+  }
+}

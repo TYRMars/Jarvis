@@ -1,0 +1,26 @@
+{
+  "name": "@jarvis/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Built-in Tool implementations: echo, time.now, http.fetch, code.grep, git.*, workspace.context, project.checks, plan.update, triage.scan_candidates, ask.text, exit_plan; sandbox (resolve_under); fs.read/list/find/write/edit/patch; shell.exec. register_builtins(BuiltinsConfig) assembles the default set. Write/exec tools stay opt-in + approval-gated.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/learning": "workspace:*",
+    "@jarvis/project": "workspace:*",
+    "@jarvis/todo": "workspace:*",
+    "diff": "^7.0.0",
+    "ignore": "^6.0.2"
+  },
+  "devDependencies": {
+    "@jarvis/store": "workspace:*",
+    "@types/diff": "^7.0.0"
+  }
+}

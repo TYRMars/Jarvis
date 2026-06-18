@@ -1,0 +1,16 @@
+{
+  "name": "@jarvis/learning",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-improving-agent surfaces: SkillUsageEvent/Store telemetry + MemoryItem/Store long-term memory, with injection/leak guards.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/store": "workspace:*"
+  }
+}

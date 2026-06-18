@@ -1,0 +1,6 @@
+# Node/TS rewrite workspace. Scoped to packages/* for now so the existing
+# standalone apps/jarvis-web tooling is untouched during the strangler
+# migration. apps/* get added here once they are ported (see
+# docs/proposals/nodejs-rewrite.zh-CN.md).
+packages:
+  - "packages/*"

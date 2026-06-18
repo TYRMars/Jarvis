@@ -1,0 +1,17 @@
+{
+  "name": "@jarvis/router",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Smart model routing. A RoutingProvider (itself an LlmProvider) classifies each request's difficulty into a Tier via a Classifier and rewrites the model (and possibly the downstream provider) before delegating. P0: HeuristicClassifier (no LLM). Depends on @jarvis/core only.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*"
+  }
+}

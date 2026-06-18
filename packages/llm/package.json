@@ -1,0 +1,17 @@
+{
+  "name": "@jarvis/llm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LlmProvider implementations. P2: OpenAI (Chat Completions, complete + SSE stream). Kimi/Ollama reuse the OpenAI wire format via base-URL swaps. Anthropic/Google/Responses land in later phases.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*"
+  }
+}

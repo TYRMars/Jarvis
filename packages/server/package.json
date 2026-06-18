@@ -1,0 +1,36 @@
+{
+  "name": "@jarvis/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "HTTP server: Fastify router + AppState. P2: /v1/chat/completions (blocking), /v1/chat/completions/stream (SSE), /v1/chat/ws (multi-turn + per-socket ChannelApprover), conversations CRUD (503-when-unconfigured). The streaming invariant: every transport serialises Agent.runStream AgentEvents — never reimplement the loop.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "@jarvis/agent-profile": "workspace:*",
+    "@jarvis/automation": "workspace:*",
+    "@jarvis/channel": "workspace:*",
+    "@jarvis/core": "workspace:*",
+    "@jarvis/learning": "workspace:*",
+    "@jarvis/observability": "workspace:*",
+    "@jarvis/plugin": "workspace:*",
+    "@jarvis/project": "workspace:*",
+    "@jarvis/skill": "workspace:*",
+    "@jarvis/store": "workspace:*",
+    "@jarvis/subagents": "workspace:*",
+    "@jarvis/todo": "workspace:*",
+    "@jarvis/workflow": "workspace:*",
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@jarvis/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP bridge. McpClient connects to an external server over stdio, lists its tools, and adapts each into a harness Tool (renamed <prefix>.<name>). McpServer exposes a local ToolRegistry over stdio (what --mcp-serve calls).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  }
+}

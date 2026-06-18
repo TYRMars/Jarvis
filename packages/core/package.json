@@ -1,0 +1,14 @@
+{
+  "name": "@jarvis/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime-independent agent harness: message types, Tool/LlmProvider/Memory/Approver interfaces, plan/progress/approval channels, and the Agent run loop. Zero runtime dependencies — the leaf everything else builds on.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/model.test.ts src/agent.test.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

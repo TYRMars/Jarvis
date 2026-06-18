@@ -17,3 +17,7 @@ apps/jarvis-desktop/binaries/
 node_modules
 .playwright-cli
 .jarvis
+# Node/TS rewrite workspace artifacts
+dist/
+**/*.tsbuildinfo
+.turbo/

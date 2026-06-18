@@ -1,0 +1,33 @@
+{
+  "name": "@jarvis/jarvis-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Composition root: env parsing + wiring of all stores/tools/providers + the HTTP server. Subcommands: serve / mcp-serve / init / login / status / workspace. The SOLE place that reads process.env.",
+  "bin": {
+    "jarvis": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/main.ts",
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/llm": "workspace:*",
+    "@jarvis/memory": "workspace:*",
+    "@jarvis/store": "workspace:*",
+    "@jarvis/tools": "workspace:*",
+    "@jarvis/mcp": "workspace:*",
+    "@jarvis/router": "workspace:*",
+    "@jarvis/project": "workspace:*",
+    "@jarvis/workflow": "workspace:*",
+    "@jarvis/server": "workspace:*",
+    "@jarvis/channel": "workspace:*",
+    "@jarvis/skill": "workspace:*",
+    "@jarvis/learning": "workspace:*",
+    "@jarvis/automation": "workspace:*",
+    "@jarvis/observability": "workspace:*",
+    "@jarvis/subagents": "workspace:*"
+  }
+}
