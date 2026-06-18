@@ -206,13 +206,15 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 - [ ] **7.7** Electron：preload bridge + ipc（替 `@tauri-apps/api`）+ 前端 `services/desktop.ts` 适配 `size:M` `area:desktop`
 - [ ] **7.8** `electron-builder` 打包（macOS dmg/zip）+ release CI `size:M` `area:desktop`
 - [~] **7.9** Web：base URL 切换 ✅（`VITE_BACKEND_URL` 驱动 dev 代理 + `api.ts` 默认源，运行时 `localStorage jarvis.apiOrigin` / `setApiOriginOverride` 仍可热切；`@jarvis/jarvis-app` 经 `JARVIS_WEB_DIST` 服务构建好的 SPA）。余项：`types/generated` → `shared-types` + 删 `ts-codegen`（更大的前端改线，延后） `size:M` `area:web`
-- [ ] **7.10** iOS：base URL 切换 + `/v1` 契约 smoke test `size:S` `area:ios`
+- [x] **7.10** iOS：base URL 切换 + `/v1` 契约 smoke test `size:S` `area:ios`
+      ✅ `ServerConfig.resolve` 优先级 UserDefaults `serverURL` > `JARVIS_SERVER_URL` env > Info.plist `JarvisServerURL` > `:7001`（iOS 版 `VITE_BACKEND_URL`+运行时覆盖）。契约冒烟测试 `apps/jarvis-ios/Tests/`（`run-contract-smoke.sh` 用宿主 `swiftc` 编译纯 Foundation 模型，离线黄金样本对齐 Rust 契约 + 可选 live 模式，24 检查全过）+ CI `ios-contract.yml`。**期间发现并修复** Node `GET /v1/conversations` 把数组错包成 `{conversations:[…]}`（背离 Rust 与 web/iOS 两端,且原 `server.test.ts` 把错误形状写进了断言）→ 改回裸数组 + 新增 `conversations-routes.test.ts` 锁定契约。
 
 ---
 
 ## P8 — 收尾与下线 `phase:8`
 
 - [ ] **8.1** 拆全部代理转发，Node 成为独立服务 `size:M` `area:server`
+      ↳ 已知 Node `/v1` 对 Rust 的缺口（P7.10 契约冒烟测试期间发现）：`GET /v1/providers` 只读目录未实现（仅 `POST` + `GET /:name`）；`GET /v1/conversations` 行缺 `title`/`source` 富化（Rust 会按首条 user 消息算 title）。补齐时以 iOS/web 契约 + `apps/jarvis-ios/Tests` 黄金样本为准。
 - [ ] **8.2** 下线 Rust 服务 + 归档旧 crate（保留 git 历史） `size:S` `area:infra`
 - [ ] **8.3** 性能/压测对照（chat 流式吞吐/延迟、内存占用） `size:M` `risk:high`
 - [ ] **8.4** OTel 全链路验证（`jarvis.agent.run` / `gen_ai.tool.call` span） `size:S`

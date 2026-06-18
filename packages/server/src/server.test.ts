@@ -211,7 +211,7 @@ test("conversations create/get/post-message/list/delete round-trip", async () =>
   assert.equal(reload.json().messages.length, 3);
 
   const list = await app.inject({ method: "GET", url: "/v1/conversations" });
-  assert.ok((list.json().conversations as { id: string }[]).some((r) => r.id === id));
+  assert.ok((list.json() as { id: string }[]).some((r) => r.id === id));
 
   const del = await app.inject({ method: "DELETE", url: `/v1/conversations/${id}` });
   assert.deepEqual(del.json(), { deleted: true });
@@ -232,7 +232,7 @@ test("conversations: internal __ ids are rejected/hidden", async () => {
   assert.equal((await app.inject({ method: "DELETE", url: "/v1/conversations/__memory__.summary:abc" })).statusCode, 404);
   // list hides it
   const list = await app.inject({ method: "GET", url: "/v1/conversations" });
-  assert.ok(!(list.json().conversations as { id: string }[]).some((r) => r.id.startsWith("__")));
+  assert.ok(!(list.json() as { id: string }[]).some((r) => r.id.startsWith("__")));
   await app.close();
 });
 
