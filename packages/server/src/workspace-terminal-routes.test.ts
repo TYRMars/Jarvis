@@ -279,3 +279,38 @@ test("WS terminal 503-closes when no workspace root is configured", async () => 
     await close();
   }
 });
+
+// ---------- regression: multibyte close reason (#167) ----------
+
+// A non-resolving `root` with multibyte (CJK) characters produces an error
+// message whose sliced-by-chars reason would exceed the 123-BYTE WS close-frame
+// limit. `ws` validates the reason in bytes *before* closing, so an over-long
+// reason throws `RangeError` and (previously) left the socket open. The reason
+// must be clamped by bytes so the socket still closes cleanly with 1008.
+test("WS terminal closes cleanly when a multibyte `root` yields a long error reason", async () => {
+  const root = await mkdtemp(join(tmpdir(), "jarvis-term-"));
+  const { port, close } = await startServer(makeState(root));
+  // 40+ CJK chars: the ENOENT message embeds this path, so a 120-char slice of
+  // the reason would be ~3x over the 123-byte cap.
+  const cjkPath = "/不存在的目录名称需要足够长以超过一百二十三字节的限制因此这里塞满了中文字符确保越界";
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${port}/v1/workspace/terminal/ws?root=${encodeURIComponent(cjkPath)}`,
+  );
+  try {
+    const [code, reason] = (await Promise.race([
+      once(ws, "close"),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("no close")), 5000)),
+    ])) as [number, Buffer];
+    assert.equal(code, 1008);
+    // The reason actually arrived (the close was not dropped) and fits the limit.
+    assert.ok(Buffer.byteLength(reason) <= 123, `reason ${Buffer.byteLength(reason)} bytes > 123`);
+  } finally {
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+    await close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
