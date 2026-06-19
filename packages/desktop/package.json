@@ -1,0 +1,32 @@
+{
+  "name": "@jarvis/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Electron desktop shell for the Node rewrite. Embeds @jarvis/server in the main process and renders the built jarvis-web SPA (loadFile -> loadURL once the embedded server is healthy). Replaces the Tauri shell (apps/jarvis-desktop). P7.6-7.8.",
+  "main": "out/main/index.cjs",
+  "scripts": {
+    "bundle": "node build.mjs",
+    "build:web": "node scripts/build-web.mjs",
+    "build": "pnpm run build:web && pnpm run bundle",
+    "start": "electron .",
+    "dev": "pnpm run bundle && electron .",
+    "dist": "pnpm run build && electron-builder --mac",
+    "dist:dir": "pnpm run build && electron-builder --mac --dir",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/main/*.test.ts",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.0",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@jarvis/jarvis-app": "workspace:*",
+    "@jarvis/server": "workspace:*",
+    "@types/better-sqlite3": "^7.6.11",
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.0"
+  }
+}

@@ -1,0 +1,58 @@
+# electron-builder config — P7.8 (macOS dmg + zip).
+#
+# Inputs that must exist before `electron-builder` runs (produced by `pnpm run
+# build`): out/main/index.cjs + out/preload/index.cjs (esbuild) and the built
+# jarvis-web SPA at ../../apps/jarvis-web/dist (copied in as the `web` resource).
+#
+# The @jarvis/* sources are bundled into out/ by esbuild, so the packaged app
+# only needs the EXTERNAL native addons (better-sqlite3, node-pty) at runtime —
+# they are unpacked from the asar and rebuilt against Electron's ABI.
+appId: ai.jarvis.desktop
+productName: Jarvis
+copyright: Copyright © Jarvis
+
+directories:
+  output: release
+  buildResources: build
+
+# Only the bundled output + manifest go into the asar. node_modules is collected
+# automatically from `dependencies` (the native addons + their transitive deps).
+files:
+  - "out/**/*"
+  - "package.json"
+
+# The SPA ships as an unpacked resource so `loadFile`/`loadURL` can read it from
+# `<resources>/web` (see resolveWebDist() in src/main/index.ts).
+extraResources:
+  - from: "../../apps/jarvis-web/dist"
+    to: "web"
+
+asar: true
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+  - "**/node_modules/node-pty/**"
+
+# Rebuild native addons against Electron's ABI during packaging.
+npmRebuild: true
+nodeGypRebuild: false
+
+mac:
+  category: public.app-category.developer-tools
+  # Reuse the existing Tauri app icon rather than duplicating the asset.
+  icon: "../../apps/jarvis-desktop/icons/icon.icns"
+  # No explicit arch list: electron-builder defaults to the HOST arch, and
+  # npmRebuild then rebuilds the native addons for that same arch. The release
+  # workflow runs one native runner per arch (macos-14 → arm64, macos-13 → x64),
+  # so each produces a correct single-arch artifact. Listing both arches here
+  # would make each runner cross-build the other arch with host-arch natives.
+  target:
+    - dmg
+    - zip
+  artifactName: "Jarvis-${version}-${arch}.${ext}"
+  # Unsigned by default. For a signed/notarized build, supply CSC_LINK +
+  # CSC_KEY_PASSWORD (and APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID)
+  # in the environment and set hardenedRuntime: true + a notarize config.
+  hardenedRuntime: false
+
+dmg:
+  artifactName: "Jarvis-${version}-${arch}.${ext}"

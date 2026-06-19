@@ -7,6 +7,9 @@
   "bin": {
     "jarvis": "./src/main.ts"
   },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "start": "node --experimental-strip-types src/main.ts",
     "test": "node --experimental-strip-types --test src/*.test.ts",
