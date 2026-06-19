@@ -253,6 +253,15 @@ function notifyChanged(state: ProviderAdminState): void {
 export function registerProviderAdminRoutes(app: FastifyInstance, state: AppState): void {
   const s = state as ProviderAdminState;
 
+  // ---------------------- GET /v1/providers (read-only list) ----------------
+  // The model-picker catalog (mirrors Rust `list_providers`): `{ default,
+  // providers }`. Independent of the admin impl — it reads the catalog the
+  // composition root put on AppState, and returns an empty list (not 503) when
+  // none is wired, so the clients always get a decodable body.
+  app.get("/v1/providers", async (_req, reply) => {
+    return reply.send(state.providerCatalog ?? { default: null, providers: [] });
+  });
+
   // ---------------------- POST /v1/providers --------------------------------
   app.post("/v1/providers", async (req, reply) => {
     const admin = requireAdmin(s, reply);

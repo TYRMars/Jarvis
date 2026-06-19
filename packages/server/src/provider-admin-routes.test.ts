@@ -279,3 +279,53 @@ test("PUT /default sets the default; blank name → 400; missing → 404", async
   assert.equal(changed, 2);
   await app.close();
 });
+
+// ---------------------- GET /v1/providers (read-only model-picker list) -------
+
+test("GET /v1/providers returns an empty catalog when none is wired (not 503)", async () => {
+  const app = await buildApp({ createAgent: agentUnused });
+  const res = await app.inject({ method: "GET", url: "/v1/providers" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { default: null, providers: [] });
+  await app.close();
+});
+
+test("GET /v1/providers returns the wired { default, providers } catalog", async () => {
+  const state: AppState = {
+    createAgent: agentUnused,
+    providerCatalog: {
+      default: "openai",
+      providers: [
+        {
+          name: "openai",
+          default_model: "gpt-4o-mini",
+          models: ["gpt-4o-mini", "gpt-4o"],
+          is_default: true,
+          kind: "openai",
+        },
+      ],
+    },
+  };
+  const app = await buildApp(state);
+  const res = await app.inject({ method: "GET", url: "/v1/providers" });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as {
+    default: string;
+    providers: Array<{ name: string; default_model: string; is_default: boolean }>;
+  };
+  assert.equal(body.default, "openai");
+  assert.equal(body.providers.length, 1);
+  assert.equal(body.providers[0]!.name, "openai");
+  assert.equal(body.providers[0]!.default_model, "gpt-4o-mini");
+  assert.ok(body.providers[0]!.is_default);
+  await app.close();
+});
+
+test("GET /v1/providers is independent of the ProviderAdmin impl (200 even when admin is absent)", async () => {
+  const app = await buildApp(makeState({ admin: false }));
+  // admin mutators 503…
+  assert.equal((await app.inject({ method: "POST", url: "/v1/providers", payload: {} })).statusCode, 503);
+  // …but the read-only list still answers 200.
+  assert.equal((await app.inject({ method: "GET", url: "/v1/providers" })).statusCode, 200);
+  await app.close();
+});

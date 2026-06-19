@@ -217,8 +217,10 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 
 ## P8 — 收尾与下线 `phase:8`
 
-- [ ] **8.1** 拆全部代理转发，Node 成为独立服务 `size:M` `area:server`
-      ↳ 已知 Node `/v1` 对 Rust 的缺口（P7.10 契约冒烟测试期间发现）：`GET /v1/providers` 只读目录未实现（仅 `POST` + `GET /:name`）；`GET /v1/conversations` 行缺 `title`/`source` 富化（Rust 会按首条 user 消息算 title）。补齐时以 iOS/web 契约 + `apps/jarvis-ios/Tests` 黄金样本为准。
+- [~] **8.1** 拆全部代理转发，Node 成为独立服务 `size:M` `area:server`
+      进行中（无代理层需拆——P0.5 代理中间件从未落地，Rust/Node 各自独立；本任务实为补齐 Node `/v1` 对 Rust 的契约缺口，缺口由 P7.10 契约冒烟测试发现，以 iOS/web 契约 + `apps/jarvis-ios/Tests` 黄金样本为准）：
+      ✅ `GET /v1/providers` 只读目录（`{default, providers}`，model-picker 用；`buildProviderCatalog` 从配置 provider + capability catalog 构建，挂到 `AppState.providerCatalog`，路由独立于 ProviderAdmin、无 catalog 时回空表而非 503）。
+      余项：`GET /v1/conversations` 行的 `title`/`source` 富化（需逐行 load 取首条 user 消息，对齐 Rust）；其余路由全量契约审计。
 - [ ] **8.2** 下线 Rust 服务 + 归档旧 crate（保留 git 历史） `size:S` `area:infra`
 - [ ] **8.3** 性能/压测对照（chat 流式吞吐/延迟、内存占用） `size:M` `risk:high`
 - [ ] **8.4** OTel 全链路验证（`jarvis.agent.run` / `gen_ai.tool.call` span） `size:S`

@@ -46,6 +46,7 @@ export {
   GENERAL_SYSTEM_PROMPT,
   buildAppState,
   buildMemory,
+  buildProviderCatalog,
   loadProjectContext,
   resolveSystemPrompt,
 } from "./state.ts";
