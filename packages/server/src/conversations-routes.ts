@@ -56,13 +56,19 @@ export function registerConversationsRoutes(app: FastifyInstance, state: AppStat
   });
 
   // list (internal ids filtered out)
+  //
+  // Contract: a BARE JSON array, newest-first — byte-aligned with the Rust
+  // `harness-server` (`Json(out)` in conversations.rs) and what both clients
+  // decode (web `setConvoRows(rows)`, iOS `[ConversationSummary]`). It must NOT
+  // be wrapped in an `{ conversations: [...] }` envelope; the iOS contract smoke
+  // test (apps/jarvis-ios/Tests) and conversations-routes.test.ts guard this.
   app.get("/v1/conversations", async (req, reply) => {
     const store = requireStore(state, reply);
     if (!store) return reply;
     const limit = clampLimit((req.query as { limit?: string }).limit);
     try {
       const rows = (await store.list(limit)).filter((r) => !isInternalId(r.id));
-      return reply.send({ conversations: rows });
+      return reply.send(rows);
     } catch (e) {
       return reply.code(500).send({ error: errorText(e) });
     }

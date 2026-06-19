@@ -1,0 +1,36 @@
+name: iOS /v1 Contract
+
+# Compile + run the iOS /v1 contract smoke test (tasklist P7.10) on a macOS
+# runner. The client models are Foundation-only, so this uses `swiftc` directly
+# — no Xcode project, simulator, or signing needed. It guards that the iOS
+# Codable models keep decoding the server's `/v1` wire shapes.
+#
+# Runs when the iOS client OR the server's conversation contract changes (the
+# two sides this test bridges).
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/jarvis-ios/Sources/**"
+      - "apps/jarvis-ios/Tests/**"
+      - "packages/server/src/conversations-routes.ts"
+      - ".github/workflows/ios-contract.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "apps/jarvis-ios/Sources/**"
+      - "apps/jarvis-ios/Tests/**"
+      - "packages/server/src/conversations-routes.ts"
+      - ".github/workflows/ios-contract.yml"
+
+jobs:
+  contract-smoke:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Swift toolchain
+        run: swift --version
+      - name: Run /v1 contract smoke test (offline goldens)
+        working-directory: apps/jarvis-ios
+        run: ./Tests/run-contract-smoke.sh
