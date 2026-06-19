@@ -5,3 +5,9 @@ Generated/
 # Xcode user state
 xcuserdata/
 DerivedData/
+
+# Build output (Xcode DerivedData/ModuleCache/Intermediates)
+build/
+
+# Logs
+*.log

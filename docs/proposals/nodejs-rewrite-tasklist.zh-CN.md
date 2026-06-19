@@ -1,7 +1,7 @@
 # Node.js 重写 · 执行任务清单
 
 **状态：** P0–P7 基本完成，端到端可运行（`jarvis serve` / `jarvis mcp-serve` / `jarvis-cli`）。
-全量 typecheck + eslint + test 绿：**21 个包，1617 测试**。
+全量 typecheck + eslint + test 绿：**23 个包，2019 测试**（含 Electron 客户端 `desktop`，P7.6–7.8）。
 **框架定档（0.6）：** 纯 Fastify（NestJS 装饰器与现 `node --experimental-strip-types`
 + `erasableSyntaxOnly` 工具链不兼容，留待将来若需 DI 再换）。
 
@@ -16,10 +16,11 @@
   projects/requirements(approve/reject/runs/review)/comments/labels/work + skills/automation/observability/diagnostics/
   provider-admin/learning/subagents/channels(CRUD+inbound 签名校验+oauth)/doc/memories/permissions/plugins/agent-profiles/todos/workspace(files/find/diff)。
 - 组合根：`jarvis-app`(17，env 解析 + 装配全部 provider/store/tool + serve/mcp-serve/init/login/status/workspace 子命令 + 系统提示切换 + 项目上下文加载) 与 `jarvis-cli`(25，REPL + `--no-interactive` 管道)。
+- 客户端：`desktop`(14，Electron 外壳 — 主进程内嵌 `server`、preload bridge、electron-builder dmg/zip，P7.6–7.8)。
 
 **真正延后（明确未做）：** terminal PTY（需 `node-pty`）；`memory.*` agent-markdown 记忆工具 + git/iCloud 同步；
 GitHub connectors；tasks 路由；market 实时 HTTP 拉取；SQL 后端（P6.7，sqlite/postgres/mysql，JSON 后端已覆盖功能）；
-`shared-types`（替 `ts_rs` codegen，P7.9 余项，属客户端改线 — base-URL 切换已完成，见下）；Electron（P7.6–7.8）/ iOS（P7.10）客户端；
+`shared-types`（替 `ts_rs` codegen，P7.9 余项，属客户端改线 — base-URL 切换已完成，见下）；iOS（P7.10）客户端（Electron P7.6–7.8 已完成，见 `packages/desktop`）；
 P8 下线 Rust（当前 Rust 与 Node 并存，不单方面删除）。
 
 **配套：** [nodejs-rewrite.zh-CN.md](nodejs-rewrite.zh-CN.md)（设计与策略）。本文件是
@@ -202,18 +203,22 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 - [ ] **7.3** 子命令 `serve` / `mcp-serve` / `init` / `login` / `status` / `workspace` `size:L`
 - [ ] **7.4** 工具门控 env（`JARVIS_ENABLE_*`）+ 权限模式 env + worktree env `size:M`
 - [ ] **7.5** `jarvis-cli`：REPL + `--no-interactive` 管道（单轮 AlwaysDeny）+ 审批门 + slash 命令 + 项目上下文（可选 `ink` TUI） `size:L` `area:cli`
-- [ ] **7.6** Electron：主进程内嵌 `server` 包 + `loadFile(dist)` + 窗口 `1280×860` `size:L` `area:desktop`
-- [ ] **7.7** Electron：preload bridge + ipc（替 `@tauri-apps/api`）+ 前端 `services/desktop.ts` 适配 `size:M` `area:desktop`
-- [ ] **7.8** `electron-builder` 打包（macOS dmg/zip）+ release CI `size:M` `area:desktop`
+- [x] **7.6** Electron：主进程内嵌 `server` 包 + `loadFile(dist)` + 窗口 `1280×860` `size:L` `area:desktop`
+      ✅ `packages/desktop`（`@jarvis/desktop`）。主进程经 `ServerManager` 在进程内 `loadConfig→buildProvider→openStores→buildAppState→serve` 启动嵌入式服务（强制 `JARVIS_ADDR=127.0.0.1:<随机端口>` / `JARVIS_FS_ROOT` / `JARVIS_WEB_DIST`），窗口 `1280×860` 先 `loadFile(dist/index.html)` 即时首屏、服务就绪后 `loadURL(origin)` 转同源（免 CORS，复刻 Tauri 导航模型）；已有外部 `jarvis serve` 则复用。无 key 时降级停在 file:// SPA，`restart` 可重试。
+- [x] **7.7** Electron：preload bridge + ipc（替 `@tauri-apps/api`）+ 前端 `services/desktop.ts` 适配 `size:M` `area:desktop`
+      ✅ `src/preload/index.ts` 经 `contextBridge` 暴露类型化 `window.jarvisDesktop`（status/restartServer/selectWorkspaceDir/openPath/revealPath/logs，频道见 `src/shared/ipc.ts`），`contextIsolation+sandbox` 开、`nodeIntegration` 关；`apps/jarvis-web/src/services/desktop.ts` 改为同时识别 `__TAURI__` 与 `window.jarvisDesktop`，对外函数面不变。
+- [x] **7.8** `electron-builder` 打包（macOS dmg/zip）+ release CI `size:M` `area:desktop`
+      ✅ `electron-builder.yml`（dmg+zip，arm64/x64，复用 Tauri 图标，原生模块 `better-sqlite3`/`node-pty` 走 external + asarUnpack + npmRebuild）；esbuild `build.mjs` 把 `@jarvis/*` 全图打成 CJS（仅原生 external）；release CI `.github/workflows/node-desktop-release.yml`（`node-desktop-v*` tag，与 Tauri 的 `desktop-v*` 互不冲突）。`node.yml` 装机加 `ELECTRON_SKIP_BINARY_DOWNLOAD` 省去运行时二进制。
 - [~] **7.9** Web：base URL 切换 ✅（`VITE_BACKEND_URL` 驱动 dev 代理 + `api.ts` 默认源，运行时 `localStorage jarvis.apiOrigin` / `setApiOriginOverride` 仍可热切；`@jarvis/jarvis-app` 经 `JARVIS_WEB_DIST` 服务构建好的 SPA）。余项：`types/generated` → `shared-types` + 删 `ts-codegen`（更大的前端改线，延后） `size:M` `area:web`
-- [ ] **7.10** iOS：base URL 切换 + `/v1` 契约 smoke test `size:S` `area:ios`
+- [x] **7.10** iOS：base URL 切换 + `/v1` 契约 smoke test `size:S` `area:ios`
+      ✅ `ServerConfig.resolve` 优先级 UserDefaults `serverURL` > `JARVIS_SERVER_URL` env > Info.plist `JarvisServerURL` > `:7001`（iOS 版 `VITE_BACKEND_URL`+运行时覆盖）。契约冒烟测试 `apps/jarvis-ios/Tests/`（`run-contract-smoke.sh` 用宿主 `swiftc` 编译纯 Foundation 模型，离线黄金样本对齐 Rust 契约 + 可选 live 模式，24 检查全过）+ CI `ios-contract.yml`。**期间发现并修复** Node `GET /v1/conversations` 把数组错包成 `{conversations:[…]}`（背离 Rust 与 web/iOS 两端,且原 `server.test.ts` 把错误形状写进了断言）→ 改回裸数组 + 新增 `conversations-routes.test.ts` 锁定契约。
 
 ---
 
 ## P8 — 收尾与下线 `phase:8`
 
 - [~] **8.1** 拆全部代理转发，Node 成为独立服务 `size:M` `area:server`
-      进行中（无代理层需拆，P0.5 代理中间件从未落地，Rust/Node 各自独立；本任务实为补齐 Node `/v1` 对 Rust 的契约缺口）：
+      进行中（无代理层需拆——P0.5 代理中间件从未落地，Rust/Node 各自独立；本任务实为补齐 Node `/v1` 对 Rust 的契约缺口，缺口由 P7.10 契约冒烟测试发现，以 iOS/web 契约 + `apps/jarvis-ios/Tests` 黄金样本为准）：
       ✅ `GET /v1/providers` 只读目录（`{default, providers}`，model-picker 用；`buildProviderCatalog` 从配置 provider + capability catalog 构建，挂到 `AppState.providerCatalog`，路由独立于 ProviderAdmin、无 catalog 时回空表而非 503）。
       余项：`GET /v1/conversations` 行的 `title`/`source` 富化（需逐行 load 取首条 user 消息，对齐 Rust）；其余路由全量契约审计。
 - [ ] **8.2** 下线 Rust 服务 + 归档旧 crate（保留 git 历史） `size:S` `area:infra`

@@ -34,6 +34,40 @@ open JarvisiOS.xcodeproj
    - 真机:`http://<Mac 局域网 IP>:7001`(`JARVIS_ADDR` 默认监听 `0.0.0.0:7001`)
 3. 「测试连接」走 `GET /health` 验证连通性。
 
+Rust `harness-server` 与 Node `@jarvis/jarvis-app serve` 说同一套 `/v1`、同在 7001,
+所以默认地址两者通用。
+
+### base URL 切换(P7.10)
+
+`ServerConfig.resolve` 的优先级(高→低,iOS 版的 `VITE_BACKEND_URL` + 运行时覆盖):
+
+1. UserDefaults `serverURL` —— 设置页编辑的运行时覆盖,最高优先级;
+2. `JARVIS_SERVER_URL` 环境变量 —— 启动/CI/开发期默认(Xcode scheme 的 Run
+   environment 或无头驱动模拟器时设),不入构建;
+3. Info.plist `JarvisServerURL` —— 构建期默认,可让某个构建出厂即指向特定后端;
+4. `http://localhost:7001` —— 兜底。
+
+## /v1 契约冒烟测试(P7.10)
+
+客户端模型(`Sources/Models/*` + `Networking/{ServerConfig,JarvisAPI}`)是纯
+Foundation,所以契约冒烟测试用宿主 `swiftc` 直接编译运行——**无需 Xcode 工程或
+模拟器**:
+
+```bash
+cd apps/jarvis-ios
+./Tests/run-contract-smoke.sh                                   # 离线黄金样本(门禁)
+JARVIS_SMOKE_BASE_URL=http://localhost:7001 ./Tests/run-contract-smoke.sh   # + 实测诊断
+```
+
+离线模式用「黄金样本」校验 iOS Codable 模型能否解出服务端 `/v1` 线格式(会话列表/
+详情/providers/WS `AgentEvent` 帧),黄金样本对齐 **Rust `harness-server` 的契约**
+(权威基线)。CI 见 `.github/workflows/ios-contract.yml`。
+
+> 迁移期发现:Node 服务端 `GET /v1/conversations` 曾把数组包进 `{conversations:[…]}`
+> (已在本次随 P7.10 修回裸数组,补 `conversations-routes.test.ts` 锁定);另
+> `GET /v1/providers`(只读目录)Node 端尚未实现(仅 `POST` + `GET /:name`),
+> 会话列表也缺 `title`/`source` 富化——留待 P8.1「Node 独立成服务」补齐。
+
 开发期 Info.plist 设置了 `NSAllowsArbitraryLoads` 以允许局域网明文
 http/ws;正式分发前应收紧 ATS 并改用 TLS。
 
