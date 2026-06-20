@@ -532,3 +532,89 @@ test("requirement todos: CRUD + batch + link round-trip", async () => {
   assert.equal((await app.inject({ method: "GET", url: "/v1/requirements/ghost/todos" })).statusCode, 404);
   await app.close();
 });
+
+// ---------- run verification ----------
+
+test("run verification: /verification stores result + flips terminal", async () => {
+  const { newRequirement, newRequirementRun } = await import("@jarvis/project");
+  const stores = makeMemoryStores();
+  const req = newRequirement("p", "X");
+  await stores.requirements.upsert(req);
+  const run = newRequirementRun(req.id, "conv-1");
+  await stores.requirementRuns.upsert(run);
+  const app = await buildApp(
+    makeState({
+      requirements: stores.requirements,
+      requirementRuns: stores.requirementRuns,
+      activities: stores.activities,
+    }),
+  );
+
+  const stored = await app.inject({
+    method: "POST",
+    url: `/v1/runs/${run.id}/verification`,
+    payload: { status: "passed", command_results: [] },
+  });
+  assert.equal(stored.statusCode, 200);
+  const sj = stored.json() as { status: string; verification: { status: string } };
+  assert.equal(sj.status, "completed"); // passed → terminal Completed
+  assert.equal(sj.verification.status, "passed");
+
+  assert.equal(
+    (await app.inject({ method: "POST", url: "/v1/runs/ghost/verification", payload: { status: "failed" } }))
+      .statusCode,
+    404,
+  );
+  await app.close();
+});
+
+test("run verify executes commands", { skip: process.platform === "win32" }, async () => {
+  const { newRequirement, newRequirementRun } = await import("@jarvis/project");
+  const stores = makeMemoryStores();
+  const req = newRequirement("p", "X");
+  await stores.requirements.upsert(req);
+  const app = await buildApp(
+    makeState({
+      requirements: stores.requirements,
+      requirementRuns: stores.requirementRuns,
+      activities: stores.activities,
+    }),
+  );
+
+  // empty commands → 400; missing run → 404
+  const run0 = newRequirementRun(req.id, "c0");
+  await stores.requirementRuns.upsert(run0);
+  assert.equal(
+    (await app.inject({ method: "POST", url: `/v1/runs/${run0.id}/verify`, payload: { commands: [] } })).statusCode,
+    400,
+  );
+  assert.equal(
+    (await app.inject({ method: "POST", url: "/v1/runs/ghost/verify", payload: { commands: ["exit 0"] } }))
+      .statusCode,
+    404,
+  );
+
+  // passing plan → Completed
+  const pass = newRequirementRun(req.id, "c1");
+  await stores.requirementRuns.upsert(pass);
+  const passed = (await app.inject({
+    method: "POST",
+    url: `/v1/runs/${pass.id}/verify`,
+    payload: { commands: ["exit 0"] },
+  })).json() as { status: string; verification: { status: string; command_results: { exit_code: number }[] } };
+  assert.equal(passed.status, "completed");
+  assert.equal(passed.verification.status, "passed");
+  assert.equal(passed.verification.command_results[0]!.exit_code, 0);
+
+  // failing plan → Failed
+  const fail = newRequirementRun(req.id, "c2");
+  await stores.requirementRuns.upsert(fail);
+  const failed = (await app.inject({
+    method: "POST",
+    url: `/v1/runs/${fail.id}/verify`,
+    payload: { commands: ["exit 3"] },
+  })).json() as { status: string; verification: { status: string } };
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.verification.status, "failed");
+  await app.close();
+});

@@ -45,14 +45,18 @@ import type {
   RequirementTodo,
   RequirementTodoEvidence,
   TriageState,
+  VerificationPlan,
+  VerificationResult,
 } from "@jarvis/project";
 import {
+  finishRequirementRun,
   linkConversation,
   newActivity,
   newRequirement,
   newRequirementRun,
   newRequirementTodo,
   pushRequirementRunLog,
+  requirementRunStatusIsTerminal,
   requirementStatusFromWire,
   requirementToWire,
   requirementTodoCreatorFromWire,
@@ -63,6 +67,7 @@ import {
   triageStateFromWire,
   triageStateNeedsTriage,
 } from "@jarvis/project";
+import { DEFAULT_TIMEOUT_MS, executePlan } from "./verification.ts";
 import type { AppState } from "./state.ts";
 
 // ---------- store guards (503 when absent) --------------------------------
@@ -787,6 +792,119 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
       return reply.code(500).send({ error: errorText(e) });
     }
   });
+
+  // ---- run verification ----
+
+  // Attach an externally-computed VerificationResult to a run.
+  app.post("/v1/runs/:id/verification", async (req, reply) => {
+    const runStore = requireRunStore(state, reply);
+    if (!runStore) return reply;
+    const id = (req.params as { id: string }).id;
+    const result = (req.body ?? {}) as VerificationResult;
+    if (typeof result.status !== "string") {
+      return reply.code(400).send({ error: "body must be a VerificationResult" });
+    }
+    try {
+      const run = await runStore.get(id);
+      if (!run) return reply.code(404).send({ error: `run \`${id}\` not found` });
+      return reply.send(await applyVerification(state, run, result));
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+
+  // Execute the plan's commands in the run's workspace, then attach the result.
+  app.post("/v1/runs/:id/verify", async (req, reply) => {
+    const runStore = requireRunStore(state, reply);
+    if (!runStore) return reply;
+    const id = (req.params as { id: string }).id;
+    const body = (req.body ?? {}) as {
+      commands?: unknown;
+      timeout_ms?: unknown;
+      require_diff?: unknown;
+      require_tests?: unknown;
+      require_human_review?: unknown;
+    };
+    const commands = Array.isArray(body.commands)
+      ? body.commands.filter((c): c is string => typeof c === "string")
+      : [];
+    if (commands.length === 0) {
+      return reply.code(400).send({
+        error: "`commands` must not be empty; POST /verification to attach a result without running anything",
+      });
+    }
+    try {
+      const run = await runStore.get(id);
+      if (!run) return reply.code(404).send({ error: `run \`${id}\` not found` });
+      const plan: VerificationPlan = {
+        commands,
+        require_diff: body.require_diff === true,
+        require_tests: body.require_tests === true,
+        require_human_review: body.require_human_review === true,
+      };
+      const workspace = await resolveRunWorkspace(state, run);
+      const timeoutMs =
+        typeof body.timeout_ms === "number" && body.timeout_ms > 0 ? body.timeout_ms : DEFAULT_TIMEOUT_MS;
+      pushRequirementRunLog(run, "info", "Verification started", {
+        workspace,
+        commands: commands.length,
+        timeout_ms: timeoutMs,
+        manual: true,
+      });
+      await runStore.upsert(run);
+      const result = await executePlan(workspace, plan, timeoutMs);
+      return reply.send(await applyVerification(state, run, result));
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+}
+
+/** Where a run's verification commands execute: worktree → bound workspace → root. */
+async function resolveRunWorkspace(state: AppState, run: RequirementRun): Promise<string> {
+  const wt = run.worktree_path?.trim();
+  if (wt) return wt;
+  if (state.workspaces) {
+    const bound = (await state.workspaces.lookup(run.conversation_id))?.trim();
+    if (bound) return bound;
+  }
+  return state.workspaceRoot ?? ".";
+}
+
+/**
+ * Persist + broadcast a verification result for a run (terminal flip on
+ * pass/fail, Verified + Finished frames, Activity rows). Shared by /verify and
+ * /verification. Mirrors `apply_verification`.
+ */
+async function applyVerification(
+  state: AppState,
+  run: RequirementRun,
+  result: VerificationResult,
+): Promise<RequirementRun> {
+  const runStore = state.requirementRuns;
+  if (!runStore) return run;
+  const wasTerminal = requirementRunStatusIsTerminal(run.status);
+  if (!wasTerminal) {
+    if (result.status === "passed") finishRequirementRun(run, "completed");
+    else if (result.status === "failed") finishRequirementRun(run, "failed");
+    // needs_review / skipped: leave the run non-terminal.
+  }
+  run.verification = result;
+  await runStore.upsert(run);
+  runStore.broadcast({ type: "verified", run_id: run.id, result });
+  if (requirementRunStatusIsTerminal(run.status)) runStore.broadcast({ type: "finished", ...run });
+  await recordActivity(state, run.requirement_id, "verification_finished", SYSTEM_ACTOR, {
+    run_id: run.id,
+    status: result.status,
+  });
+  if (!wasTerminal && requirementRunStatusIsTerminal(run.status)) {
+    await recordActivity(state, run.requirement_id, "run_finished", SYSTEM_ACTOR, {
+      run_id: run.id,
+      status: run.status,
+      reason: "verification",
+    });
+  }
+  return run;
 }
 
 /**
