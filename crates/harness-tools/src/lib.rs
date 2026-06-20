@@ -38,6 +38,7 @@ pub mod requirement;
 pub mod roadmap;
 mod sandbox;
 pub mod shell;
+pub mod ssrf;
 pub mod time;
 pub mod todo;
 pub mod triage_scan;
@@ -62,6 +63,7 @@ pub use git::{
 pub use grep::CodeGrepTool;
 pub use harness_health::HarnessHealthTool;
 pub use http::HttpFetchTool;
+pub use ssrf::SsrfPolicy;
 pub use memory::{
     MemoryDeleteTool, MemoryListTool, MemoryReadTool, MemoryRoots, MemoryScope, MemoryWriteTool,
 };
@@ -106,6 +108,11 @@ pub struct BuiltinsConfig {
     /// Cap on response body size (in bytes) for `http.fetch`. Responses
     /// larger than this are truncated with a trailing marker.
     pub http_max_bytes: usize,
+    /// SSRF policy for `http.fetch`. Defaults to blocking loopback /
+    /// link-local / private / reserved targets. Operators can allowlist
+    /// specific hosts (or pass `"*"` to disable blocking) via the composition
+    /// root — see `JARVIS_HTTP_FETCH_ALLOW`.
+    pub http_ssrf_policy: SsrfPolicy,
     /// Cap on file size (in bytes) for `fs.read`. Files larger than this
     /// are truncated with a trailing marker so a single `fs.read` can't
     /// blow the LLM context window.
@@ -260,6 +267,7 @@ impl Default for BuiltinsConfig {
         Self {
             fs_root: PathBuf::from("."),
             http_max_bytes: 256 * 1024,
+            http_ssrf_policy: SsrfPolicy::default(),
             fs_max_bytes: 256 * 1024,
             enable_fs_write: false,
             enable_fs_edit: false,
@@ -299,7 +307,9 @@ pub fn register_builtins(registry: &mut ToolRegistry, cfg: BuiltinsConfig) {
     let roadmap_requirements = cfg.requirement_store.clone();
     registry.register(EchoTool);
     registry.register(TimeNowTool);
-    registry.register(HttpFetchTool::new(cfg.http_max_bytes));
+    registry.register(
+        HttpFetchTool::new(cfg.http_max_bytes).with_ssrf_policy(cfg.http_ssrf_policy.clone()),
+    );
     registry.register(FsReadTool::new(root.clone()).with_max_bytes(cfg.fs_max_bytes));
     registry.register(FsListTool::new(root.clone()));
     registry.register(CodeGrepTool::new(root.clone()));

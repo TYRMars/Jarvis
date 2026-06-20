@@ -25,7 +25,7 @@ import { connect, connectAll, makeMemoryStores, type StoreBundle } from "@jarvis
 import { serveRegistryStdio } from "@jarvis/mcp";
 import { serve } from "@jarvis/server";
 import { ToolRegistry } from "@jarvis/core";
-import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
+import { registerBuiltins, SsrfPolicy, type BuiltinsConfig } from "@jarvis/tools";
 
 import { loadConfig, parseAddr, type JarvisConfig } from "./config.ts";
 import { buildProvider } from "./provider.ts";
@@ -167,6 +167,7 @@ export async function runMcpServe(config: JarvisConfig): Promise<void> {
   const builtins: BuiltinsConfig = {
     fsRoot: config.fsRoot,
     httpMaxBytes: config.gating.httpMaxBytes,
+    httpSsrf: SsrfPolicy.fromAllowHosts(config.gating.httpFetchAllow),
     enableFsWrite: config.gating.enableFsWrite,
     enableFsEdit: config.gating.enableFsEdit,
     enableFsPatch: config.gating.enableFsPatch,

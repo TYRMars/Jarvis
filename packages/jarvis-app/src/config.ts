@@ -74,6 +74,12 @@ export interface ToolGating {
   /** `git.*` read group is on unless `JARVIS_DISABLE_GIT_READ` is set. */
   enableGitRead: boolean;
   httpMaxBytes: number;
+  /**
+   * Operator allowlist for `http.fetch` SSRF protection (from
+   * `JARVIS_HTTP_FETCH_ALLOW`, comma-separated). Empty = block all
+   * private/loopback/link-local targets; `["*"]` disables blocking.
+   */
+  httpFetchAllow: string[];
 }
 
 /** The fully-parsed runtime configuration handed to every builder. */
@@ -256,6 +262,10 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     // git.* read group is ON by default; the env var DISABLES it.
     enableGitRead: !truthy(env.JARVIS_DISABLE_GIT_READ),
     httpMaxBytes: parseIntOr(env.JARVIS_HTTP_MAX_BYTES, 256 * 1024),
+    httpFetchAllow: (env.JARVIS_HTTP_FETCH_ALLOW ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
   };
 
   const memoryTokensRaw = firstNonEmpty(env, "JARVIS_MEMORY_TOKENS");

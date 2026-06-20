@@ -26,7 +26,9 @@ export { ExitPlanTool } from "./exit-plan.ts";
 export { EnterPlanModeTool } from "./enter-plan-mode.ts";
 
 export { HttpFetchTool, HTTP_DEFAULT_MAX_BYTES } from "./http.ts";
-export type { FetchImpl, FetchResponse, HttpFetchConfig } from "./http.ts";
+export type { FetchImpl, FetchResponse, HttpFetchConfig, ResolveHook } from "./http.ts";
+export { SsrfPolicy, classifyBlocked } from "./ssrf.ts";
+export type { SsrfPolicyConfig } from "./ssrf.ts";
 
 export { CodeGrepTool } from "./grep.ts";
 export type { CodeGrepOptions } from "./grep.ts";

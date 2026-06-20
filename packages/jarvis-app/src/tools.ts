@@ -20,7 +20,7 @@
 // `enter_plan_mode` coding-mode default — none are on the @jarvis/tools surface
 // or needed for the P1 server boot.
 import { ToolRegistry, type LlmProvider } from "@jarvis/core";
-import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
+import { registerBuiltins, SsrfPolicy, type BuiltinsConfig } from "@jarvis/tools";
 import { connectAllMcp, mcpClientConfig, type McpClient } from "@jarvis/mcp";
 import {
   InternalSubAgent,
@@ -69,6 +69,7 @@ export async function buildToolRegistry(
   const builtins: BuiltinsConfig = {
     fsRoot: config.fsRoot,
     httpMaxBytes: config.gating.httpMaxBytes,
+    httpSsrf: SsrfPolicy.fromAllowHosts(config.gating.httpFetchAllow),
     enableFsWrite: config.gating.enableFsWrite,
     enableFsEdit: config.gating.enableFsEdit,
     enableFsPatch: config.gating.enableFsPatch,

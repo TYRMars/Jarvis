@@ -31,6 +31,7 @@ import { FsFindTool } from "./fs-find.ts";
 import { GitDiffTool, GitLogTool, GitShowTool, GitStatusTool } from "./git.ts";
 import { CodeGrepTool } from "./grep.ts";
 import { HttpFetchTool, HTTP_DEFAULT_MAX_BYTES } from "./http.ts";
+import { SsrfPolicy, type SsrfPolicyConfig } from "./ssrf.ts";
 import { FsPatchTool } from "./patch.ts";
 import { registerDocTools } from "./doc-tools.ts";
 import { registerLearningMemoryTools } from "./learning-memory-tools.ts";
@@ -64,6 +65,12 @@ export interface BuiltinsConfig {
    * than this are truncated with a trailing marker. Defaults to 256 KiB.
    */
   httpMaxBytes?: number;
+  /**
+   * SSRF policy for `http.fetch`. Defaults to blocking loopback / link-local /
+   * private / reserved targets. Operators can allowlist specific hosts (or pass
+   * `"*"`) via the composition root — see `JARVIS_HTTP_FETCH_ALLOW`.
+   */
+  httpSsrf?: SsrfPolicyConfig | SsrfPolicy;
   /**
    * Cap on file size (in bytes) for `fs.read`. Files larger than this are
    * truncated with a trailing marker so a single `fs.read` can't blow the
@@ -193,7 +200,7 @@ export function registerBuiltins(registry: ToolRegistry, config: BuiltinsConfig 
   // Always-on, read-only group.
   registry.register(new EchoTool());
   registry.register(new TimeNowTool());
-  registry.register(new HttpFetchTool({ maxBytes: httpMaxBytes }));
+  registry.register(new HttpFetchTool({ maxBytes: httpMaxBytes, ssrf: config.httpSsrf }));
   registry.register(new FsReadTool({ root, maxBytes: fsMaxBytes }));
   registry.register(new FsListTool({ root }));
   registry.register(new CodeGrepTool({ root }));

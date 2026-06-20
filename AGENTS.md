@@ -120,7 +120,9 @@ binary uses. The individual tools are also pub so callers can register selective
 - `echo` — returns its `text` arg; useful for smoke-testing the tool loop.
 - `time.now` — `{unix, iso}` UTC.
 - `http.fetch` — GET/POST with headers/body, response truncated to `http_max_bytes`
-  (default 256 KiB). Returns a `HTTP <status>\n<headers>\n\n<body>` string.
+  (default 256 KiB). Returns a `HTTP <status>\n<headers>\n\n<body>` string. SSRF-guarded:
+  http(s)-only, redirects not followed, target must not be/resolve to loopback / link-local /
+  private / reserved addresses (allowlist via `JARVIS_HTTP_FETCH_ALLOW`).
 - `fs.read` / `fs.list` / `fs.write` — every `fs.*` tool is scoped to a `root`
   supplied at construction. `resolve_under` rejects absolute paths and any
   component equal to `..`. **`fs.write` is not registered by default**; flip

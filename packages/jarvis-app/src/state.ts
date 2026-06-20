@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider, type Memory } from "@jarvis/core";
-import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
+import { registerBuiltins, SsrfPolicy, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
 import type { AppState, ProviderCatalog } from "@jarvis/server";
@@ -159,6 +159,7 @@ function innerBuiltinsConfig(config: JarvisConfig, stores: ToolStores): Builtins
   const c: BuiltinsConfig = {
     fsRoot: config.fsRoot,
     httpMaxBytes: config.gating.httpMaxBytes,
+    httpSsrf: SsrfPolicy.fromAllowHosts(config.gating.httpFetchAllow),
     enableFsWrite: config.gating.enableFsWrite,
     enableFsEdit: config.gating.enableFsEdit,
     enableFsPatch: config.gating.enableFsPatch,

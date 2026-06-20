@@ -10,6 +10,7 @@ import {
   HttpFetchTool,
   type FetchImpl,
   type FetchResponse,
+  type ResolveHook,
 } from "./http.ts";
 
 /** Build a fake FetchResponse over a body string/bytes + header map. */
@@ -78,7 +79,7 @@ test("GET: formats status, headers, and body", async () => {
       body: "hello world",
     }),
   );
-  const tool = new HttpFetchTool({ fetchImpl });
+  const tool = new HttpFetchTool({ fetchImpl, ssrf: { enabled: false } });
   const out = await tool.invoke({ url: "http://example.test/" });
 
   assert.equal(
@@ -93,14 +94,14 @@ test("GET: formats status, headers, and body", async () => {
 
 test("status line falls back to the code when no reason phrase", async () => {
   const { fetchImpl } = stubFetch(fakeResponse({ status: 599, statusText: "", body: "x" }));
-  const tool = new HttpFetchTool({ fetchImpl });
+  const tool = new HttpFetchTool({ fetchImpl, ssrf: { enabled: false } });
   const out = await tool.invoke({ url: "http://example.test/" });
   assert.ok(out.startsWith("HTTP 599\n"));
 });
 
 test("method is uppercased and only GET/POST allowed", async () => {
   const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
-  const tool = new HttpFetchTool({ fetchImpl });
+  const tool = new HttpFetchTool({ fetchImpl, ssrf: { enabled: false } });
 
   await tool.invoke({ url: "http://example.test/", method: "post", body: "payload" });
   assert.equal(calls[0]?.init?.method, "POST");
@@ -114,14 +115,14 @@ test("method is uppercased and only GET/POST allowed", async () => {
 
 test("body is only attached for POST", async () => {
   const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
-  const tool = new HttpFetchTool({ fetchImpl });
+  const tool = new HttpFetchTool({ fetchImpl, ssrf: { enabled: false } });
   await tool.invoke({ url: "http://example.test/", method: "GET", body: "ignored" });
   assert.equal(calls[0]?.init?.body, undefined);
 });
 
 test("headers must be strings", async () => {
   const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
-  const tool = new HttpFetchTool({ fetchImpl });
+  const tool = new HttpFetchTool({ fetchImpl, ssrf: { enabled: false } });
 
   await tool.invoke({
     url: "http://example.test/",
@@ -138,7 +139,7 @@ test("headers must be strings", async () => {
 test("body is truncated at maxBytes on a byte boundary with a marker", async () => {
   const maxBytes = 8;
   const { fetchImpl } = stubFetch(fakeResponse({ body: "0123456789" }));
-  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl, ssrf: { enabled: false } });
   const out = await tool.invoke({ url: "http://example.test/" });
 
   // header block is empty here, so: "HTTP 200 OK\n\n" + body + marker
@@ -150,7 +151,7 @@ test("truncation counts bytes, not characters (multi-byte safe)", async () => {
   // yields a replacement char rather than throwing.
   const maxBytes = 3;
   const { fetchImpl } = stubFetch(fakeResponse({ body: "éé" })); // 4 bytes total
-  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl, ssrf: { enabled: false } });
   const out = await tool.invoke({ url: "http://example.test/" });
   assert.ok(out.startsWith("HTTP 200 OK\n\n"));
   assert.ok(out.endsWith("[... truncated at 3 bytes ...]"));
@@ -160,7 +161,7 @@ test("truncation counts bytes, not characters (multi-byte safe)", async () => {
 
 test("no truncation marker when body fits exactly", async () => {
   const { fetchImpl } = stubFetch(fakeResponse({ body: "1234" }));
-  const tool = new HttpFetchTool({ maxBytes: 4, fetchImpl });
+  const tool = new HttpFetchTool({ maxBytes: 4, fetchImpl, ssrf: { enabled: false } });
   const out = await tool.invoke({ url: "http://example.test/" });
   assert.equal(out.includes("truncated"), false);
   assert.equal(out, "HTTP 200 OK\n\n1234");
@@ -170,7 +171,7 @@ test("default maxBytes is 256 KiB", async () => {
   assert.equal(HTTP_DEFAULT_MAX_BYTES, 262144);
   const big = "a".repeat(HTTP_DEFAULT_MAX_BYTES + 100);
   const { fetchImpl } = stubFetch(fakeResponse({ body: big }));
-  const tool = new HttpFetchTool({ fetchImpl }); // no maxBytes override
+  const tool = new HttpFetchTool({ fetchImpl, ssrf: { enabled: false } }); // no maxBytes override
   const out = await tool.invoke({ url: "http://example.test/" });
   assert.ok(out.endsWith(`[... truncated at ${HTTP_DEFAULT_MAX_BYTES} bytes ...]`));
 });
@@ -188,7 +189,7 @@ test("integration: hits a real local server via global fetch", async () => {
   const { port } = server.address() as AddressInfo;
 
   try {
-    const tool = new HttpFetchTool({}); // uses global fetch
+    const tool = new HttpFetchTool({ ssrf: { enabled: false } }); // uses global fetch
     const out = await tool.invoke({
       url: `http://127.0.0.1:${port}/`,
       method: "POST",
@@ -202,4 +203,106 @@ test("integration: hits a real local server via global fetch", async () => {
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+// ---------------------------------------------------------------------------
+// SSRF guard
+// ---------------------------------------------------------------------------
+
+/** A tool whose fetch must never be reached (the guard should reject first). */
+function guardedTool(opts: { resolve?: ResolveHook } = {}) {
+  let fetched = false;
+  const fetchImpl: FetchImpl = async () => {
+    fetched = true;
+    return fakeResponse({ body: "should not reach" });
+  };
+  const tool = new HttpFetchTool({ fetchImpl, resolve: opts.resolve });
+  return { tool, wasFetched: () => fetched };
+}
+
+test("ssrf: rejects non-http(s) schemes", async () => {
+  const { tool, wasFetched } = guardedTool();
+  await assert.rejects(() => tool.invoke({ url: "file:///etc/passwd" }), /scheme/);
+  await assert.rejects(() => tool.invoke({ url: "gopher://example.com/" }), /scheme/);
+  assert.equal(wasFetched(), false);
+});
+
+test("ssrf: blocks literal metadata / loopback / private IPs", async () => {
+  for (const url of [
+    "http://169.254.169.254/latest/meta-data/",
+    "http://127.0.0.1:7001/",
+    "http://10.0.0.5/",
+    "http://192.168.1.1/",
+    "http://[::1]/",
+    "http://[fe80::1]/",
+    "http://[fc00::1]/",
+    "http://[::ffff:127.0.0.1]/",
+  ]) {
+    const { tool, wasFetched } = guardedTool();
+    await assert.rejects(() => tool.invoke({ url }), /blocked/, `expected ${url} blocked`);
+    assert.equal(wasFetched(), false, `${url} should not be fetched`);
+  }
+});
+
+test("ssrf: blocks hostnames that resolve to private addresses", async () => {
+  const { tool, wasFetched } = guardedTool({ resolve: async () => ["10.1.2.3"] });
+  await assert.rejects(() => tool.invoke({ url: "http://intranet.example/" }), /resolves to/);
+  assert.equal(wasFetched(), false);
+});
+
+test("ssrf: rejects a host returning a mix of public and private records", async () => {
+  const { tool } = guardedTool({ resolve: async () => ["93.184.216.34", "169.254.169.254"] });
+  await assert.rejects(() => tool.invoke({ url: "http://rebind.example/" }), /resolves to/);
+});
+
+test("ssrf: allows hostnames resolving to public addresses", async () => {
+  const calls: string[] = [];
+  const fetchImpl: FetchImpl = async (u) => {
+    calls.push(u);
+    return fakeResponse({ body: "ok" });
+  };
+  const tool = new HttpFetchTool({ fetchImpl, resolve: async () => ["93.184.216.34"] });
+  const out = await tool.invoke({ url: "http://example.com/" });
+  assert.ok(out.startsWith("HTTP 200 OK"));
+  assert.deepEqual(calls, ["http://example.com/"]);
+});
+
+test("ssrf: allowlist bypasses the private-range check", async () => {
+  const calls: string[] = [];
+  const fetchImpl: FetchImpl = async (u) => {
+    calls.push(u);
+    return fakeResponse({ body: "ok" });
+  };
+  const tool = new HttpFetchTool({
+    fetchImpl,
+    ssrf: { allowHosts: ["intranet.example"] },
+    resolve: async () => ["10.1.2.3"],
+  });
+  const out = await tool.invoke({ url: "http://intranet.example/" });
+  assert.ok(out.startsWith("HTTP 200 OK"));
+  assert.deepEqual(calls, ["http://intranet.example/"]);
+});
+
+test("ssrf: disabled policy restores unrestricted fetch", async () => {
+  const calls: string[] = [];
+  const fetchImpl: FetchImpl = async (u) => {
+    calls.push(u);
+    return fakeResponse({ body: "ok" });
+  };
+  const tool = new HttpFetchTool({ fetchImpl, ssrf: { enabled: false } });
+  await tool.invoke({ url: "http://127.0.0.1:7001/" });
+  assert.deepEqual(calls, ["http://127.0.0.1:7001/"]);
+});
+
+test("ssrf: redirects are requested in manual mode and not followed", async () => {
+  let seenInit: Parameters<FetchImpl>[1];
+  const fetchImpl: FetchImpl = async (_u, init) => {
+    seenInit = init;
+    // Simulate undici's opaque-redirect response (status 0).
+    return fakeResponse({ status: 0, statusText: "", headers: { location: "http://169.254.169.254/" } });
+  };
+  const tool = new HttpFetchTool({ fetchImpl, resolve: async () => ["93.184.216.34"] });
+  const out = await tool.invoke({ url: "http://example.com/" });
+  assert.equal(seenInit?.redirect, "manual");
+  assert.ok(/redirect not followed/.test(out), out);
 });

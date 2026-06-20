@@ -1665,6 +1665,17 @@ fn builtins_config_with_workspace(
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(defaults.http_max_bytes),
+        http_ssrf_policy: match std::env::var("JARVIS_HTTP_FETCH_ALLOW") {
+            Ok(raw) if !raw.trim().is_empty() => {
+                let hosts: Vec<String> = raw
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                harness_tools::SsrfPolicy::from_allow_hosts(hosts)
+            }
+            _ => defaults.http_ssrf_policy.clone(),
+        },
         fs_max_bytes: std::env::var("JARVIS_FS_MAX_BYTES")
             .ok()
             .and_then(|s| s.parse().ok())

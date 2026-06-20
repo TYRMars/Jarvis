@@ -117,7 +117,7 @@ not on a stock box). The `make` targets apply it automatically; override with
 
 **Server / workspace:** `JARVIS_ADDR` (`0.0.0.0:7001`), `JARVIS_FS_ROOT` (`.`, sandboxes `fs.*`/`git.*`/`code.grep`/`workspace.context` + `shell.exec` cwd; `--workspace <path>` CLI flag overrides), `JARVIS_NO_PROJECT_CONTEXT` (disable auto-loading `AGENTS.md`/`CLAUDE.md`/`AGENT.md`), `JARVIS_PROJECT_CONTEXT_BYTES` (cap, default 8 KiB), `RUST_LOG`.
 
-**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`).
+**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`), `JARVIS_HTTP_FETCH_ALLOW` (comma-sep hosts exempt from the `http.fetch` SSRF guard; `*` disables blocking entirely).
 
 **Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`). `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
 
@@ -183,7 +183,9 @@ default. **Anything that writes to disk or runs code stays opt-in and approval-g
 the `fs.write` / `shell.exec` precedent).
 
 **Always-on, read-only:** `echo`, `time.now`, `http.fetch` (GET/POST, body truncated to
-`http_max_bytes`≈256 KiB), `code.grep` (regex over sandbox, `.gitignore`-aware via the `ignore`
+`http_max_bytes`≈256 KiB; **SSRF-guarded** — http(s)-only, redirects not followed, and the
+target host must not be/resolve to loopback / link-local (`169.254.0.0/16` metadata) / RFC-1918 /
+reserved; allowlist via `JARVIS_HTTP_FETCH_ALLOW`), `code.grep` (regex over sandbox, `.gitignore`-aware via the `ignore`
 crate, `path`/`glob` narrowers, `max_results` + 64 KiB budget), `git.{status,diff,log,show}`
 (read-only over host `git -C <root>`, typed per-subcommand schemas, arg validators reject
 `-`-leading/null/newline; off via `JARVIS_DISABLE_GIT_READ`), `workspace.context` (compact JSON
