@@ -132,6 +132,12 @@ export interface JarvisConfig {
 
   mcpServers: McpServerSpec[];
   router: RouterConfigParsed;
+  /**
+   * Operator route-policy slot seeds from `JARVIS_ROUTE_*` (slot → raw
+   * `"provider/model"`). Seeds the in-process /v1/routing policy at boot;
+   * only `summarization` is consumed today (by the summariser).
+   */
+  routeSlots: Record<string, string>;
   workMode: WorkMode;
   workTickSeconds: number;
   workMaxConcurrent: number;
@@ -269,9 +275,24 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     reasoning: firstNonEmpty(env, "JARVIS_ROUTER_TIER_REASONING"),
   };
 
+  const routeSlots: Record<string, string> = {};
+  for (const [slot, envVar] of [
+    ["default", "JARVIS_ROUTE_DEFAULT"],
+    ["coding", "JARVIS_ROUTE_CODING"],
+    ["review", "JARVIS_ROUTE_REVIEW"],
+    ["summarization", "JARVIS_ROUTE_SUMMARIZATION"],
+    ["doc_reader", "JARVIS_ROUTE_DOC_READER"],
+    ["vision", "JARVIS_ROUTE_VISION"],
+    ["local_private", "JARVIS_ROUTE_LOCAL_PRIVATE"],
+  ] as const) {
+    const v = firstNonEmpty(env, envVar);
+    if (v) routeSlots[slot] = v;
+  }
+
   return {
     provider,
     model,
+    routeSlots,
     openaiApiKey: firstNonEmpty(env, "OPENAI_API_KEY"),
     anthropicApiKey: firstNonEmpty(env, "ANTHROPIC_API_KEY"),
     googleApiKey: firstNonEmpty(env, "GOOGLE_API_KEY", "GEMINI_API_KEY"),

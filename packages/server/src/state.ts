@@ -4,6 +4,7 @@
 import type { Agent, Approver, LlmProvider, ToolRegistry } from "@jarvis/core";
 import type { ChatRunRegistry } from "./chat-runs.ts";
 import type { McpManager } from "./mcp-manager.ts";
+import type { RoutePolicyStore } from "./route-policy.ts";
 import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
   ActivityStore,
@@ -127,6 +128,12 @@ export interface AppState {
    * minimal ping completion to check auth/capabilities). Absent → probe 503s.
    */
   provider?: LlmProvider;
+  /**
+   * Operator model route policy (`/v1/routing` CRUD). Mutable in-process; the
+   * `summarization` slot is read by the SummarizingMemory resolver. Routes 503
+   * when absent.
+   */
+  routePolicy?: RoutePolicyStore;
   /** Optional conversation persistence. Routes 503 when absent. */
   store?: ConversationStore;
 

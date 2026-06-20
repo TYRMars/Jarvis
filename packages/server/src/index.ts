@@ -173,6 +173,16 @@ export {
 } from "./tasks-routes.ts";
 export { registerToolsRoutes } from "./tools-routes.ts";
 export { registerMetaRoutes } from "./meta-routes.ts";
+export { registerRoutingRoutes } from "./routing-routes.ts";
+export {
+  RoutePolicyStore,
+  parseModelTarget,
+  isRouteSlot,
+  ROUTE_SLOTS,
+  type RoutePolicy,
+  type ModelTarget,
+  type RouteSlot,
+} from "./route-policy.ts";
 export { registerMcpRoutes } from "./mcp-routes.ts";
 export {
   McpManager,
