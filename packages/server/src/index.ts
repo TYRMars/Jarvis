@@ -4,6 +4,7 @@ export {
   type ConnectorSecretResolver,
   type ProviderCatalog,
   type ProviderListEntry,
+  type ServerInfo,
   isInternalId,
 } from "./state.ts";
 export { type ServeOptions, buildServer, serve } from "./server.ts";
@@ -171,6 +172,7 @@ export {
   registerTasksRoutes,
 } from "./tasks-routes.ts";
 export { registerToolsRoutes } from "./tools-routes.ts";
+export { registerMetaRoutes } from "./meta-routes.ts";
 export { registerMcpRoutes } from "./mcp-routes.ts";
 export {
   McpManager,

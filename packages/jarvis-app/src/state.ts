@@ -22,7 +22,7 @@ import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
 import { ChatRunRegistry } from "@jarvis/server";
-import type { AppState, ProviderCatalog } from "@jarvis/server";
+import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
   DocStore,
@@ -292,8 +292,30 @@ export async function buildAppState(
     return new Agent(provider, agentConfig);
   };
 
+  // Static config snapshot for GET /v1/server/info + /v1/version (no secrets).
+  const serverInfo: ServerInfo = {
+    // The "jarvis" app version users saw under the Rust binary (crate 0.2.0);
+    // continuity for the About section until a single Node version is minted.
+    version: "0.2.0",
+    listen_addr: config.addr,
+    config_path: null,
+    persistence: config.dbUrl ?? "json",
+    project_store: stores.projects !== undefined,
+    memory: { mode: config.memoryMode, budget_tokens: config.memoryTokens ?? null },
+    approval_mode: config.permissionMode,
+    coding_mode: codingMode(config),
+    project_context: { loaded: config.includeProjectContext, max_bytes: config.projectContextMaxBytes },
+    system_prompt: { length: systemPrompt.length, preview: systemPrompt.slice(0, 280) },
+    max_iterations: 80,
+    workspace_root: config.fsRoot,
+  };
+
   const state: AppState = {
     createAgent,
+    // The configured provider, for GET /v1/server/info's provider list + the
+    // POST /v1/providers/:name/probe connectivity ping.
+    provider,
+    serverInfo,
     // The SAME registry `createAgent` builds agents from — so `GET /v1/tools`
     // lists the live catalog and `PATCH /v1/tools/:name` mutes take effect for
     // the next turn.
