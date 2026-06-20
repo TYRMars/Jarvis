@@ -89,6 +89,23 @@ export class ToolRegistry {
     return this.#tools.has(name) && !this.#muted.has(name);
   }
 
+  /** Remove a tool (and clear any mute on it). Returns true if it existed. */
+  unregister(name: string): boolean {
+    this.#muted.delete(name);
+    return this.#tools.delete(name);
+  }
+
+  /**
+   * Remove every tool named `<prefix>.<...>` (the MCP manager unregisters a
+   * server's whole tool set on remove/reload). Returns the removed names.
+   */
+  unregisterPrefix(prefix: string): string[] {
+    const needle = `${prefix}.`;
+    const removed = [...this.#tools.keys()].filter((n) => n.startsWith(needle));
+    for (const n of removed) this.unregister(n);
+    return removed;
+  }
+
   mute(name: string): this {
     this.#muted.add(name);
     return this;

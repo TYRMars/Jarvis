@@ -300,6 +300,8 @@ export async function buildAppState(
     tools: toolBundle.registry,
     // In-process chat-run registry for the turn-status badge / Stop button.
     chatRuns: new ChatRunRegistry(),
+    // MCP server manager backing /v1/mcp/servers* (shares the tool registry).
+    mcpManager: toolBundle.mcpManager,
     store: stores.conversations,
     projects: stores.projects,
     requirements: stores.requirements,

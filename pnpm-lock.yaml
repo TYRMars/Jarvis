@@ -263,6 +263,9 @@ importers:
       '@jarvis/learning':
         specifier: workspace:*
         version: link:../learning
+      '@jarvis/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@jarvis/observability':
         specifier: workspace:*
         version: link:../observability

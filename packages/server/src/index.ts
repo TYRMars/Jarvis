@@ -171,6 +171,17 @@ export {
   registerTasksRoutes,
 } from "./tasks-routes.ts";
 export { registerToolsRoutes } from "./tools-routes.ts";
+export { registerMcpRoutes } from "./mcp-routes.ts";
+export {
+  McpManager,
+  McpManagerError,
+  wireToConfig,
+  configToWire,
+  type McpConnect,
+  type McpServerInfo,
+  type McpServerStatus,
+  type McpClientConfigWire,
+} from "./mcp-manager.ts";
 export { type RegisterUiOptions, registerUiRoutes, pathLooksLikeAsset } from "./ui.ts";
 export {
   type OAuthStateClaims,

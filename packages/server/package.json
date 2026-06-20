@@ -20,6 +20,7 @@
     "@jarvis/connectors": "workspace:*",
     "@jarvis/core": "workspace:*",
     "@jarvis/learning": "workspace:*",
+    "@jarvis/mcp": "workspace:*",
     "@jarvis/observability": "workspace:*",
     "@jarvis/plugin": "workspace:*",
     "@jarvis/project": "workspace:*",

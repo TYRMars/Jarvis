@@ -3,6 +3,7 @@
 // and hands it to `buildServer`; the server itself reads no env / config.
 import type { Agent, Approver, ToolRegistry } from "@jarvis/core";
 import type { ChatRunRegistry } from "./chat-runs.ts";
+import type { McpManager } from "./mcp-manager.ts";
 import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
   ActivityStore,
@@ -87,6 +88,12 @@ export interface AppState {
    * button) and is populated by the WS turn loop. Routes 503 when absent.
    */
   chatRuns?: ChatRunRegistry;
+  /**
+   * Dynamic MCP server manager backing `/v1/mcp/servers*` (list/add/remove/
+   * health/reload). Wraps the shared ToolRegistry so a server added at runtime
+   * registers its tools for the next agent turn. Routes 503 when absent.
+   */
+  mcpManager?: McpManager;
   /** Optional conversation persistence. Routes 503 when absent. */
   store?: ConversationStore;
 
