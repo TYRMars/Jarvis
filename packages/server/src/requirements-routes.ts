@@ -42,6 +42,8 @@ import type {
   RequirementRun,
   RequirementRunStore,
   RequirementStore,
+  RequirementTodo,
+  RequirementTodoEvidence,
   TriageState,
 } from "@jarvis/project";
 import {
@@ -49,10 +51,15 @@ import {
   newActivity,
   newRequirement,
   newRequirementRun,
+  newRequirementTodo,
   pushRequirementRunLog,
   requirementStatusFromWire,
   requirementToWire,
+  requirementTodoCreatorFromWire,
+  requirementTodoKindFromWire,
+  requirementTodoStatusFromWire,
   touchRequirement,
+  touchRequirementTodo,
   triageStateFromWire,
   triageStateNeedsTriage,
 } from "@jarvis/project";
@@ -566,6 +573,216 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
       const run = await runStore.get(id);
       if (!run) return reply.code(404).send({ error: `run \`${id}\` not found` });
       return reply.send(run);
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+
+  // ---- requirement TODO checklist (embedded in the Requirement row) ----
+
+  app.get("/v1/requirements/:id/todos", async (req, reply) => {
+    const store = requireStore(state, reply);
+    if (!store) return reply;
+    const id = (req.params as { id: string }).id;
+    try {
+      const item = await store.get(id);
+      if (!item) return reply.code(404).send({ error: `requirement \`${id}\` not found` });
+      return reply.send({ requirement_id: id, items: item.todos ?? [] });
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+
+  app.post("/v1/requirements/:id/todos", async (req, reply) => {
+    const store = requireStore(state, reply);
+    if (!store) return reply;
+    const id = (req.params as { id: string }).id;
+    const body = (req.body ?? {}) as {
+      title?: unknown;
+      kind?: unknown;
+      status?: unknown;
+      command?: unknown;
+      evidence?: unknown;
+      depends_on?: unknown;
+      created_by?: unknown;
+    };
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    if (title === "") return reply.code(400).send({ error: "`title` must not be blank" });
+    const kind = requirementTodoKindFromWire(typeof body.kind === "string" ? body.kind : "work");
+    if (!kind) return reply.code(400).send({ error: `unknown todo kind \`${String(body.kind)}\`` });
+    try {
+      const item = await store.get(id);
+      if (!item) return reply.code(404).send({ error: `requirement \`${id}\` not found` });
+      const todo = newRequirementTodo(title, kind);
+      if (typeof body.status === "string") {
+        const s = requirementTodoStatusFromWire(body.status);
+        if (!s) return reply.code(400).send({ error: `unknown todo status \`${body.status}\`` });
+        todo.status = s;
+      }
+      if (typeof body.command === "string" && body.command.trim() !== "") todo.command = body.command.trim();
+      if (body.evidence !== undefined && body.evidence !== null) {
+        todo.evidence = body.evidence as RequirementTodoEvidence;
+      }
+      if (Array.isArray(body.depends_on)) {
+        todo.depends_on = body.depends_on
+          .filter((x): x is string => typeof x === "string")
+          .map((s) => s.trim())
+          .filter((s) => s !== "");
+      }
+      if (typeof body.created_by === "string") {
+        const c = requirementTodoCreatorFromWire(body.created_by);
+        if (!c) return reply.code(400).send({ error: `unknown todo creator \`${body.created_by}\`` });
+        todo.created_by = c;
+      }
+      item.todos = [...(item.todos ?? []), todo];
+      touchRequirement(item);
+      await store.upsert(item);
+      await recordActivity(state, item.id, "comment", HUMAN_ACTOR, {
+        kind: "requirement_todo_created",
+        todo_id: todo.id,
+        todo_kind: todo.kind,
+        title: todo.title,
+      });
+      return reply.code(201).send({ todo, requirement: item });
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+
+  // Batch status update — one read-modify-write avoids the lost-update race of
+  // fanning out N per-item PATCHes against the same row.
+  app.patch("/v1/requirements/:id/todos", async (req, reply) => {
+    const store = requireStore(state, reply);
+    if (!store) return reply;
+    const id = (req.params as { id: string }).id;
+    const body = (req.body ?? {}) as { ids?: unknown; status?: unknown };
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === "string") : [];
+    if (ids.length === 0) return reply.code(400).send({ error: "`ids` must be a non-empty array" });
+    const status = typeof body.status === "string" ? requirementTodoStatusFromWire(body.status) : undefined;
+    if (!status) return reply.code(400).send({ error: `unknown todo status \`${String(body.status)}\`` });
+    try {
+      const item = await store.get(id);
+      if (!item) return reply.code(404).send({ error: `requirement \`${id}\` not found` });
+      const todos = item.todos ?? [];
+      const updated: RequirementTodo[] = [];
+      for (const tid of ids) {
+        const todo = todos.find((t) => t.id === tid);
+        if (!todo) return reply.code(404).send({ error: `todo \`${tid}\` not found` });
+        todo.status = status;
+        touchRequirementTodo(todo);
+        updated.push(todo);
+      }
+      touchRequirement(item);
+      await store.upsert(item);
+      await recordActivity(state, item.id, "comment", HUMAN_ACTOR, {
+        kind: "requirement_todos_batch_updated",
+        todo_ids: ids,
+        status,
+      });
+      return reply.send({ todos: updated, requirement: item });
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+
+  app.patch("/v1/requirements/:id/todos/:todo_id", async (req, reply) => {
+    const store = requireStore(state, reply);
+    if (!store) return reply;
+    const { id, todo_id: todoId } = req.params as { id: string; todo_id: string };
+    const body = (req.body ?? {}) as {
+      title?: unknown;
+      status?: unknown;
+      kind?: unknown;
+      command?: unknown;
+      evidence?: unknown;
+      depends_on?: unknown;
+    };
+    try {
+      const item = await store.get(id);
+      if (!item) return reply.code(404).send({ error: `requirement \`${id}\` not found` });
+      const todo = (item.todos ?? []).find((t) => t.id === todoId);
+      if (!todo) return reply.code(404).send({ error: `todo \`${todoId}\` not found` });
+      if (body.title !== undefined) {
+        const t = typeof body.title === "string" ? body.title.trim() : "";
+        if (t === "") return reply.code(400).send({ error: "`title` must not be blank" });
+        todo.title = t;
+      }
+      if (body.status !== undefined) {
+        const s = typeof body.status === "string" ? requirementTodoStatusFromWire(body.status) : undefined;
+        if (!s) return reply.code(400).send({ error: `unknown todo status \`${String(body.status)}\`` });
+        todo.status = s;
+      }
+      if (body.kind !== undefined) {
+        const k = typeof body.kind === "string" ? requirementTodoKindFromWire(body.kind) : undefined;
+        if (!k) return reply.code(400).send({ error: `unknown todo kind \`${String(body.kind)}\`` });
+        todo.kind = k;
+      }
+      if (body.command !== undefined) {
+        const c = typeof body.command === "string" ? body.command.trim() : "";
+        todo.command = c === "" ? undefined : c;
+      }
+      if (body.evidence !== undefined) {
+        todo.evidence = body.evidence === null ? undefined : (body.evidence as RequirementTodoEvidence);
+      }
+      if (Array.isArray(body.depends_on)) {
+        todo.depends_on = body.depends_on
+          .filter((x): x is string => typeof x === "string")
+          .map((s) => s.trim())
+          .filter((s) => s !== "");
+      }
+      touchRequirementTodo(todo);
+      touchRequirement(item);
+      await store.upsert(item);
+      await recordActivity(state, item.id, "comment", HUMAN_ACTOR, {
+        kind: "requirement_todo_updated",
+        todo_id: todo.id,
+        status: todo.status,
+      });
+      return reply.send({ todo, requirement: item });
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+
+  app.delete("/v1/requirements/:id/todos/:todo_id", async (req, reply) => {
+    const store = requireStore(state, reply);
+    if (!store) return reply;
+    const { id, todo_id: todoId } = req.params as { id: string; todo_id: string };
+    try {
+      const item = await store.get(id);
+      if (!item) return reply.code(404).send({ error: `requirement \`${id}\` not found` });
+      const before = item.todos ?? [];
+      const after = before.filter((t) => t.id !== todoId);
+      if (after.length !== before.length) {
+        item.todos = after;
+        touchRequirement(item);
+        await store.upsert(item);
+        await recordActivity(state, item.id, "comment", HUMAN_ACTOR, {
+          kind: "requirement_todo_deleted",
+          todo_id: todoId,
+        });
+      }
+      return reply.send({ deleted: true, requirement: item });
+    } catch (e) {
+      return reply.code(500).send({ error: errorText(e) });
+    }
+  });
+
+  // Idempotently link a conversation to a requirement.
+  app.post("/v1/requirements/:id/conversations", async (req, reply) => {
+    const store = requireStore(state, reply);
+    if (!store) return reply;
+    const id = (req.params as { id: string }).id;
+    const body = (req.body ?? {}) as { conversation_id?: unknown };
+    if (typeof body.conversation_id !== "string" || body.conversation_id === "") {
+      return reply.code(400).send({ error: "`conversation_id` is required" });
+    }
+    try {
+      const item = await store.get(id);
+      if (!item) return reply.code(404).send({ error: `requirement \`${id}\` not found` });
+      const appended = linkConversation(item, body.conversation_id);
+      if (appended) await store.upsert(item);
+      return reply.send({ requirement: item, appended });
     } catch (e) {
       return reply.code(500).send({ error: errorText(e) });
     }
