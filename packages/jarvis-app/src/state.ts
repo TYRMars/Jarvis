@@ -206,10 +206,18 @@ export function buildMemory(
  * shape of Rust's `list_providers` (`{ default, providers }`).
  */
 export function buildProviderCatalog(config: JarvisConfig): ProviderCatalog {
-  const catalogModels = capabilityCatalog(config.provider).map((c) => c.model);
-  const models = catalogModels.includes(config.model)
-    ? catalogModels
-    : [config.model, ...catalogModels];
+  const capabilities = capabilityCatalog(config.provider);
+  // Mirror Rust's `insert_with_capabilities`: the default model is always first,
+  // then the catalog models with duplicates dropped (so a default that exists
+  // mid-catalog is surfaced first, not left in place).
+  const seen = new Set<string>([config.model]);
+  const models = [config.model];
+  for (const c of capabilities) {
+    if (!seen.has(c.model)) {
+      seen.add(c.model);
+      models.push(c.model);
+    }
+  }
   return {
     default: config.provider,
     providers: [
@@ -219,6 +227,12 @@ export function buildProviderCatalog(config: JarvisConfig): ProviderCatalog {
         models,
         is_default: true,
         kind: config.provider,
+        // `capabilities` is `ModelCapability[]` from @jarvis/llm; the server's
+        // wire type treats each entry as an opaque `Record<string, unknown>`
+        // (it deliberately doesn't depend on @jarvis/llm — see
+        // provider-admin-routes.ts). The shape is preserved losslessly across
+        // the boundary, so erase the nominal type here.
+        capabilities: capabilities as unknown as ProviderCatalog["providers"][number]["capabilities"],
       },
     ],
   };
