@@ -8,6 +8,13 @@ export {
 } from "./state.ts";
 export { type ServeOptions, buildServer, serve } from "./server.ts";
 export { registerChatRoutes } from "./chat-routes.ts";
+export {
+  ChatRunRegistry,
+  chatRunStatusIsTerminal,
+  type ChatRunStatus,
+  type ChatRunRecord,
+  type ChatRunEventRecord,
+} from "./chat-runs.ts";
 export { registerConversationsRoutes } from "./conversations-routes.ts";
 export { registerProjectsRoutes } from "./projects-routes.ts";
 export { registerRequirementsRoutes } from "./requirements-routes.ts";

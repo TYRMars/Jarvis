@@ -2,6 +2,7 @@
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
 import type { Agent, Approver, ToolRegistry } from "@jarvis/core";
+import type { ChatRunRegistry } from "./chat-runs.ts";
 import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
   ActivityStore,
@@ -79,6 +80,13 @@ export interface AppState {
    * when absent.
    */
   tools?: ToolRegistry;
+  /**
+   * In-process chat-run registry: tracks the live turn per persisted
+   * conversation (status / event buffer / interrupt). Powers the
+   * `/v1/chat/runs*` routes (turn-status badge, reconnect event replay, Stop
+   * button) and is populated by the WS turn loop. Routes 503 when absent.
+   */
+  chatRuns?: ChatRunRegistry;
   /** Optional conversation persistence. Routes 503 when absent. */
   store?: ConversationStore;
 

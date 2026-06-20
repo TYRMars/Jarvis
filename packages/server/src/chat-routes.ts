@@ -68,6 +68,35 @@ export function registerChatRoutes(app: FastifyInstance, state: AppState): void 
   app.get("/v1/chat/ws", { websocket: true }, (socket) => {
     handleWsConnection(socket as unknown as WsSocket, state);
   });
+
+  // ---- chat-run registry (turn-status badge / reconnect replay / Stop) ----
+
+  // Bare array of run records (the web decodes `as ServerChatRun[]`). `?active`
+  // drops terminal runs.
+  app.get("/v1/chat/runs", async (req, reply) => {
+    if (!state.chatRuns) return reply.code(503).send({ error: "chat run registry not configured" });
+    const active = (req.query as { active?: string }).active === "true";
+    return reply.send(state.chatRuns.list(active));
+  });
+
+  // Buffered events with seq > ?after (bare array). Empty when untracked.
+  app.get("/v1/chat/runs/:conversation_id/events", async (req, reply) => {
+    if (!state.chatRuns) return reply.code(503).send({ error: "chat run registry not configured" });
+    const id = (req.params as { conversation_id: string }).conversation_id;
+    const afterRaw = (req.query as { after?: string }).after;
+    const after = afterRaw !== undefined ? Number.parseInt(afterRaw, 10) : 0;
+    return reply.send(state.chatRuns.events(id, Number.isFinite(after) ? after : 0));
+  });
+
+  // Cooperatively interrupt the conversation's in-flight turn. 404 when none.
+  app.post("/v1/chat/runs/:conversation_id/interrupt", async (req, reply) => {
+    if (!state.chatRuns) return reply.code(503).send({ error: "chat run registry not configured" });
+    const id = (req.params as { conversation_id: string }).conversation_id;
+    if (!state.chatRuns.interrupt(id)) {
+      return reply.code(404).send({ error: "no active run for conversation" });
+    }
+    return reply.send({ ok: true });
+  });
 }
 
 // ---------- WebSocket ----------
@@ -107,9 +136,31 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
 
   const runTurn = async (): Promise<void> => {
     turnRunning = true;
+    // Only persisted conversations are tracked (the routes key by id). `start`
+    // returns the AbortSignal the loop races against so an interrupt request
+    // (from the REST route, on another connection) stops emission promptly.
+    const runId = persistedId;
+    const signal = runId && state.chatRuns ? state.chatRuns.start(runId) : undefined;
+    // Built ONCE so we don't leak an abort listener per event.
+    const abortP: Promise<"aborted"> | undefined = signal
+      ? new Promise<"aborted">((resolve) => {
+          if (signal.aborted) resolve("aborted");
+          else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
+        })
+      : undefined;
     const agent = state.createAgent(approver);
+    let cancelled = false;
     try {
-      for await (const ev of agent.runStream(conv) as AsyncIterable<AgentEvent>) {
+      const it = (agent.runStream(conv) as AsyncIterable<AgentEvent>)[Symbol.asyncIterator]();
+      for (;;) {
+        const raced = abortP ? await Promise.race([it.next(), abortP]) : await it.next();
+        if (raced === "aborted") {
+          cancelled = true;
+          break;
+        }
+        if (raced.done) break;
+        const ev = raced.value;
+        if (runId && state.chatRuns) state.chatRuns.event(runId, ev);
         send(ev);
         if (ev.type === "done") {
           conv = ev.conversation;
@@ -122,8 +173,16 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
           }
         }
       }
+      if (cancelled) {
+        // `interrupt()` already marked the run cancelled; tell the client.
+        send({ type: "cancelled" });
+      } else if (runId && state.chatRuns) {
+        state.chatRuns.finish(runId, "completed");
+      }
     } catch (e) {
-      send({ type: "error", message: errorText(e) });
+      const message = errorText(e);
+      send({ type: "error", message });
+      if (runId && state.chatRuns) state.chatRuns.finish(runId, "failed", message);
     } finally {
       turnRunning = false;
       pending.clear();

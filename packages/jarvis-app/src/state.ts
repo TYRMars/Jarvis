@@ -21,6 +21,7 @@ import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider,
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
+import { ChatRunRegistry } from "@jarvis/server";
 import type { AppState, ProviderCatalog } from "@jarvis/server";
 import type {
   ActivityStore,
@@ -297,6 +298,8 @@ export async function buildAppState(
     // lists the live catalog and `PATCH /v1/tools/:name` mutes take effect for
     // the next turn.
     tools: toolBundle.registry,
+    // In-process chat-run registry for the turn-status badge / Stop button.
+    chatRuns: new ChatRunRegistry(),
     store: stores.conversations,
     projects: stores.projects,
     requirements: stores.requirements,
