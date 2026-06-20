@@ -104,6 +104,31 @@ export class ToolRegistry {
     return [...this.#tools.keys()].filter((n) => !this.#muted.has(n));
   }
 
+  /** Every registered name, INCLUDING muted ones (the catalog view). */
+  allNames(): string[] {
+    return [...this.#tools.keys()];
+  }
+
+  /** Registered (ignores mute) — distinct from {@link has}, the 404 check. */
+  contains(name: string): boolean {
+    return this.#tools.has(name);
+  }
+
+  /** Resolve a tool by name INCLUDING muted ones (catalog metadata). */
+  resolveUnchecked(name: string): Tool | undefined {
+    return this.#tools.get(name);
+  }
+
+  /** Whether a tool is currently muted. */
+  isMuted(name: string): boolean {
+    return this.#muted.has(name);
+  }
+
+  /** Count of muted tools (for `PATCH /v1/tools/:name`'s `muted_count`). */
+  mutedCount(): number {
+    return this.#muted.size;
+  }
+
   /** Specs for every non-muted tool (the LLM-visible catalogue). */
   specs(): ToolSpec[] {
     return this.specsFiltered(() => true);

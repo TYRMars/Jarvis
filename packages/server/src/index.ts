@@ -163,6 +163,7 @@ export {
   collectTasks,
   registerTasksRoutes,
 } from "./tasks-routes.ts";
+export { registerToolsRoutes } from "./tools-routes.ts";
 export { type RegisterUiOptions, registerUiRoutes, pathLooksLikeAsset } from "./ui.ts";
 export {
   type OAuthStateClaims,

@@ -293,6 +293,10 @@ export async function buildAppState(
 
   const state: AppState = {
     createAgent,
+    // The SAME registry `createAgent` builds agents from — so `GET /v1/tools`
+    // lists the live catalog and `PATCH /v1/tools/:name` mutes take effect for
+    // the next turn.
+    tools: toolBundle.registry,
     store: stores.conversations,
     projects: stores.projects,
     requirements: stores.requirements,

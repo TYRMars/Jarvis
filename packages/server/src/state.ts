@@ -1,7 +1,7 @@
 // Server-shared application state. Ported (minimal P2 subset) from
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
-import type { Agent, Approver } from "@jarvis/core";
+import type { Agent, Approver, ToolRegistry } from "@jarvis/core";
 import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
   ActivityStore,
@@ -71,6 +71,14 @@ export interface AppState {
    * The blocking / SSE chat routes call this with no approver.
    */
   createAgent(approver?: Approver): Agent;
+  /**
+   * The shared tool registry that `createAgent` builds agents from. Surfaced
+   * here so `GET /v1/tools` can list the catalog (including muted tools) and
+   * `PATCH /v1/tools/:name` can flip the in-process mute set — which takes
+   * effect for the next turn because agents share this instance. Routes 503
+   * when absent.
+   */
+  tools?: ToolRegistry;
   /** Optional conversation persistence. Routes 503 when absent. */
   store?: ConversationStore;
 
