@@ -173,8 +173,8 @@ function draftToStep(d: DraftStep): WorkflowStep {
   const step = newAgentStep(d.name.trim() || "Step");
   if (step.kind.type === "agent") {
     step.kind.prompt = d.prompt;
-    step.kind.model = d.model.trim() || null;
-    step.kind.output_key = d.outputKey.trim() || null;
+    step.kind.model = d.model.trim() || undefined;
+    step.kind.output_key = d.outputKey.trim() || undefined;
   }
   return step;
 }

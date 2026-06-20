@@ -1,10 +1,12 @@
-// Channel-instance value type + env-template resolver.
+// Channel-instance runtime helpers + env-template resolver.
 //
-// Ported from crates/harness-channel/src/instance.rs. A `ChannelInstance` is
-// one user-configured connection to a messaging platform — e.g. "the
-// prod-alerts WeCom group robot". One deployment typically carries several
-// instances, each pinning a `kind` (transport flavour) and an opaque `config`
-// blob shaped by that kind.
+// The wire TYPES (ChannelInstance / ChannelInstanceStatus) are the single
+// source of truth in @jarvis/shared-types — this module re-exports them and
+// owns the runtime behaviour. Ported from crates/harness-channel/src/instance.rs.
+// A `ChannelInstance` is one user-configured connection to a messaging
+// platform — e.g. "the prod-alerts WeCom group robot". One deployment typically
+// carries several instances, each pinning a `kind` (transport flavour) and an
+// opaque `config` blob shaped by that kind.
 //
 // Credentials in `config` may be literal strings or use the `${env:VAR_NAME}`
 // template syntax. The Rust resolver reads `std::env` at send-time; this port
@@ -12,14 +14,9 @@
 // lookup function (the composition root supplies one backed by env). Keeping
 // the lookup injected also makes the resolver pure + trivially testable.
 import type { JsonValue } from "@jarvis/core";
+import type { ChannelInstance, ChannelInstanceStatus } from "@jarvis/shared-types";
 
-/**
- * User-driven enabled/disabled/unconfigured state. Distinct from "did the last
- * send succeed". `"unconfigured"` is set by handlers when required fields are
- * missing. Serde shape: `#[serde(rename_all = "snake_case")]`, default
- * `"unconfigured"` on a fresh instance (see {@link newChannelInstance}).
- */
-export type ChannelInstanceStatus = "enabled" | "disabled" | "unconfigured";
+export type { ChannelInstance, ChannelInstanceStatus };
 
 const CHANNEL_INSTANCE_STATUSES: readonly ChannelInstanceStatus[] = [
   "enabled",
@@ -35,35 +32,6 @@ export function channelInstanceStatusFromWire(s: string): ChannelInstanceStatus 
 }
 
 /**
- * One configured channel — e.g. a WeCom group robot, a WeChat MP callback
- * target, a Feishu bot. Instances are user-named (`display_name`) because a
- * deployment may host several of the same `kind`.
- *
- * `config` is an opaque JSON object so each kind owns its own schema without
- * baking variant-specific fields into the shared surface. It may embed
- * `${env:NAME}` template strings — resolved at send-time, never at store-time.
- */
-export interface ChannelInstance {
-  /** Stable UUID. Frontend keys list rows by this. */
-  id: string;
-  /** Discriminator: `"wecom_webhook"` / `"wechat_mp"` / `"feishu_bot"` / … */
-  kind: string;
-  /** User-set human-readable name (e.g. "prod-alerts"). */
-  display_name: string;
-  status: ChannelInstanceStatus;
-  /**
-   * Kind-specific config payload. Rust uses `serde_json::Value` annotated
-   * `Record<string, unknown>` for codegen; here it's a {@link JsonValue}
-   * object in practice (the resolver recurses generically regardless).
-   */
-  config: JsonValue;
-  /** RFC-3339 timestamp set on insert. */
-  created_at: string;
-  /** RFC-3339 timestamp bumped on every upsert. */
-  updated_at: string;
-}
-
-/**
  * Build a fresh instance with a UUID id and now-stamped timestamps. Status
  * defaults to `"unconfigured"` so the caller has to opt into "go live" by
  * toggling it after validation (mirrors `ChannelInstance::new`).
@@ -71,7 +39,7 @@ export interface ChannelInstance {
 export function newChannelInstance(
   kind: string,
   displayName: string,
-  config: JsonValue,
+  config: Record<string, unknown>,
 ): ChannelInstance {
   const now = new Date().toISOString();
   return {

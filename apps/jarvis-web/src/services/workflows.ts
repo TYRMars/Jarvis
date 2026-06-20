@@ -13,17 +13,19 @@
 // Definitions are cached + subscribable (catalogue UI); runs are fetched
 // on demand (server-of-record telemetry, like requirementRuns).
 
-import type { WorkflowDefinition } from "../types/generated/WorkflowDefinition";
-import type { WorkflowStep } from "../types/generated/WorkflowStep";
-import type { WorkflowStepKind } from "../types/generated/WorkflowStepKind";
-import type { WorkflowRun } from "../types/generated/WorkflowRun";
-import type { WorkflowStepResult } from "../types/generated/WorkflowStepResult";
-import type { WorkflowRunStatus } from "../types/generated/WorkflowRunStatus";
-import type { JoinPolicy } from "../types/generated/JoinPolicy";
+import type {
+  WorkflowDefinition,
+  WorkflowStep,
+  WorkflowStepKind,
+  WorkflowRun,
+  WorkflowStepResult,
+  WorkflowRunStatus,
+  JoinPolicy,
+} from "@jarvis/shared-types";
 import { apiUrl } from "./api";
 
-// Re-export generated types so components import them from the service,
-// never from types/generated directly.
+// Re-export the wire types (now sourced from @jarvis/shared-types — the Node
+// single source of truth) so components import them from the service.
 export type {
   WorkflowDefinition,
   WorkflowStep,
@@ -192,11 +194,10 @@ export function newAgentStep(name = "Step"): WorkflowStep {
     id: "",
     name,
     kind: {
+      // Optional fields (subagent / model / output_key) are absent until set —
+      // the wire shape omits them rather than sending null.
       type: "agent",
       prompt: "",
-      subagent: null,
-      model: null,
-      output_key: null,
     },
   };
 }

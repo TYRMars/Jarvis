@@ -44,6 +44,9 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+      '@jarvis/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
       '@jarvis/store':
         specifier: workspace:*
         version: link:../store
@@ -298,6 +301,8 @@ importers:
         specifier: ^8.18.0
         version: 8.21.0
 
+  packages/shared-types: {}
+
   packages/skill:
     dependencies:
       '@jarvis/core':
@@ -380,6 +385,9 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+      '@jarvis/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
 
 packages:
 

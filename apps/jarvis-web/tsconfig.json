@@ -11,6 +11,14 @@
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      // The SPA lives outside the pnpm workspace during the strangler
+      // migration, so it consumes the type-only @jarvis/shared-types leaf by
+      // pointing straight at its source. (Type-only: vite erases the imports,
+      // so no bundling/linking is involved — this alias is for tsc + eslint.)
+      "@jarvis/shared-types": ["../../packages/shared-types/src/index.ts"]
+    },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,

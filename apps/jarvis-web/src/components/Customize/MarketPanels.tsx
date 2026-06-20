@@ -415,10 +415,12 @@ function agentStep(
   prompt: string,
   outputKey: string | null = null,
 ): WorkflowStep {
+  // Optional fields (subagent / model / output_key) are omitted when unset —
+  // the wire shape is absent-when-default, not null.
   return {
     id: "",
     name,
-    kind: { type: "agent", prompt, subagent: null, model: null, output_key: outputKey },
+    kind: { type: "agent", prompt, ...(outputKey ? { output_key: outputKey } : {}) },
   };
 }
 

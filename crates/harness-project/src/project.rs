@@ -33,8 +33,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Paths are stored verbatim — canonicalisation is the caller's job
 /// (the REST layer canonicalises on insert).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectWorkspace {
     /// Filesystem path. Expected to be absolute and canonical, but the
     /// type does not enforce that — see `harness-server`'s create /
@@ -63,8 +62,7 @@ impl ProjectWorkspace {
 /// enabled so existing deployments that turn on `JARVIS_WORK_MODE=auto`
 /// keep the historical "all approved projects are eligible" behaviour
 /// until an operator pauses a specific project.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectAutomation {
     #[serde(default = "default_auto_mode_enabled")]
     pub auto_mode_enabled: bool,
@@ -92,8 +90,7 @@ fn is_default_automation(value: &ProjectAutomation) -> bool {
 /// Stored opaquely by [`ProjectStore`](crate::store::ProjectStore)
 /// implementations; the wire shape is the JSON serialisation of this
 /// struct, so all fields must round-trip through `serde`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Project {
     /// Stable internal identifier (UUID v4). Conversations reference
     /// this, never the slug.
@@ -147,8 +144,7 @@ pub struct Project {
 /// inline on the [`Project`] (not a separate table) since the
 /// cardinality is tiny (typically 3–6 per project) and edits always go
 /// through the project's PATCH endpoint anyway.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KanbanColumn {
     /// Stable id; what `Requirement.status` references. Validated as
     /// non-empty + ≤ 64 bytes by [`validate_column_id`]. Built-in

@@ -27,8 +27,10 @@
 //! This crate is a true leaf: value types + the [`WorkflowStore`] trait,
 //! depending only on `harness-core` (for [`BoxError`]). It owns no HTTP,
 //! storage, or execution logic — `harness-store` provides backends and
-//! `harness-server` provides the runtime. Wire-shape types derive
-//! [`ts_rs::TS`] here (the owning domain crate), never in `harness-core`.
+//! `harness-server` provides the runtime. The wire-shape types that cross the
+//! SPA boundary now live in the Node `@jarvis/shared-types` package (the
+//! single source of truth); these Rust structs only need to serialise to the
+//! same JSON shape.
 
 use async_trait::async_trait;
 use harness_core::BoxError;
@@ -42,8 +44,7 @@ use uuid::Uuid;
 /// The wire shape matches the JSON serialisation of this struct. Newer
 /// fields are added with `#[serde(default, skip_serializing_if = …)]` so
 /// older rows on disk keep deserialising.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
     /// Stable identifier (UUID v4 string), server-allocated.
     pub id: String,
@@ -108,8 +109,7 @@ impl WorkflowDefinition {
 
 /// One node in a [`WorkflowDefinition`]. Carries presentation metadata
 /// (`id`, `name`) plus the executable [`WorkflowStepKind`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowStep {
     /// Stable id within the definition (UUID v4). Referenced by
     /// [`WorkflowStepResult::step_id`].
@@ -136,9 +136,8 @@ impl WorkflowStep {
 /// (`{"type":"agent",…}` / `{"type":"pipeline",…}` / …).
 ///
 /// Recursive: `Pipeline` / `Phase` / `Parallel` nest further steps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum WorkflowStepKind {
     /// One agent step. The runtime mints a fresh conversation, sends
     /// `prompt` (after interpolating `{{ prev }}` / `{{ outputs.<key> }}`),
@@ -187,9 +186,8 @@ pub enum WorkflowStepKind {
 /// Mirrors the semantics of `harness_subagents::JoinStrategy` without a
 /// hard dependency (this value crate stays a `harness-core`-only leaf;
 /// the server runtime maps between the two).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum JoinPolicy {
     /// Every child must succeed; the first failure fails the whole run.
     #[default]
@@ -226,8 +224,7 @@ impl JoinPolicy {
 /// Sibling to `harness_project::RequirementRun`: that records one
 /// single-agent run; this records a *multi-step* run, one
 /// [`WorkflowStepResult`] per leaf step executed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowRun {
     /// Stable identifier (UUID v4).
     pub id: String,
@@ -286,8 +283,7 @@ impl WorkflowRun {
 
 /// Result of executing one leaf [`WorkflowStep`] within a
 /// [`WorkflowRun`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowStepResult {
     /// The [`WorkflowStep::id`] this result corresponds to.
     pub step_id: String,
@@ -337,9 +333,8 @@ impl WorkflowStepResult {
 
 /// Lifecycle of a [`WorkflowRun`] (and the terminal state of a
 /// [`WorkflowStepResult`]). Serialised snake_case.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum WorkflowRunStatus {
     /// Created but not yet started.
     Pending,

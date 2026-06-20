@@ -87,7 +87,6 @@ New crates go under `crates/` (libraries) or `apps/` (binaries) and must be adde
 make check            # cargo check  --workspace --exclude jarvis-desktop
 make lint             # cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings  (CI gate)
 make test             # cargo test   --workspace --exclude jarvis-desktop
-make ts-codegen       # regenerate apps/jarvis-web/src/types/generated/ from ts_rs types
 cargo test -p harness-core message::          # filter by path
 cargo run -p jarvis                           # needs OPENAI_API_KEY
 cargo build --release -p jarvis
@@ -466,4 +465,4 @@ composition root. Library crates must not read `std::env`.
 - **Clippy is the gate** — `make lint` must pass clean (mirrors CI `.github/workflows/rust.yml`).
 - **Streaming on its own method** — `complete_stream` parallels `complete`; don't retrofit `complete`'s return type. New providers may skip it (default impl wraps `complete` + one `Finish`).
 - **Tool-name collisions are silent** — second registration wins; keep names namespaced.
-- **Wire-shape types are codegen'd to TS** — types crossing the SPA boundary derive `#[derive(ts_rs::TS)]`; annotations live in the owning domain crate (`harness-channel` / `harness-project` / `harness-observability`, **never** `harness-core`). Run `make ts-codegen` after changes; the committed output is under `apps/jarvis-web/src/types/generated/`. See `docs/conventions/rust-ts-codegen.md`.
+- **Wire-shape types are owned by `@jarvis/shared-types`** — the Node-side single source of truth for types crossing the SPA boundary (the former Rust `ts_rs` codegen into `apps/jarvis-web/src/types/generated/` has been removed as a step toward decommissioning Rust). The Node domain packages (`@jarvis/channel` / `@jarvis/workflow`) re-export from it and keep their runtime helpers; the standalone web SPA consumes it via a path alias. When you change a wire shape, edit `packages/shared-types/src/index.ts` and keep the Rust struct's serde JSON shape in sync by hand. See `docs/conventions/rust-ts-codegen.md` (retired-convention note).

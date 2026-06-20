@@ -279,8 +279,7 @@ impl RequirementRunStatus {
 /// What success looks like for the run, expressed as commands the
 /// host should execute and policy gates the user / harness should
 /// honour.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationPlan {
     /// Shell-style commands to run after the agent finishes. Each
     /// is run via the binary's existing `shell.exec` plumbing

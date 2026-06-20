@@ -6,15 +6,11 @@
 // normalised outbound shape ({@link OutboundMessage}) and the normalised
 // result ({@link SendOutcome}) so retries are explicit.
 
-/**
- * Wire format of an outbound message body. Adapters that don't support a
- * particular format fall back to `"text"` and tag the {@link SendOutcome} so
- * the caller can surface "downgraded to text" in the agent's transcript.
- *
- * Serde shape: `#[serde(rename_all = "snake_case")]` over a fieldless enum →
- * a string-literal union. Default is `"text"`.
- */
-export type ChannelMessageFormat = "text" | "markdown";
+// `ChannelMessageFormat` is the single-source-of-truth wire type from
+// @jarvis/shared-types; re-exported here next to its runtime validator.
+import type { ChannelMessageFormat } from "@jarvis/shared-types";
+
+export type { ChannelMessageFormat };
 
 const CHANNEL_MESSAGE_FORMATS: readonly ChannelMessageFormat[] = ["text", "markdown"];
 

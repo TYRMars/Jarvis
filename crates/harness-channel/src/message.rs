@@ -7,15 +7,13 @@
 //! - normalise the result so retries are explicit ([`SendOutcome`])
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Wire format of an outbound message body. Adapters that don't
 /// support a particular format fall back to `Text` and tag the
 /// `SendOutcome` so the caller (e.g. `channel.send` tool) can
 /// surface "downgraded to text" in the agent's transcript.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
 pub enum ChannelMessageFormat {
     #[default]
     Text,

@@ -39,8 +39,7 @@ use crate::ActivityActor;
 /// We deliberately keep this flat (no nesting deeper than two levels)
 /// — multi-level reply trees are a feature trap; Linear / GitHub /
 /// Multica all flatten beyond depth 1, and so do we.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../apps/jarvis-web/src/types/generated/")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     /// Stable identifier (UUID v4).
     pub id: String,

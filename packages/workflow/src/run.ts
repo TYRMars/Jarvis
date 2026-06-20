@@ -1,20 +1,25 @@
-// WorkflowRun + WorkflowStepResult + WorkflowRunStatus.
-// Ported from harness-workflow/src/lib.rs (the run subset).
+// WorkflowRun runtime helpers (constructors / transitions).
+//
+// The wire TYPES (WorkflowRun / WorkflowStepResult / WorkflowRunStatus) are the
+// single source of truth in @jarvis/shared-types — this module re-exports them
+// and owns the runtime behaviour. Ported from harness-workflow/src/lib.rs (the
+// run subset).
 //
 // A WorkflowRun is one execution attempt against a WorkflowDefinition —
 // sibling to RequirementRun, but multi-step: one WorkflowStepResult per leaf
 // step executed. Status is a snake_case union; terminal status is sticky.
 import { randomUUID } from "node:crypto";
 
-import type { WorkflowStep } from "./definition.ts";
+import type {
+  WorkflowRun,
+  WorkflowRunStatus,
+  WorkflowStep,
+  WorkflowStepResult,
+} from "@jarvis/shared-types";
+
+export type { WorkflowRun, WorkflowRunStatus, WorkflowStepResult };
 
 // ---------- WorkflowRunStatus ----------------------------------------------
-
-/**
- * Lifecycle of a {@link WorkflowRun} (and the terminal state of a
- * {@link WorkflowStepResult}). Serialised snake_case.
- */
-export type WorkflowRunStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 
 /** Every valid {@link WorkflowRunStatus} wire string. */
 export const WORKFLOW_RUN_STATUSES: readonly WorkflowRunStatus[] = [
@@ -41,33 +46,6 @@ export function workflowRunStatusIsTerminal(status: WorkflowRunStatus): boolean 
 }
 
 // ---------- WorkflowStepResult ---------------------------------------------
-
-/**
- * Result of executing one leaf {@link WorkflowStep} within a
- * {@link WorkflowRun}.
- */
-export interface WorkflowStepResult {
-  /** The `WorkflowStep.id` this result corresponds to. */
-  step_id: string;
-  /**
-   * Step label, denormalised so a client can render without the definition.
-   */
-  name: string;
-  /** Terminal state of the step. */
-  status: WorkflowRunStatus;
-  /**
-   * Conversation that drove the step (for drill-down). Absent for steps that
-   * never reached the agent loop. (`skip_serializing_if = "Option::is_none"`.)
-   */
-  conversation_id?: string;
-  /**
-   * Final assistant text — also the handoff value for `{{ prev }}` /
-   * `{{ outputs.<key> }}`. (`skip_serializing_if = "Option::is_none"`.)
-   */
-  output?: string;
-  /** Error string if the step failed. (`skip_serializing_if`.) */
-  error?: string;
-}
 
 /** A successful step result. Mirrors `WorkflowStepResult::ok`. */
 export function workflowStepResultOk(
@@ -102,41 +80,6 @@ export function workflowStepResultFailed(
 }
 
 // ---------- WorkflowRun ----------------------------------------------------
-
-/**
- * One execution attempt against a {@link WorkflowDefinition}.
- *
- * Sibling to `RequirementRun`: that records one single-agent run; this
- * records a multi-step run, one {@link WorkflowStepResult} per leaf step
- * executed.
- */
-export interface WorkflowRun {
-  /** Stable identifier (UUID v4). */
-  id: string;
-  /** The definition this run executed. */
-  workflow_id: string;
-  /**
-   * Optional Requirement this run was bound to. Absent for ad-hoc runs not
-   * tied to a kanban card. (`skip_serializing_if = "Option::is_none"`.)
-   */
-  requirement_id?: string;
-  /** Lifecycle state. */
-  status: WorkflowRunStatus;
-  /** Per-step results in execution order. `#[serde(default)]` → `[]`. */
-  step_results: WorkflowStepResult[];
-  /**
-   * Free-form error string when the run failed before / between steps.
-   * (`skip_serializing_if = "Option::is_none"`.)
-   */
-  error?: string;
-  /** RFC-3339 timestamp of run creation. */
-  started_at: string;
-  /**
-   * RFC-3339 timestamp of completion. Absent while in flight.
-   * (`skip_serializing_if = "Option::is_none"`.)
-   */
-  finished_at?: string;
-}
 
 /**
  * Mint a new run with a fresh UUID, current timestamp, and status `running`

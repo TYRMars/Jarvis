@@ -85,24 +85,6 @@ test: ## Run the workspace test suite
 check: lint test ## Run clippy + tests, what CI runs
 
 # ---------------------------------------------------------------------------
-# Rust → TypeScript type codegen (see docs/conventions/rust-ts-codegen.md)
-# ---------------------------------------------------------------------------
-# Every `#[derive(TS)]` type emits its own `<TypeName>.ts` under
-# `apps/jarvis-web/src/types/generated/` when the embedded export
-# test runs. Crates with annotated types today: harness-channel,
-# harness-project. Add more by following the convention doc.
-#
-# Output goes in git so the SPA-only Vite build doesn't need a
-# Rust toolchain. `make ts-codegen` is the canonical "I changed a
-# wire type, regenerate" target; CI's `make test` covers it as a
-# side effect.
-.PHONY: ts-codegen
-ts-codegen: ## Regenerate TS types from Rust (`#[derive(TS)]`)
-	$(CARGO) test -p harness-channel -p harness-project --lib --quiet
-	@printf "\ngenerated:\n"
-	@ls apps/jarvis-web/src/types/generated/ | sed 's/^/  /'
-
-# ---------------------------------------------------------------------------
 # Docker / Compose
 # ---------------------------------------------------------------------------
 .PHONY: docker
