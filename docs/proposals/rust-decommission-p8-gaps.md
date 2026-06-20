@@ -1,8 +1,15 @@
 # P8 · Rust decommission — `/v1` contract gap inventory
 
+> **✅ DONE — Rust decommissioned (P8.2).** All blocker-priority gaps below are
+> closed (or graceful-stubbed for memory-sync); the Node server passes its full
+> test gate and the Rust crates/apps were removed (tag
+> `rust-archive-pre-takedown`). Node is the sole runtime. Remaining P8 items are
+> non-blocking: 8.3 perf/load compare, 8.4 OTel verify, 8.5 docs rewrite,
+> 8.6 security baseline, and the full memory-sync git/iCloud subsystem (below).
+
 **Goal:** make the Node server (`packages/server`) a drop-in replacement for the
-Rust server (`crates/harness-server`) on the `/v1` surface so the Rust service
-can be turned off (tasklist [P8.1/8.2](nodejs-rewrite-tasklist.zh-CN.md)).
+Rust server on the `/v1` surface so the Rust service can be turned off
+(tasklist [P8.1/8.2](nodejs-rewrite-tasklist.zh-CN.md)).
 
 **Method:** route-by-route diff of Rust vs Node registrations, each gap tagged
 with the real client that consumes it (web SPA / iOS / SDK), a port-size, and a
