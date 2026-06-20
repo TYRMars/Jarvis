@@ -174,6 +174,7 @@ export {
 export { registerToolsRoutes } from "./tools-routes.ts";
 export { registerMetaRoutes } from "./meta-routes.ts";
 export { registerRoutingRoutes } from "./routing-routes.ts";
+export { registerMemorySyncRoutes } from "./memory-sync-routes.ts";
 export {
   RoutePolicyStore,
   parseModelTarget,

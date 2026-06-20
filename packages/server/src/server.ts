@@ -36,6 +36,7 @@ import { registerToolsRoutes } from "./tools-routes.ts";
 import { registerMcpRoutes } from "./mcp-routes.ts";
 import { registerMetaRoutes } from "./meta-routes.ts";
 import { registerRoutingRoutes } from "./routing-routes.ts";
+import { registerMemorySyncRoutes } from "./memory-sync-routes.ts";
 import { registerUiRoutes } from "./ui.ts";
 import type { AppState } from "./state.ts";
 
@@ -64,6 +65,7 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerChannelsRoutes(app, state);
   registerDocRoutes(app, state);
   registerMemoriesRoutes(app, state);
+  registerMemorySyncRoutes(app, state);
   registerPermissionsRoutes(app, state);
   registerPluginsRoutes(app, state);
   registerAgentProfilesRoutes(app, state);
