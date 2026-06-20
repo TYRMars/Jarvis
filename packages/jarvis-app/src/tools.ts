@@ -21,7 +21,8 @@
 // or needed for the P1 server boot.
 import { ToolRegistry, type LlmProvider } from "@jarvis/core";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
-import { connectAllMcp, mcpClientConfig, type McpClient } from "@jarvis/mcp";
+import { mcpClientConfig, type McpClient } from "@jarvis/mcp";
+import { McpManager } from "@jarvis/server";
 import {
   InternalSubAgent,
   SubAgentRegistry,
@@ -39,6 +40,8 @@ export interface ToolRegistryBundle {
   registry: ToolRegistry;
   /** Connected MCP clients — keep alive; call `.close()` on shutdown. */
   mcpClients: McpClient[];
+  /** Manages the MCP servers (list/add/remove/health/reload) over the registry. */
+  mcpManager: McpManager;
   /** The subagent registry the adapters were built from (shared into AppState). */
   subagents: SubAgentRegistry;
 }
@@ -101,16 +104,16 @@ export async function buildToolRegistry(
     }
   }
 
-  // External MCP servers from JARVIS_MCP_SERVERS (already parsed into specs).
-  const mcpClients =
-    config.mcpServers.length > 0
-      ? await connectAllMcp(
-          config.mcpServers.map((s) => mcpClientConfig(s.prefix, s.command, s.args)),
-          registry,
-        )
-      : [];
+  // External MCP servers from JARVIS_MCP_SERVERS. Routed through the McpManager
+  // so they're listable / reloadable at runtime via /v1/mcp/servers; `add`
+  // connects + registers each server's tools into the shared registry. A bad
+  // config fails the boot, same as the prior connectAllMcp.
+  const mcpManager = new McpManager(registry);
+  for (const s of config.mcpServers) {
+    await mcpManager.add(mcpClientConfig(s.prefix, s.command, s.args));
+  }
 
-  return { registry, mcpClients, subagents };
+  return { registry, mcpClients: mcpManager.clients(), mcpManager, subagents };
 }
 
 /** Coding mode = any write/exec primitive enabled (mirrors the Rust switch). */

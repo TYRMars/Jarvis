@@ -1,7 +1,10 @@
 // Server-shared application state. Ported (minimal P2 subset) from
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
-import type { Agent, Approver } from "@jarvis/core";
+import type { Agent, Approver, LlmProvider, ToolRegistry } from "@jarvis/core";
+import type { ChatRunRegistry } from "./chat-runs.ts";
+import type { McpManager } from "./mcp-manager.ts";
+import type { RoutePolicyStore } from "./route-policy.ts";
 import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
   ActivityStore,
@@ -64,6 +67,29 @@ export interface ProviderCatalog {
   providers: ProviderListEntry[];
 }
 
+/**
+ * Static, config-derived runtime snapshot surfaced by `GET /v1/server/info`
+ * (the Settings·ServerSection + ContextWindowBadge). Built once by the
+ * composition root; the route adds the live `tools` / `mcp_servers` /
+ * `providers` lists. Mirrors `harness_server::ServerInfo`; every field is
+ * optional so older/partial deployments degrade gracefully. NEVER carries
+ * secrets (api keys / tokens).
+ */
+export interface ServerInfo {
+  version?: string | null;
+  listen_addr?: string | null;
+  config_path?: string | null;
+  persistence?: string | null;
+  project_store?: boolean;
+  memory?: { mode: string; budget_tokens?: number | null } | null;
+  approval_mode?: string | null;
+  coding_mode?: boolean;
+  project_context?: { loaded: boolean; max_bytes?: number | null } | null;
+  system_prompt?: { length: number; preview: string } | null;
+  max_iterations?: number | null;
+  workspace_root?: string | null;
+}
+
 export interface AppState {
   /**
    * Build an Agent for one request. The optional `approver` is the per-socket
@@ -71,6 +97,43 @@ export interface AppState {
    * The blocking / SSE chat routes call this with no approver.
    */
   createAgent(approver?: Approver): Agent;
+  /**
+   * The shared tool registry that `createAgent` builds agents from. Surfaced
+   * here so `GET /v1/tools` can list the catalog (including muted tools) and
+   * `PATCH /v1/tools/:name` can flip the in-process mute set — which takes
+   * effect for the next turn because agents share this instance. Routes 503
+   * when absent.
+   */
+  tools?: ToolRegistry;
+  /**
+   * In-process chat-run registry: tracks the live turn per persisted
+   * conversation (status / event buffer / interrupt). Powers the
+   * `/v1/chat/runs*` routes (turn-status badge, reconnect event replay, Stop
+   * button) and is populated by the WS turn loop. Routes 503 when absent.
+   */
+  chatRuns?: ChatRunRegistry;
+  /**
+   * Dynamic MCP server manager backing `/v1/mcp/servers*` (list/add/remove/
+   * health/reload). Wraps the shared ToolRegistry so a server added at runtime
+   * registers its tools for the next agent turn. Routes 503 when absent.
+   */
+  mcpManager?: McpManager;
+  /**
+   * Static config snapshot for `GET /v1/server/info` + `GET /v1/version`
+   * (no secrets). Absent → those routes report only the live lists.
+   */
+  serverInfo?: ServerInfo;
+  /**
+   * The configured LLM provider, for `POST /v1/providers/:name/probe` (a
+   * minimal ping completion to check auth/capabilities). Absent → probe 503s.
+   */
+  provider?: LlmProvider;
+  /**
+   * Operator model route policy (`/v1/routing` CRUD). Mutable in-process; the
+   * `summarization` slot is read by the SummarizingMemory resolver. Routes 503
+   * when absent.
+   */
+  routePolicy?: RoutePolicyStore;
   /** Optional conversation persistence. Routes 503 when absent. */
   store?: ConversationStore;
 

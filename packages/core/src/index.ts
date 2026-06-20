@@ -48,6 +48,16 @@ export {
   toolIsDestructive,
 } from "./tool.ts";
 export {
+  type ToolSource,
+  type ToolPackCategory,
+  type ToolRisk,
+  type ToolMetadata,
+  toolMetadataFromTool,
+  toolMetadataToWire,
+  derivePack,
+  deriveRisk,
+} from "./tool-metadata.ts";
+export {
   type ApprovalDecision,
   type ApprovalRequest,
   type Approver,

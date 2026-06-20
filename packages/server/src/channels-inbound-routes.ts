@@ -577,10 +577,13 @@ function sendAck(reply: FastifyReply, ack: AckPayload): FastifyReply {
  * placeholders survive and the handler's `requireInboundField` rejects them
  * with a clear "set the env var" message (no `process.env` read here).
  */
-function resolveConfig(state: AppState, config: JsonValue): JsonValue {
+function resolveConfig(state: AppState, config: Record<string, unknown>): JsonValue {
+  // `ChannelInstance.config` is an opaque JSON object (`Record<string, unknown>`
+  // on the wire); it is a `JsonValue` at runtime, so narrow it for the resolver.
+  const json = config as Record<string, JsonValue>;
   const lookup = (state as { envLookup?: EnvLookup }).envLookup;
-  if (lookup) return resolveEnvTemplates(config, lookup);
-  return config;
+  if (lookup) return resolveEnvTemplates(json, lookup);
+  return json;
 }
 
 interface PreparedInbound {

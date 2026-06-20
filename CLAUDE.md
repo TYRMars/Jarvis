@@ -2,16 +2,29 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **⚠️ Runtime is now Node/TypeScript (P8.2 — Rust decommissioned).** The Rust
+> workspace (`crates/harness-*`, `apps/jarvis`, `apps/jarvis-cli`,
+> `apps/jarvis-desktop`, `Cargo.toml`) was removed; Jarvis runs entirely on the
+> **pnpm workspace under `packages/*`** + the `apps/jarvis-web` SPA. The Rust
+> source remains in git history (tag `rust-archive-pre-takedown`). Each Node
+> package mirrors the crate it was ported from (e.g. `@jarvis/core` ←
+> `harness-core`), so the architecture notes below still describe the *shape* of
+> the system — read them with `<crate>` → `@jarvis/<name>`,
+> `apps/jarvis/src/main.rs` → `packages/jarvis-app/src/main.ts`. A full prose
+> rewrite of this file is tracked as **P8.5**. Build/test via `make check`
+> (pnpm) or `pnpm -r typecheck && pnpm -r test`.
+
 ## Project Overview
 
-Jarvis is a Rust agent runtime organised as a Cargo **workspace** around a small, runtime-
-independent harness. The repo was rewritten from a TypeScript Egg.js + tegg implementation;
-no prior TS conventions or files apply — they were deleted in the rewrite.
+Jarvis is an agent runtime organised as a small, runtime-independent harness with
+sibling packages plugging in. The single design rule: **`@jarvis/core` knows
+nothing about HTTP, providers, storage, or MCP** — it owns only the agent loop and
+the interfaces everything else implements. Library packages never read
+`process.env`; `packages/jarvis-app/src/main.ts` is the sole composition root.
 
-The single design rule: **`harness-core` knows nothing about HTTP, providers, storage, or
-MCP.** It owns only the agent loop and the traits everything else implements. Sibling crates
-plug in. Library crates must never read `std::env` — `apps/jarvis/src/main.rs` is the sole
-composition root.
+The sections below were written for the original Rust workspace; the Node port
+preserves the same module boundaries (crate ↔ `@jarvis/*` package) and wire
+contracts, so they remain an accurate architectural map pending the P8.5 rewrite.
 
 ## Workspace layout
 
@@ -78,27 +91,27 @@ crates/  (libraries; deps are workspace-only: `foo.workspace = true`)
                        # harness-server's workflow_runtime. Depends on core only.
 ```
 
-New crates go under `crates/` (libraries) or `apps/` (binaries) and must be added to
-`members` in the root `Cargo.toml`, which also holds the shared `[workspace.dependencies]`.
+New packages go under `packages/` (libraries) or `apps/` (binaries) and are picked up
+by `pnpm-workspace.yaml` (`packages/*`); the shared dev-deps live in the root `package.json`.
 
 ## Commands
 
 ```bash
-make check            # cargo check  --workspace --exclude jarvis-desktop
-make lint             # cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings  (CI gate)
-make test             # cargo test   --workspace --exclude jarvis-desktop
-make ts-codegen       # regenerate apps/jarvis-web/src/types/generated/ from ts_rs types
-cargo test -p harness-core message::          # filter by path
-cargo run -p jarvis                           # needs OPENAI_API_KEY
-cargo build --release -p jarvis
+make check            # pnpm -r typecheck + lint + test (what CI runs)
+make typecheck        # pnpm -r typecheck      (tsc --noEmit per package)
+make lint             # pnpm lint              (eslint .  — CI gate)
+make test             # pnpm -r test           (node --test per package)
+make dev              # build web + run the Node server with the embedded UI
+pnpm --filter @jarvis/core test                # one package
+node --experimental-strip-types packages/jarvis-app/src/main.ts serve   # run the server (needs OPENAI_API_KEY)
 ```
 
-`--exclude jarvis-desktop` matches Linux CI (the Tauri crate needs WebKitGTK + GObject libs
-not on a stock box). The `make` targets apply it automatically; override with
-`WORKSPACE_EXCLUDE=` on a fully provisioned machine. **Clippy with `-D warnings` is the gate**
-— keep the tree clean against it.
+Runtime is Node ≥ 22.6 (`--experimental-strip-types` runs the TS sources with no
+build step). **eslint is the gate** — keep the tree clean against it. The web SPA
+(`apps/jarvis-web`) is a standalone npm app (`npm` in that dir), built into `dist/`
+and served by the Node server via `JARVIS_WEB_DIST`.
 
-### Environment variables (consumed only by `apps/jarvis`)
+### Environment variables (consumed only by `packages/jarvis-app`)
 
 **Provider & auth** (`JARVIS_PROVIDER` ∈ `openai` (default) / `openai-responses` / `anthropic` / `google` / `codex` / `kimi` / `ollama`):
 
@@ -466,4 +479,4 @@ composition root. Library crates must not read `std::env`.
 - **Clippy is the gate** — `make lint` must pass clean (mirrors CI `.github/workflows/rust.yml`).
 - **Streaming on its own method** — `complete_stream` parallels `complete`; don't retrofit `complete`'s return type. New providers may skip it (default impl wraps `complete` + one `Finish`).
 - **Tool-name collisions are silent** — second registration wins; keep names namespaced.
-- **Wire-shape types are codegen'd to TS** — types crossing the SPA boundary derive `#[derive(ts_rs::TS)]`; annotations live in the owning domain crate (`harness-channel` / `harness-project` / `harness-observability`, **never** `harness-core`). Run `make ts-codegen` after changes; the committed output is under `apps/jarvis-web/src/types/generated/`. See `docs/conventions/rust-ts-codegen.md`.
+- **Wire-shape types are owned by `@jarvis/shared-types`** — the Node-side single source of truth for types crossing the SPA boundary (the former Rust `ts_rs` codegen into `apps/jarvis-web/src/types/generated/` has been removed as a step toward decommissioning Rust). The Node domain packages (`@jarvis/channel` / `@jarvis/workflow`) re-export from it and keep their runtime helpers; the standalone web SPA consumes it via a path alias. When you change a wire shape, edit `packages/shared-types/src/index.ts` and keep the Rust struct's serde JSON shape in sync by hand. See `docs/conventions/rust-ts-codegen.md` (retired-convention note).

@@ -123,6 +123,9 @@ export class SummarizingMemory implements Memory {
   #summaryMaxTokens = DEFAULT_SUMMARY_MAX_TOKENS;
   #estimator: TokenEstimator = defaultEstimator();
   #persistence: SummaryStore | undefined;
+  // Optional per-call model override (the operator route policy's
+  // `summarization` slot). Returns undefined to fall back to `#model`.
+  #resolveModel: (() => string | undefined) | undefined;
 
   // Single-slot in-memory cache. The dropped set is monotone, so one slot
   // covers turn-by-turn growth.
@@ -141,6 +144,16 @@ export class SummarizingMemory implements Memory {
   /** Override the summariser system prompt. */
   withSummaryPrompt(prompt: string): this {
     this.#summaryPrompt = prompt;
+    return this;
+  }
+
+  /**
+   * Supply a per-call model resolver — when it returns a model id, it overrides
+   * the constructor `model` for the summary completion. Wired to the operator
+   * route policy's `summarization` slot by the composition root.
+   */
+  withModelResolver(fn: () => string | undefined): this {
+    this.#resolveModel = fn;
     return this;
   }
 
@@ -317,9 +330,10 @@ export class SummarizingMemory implements Memory {
       }
     }
 
-    // Tier 3: ask the LLM. Pinned temperature, NO tools.
+    // Tier 3: ask the LLM. Pinned temperature, NO tools. The model is the
+    // route policy's summarization override when present, else the default.
     const req: ChatRequest = {
-      model: this.#model,
+      model: this.#resolveModel?.() ?? this.#model,
       messages: [
         systemMessage(this.#summaryPrompt),
         userMessage(`Summarise the following conversation excerpt:\n\n${renderForSummary(dropped)}`),

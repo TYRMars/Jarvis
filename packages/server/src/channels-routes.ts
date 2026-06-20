@@ -39,7 +39,7 @@
 //   - .../:id/oauth/{start,callback}        (WeCom-app OAuth2 identity)
 // Those routes are intentionally NOT registered here.
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { errorText, type JsonValue } from "@jarvis/core";
+import { errorText } from "@jarvis/core";
 import {
   channelInstanceStatusFromWire,
   newChannelInstance,
@@ -73,7 +73,7 @@ function instanceToJson(inst: ChannelInstance): {
   kind: string;
   display_name: string;
   status: string;
-  config: JsonValue;
+  config: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 } {
@@ -131,8 +131,8 @@ export function registerChannelsRoutes(app: FastifyInstance, state: AppState): v
     if (displayName.length > DISPLAY_NAME_MAX) {
       return reply.code(400).send({ error: "display_name must be ≤ 64 chars" });
     }
-    const config: JsonValue =
-      body.config === undefined ? {} : (body.config as JsonValue);
+    const config: Record<string, unknown> =
+      body.config === undefined ? {} : (body.config as Record<string, unknown>);
     // DEFERRED: without the adapter registry we can neither reject an unknown
     // kind nor validate the config, so the row stays `"unconfigured"` (the
     // Rust "invalid config stays Unconfigured" branch). Promotion to Enabled
@@ -194,7 +194,7 @@ export function registerChannelsRoutes(app: FastifyInstance, state: AppState): v
     }
 
     if (body.config !== undefined) {
-      inst.config = body.config as JsonValue;
+      inst.config = body.config as Record<string, unknown>;
     }
 
     // DEFERRED: Rust re-validates the (possibly edited) config via the kind's

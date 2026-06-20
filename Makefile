@@ -1,36 +1,23 @@
-# Jarvis — top-level developer commands.
+# Jarvis — top-level developer commands (Node / TypeScript runtime).
 #
-# `make help` (or just `make`) prints the menu. Targets are grouped:
-#
-#   dev / build       — local cargo + vite workflow
-#   check             — lint + tests, what CI runs
-#   docker / compose  — container workflow
-#   clean             — wipe build artefacts
+# The Rust runtime was decommissioned (P8.2); Jarvis now runs entirely on the
+# Node workspace under packages/* + apps/jarvis-web. `make help` prints the menu.
 #
 # Conventions:
-#   * Every target is .PHONY (we have no file outputs whose freshness make
-#     could check sensibly across cargo + vite + docker).
-#   * Targets call sub-tools directly rather than wrapping them in shell
-#     scripts so failure messages stay readable.
+#   * Every target is .PHONY (no file outputs whose freshness make tracks
+#     across pnpm + vite + docker).
+#   * Targets call sub-tools directly so failure messages stay readable.
 
 .DEFAULT_GOAL := help
 
-CARGO         ?= cargo
+PNPM          ?= pnpm
 NPM           ?= npm
+NODE          ?= node
 DOCKER        ?= docker
 COMPOSE       ?= docker compose
 IMAGE         ?= jarvis:local
 WEB_DIR       := apps/jarvis-web
 WEB_DIST      := $(WEB_DIR)/dist
-
-# `jarvis-desktop` is a Tauri shell that requires WebKitGTK + GObject system
-# libs on Linux (libgtk-3-dev, libwebkit2gtk-4.1-dev, librsvg2-dev, ...).
-# Linux CI excludes it (see .github/workflows/rust.yml) so the default
-# workspace targets stay buildable on a stock Ubuntu box without the GTK
-# toolchain. Mirror the exclusion here so `make check` matches CI.
-# Override `WORKSPACE_EXCLUDE=` (empty) on a machine with the GTK deps
-# installed to lint / test the desktop crate too.
-WORKSPACE_EXCLUDE ?= --exclude jarvis-desktop
 
 # ---------------------------------------------------------------------------
 # Help
@@ -42,10 +29,14 @@ help: ## Show this help (default target)
 	@printf "\n"
 
 # ---------------------------------------------------------------------------
-# Dev (local cargo + vite, no Docker)
+# Dev
 # ---------------------------------------------------------------------------
+.PHONY: install
+install: ## Install the pnpm workspace dependencies
+	$(PNPM) install
+
 .PHONY: web-deps
-web-deps: ## Install web dependencies (npm ci)
+web-deps: ## Install web dependencies (npm ci — the SPA is a standalone npm app)
 	cd $(WEB_DIR) && $(NPM) ci --no-audit --no-fund
 
 .PHONY: web
@@ -53,54 +44,31 @@ web: web-deps ## Build the web bundle into apps/jarvis-web/dist
 	cd $(WEB_DIR) && $(NPM) run build
 
 .PHONY: web-dev
-web-dev: web-deps ## Run the Vite dev server (hot reload, separate from cargo)
+web-dev: web-deps ## Run the Vite dev server (hot reload)
 	cd $(WEB_DIR) && $(NPM) run dev
 
 .PHONY: dev
-dev: web ## Build web + run jarvis in dev mode (one process, embedded UI)
-	$(CARGO) run -p jarvis -- serve
-
-.PHONY: build
-build: web ## Release-build the jarvis binary into target/release/jarvis
-	$(CARGO) build --release --locked -p jarvis
-	@echo
-	@echo "→ binary: $(CURDIR)/target/release/jarvis"
+dev: web ## Build web + run the Node server (one process, embedded UI)
+	JARVIS_WEB_DIST=$(CURDIR)/$(WEB_DIST) \
+		$(NODE) --experimental-strip-types packages/jarvis-app/src/main.ts serve
 
 # ---------------------------------------------------------------------------
-# Quality gates
+# Quality gates (CI mirrors these)
 # ---------------------------------------------------------------------------
-.PHONY: fmt
-fmt: ## Format Rust code (rustfmt)
-	$(CARGO) fmt --all
+.PHONY: typecheck
+typecheck: ## tsc --noEmit across every package
+	$(PNPM) -r typecheck
 
 .PHONY: lint
-lint: ## Clippy with -D warnings (CI gate)
-	$(CARGO) clippy --workspace --all-targets $(WORKSPACE_EXCLUDE) -- -D warnings
+lint: ## eslint (CI gate)
+	$(PNPM) lint
 
 .PHONY: test
-test: ## Run the workspace test suite
-	$(CARGO) test --workspace $(WORKSPACE_EXCLUDE)
+test: ## Node test runner across every package
+	$(PNPM) -r test
 
 .PHONY: check
-check: lint test ## Run clippy + tests, what CI runs
-
-# ---------------------------------------------------------------------------
-# Rust → TypeScript type codegen (see docs/conventions/rust-ts-codegen.md)
-# ---------------------------------------------------------------------------
-# Every `#[derive(TS)]` type emits its own `<TypeName>.ts` under
-# `apps/jarvis-web/src/types/generated/` when the embedded export
-# test runs. Crates with annotated types today: harness-channel,
-# harness-project. Add more by following the convention doc.
-#
-# Output goes in git so the SPA-only Vite build doesn't need a
-# Rust toolchain. `make ts-codegen` is the canonical "I changed a
-# wire type, regenerate" target; CI's `make test` covers it as a
-# side effect.
-.PHONY: ts-codegen
-ts-codegen: ## Regenerate TS types from Rust (`#[derive(TS)]`)
-	$(CARGO) test -p harness-channel -p harness-project --lib --quiet
-	@printf "\ngenerated:\n"
-	@ls apps/jarvis-web/src/types/generated/ | sed 's/^/  /'
+check: typecheck lint test ## Run typecheck + lint + tests, what CI runs
 
 # ---------------------------------------------------------------------------
 # Docker / Compose
@@ -134,9 +102,8 @@ compose-logs: ## Tail logs from the running stack
 # Cleanup
 # ---------------------------------------------------------------------------
 .PHONY: clean
-clean: ## Wipe cargo target/, web dist/, web node_modules/
-	$(CARGO) clean
-	rm -rf $(WEB_DIST) $(WEB_DIR)/node_modules
+clean: ## Wipe web dist/ + node_modules
+	rm -rf $(WEB_DIST) $(WEB_DIR)/node_modules node_modules packages/*/node_modules
 
 .PHONY: distclean
 distclean: clean ## clean + drop docker image and volumes (destructive)

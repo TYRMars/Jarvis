@@ -220,8 +220,23 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 - [~] **8.1** 拆全部代理转发，Node 成为独立服务 `size:M` `area:server`
       进行中（无代理层需拆——P0.5 代理中间件从未落地，Rust/Node 各自独立；本任务实为补齐 Node `/v1` 对 Rust 的契约缺口，缺口由 P7.10 契约冒烟测试发现，以 iOS/web 契约 + `apps/jarvis-ios/Tests` 黄金样本为准）：
       ✅ `GET /v1/providers` 只读目录（`{default, providers}`，model-picker 用；`buildProviderCatalog` 从配置 provider + capability catalog 构建，挂到 `AppState.providerCatalog`，路由独立于 ProviderAdmin、无 catalog 时回空表而非 503）。
-      余项：`GET /v1/conversations` 行的 `title`/`source` 富化（需逐行 load 取首条 user 消息，对齐 Rust）；其余路由全量契约审计。
-- [ ] **8.2** 下线 Rust 服务 + 归档旧 crate（保留 git 历史） `size:S` `area:infra`
+      ✅ **`/v1` 全量契约审计完成** → [rust-decommission-p8-gaps.md](rust-decommission-p8-gaps.md)（70 个差距，按 blocker/quick-win/operator 分级 + 客户端消费 + 规模）。
+      ✅ `GET /v1/tools` + `PATCH /v1/tools/:name`（工具目录 + 运行时 mute；`tool_metadata` 分类器移植到 `@jarvis/core`，registry 与 `createAgent` 共享 → mute 即时对 LLM 生效）。
+      ✅ wire 类型单一真相源移到 Node `@jarvis/shared-types`，删 Rust ts_rs codegen（P7.9）。
+      ✅ `GET /v1/conversations` 富化（title/source/requirement/lifecycle/workspace_path，两端 blocker）+ `…/:id/work-context` + `…/:id/lifecycle`。
+      ✅ `GET /v1/chat/runs` + `…/events` + `…/interrupt`（in-process ChatRunRegistry，WS turn 集成，协作式中断）。
+      ✅ `GET /v1/workspace` + `/v1/workspace/probe`（git 快照）。
+      ✅ `/v1/mcp/servers*`×6（McpManager 接管启动连接,动态增删/health/reload over 共享 registry）。
+      ✅ `/v1/server/info` + `/v1/version` + `/v1/providers/:name/probe`(连通性 ping)。
+      ✅ `/v1/routing`×4(ModelRoutePolicy CRUD;summarization slot 接入 SummarizingMemory resolver,非空心)。
+      ✅ workspace commit/PR(`/commit` + `/pr/preview` + `/pr`,git + gh)。
+      ✅ requirement todos CRUD + batch + link + `/runs/:id/verify`(plan shell 执行器) + `/verification`(存储)。
+      ✅ memory-sync 簇(8 路由)注册为优雅 503 stub(web 面板 503-aware → "未配置";完整 git/iCloud 子系统留作后续,见 gaps 文档)。
+      **→ Node 已达 blocker 级平价(server 504 测试全绿)。**
+- [x] **8.2** ✅ 下线 Rust 服务 + 归档旧 crate `size:S` `area:infra`
+      `git rm` 全部 Rust(`crates/`×20 + `apps/{jarvis,jarvis-cli,jarvis-desktop}` + `Cargo.toml/lock`);历史保留(tag `rust-archive-pre-takedown`)。
+      Node 成为唯一运行时:Makefile/Dockerfile/docker-compose 改 Node;删 Rust CI(rust/release/desktop-release.yml,保留 node*/ios);CLAUDE.md 加横幅 + Commands 改 Node。
+      余项归 8.5:CLAUDE.md/README/ARCHITECTURE 全文重写(架构段仍按 crate↔`@jarvis/*` 映射有效)。
 - [ ] **8.3** 性能/压测对照（chat 流式吞吐/延迟、内存占用） `size:M` `risk:high`
 - [ ] **8.4** OTel 全链路验证（`jarvis.agent.run` / `gen_ai.tool.call` span） `size:S`
 - [ ] **8.5** 重写 `CLAUDE.md` + 文档 + README `size:M` `area:infra`

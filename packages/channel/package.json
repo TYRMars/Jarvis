@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@jarvis/core": "workspace:*",
+    "@jarvis/shared-types": "workspace:*",
     "@jarvis/store": "workspace:*"
   }
 }

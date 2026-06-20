@@ -9,5 +9,8 @@
     "test": "node --experimental-strip-types --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": { "@jarvis/core": "workspace:*" }
+  "dependencies": {
+    "@jarvis/core": "workspace:*",
+    "@jarvis/shared-types": "workspace:*"
+  }
 }

@@ -1,0 +1,12 @@
+{
+  "name": "@jarvis/shared-types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Wire-shape types crossing the SPA boundary — the single source of truth that replaces the Rust ts_rs codegen (apps/jarvis-web/src/types/generated/). Pure type-only leaf: no runtime, no @jarvis/* deps, so the standalone web build can consume it via a path alias.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

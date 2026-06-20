@@ -132,10 +132,10 @@ flowchart TD
 | 维度 / Dimension | 内容 / Detail |
 |------|------|
 | **进入条件 / Entry** | 实现完成，准备推进/提 PR |
-| **做什么 / Action** | 本地依次跑通三道 make 门禁；类型跨 SPA 边界时重跑 codegen |
-| **命令 / Commands** | `make check` → `make lint`（clippy `-D warnings`，**CI gate**）→ `make test` →（若改 wire-shape 类型）`make ts-codegen` |
-| **codegen 约束 / Codegen** | 跨 SPA 边界类型 derive `#[derive(ts_rs::TS)]`，标注只放 owning domain crate（`harness-channel` / `harness-project` / `harness-observability`，**绝不** `harness-core`）；改后必须 `make ts-codegen` 并提交 `apps/jarvis-web/src/types/generated/` 产物 |
-| **产出物 / Output** | 三道门禁全绿 + 已重新生成并提交的 TS 类型 |
+| **做什么 / Action** | 本地依次跑通三道 make 门禁；改 wire-shape 类型时同步 `@jarvis/shared-types` |
+| **命令 / Commands** | `make check` → `make lint`（clippy `-D warnings`，**CI gate**）→ `make test`；改 wire 类型再跑 `pnpm -r typecheck` |
+| **wire 类型约束 / Wire types** | 跨 SPA 边界类型的单一真相源是 Node 包 `packages/shared-types/src/index.ts`（ts_rs codegen 已下线）。改后让 Rust struct 的 serde JSON 形状手动对齐;详见 `docs/conventions/rust-ts-codegen.md`（退役说明） |
+| **产出物 / Output** | 三道门禁全绿 + （若动 wire 类型）`@jarvis/shared-types` 已更新且 `pnpm -r typecheck` 绿 |
 | **退出门禁 / Exit gate** | **Clippy `-D warnings` 必须 clean**（CI `.github/workflows/rust.yml` 硬门禁） |
 
 ### 阶段 E — 评审 / Review
@@ -182,7 +182,7 @@ flowchart TD
 - [ ] `make check` 通过 / passes (`cargo check --workspace --exclude jarvis-desktop`)
 - [ ] `make lint` 通过且 **clippy `-D warnings` 完全 clean** / passes, clippy clean (CI hard gate)
 - [ ] `make test` 通过 / passes (`cargo test --workspace --exclude jarvis-desktop`)
-- [ ] 若改动跨 SPA 边界类型：已 `make ts-codegen` 并提交 `apps/jarvis-web/src/types/generated/` 产物 / regenerated & committed TS types if wire shapes changed
+- [ ] 若改动跨 SPA 边界类型：已更新 `packages/shared-types/src/index.ts` 且 `pnpm -r typecheck` 绿 / updated @jarvis/shared-types + typecheck green if wire shapes changed
 - [ ] `harness-core` 未引入 HTTP / provider / storage / MCP 知识 / `harness-core` stays pure
 - [ ] 库 crate 未读 `std::env`（新 env 只在 `apps/jarvis/src/main.rs` / `serve.rs`）/ no `std::env` in library crates
 - [ ] 依赖走 `foo.workspace = true`，版本只在根 `Cargo.toml` 出现一次 / workspace-deps only
@@ -237,7 +237,7 @@ Automation drives Approved-and-ready cards to Review in an isolated worktree; hu
 make check            # cargo check  --workspace --exclude jarvis-desktop
 make lint             # cargo clippy --workspace --all-targets --exclude jarvis-desktop -- -D warnings  (CI gate)
 make test             # cargo test   --workspace --exclude jarvis-desktop
-make ts-codegen       # 改动跨 SPA 边界类型后重新生成 / regen TS types after wire-shape change
+pnpm -r typecheck     # 改动 wire 类型后校验 @jarvis/shared-types / verify after a wire-shape change
 
 # —— 按路径过滤测试 / Filtered tests ——
 cargo test -p harness-core message::           # 过滤单 crate / 模块
@@ -307,7 +307,7 @@ cargo run -p jarvis -- --mcp-serve
 | 无 `unwrap`（库 crate） | `grep -rn "unwrap()\|expect(" crates/<your-crate>/src/`；用 `?` + `harness_core::Result` / `BoxError` 替换 |
 | 工具命名 `<group>.<verb>` | 新工具名带命名空间，避免静默覆盖既有同名工具 |
 | 写盘/执行类工具 opt-in + 审批 | 照 `fs.write` / `shell.exec`：默认关闭，`requires_approval()` 返回 true |
-| 跨 SPA 边界类型加 `ts_rs::TS` | 仅在 `harness-channel`/`harness-project`/`harness-observability` 标注，**绝不** `harness-core` |
+| 跨 SPA 边界 wire 类型 | 单一真相源是 Node 包 `packages/shared-types/src/index.ts`（ts_rs codegen 已下线）；Rust struct 的 serde JSON 形状手动对齐 |
 
 实现时优先用只读工具勘察（`code.grep` / `fs.read` / `git.diff`），写改动用 `fs.edit`/`fs.patch`（审批门），验证命令用 `shell.exec`（cwd 自动指向 worktree）。
 
@@ -324,11 +324,12 @@ make test      # 3) 测试过；改了调度/分诊则确认 auto_mode reviewer_
 若本次改动触及跨 SPA 边界的 wire-shape 类型（REST/WS payload、localStorage 形状），追加：
 
 ```bash
-make ts-codegen        # 重新生成
-git status apps/jarvis-web/src/types/generated/   # 必须提交产物，diff 不为空才算改完
+# 单一真相源在 Node 包 packages/shared-types/src/index.ts（ts_rs codegen 已下线）
+pnpm -r typecheck      # 改完 @jarvis/shared-types 后校验所有依赖包
+# 同步 Rust struct 的 serde JSON 形状（直至 Rust 完全下线）
 ```
 
-> 顺序固定：check → lint → test → (ts-codegen)。lint 红灯在 CI 必挂，本地先解决最省事。
+> 顺序固定：check → lint → test → (pnpm typecheck)。lint 红灯在 CI 必挂，本地先解决最省事。
 > Fixed order; clippy red == CI failure, so clear it locally first.
 
 ### 8.5 补测试 / Add tests
@@ -348,7 +349,7 @@ git status apps/jarvis-web/src/types/generated/   # 必须提交产物，diff �
 ### 8.7 收尾自检 / Done definition（本 SOP 的退出标准）
 
 - [ ] worktree 内 `make check && make lint && make test` 全绿
-- [ ] 触及 wire-shape 类型则 `make ts-codegen` 产物已提交
+- [ ] 触及 wire-shape 类型则已更新 `@jarvis/shared-types` 且 `pnpm -r typecheck` 绿
 - [ ] §5 Checklist 全部勾选
 - [ ] 卡片已到 `Review`（agent 经 `requirement.complete`；人工经拖拽/PR）
 - [ ] 完成 Done 后回到阶段 G：回写提案 `**Status:**`（grep 验证），`git worktree remove` 或 `GET /v1/diagnostics/worktrees/orphans` 清理隔离目录

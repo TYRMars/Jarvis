@@ -421,3 +421,200 @@ test("POST /runs 404 for an unknown requirement; GET /v1/runs/:id 404 for an unk
   assert.equal((await app.inject({ method: "GET", url: "/v1/runs/nope" })).statusCode, 404);
   await app.close();
 });
+
+// ---------- requirement TODOs + link ----------
+
+test("requirement todos: CRUD + batch + link round-trip", async () => {
+  const { newRequirement } = await import("@jarvis/project");
+  const stores = makeMemoryStores();
+  const req = newRequirement("proj-1", "Build X");
+  await stores.requirements.upsert(req);
+  const app = await buildApp(
+    makeState({ requirements: stores.requirements, activities: stores.activities }),
+  );
+
+  // empty list
+  assert.deepEqual((await app.inject({ method: "GET", url: `/v1/requirements/${req.id}/todos` })).json(), {
+    requirement_id: req.id,
+    items: [],
+  });
+
+  // create (+ validation)
+  assert.equal(
+    (await app.inject({ method: "POST", url: `/v1/requirements/${req.id}/todos`, payload: { title: "  " } }))
+      .statusCode,
+    400,
+  );
+  assert.equal(
+    (await app.inject({
+      method: "POST",
+      url: `/v1/requirements/${req.id}/todos`,
+      payload: { title: "x", kind: "bogus" },
+    })).statusCode,
+    400,
+  );
+  const created = await app.inject({
+    method: "POST",
+    url: `/v1/requirements/${req.id}/todos`,
+    payload: { title: "Run tests", kind: "ci", command: "make test" },
+  });
+  assert.equal(created.statusCode, 201);
+  const todo = (created.json() as { todo: { id: string; status: string; command: string } }).todo;
+  assert.equal(todo.status, "pending");
+  assert.equal(todo.command, "make test");
+
+  // patch item
+  const patched = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${req.id}/todos/${todo.id}`,
+    payload: { status: "passed" },
+  });
+  assert.equal((patched.json() as { todo: { status: string } }).todo.status, "passed");
+
+  // a second todo + batch update both to pending
+  const t2 = (
+    await app.inject({ method: "POST", url: `/v1/requirements/${req.id}/todos`, payload: { title: "step 2" } })
+  ).json() as { todo: { id: string } };
+  const batch = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${req.id}/todos`,
+    payload: { ids: [todo.id, t2.todo.id], status: "running" },
+  });
+  assert.equal(batch.statusCode, 200);
+  assert.deepEqual(
+    (batch.json() as { todos: { status: string }[] }).todos.map((t) => t.status),
+    ["running", "running"],
+  );
+  // batch validation
+  assert.equal(
+    (await app.inject({ method: "PATCH", url: `/v1/requirements/${req.id}/todos`, payload: { ids: [], status: "done" } }))
+      .statusCode,
+    400,
+  );
+  assert.equal(
+    (await app.inject({
+      method: "PATCH",
+      url: `/v1/requirements/${req.id}/todos`,
+      payload: { ids: ["ghost"], status: "passed" },
+    })).statusCode,
+    404,
+  );
+
+  // delete
+  const del = await app.inject({ method: "DELETE", url: `/v1/requirements/${req.id}/todos/${todo.id}` });
+  assert.equal(del.statusCode, 200);
+  assert.equal((del.json() as { deleted: boolean }).deleted, true);
+  assert.equal(
+    ((await app.inject({ method: "GET", url: `/v1/requirements/${req.id}/todos` })).json() as { items: unknown[] })
+      .items.length,
+    1,
+  );
+
+  // link conversation (idempotent)
+  const link = await app.inject({
+    method: "POST",
+    url: `/v1/requirements/${req.id}/conversations`,
+    payload: { conversation_id: "c-1" },
+  });
+  assert.equal((link.json() as { appended: boolean }).appended, true);
+  const link2 = await app.inject({
+    method: "POST",
+    url: `/v1/requirements/${req.id}/conversations`,
+    payload: { conversation_id: "c-1" },
+  });
+  assert.equal((link2.json() as { appended: boolean }).appended, false);
+  assert.equal(
+    (await app.inject({ method: "POST", url: `/v1/requirements/${req.id}/conversations`, payload: {} })).statusCode,
+    400,
+  );
+
+  // 404 for a missing requirement
+  assert.equal((await app.inject({ method: "GET", url: "/v1/requirements/ghost/todos" })).statusCode, 404);
+  await app.close();
+});
+
+// ---------- run verification ----------
+
+test("run verification: /verification stores result + flips terminal", async () => {
+  const { newRequirement, newRequirementRun } = await import("@jarvis/project");
+  const stores = makeMemoryStores();
+  const req = newRequirement("p", "X");
+  await stores.requirements.upsert(req);
+  const run = newRequirementRun(req.id, "conv-1");
+  await stores.requirementRuns.upsert(run);
+  const app = await buildApp(
+    makeState({
+      requirements: stores.requirements,
+      requirementRuns: stores.requirementRuns,
+      activities: stores.activities,
+    }),
+  );
+
+  const stored = await app.inject({
+    method: "POST",
+    url: `/v1/runs/${run.id}/verification`,
+    payload: { status: "passed", command_results: [] },
+  });
+  assert.equal(stored.statusCode, 200);
+  const sj = stored.json() as { status: string; verification: { status: string } };
+  assert.equal(sj.status, "completed"); // passed → terminal Completed
+  assert.equal(sj.verification.status, "passed");
+
+  assert.equal(
+    (await app.inject({ method: "POST", url: "/v1/runs/ghost/verification", payload: { status: "failed" } }))
+      .statusCode,
+    404,
+  );
+  await app.close();
+});
+
+test("run verify executes commands", { skip: process.platform === "win32" }, async () => {
+  const { newRequirement, newRequirementRun } = await import("@jarvis/project");
+  const stores = makeMemoryStores();
+  const req = newRequirement("p", "X");
+  await stores.requirements.upsert(req);
+  const app = await buildApp(
+    makeState({
+      requirements: stores.requirements,
+      requirementRuns: stores.requirementRuns,
+      activities: stores.activities,
+    }),
+  );
+
+  // empty commands → 400; missing run → 404
+  const run0 = newRequirementRun(req.id, "c0");
+  await stores.requirementRuns.upsert(run0);
+  assert.equal(
+    (await app.inject({ method: "POST", url: `/v1/runs/${run0.id}/verify`, payload: { commands: [] } })).statusCode,
+    400,
+  );
+  assert.equal(
+    (await app.inject({ method: "POST", url: "/v1/runs/ghost/verify", payload: { commands: ["exit 0"] } }))
+      .statusCode,
+    404,
+  );
+
+  // passing plan → Completed
+  const pass = newRequirementRun(req.id, "c1");
+  await stores.requirementRuns.upsert(pass);
+  const passed = (await app.inject({
+    method: "POST",
+    url: `/v1/runs/${pass.id}/verify`,
+    payload: { commands: ["exit 0"] },
+  })).json() as { status: string; verification: { status: string; command_results: { exit_code: number }[] } };
+  assert.equal(passed.status, "completed");
+  assert.equal(passed.verification.status, "passed");
+  assert.equal(passed.verification.command_results[0]!.exit_code, 0);
+
+  // failing plan → Failed
+  const fail = newRequirementRun(req.id, "c2");
+  await stores.requirementRuns.upsert(fail);
+  const failed = (await app.inject({
+    method: "POST",
+    url: `/v1/runs/${fail.id}/verify`,
+    payload: { commands: ["exit 3"] },
+  })).json() as { status: string; verification: { status: string } };
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.verification.status, "failed");
+  await app.close();
+});

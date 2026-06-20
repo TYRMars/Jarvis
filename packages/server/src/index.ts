@@ -4,10 +4,18 @@ export {
   type ConnectorSecretResolver,
   type ProviderCatalog,
   type ProviderListEntry,
+  type ServerInfo,
   isInternalId,
 } from "./state.ts";
 export { type ServeOptions, buildServer, serve } from "./server.ts";
 export { registerChatRoutes } from "./chat-routes.ts";
+export {
+  ChatRunRegistry,
+  chatRunStatusIsTerminal,
+  type ChatRunStatus,
+  type ChatRunRecord,
+  type ChatRunEventRecord,
+} from "./chat-runs.ts";
 export { registerConversationsRoutes } from "./conversations-routes.ts";
 export { registerProjectsRoutes } from "./projects-routes.ts";
 export { registerRequirementsRoutes } from "./requirements-routes.ts";
@@ -163,6 +171,30 @@ export {
   collectTasks,
   registerTasksRoutes,
 } from "./tasks-routes.ts";
+export { registerToolsRoutes } from "./tools-routes.ts";
+export { registerMetaRoutes } from "./meta-routes.ts";
+export { registerRoutingRoutes } from "./routing-routes.ts";
+export { registerMemorySyncRoutes } from "./memory-sync-routes.ts";
+export {
+  RoutePolicyStore,
+  parseModelTarget,
+  isRouteSlot,
+  ROUTE_SLOTS,
+  type RoutePolicy,
+  type ModelTarget,
+  type RouteSlot,
+} from "./route-policy.ts";
+export { registerMcpRoutes } from "./mcp-routes.ts";
+export {
+  McpManager,
+  McpManagerError,
+  wireToConfig,
+  configToWire,
+  type McpConnect,
+  type McpServerInfo,
+  type McpServerStatus,
+  type McpClientConfigWire,
+} from "./mcp-manager.ts";
 export { type RegisterUiOptions, registerUiRoutes, pathLooksLikeAsset } from "./ui.ts";
 export {
   type OAuthStateClaims,

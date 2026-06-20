@@ -32,6 +32,11 @@ import { registerWorkspaceTerminalRoutes } from "./workspace-terminal-routes.ts"
 import { registerWorkspacesRoutes } from "./workspaces-routes.ts";
 import { registerConnectorsRoutes } from "./connectors-routes.ts";
 import { registerTasksRoutes } from "./tasks-routes.ts";
+import { registerToolsRoutes } from "./tools-routes.ts";
+import { registerMcpRoutes } from "./mcp-routes.ts";
+import { registerMetaRoutes } from "./meta-routes.ts";
+import { registerRoutingRoutes } from "./routing-routes.ts";
+import { registerMemorySyncRoutes } from "./memory-sync-routes.ts";
 import { registerUiRoutes } from "./ui.ts";
 import type { AppState } from "./state.ts";
 
@@ -60,6 +65,7 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerChannelsRoutes(app, state);
   registerDocRoutes(app, state);
   registerMemoriesRoutes(app, state);
+  registerMemorySyncRoutes(app, state);
   registerPermissionsRoutes(app, state);
   registerPluginsRoutes(app, state);
   registerAgentProfilesRoutes(app, state);
@@ -70,6 +76,10 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerWorkspacesRoutes(app, state);
   registerConnectorsRoutes(app, state);
   registerTasksRoutes(app, state);
+  registerToolsRoutes(app, state);
+  registerMcpRoutes(app, state);
+  registerMetaRoutes(app, state);
+  registerRoutingRoutes(app, state);
 
   // LAST: the SPA static + fallback catch-all. Registered after every /v1 +
   // /health + WS route so its not-found handler only fires on unmatched paths

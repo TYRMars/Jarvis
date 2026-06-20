@@ -21,7 +21,8 @@ import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider,
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
-import type { AppState, ProviderCatalog } from "@jarvis/server";
+import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
+import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
   DocStore,
@@ -188,10 +189,14 @@ export function buildMemory(
   config: JarvisConfig,
   llm: LlmProvider,
   summaryStore?: SummaryStore,
+  routePolicy?: RoutePolicyStore,
 ): Memory | undefined {
   if (config.memoryTokens === undefined) return undefined;
   if (config.memoryMode === "summary") {
-    const sm = new SummarizingMemory(llm, config.memoryModel ?? config.model, config.memoryTokens);
+    let sm = new SummarizingMemory(llm, config.memoryModel ?? config.model, config.memoryTokens);
+    // Honour the operator route policy's `summarization` slot (non-hollow
+    // consumer of /v1/routing), mirroring the Rust LlmRouteResolver.
+    if (routePolicy) sm = sm.withModelResolver(() => routePolicy.summarizationModel());
     return summaryStore !== undefined ? sm.withPersistence(summaryStore) : sm;
   }
   return new SlidingWindowMemory(config.memoryTokens);
@@ -274,7 +279,16 @@ export async function buildAppState(
   // public lists). Only consumed by `buildMemory` in `summary` mode; harmless to
   // construct otherwise. Mirrors the Rust "attach when a store is present" rule.
   const summaryStore = new ConversationSummaryStore(stores.conversations);
-  const memory = buildMemory(config, provider, summaryStore);
+
+  // Operator route policy: seed from JARVIS_ROUTE_* then share the mutable store
+  // between the /v1/routing CRUD and the SummarizingMemory resolver.
+  const routePolicy = new RoutePolicyStore();
+  for (const [slot, raw] of Object.entries(config.routeSlots)) {
+    if (!isRouteSlot(slot)) continue;
+    const target = parseModelTarget(raw);
+    if (target) routePolicy.setSlot(slot, target);
+  }
+  const memory = buildMemory(config, provider, summaryStore, routePolicy);
 
   const createAgent = (approver?: Approver): Agent => {
     const agentConfig: AgentConfig = {
@@ -291,8 +305,40 @@ export async function buildAppState(
     return new Agent(provider, agentConfig);
   };
 
+  // Static config snapshot for GET /v1/server/info + /v1/version (no secrets).
+  const serverInfo: ServerInfo = {
+    // The "jarvis" app version users saw under the Rust binary (crate 0.2.0);
+    // continuity for the About section until a single Node version is minted.
+    version: "0.2.0",
+    listen_addr: config.addr,
+    config_path: null,
+    persistence: config.dbUrl ?? "json",
+    project_store: stores.projects !== undefined,
+    memory: { mode: config.memoryMode, budget_tokens: config.memoryTokens ?? null },
+    approval_mode: config.permissionMode,
+    coding_mode: codingMode(config),
+    project_context: { loaded: config.includeProjectContext, max_bytes: config.projectContextMaxBytes },
+    system_prompt: { length: systemPrompt.length, preview: systemPrompt.slice(0, 280) },
+    max_iterations: 80,
+    workspace_root: config.fsRoot,
+  };
+
   const state: AppState = {
     createAgent,
+    // The configured provider, for GET /v1/server/info's provider list + the
+    // POST /v1/providers/:name/probe connectivity ping.
+    provider,
+    serverInfo,
+    // The SAME registry `createAgent` builds agents from — so `GET /v1/tools`
+    // lists the live catalog and `PATCH /v1/tools/:name` mutes take effect for
+    // the next turn.
+    tools: toolBundle.registry,
+    // In-process chat-run registry for the turn-status badge / Stop button.
+    chatRuns: new ChatRunRegistry(),
+    // MCP server manager backing /v1/mcp/servers* (shares the tool registry).
+    mcpManager: toolBundle.mcpManager,
+    // Operator route policy backing /v1/routing (shared with the summariser).
+    routePolicy,
     store: stores.conversations,
     projects: stores.projects,
     requirements: stores.requirements,

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -27,6 +28,16 @@ export default defineConfig({
   // base layer via `@import "tailwindcss"` at the top of styles.css).
   base: process.env.JARVIS_DESKTOP_BUILD ? "./" : "/",
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      // Mirror the tsconfig `paths` entry so any non-type import would also
+      // resolve. The @jarvis/shared-types imports are type-only (erased by
+      // esbuild), so this is belt-and-suspenders for the standalone build.
+      "@jarvis/shared-types": fileURLToPath(
+        new URL("../../packages/shared-types/src/index.ts", import.meta.url),
+      ),
+    },
+  },
   define: {
     // Surfaced in the Settings → About section so users can confirm
     // which build is running. `JSON.stringify` because vite's
