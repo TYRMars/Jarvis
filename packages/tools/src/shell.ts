@@ -106,6 +106,13 @@ export class ShellExecTool implements Tool {
     const child = spawn(program, programArgs, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      // POSIX: `detached` makes the child its own process-group leader so a
+      // timeout can signal the *whole* group (forked grandchildren included),
+      // not just `sh`. It also keeps the group id distinct from this process'
+      // group, so the negative-pid kill below can't ever signal us. On Windows
+      // we leave the child in the parent's group and reap the tree with
+      // `taskkill /T` instead (see #killTree).
+      detached: !isWindows,
     });
 
     const stdout: StreamBuf = { buf: "", total: 0, truncated: false };
@@ -130,9 +137,10 @@ export class ShellExecTool implements Tool {
       };
 
       const timer = setTimeout(() => {
-        // Timeout: kill the whole child (SIGKILL — `kill_on_drop` analogue);
-        // the streams close and accumulation stops.
-        child.kill("SIGKILL");
+        // Timeout: kill the whole process group (SIGKILL — `kill_on_drop`
+        // analogue) so forked children are reaped too, not just `sh`; the
+        // streams then close and accumulation stops.
+        this.#killTree(child, isWindows);
         finish({ kind: "timeout" });
       }, timeoutMs);
 
@@ -163,6 +171,45 @@ export class ShellExecTool implements Tool {
       s += `\n[... stderr truncated at ${this.#maxBytes} bytes ...]`;
     }
     return s;
+  }
+
+  /**
+   * SIGKILL the command and any processes it forked.
+   *
+   * On POSIX the child was spawned `detached`, so it leads its own process
+   * group; signalling the negative pid (`-pid`) reaches the whole group. A
+   * plain `child.kill()` would only hit `sh`, leaving backgrounded children
+   * (`sleep 600 & wait`, a dev server, a build, …) orphaned and running.
+   *
+   * On Windows there is no process group to signal, so we shell out to
+   * `taskkill /T /F` to terminate the whole tree; `child.kill` is the
+   * best-effort fallback if spawning `taskkill` throws.
+   */
+  #killTree(child: ReturnType<typeof spawn>, isWindows: boolean): void {
+    const pid = child.pid;
+    if (isWindows) {
+      try {
+        if (pid !== undefined) {
+          // Fire-and-forget; we don't await the reaper.
+          spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+          return;
+        }
+      } catch {
+        // fall through to the single-process kill below
+      }
+      child.kill("SIGKILL");
+      return;
+    }
+    try {
+      if (pid !== undefined) {
+        process.kill(-pid, "SIGKILL");
+        return;
+      }
+    } catch {
+      // The group may already be gone (race with normal exit), or the pid was
+      // never a group leader — fall back to killing the direct child.
+    }
+    child.kill("SIGKILL");
   }
 
   /**

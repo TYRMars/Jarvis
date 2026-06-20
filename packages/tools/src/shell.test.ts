@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 
 import type { Tool } from "@jarvis/core";
@@ -108,6 +110,26 @@ test("enforces the timeout and throws", posix, async () => {
   await assert.rejects(
     () => tool.invoke({ command: "sleep 5", timeout_ms: 100 }),
     /timed out/,
+  );
+});
+
+test("timeout kills forked children, not just the shell", posix, async () => {
+  const root = await tempRoot();
+  const tool = new ShellExecTool({ root });
+  // A backgrounded child writes a sentinel after the timeout would have fired;
+  // `wait` keeps `sh` alive so the timeout (not a normal exit) is what stops
+  // the run. A plain `sh`-only kill would orphan the child and let it touch
+  // the sentinel; a process-group kill reaps it first.
+  await assert.rejects(
+    () => tool.invoke({ command: "(sleep 1; touch sentinel) & wait", timeout_ms: 200 }),
+    /timed out/,
+  );
+  // Wait well past the child's 1s sleep, then assert it never ran.
+  await delay(1500);
+  assert.equal(
+    existsSync(path.join(root, "sentinel")),
+    false,
+    "forked child survived the timeout — process group was not killed",
   );
 });
 
