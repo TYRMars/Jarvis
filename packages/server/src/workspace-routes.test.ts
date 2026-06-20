@@ -457,3 +457,67 @@ test("diff/file 400s on empty / traversal / leading-dash path", async () => {
     await app.close();
   });
 });
+
+// ====================================================================
+// GET /v1/workspace + /v1/workspace/probe (git snapshot)
+// ====================================================================
+
+test("GET /v1/workspace 503s when no root; reports vcs:none for a non-git root", async () => {
+  const app503 = await buildApp(makeState());
+  assert.equal((await app503.inject({ method: "GET", url: "/v1/workspace" })).statusCode, 503);
+  await app503.close();
+
+  await withTempDir(async (dir) => {
+    const app = await buildApp(makeState(dir));
+    const snap = (await app.inject({ method: "GET", url: "/v1/workspace" })).json() as {
+      root: string;
+      vcs: string;
+      branch?: unknown;
+    };
+    assert.equal(snap.root, dir);
+    assert.equal(snap.vcs, "none");
+    assert.equal("branch" in snap, false);
+    await app.close();
+  });
+});
+
+test("GET /v1/workspace/probe requires ?path and inspects the candidate", async () => {
+  await withTempDir(async (dir) => {
+    const app = await buildApp(makeState(dir));
+    assert.equal((await app.inject({ method: "GET", url: "/v1/workspace/probe" })).statusCode, 400);
+    const snap = (await app.inject({
+      method: "GET",
+      url: `/v1/workspace/probe?path=${encodeURIComponent(dir)}`,
+    })).json() as { root: string; vcs: string };
+    assert.equal(snap.root, dir);
+    assert.equal(snap.vcs, "none");
+    await app.close();
+  });
+});
+
+test("GET /v1/workspace reports git branch/head/dirty for a real repo", { skip: !HAS_GIT }, async () => {
+  await withTempDir(async (dir) => {
+    initRepo(dir);
+    await writeFile(join(dir, "a.txt"), "hello\n");
+    git(dir, ["add", "."]);
+    git(dir, ["commit", "-q", "-m", "init"]);
+    const app = await buildApp(makeState(dir));
+
+    const clean = (await app.inject({ method: "GET", url: "/v1/workspace" })).json() as {
+      vcs: string;
+      branch: string | null;
+      head: string | null;
+      dirty: boolean;
+    };
+    assert.equal(clean.vcs, "git");
+    assert.equal(clean.branch, "main");
+    assert.ok(typeof clean.head === "string" && clean.head.length > 0);
+    assert.equal(clean.dirty, false);
+
+    // Make it dirty.
+    await writeFile(join(dir, "a.txt"), "changed\n");
+    const dirty = (await app.inject({ method: "GET", url: "/v1/workspace" })).json() as { dirty: boolean };
+    assert.equal(dirty.dirty, true);
+    await app.close();
+  });
+});

@@ -802,7 +802,49 @@ function errMsg(e: unknown): string {
  * mutating commit / PR endpoints and the terminal PTY are intentionally NOT
  * registered here (see module header).
  */
+/**
+ * Live git snapshot of a workspace root: VCS kind + branch/HEAD/dirty. Mirrors
+ * Rust `workspace_snapshot`. Non-git roots return `{ root, vcs: "none" }`.
+ */
+async function gitSnapshot(
+  root: string,
+): Promise<{ root: string; vcs: "git" | "none"; branch?: string | null; head?: string | null; dirty?: boolean }> {
+  const inside = (await runGitOk(root, ["rev-parse", "--is-inside-work-tree"]))?.trim();
+  if (inside !== "true") return { root, vcs: "none" };
+  const branch = filterBranch(await runGitOk(root, ["rev-parse", "--abbrev-ref", "HEAD"]));
+  const head = filterNonEmpty(await runGitOk(root, ["rev-parse", "--short", "HEAD"]));
+  const porcelain = await runGitOk(root, ["status", "--porcelain"]);
+  const dirty = porcelain !== undefined && porcelain.trim() !== "";
+  return { root, vcs: "git", branch, head, dirty };
+}
+
+/** `GET /v1/workspace` — live git state of the pinned workspace root. */
+async function handleWorkspace(
+  state: AppState,
+  _req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  const resolved = await resolveWorkspace(state, reply, undefined);
+  if (!resolved.ok) return reply;
+  return reply.send(await gitSnapshot(resolved.root));
+}
+
+/** `GET /v1/workspace/probe?path=<abs>` — inspect a candidate folder. */
+async function handleWorkspaceProbe(
+  state: AppState,
+  req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  const q = (req.query ?? {}) as { path?: string };
+  if (q.path === undefined || q.path.trim() === "") return badRequest(reply, "`path` is required");
+  const resolved = await resolveWorkspace(state, reply, q.path);
+  if (!resolved.ok) return reply;
+  return reply.send(await gitSnapshot(resolved.root));
+}
+
 export function registerWorkspaceRoutes(app: FastifyInstance, state: AppState): void {
+  app.get("/v1/workspace", (req, reply) => handleWorkspace(state, req, reply));
+  app.get("/v1/workspace/probe", (req, reply) => handleWorkspaceProbe(state, req, reply));
   app.get("/v1/workspace/list", (req, reply) => handleList(state, req, reply));
   app.get("/v1/workspace/read", (req, reply) => handleRead(state, req, reply));
   app.get("/v1/workspace/find", (req, reply) => handleFind(state, req, reply));
