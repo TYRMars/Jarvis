@@ -842,9 +842,214 @@ async function handleWorkspaceProbe(
   return reply.send(await gitSnapshot(resolved.root));
 }
 
+// ---------------------------------------------------------------------------
+// commit / PR (mutating; reuse the git helpers above)
+// ---------------------------------------------------------------------------
+
+/** Generous timeout for network git ops (push). Mirrors Rust NET_TIMEOUT. */
+const NET_TIMEOUT = 60_000;
+
+/** Run `gh <args...>` (cwd = root, no `-C`). Same discipline as {@link runGit}. */
+function runGh(root: string, args: string[], timeoutMs = NET_TIMEOUT): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "gh",
+      args,
+      { cwd: root, timeout: timeoutMs, encoding: "buffer", maxBuffer: 32 * 1024 * 1024, windowsHide: true },
+      (err, stdout, stderr) => {
+        const out = stdout as unknown as Buffer;
+        const errBuf = stderr as unknown as Buffer;
+        if (err) {
+          const e = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
+          if (e.killed || e.signal === "SIGTERM") return reject(new Error(`gh timed out after ${timeoutMs}ms`));
+          if (typeof e.code === "string") return reject(new Error(`spawn gh: ${e.message}`));
+          const s = errBuf.toString("utf8");
+          return reject(new Error(s.trim() === "" ? `gh exited with status ${e.code ?? "?"}` : s));
+        }
+        resolve(out.toString("utf8"));
+      },
+    );
+  });
+}
+
+/** Best-effort probe: is the `gh` CLI on PATH + runnable? Mirrors `gh_check`. */
+function ghCheck(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("gh", ["--version"], { timeout: 3000, windowsHide: true }, (err) => resolve(!err));
+  });
+}
+
+/** Suggested PR title: the top commit subject, else a humanised branch name. */
+async function bestPrTitle(root: string, base: string, branch: string | null): Promise<string> {
+  const out = await runGitOk(root, ["log", "--pretty=format:%s", `${base}..HEAD`]);
+  if (out !== undefined) {
+    const subjects = out.split("\n").filter((l) => l !== "");
+    if (subjects.length >= 1) return subjects[0]!;
+  }
+  if (branch) {
+    let t = branch;
+    for (const p of ["feat/", "fix/", "chore/", "refactor/", "docs/"]) {
+      if (t.startsWith(p)) {
+        t = t.slice(p.length);
+        break;
+      }
+    }
+    return t.replace(/[-_]/g, " ");
+  }
+  return "Update";
+}
+
+/** Suggested PR body: a chronological bullet list of commits. */
+async function bestPrBody(root: string, base: string): Promise<string> {
+  const out = await runGitOk(root, ["log", "--reverse", "--pretty=format:- %s", `${base}..HEAD`]);
+  if (out !== undefined) {
+    const t = out.trim();
+    if (t !== "") return `## Commits\n\n${t}\n`;
+  }
+  return "";
+}
+
+/** `POST /v1/workspace/commit` — stage-all + commit + optional push. */
+async function handleCommit(
+  state: AppState,
+  req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  const body = (req.body ?? {}) as { message?: unknown; push?: unknown; root?: unknown };
+  const resolved = await resolveWorkspace(state, reply, typeof body.root === "string" ? body.root : undefined);
+  if (!resolved.ok) return reply;
+  const root = resolved.root;
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (message === "") return badRequest(reply, "commit message must not be empty");
+  if (message.includes("\0")) return badRequest(reply, "commit message must not contain NUL bytes");
+  if ((await runGitOk(root, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") {
+    return badRequest(reply, "workspace root is not a git repository");
+  }
+  try {
+    await runGit(root, ["add", "-A"]);
+  } catch (e) {
+    return serverError(reply, `git add -A: ${errMsg(e)}`);
+  }
+  // `diff --cached --quiet` exits 0 (Ok) when nothing is staged.
+  const nothingStaged = (await runGitOk(root, ["diff", "--cached", "--quiet"])) !== undefined;
+  if (nothingStaged) return badRequest(reply, "nothing to commit (working tree matches HEAD)");
+  try {
+    await runGit(root, ["commit", "-m", message]);
+  } catch (e) {
+    return serverError(reply, `git commit failed: ${errMsg(e)}`);
+  }
+  const head = filterNonEmpty(await runGitOk(root, ["rev-parse", "--short", "HEAD"]));
+  let pushed = false;
+  let pushError: string | null = null;
+  if (body.push === true) {
+    const branch = filterBranch(await runGitOk(root, ["rev-parse", "--abbrev-ref", "HEAD"]));
+    if (branch) {
+      try {
+        await runGit(root, ["push", "-u", "origin", branch], NET_TIMEOUT);
+        pushed = true;
+      } catch (e) {
+        pushError = errMsg(e);
+      }
+    } else {
+      pushError = "HEAD is detached; cannot push";
+    }
+  }
+  return reply.send({ ok: true, head, pushed, push_error: pushError });
+}
+
+/** `GET /v1/workspace/pr/preview` — suggested title/body + gh availability. */
+async function handlePrPreview(
+  state: AppState,
+  req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  const q = (req.query ?? {}) as { base?: string; root?: string };
+  const resolved = await resolveWorkspace(state, reply, q.root);
+  if (!resolved.ok) return reply;
+  const root = resolved.root;
+  const baseCheck = safeBranch(q.base ?? DEFAULT_BASE);
+  if (!baseCheck.ok) return badRequest(reply, baseCheck.error);
+  const base = baseCheck.value;
+  const branch = filterBranch(await runGitOk(root, ["rev-parse", "--abbrev-ref", "HEAD"]));
+  const [ghAvailable, suggestedTitle, suggestedBody] = await Promise.all([
+    ghCheck(),
+    bestPrTitle(root, base, branch),
+    bestPrBody(root, base),
+  ]);
+  return reply.send({
+    branch,
+    base,
+    gh_available: ghAvailable,
+    suggested_title: suggestedTitle,
+    suggested_body: suggestedBody,
+  });
+}
+
+/** `POST /v1/workspace/pr` — push the branch + `gh pr create`. */
+async function handleCreatePr(
+  state: AppState,
+  req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  const body = (req.body ?? {}) as {
+    title?: unknown;
+    body?: unknown;
+    base?: unknown;
+    draft?: unknown;
+    push?: unknown;
+    root?: unknown;
+  };
+  const resolved = await resolveWorkspace(state, reply, typeof body.root === "string" ? body.root : undefined);
+  if (!resolved.ok) return reply;
+  const root = resolved.root;
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  if (title === "") return badRequest(reply, "PR title must not be empty");
+  const prBody = typeof body.body === "string" ? body.body : "";
+  if (title.includes("\0") || prBody.includes("\0")) {
+    return badRequest(reply, "title / body must not contain NUL bytes");
+  }
+  const baseCheck = safeBranch(typeof body.base === "string" ? body.base : DEFAULT_BASE);
+  if (!baseCheck.ok) return badRequest(reply, baseCheck.error);
+  const base = baseCheck.value;
+  if (!(await ghCheck())) {
+    return reply.code(400).send({
+      error: "gh CLI not available",
+      hint: "install gh from https://cli.github.com and run `gh auth login`",
+    });
+  }
+  if ((await runGitOk(root, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") {
+    return badRequest(reply, "workspace root is not a git repository");
+  }
+  if (body.push !== false) {
+    const branch = filterBranch(await runGitOk(root, ["rev-parse", "--abbrev-ref", "HEAD"]));
+    if (branch) {
+      try {
+        await runGit(root, ["push", "-u", "origin", branch], NET_TIMEOUT);
+      } catch (e) {
+        return serverError(reply, `git push failed: ${errMsg(e)}`);
+      }
+    }
+  }
+  const draft = body.draft !== false; // default true
+  // Always pass --body (even "") so gh doesn't open $EDITOR and hang.
+  const argv = ["pr", "create", "--base", base, "--title", title, "--body", prBody];
+  if (draft) argv.push("--draft");
+  let out: string;
+  try {
+    out = await runGh(root, argv, NET_TIMEOUT);
+  } catch (e) {
+    return serverError(reply, `gh pr create: ${errMsg(e)}`);
+  }
+  const url = out.split("\n").map((l) => l.trim()).find((l) => l.startsWith("https://")) ?? out.trim();
+  return reply.send({ ok: true, url, draft });
+}
+
 export function registerWorkspaceRoutes(app: FastifyInstance, state: AppState): void {
   app.get("/v1/workspace", (req, reply) => handleWorkspace(state, req, reply));
   app.get("/v1/workspace/probe", (req, reply) => handleWorkspaceProbe(state, req, reply));
+  app.post("/v1/workspace/commit", (req, reply) => handleCommit(state, req, reply));
+  app.get("/v1/workspace/pr/preview", (req, reply) => handlePrPreview(state, req, reply));
+  app.post("/v1/workspace/pr", (req, reply) => handleCreatePr(state, req, reply));
   app.get("/v1/workspace/list", (req, reply) => handleList(state, req, reply));
   app.get("/v1/workspace/read", (req, reply) => handleRead(state, req, reply));
   app.get("/v1/workspace/find", (req, reply) => handleFind(state, req, reply));

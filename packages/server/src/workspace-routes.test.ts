@@ -521,3 +521,94 @@ test("GET /v1/workspace reports git branch/head/dirty for a real repo", { skip: 
     await app.close();
   });
 });
+
+// ====================================================================
+// POST /v1/workspace/commit + /pr/preview + /pr
+// ====================================================================
+
+test("commit validates (503 no root, 400 empty/nothing-staged) and commits", { skip: !HAS_GIT }, async () => {
+  const noRoot = await buildApp(makeState());
+  assert.equal(
+    (await noRoot.inject({ method: "POST", url: "/v1/workspace/commit", payload: { message: "x" } })).statusCode,
+    503,
+  );
+  await noRoot.close();
+
+  await withTempDir(async (dir) => {
+    initRepo(dir);
+    await writeFile(join(dir, "seed.txt"), "1\n");
+    git(dir, ["add", "."]);
+    git(dir, ["commit", "-q", "-m", "seed"]);
+    const app = await buildApp(makeState(dir));
+
+    assert.equal(
+      (await app.inject({ method: "POST", url: "/v1/workspace/commit", payload: { message: "  " } })).statusCode,
+      400,
+    );
+    // Clean tree → nothing to commit.
+    assert.equal(
+      (await app.inject({ method: "POST", url: "/v1/workspace/commit", payload: { message: "noop" } })).statusCode,
+      400,
+    );
+
+    // Stage a change → success.
+    await writeFile(join(dir, "b.txt"), "2\n");
+    const res = await app.inject({ method: "POST", url: "/v1/workspace/commit", payload: { message: "add b" } });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as { ok: boolean; head: string | null; pushed: boolean; push_error: string | null };
+    assert.equal(body.ok, true);
+    assert.ok(typeof body.head === "string" && body.head.length > 0);
+    assert.equal(body.pushed, false);
+    assert.equal(body.push_error, null);
+
+    // push=true with no `origin` remote → pushed false + push_error set (no network).
+    await writeFile(join(dir, "c.txt"), "3\n");
+    const pushed = (await app.inject({
+      method: "POST",
+      url: "/v1/workspace/commit",
+      payload: { message: "add c", push: true },
+    })).json() as { pushed: boolean; push_error: string | null };
+    assert.equal(pushed.pushed, false);
+    assert.ok(pushed.push_error && pushed.push_error.length > 0);
+    await app.close();
+  });
+});
+
+test("pr/preview suggests title from the commit subject + lists commits", { skip: !HAS_GIT }, async () => {
+  await withTempDir(async (dir) => {
+    initRepo(dir);
+    await writeFile(join(dir, "a.txt"), "1\n");
+    git(dir, ["add", "."]);
+    git(dir, ["commit", "-q", "-m", "init"]);
+    git(dir, ["checkout", "-q", "-b", "feat/widget"]);
+    await writeFile(join(dir, "b.txt"), "2\n");
+    git(dir, ["add", "."]);
+    git(dir, ["commit", "-q", "-m", "Add the widget"]);
+    const app = await buildApp(makeState(dir));
+
+    const pre = (await app.inject({ method: "GET", url: "/v1/workspace/pr/preview?base=main" })).json() as {
+      branch: string | null;
+      base: string;
+      gh_available: boolean;
+      suggested_title: string;
+      suggested_body: string;
+    };
+    assert.equal(pre.branch, "feat/widget");
+    assert.equal(pre.base, "main");
+    assert.equal(pre.suggested_title, "Add the widget");
+    assert.match(pre.suggested_body, /## Commits[\s\S]*- Add the widget/);
+    assert.equal(typeof pre.gh_available, "boolean");
+    await app.close();
+  });
+});
+
+test("pr create rejects an empty title (before invoking gh)", async () => {
+  await withTempDir(async (dir) => {
+    const app = await buildApp(makeState(dir));
+    assert.equal(
+      (await app.inject({ method: "POST", url: "/v1/workspace/pr", payload: { title: "  " } })).statusCode,
+      400,
+    );
+    await app.close();
+  });
+});
