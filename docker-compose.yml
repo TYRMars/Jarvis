@@ -7,9 +7,8 @@
 #   3.  open http://127.0.0.1:7001
 #
 # To use Postgres instead of the default JSON file store, uncomment the
-# `postgres` service block and the `JARVIS_DB_URL` line in the env list.
-# That requires building Jarvis with `--features postgres` (the public
-# image is shipped with default features only — see DEPLOYMENT.md).
+# `postgres` service block and point `JARVIS_DB_URL` at it. The Node server
+# selects the backend from the URL scheme at runtime (see DEPLOYMENT.md).
 
 services:
   jarvis:
@@ -58,8 +57,8 @@ services:
     #   - postgres   # uncomment alongside the postgres service
 
   # ------------------------------------------------------------------------
-  # Optional Postgres backend. Uncomment + rebuild Jarvis with the
-  # `postgres` cargo feature to switch.
+  # Optional Postgres backend. Uncomment + set JARVIS_DB_URL to a
+  # postgres:// URL to switch (backend chosen from the URL scheme).
   # ------------------------------------------------------------------------
   # postgres:
   #   image: postgres:16-alpine
