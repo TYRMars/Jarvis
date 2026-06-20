@@ -223,7 +223,11 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
       ✅ **`/v1` 全量契约审计完成** → [rust-decommission-p8-gaps.md](rust-decommission-p8-gaps.md)（70 个差距，按 blocker/quick-win/operator 分级 + 客户端消费 + 规模）。
       ✅ `GET /v1/tools` + `PATCH /v1/tools/:name`（工具目录 + 运行时 mute；`tool_metadata` 分类器移植到 `@jarvis/core`，registry 与 `createAgent` 共享 → mute 即时对 LLM 生效）。
       ✅ wire 类型单一真相源移到 Node `@jarvis/shared-types`，删 Rust ts_rs codegen（P7.9）。
-      余项（按 gaps 文档优先级）：`GET /v1/conversations` 富化（两端 blocker）、`/v1/routing`×4、`/v1/chat/runs`×3、`/v1/mcp/servers*`×6、`/v1/server/info`、`/v1/providers/:name/probe`、workspace git 簇、memory-sync 簇。
+      ✅ `GET /v1/conversations` 富化（title/source/requirement/lifecycle/workspace_path，两端 blocker）+ `…/:id/work-context` + `…/:id/lifecycle`。
+      ✅ `GET /v1/chat/runs` + `…/events` + `…/interrupt`（in-process ChatRunRegistry，WS turn 集成，协作式中断）。
+      ✅ `GET /v1/workspace` + `/v1/workspace/probe`（git 快照）。
+      ✅ `/v1/mcp/servers*`×6（McpManager 接管启动连接,动态增删/health/reload over 共享 registry）。
+      余项（按 gaps 文档优先级）：`/v1/server/info`、`/v1/providers/:name/probe`、`/v1/routing`×4（需接 model-selection 防空心）、workspace commit/PR、memory-sync 簇。
 - [ ] **8.2** 下线 Rust 服务 + 归档旧 crate（保留 git 历史） `size:S` `area:infra`
 - [ ] **8.3** 性能/压测对照（chat 流式吞吐/延迟、内存占用） `size:M` `risk:high`
 - [ ] **8.4** OTel 全链路验证（`jarvis.agent.run` / `gen_ai.tool.call` span） `size:S`
