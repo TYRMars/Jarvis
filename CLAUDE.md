@@ -208,7 +208,10 @@ default. **Anything that writes to disk or runs code stays opt-in and approval-g
 the `fs.write` / `shell.exec` precedent).
 
 **Always-on, read-only:** `echo`, `time.now`, `http.fetch` (GET/POST, body truncated to
-`http_max_bytes`≈256 KiB), `code.grep` (regex over sandbox, `.gitignore`-aware via the `ignore`
+`http_max_bytes`≈256 KiB; `format: "markdown"` arg converts HTML responses to clean Markdown
+via `node-html-markdown` — non-HTML bodies pass through; native web search is intentionally not
+built — point `JARVIS_MCP_SERVERS` at a search MCP server, e.g. `web=npx -y exa-mcp-server`, to
+get `web.search`), `code.grep` (regex over sandbox, `.gitignore`-aware via the `ignore`
 crate, `path`/`glob` narrowers, `max_results` + 64 KiB budget), `git.{status,diff,log,show}`
 (read-only over host `git -C <root>`, typed per-subcommand schemas, arg validators reject
 `-`-leading/null/newline; off via `JARVIS_DISABLE_GIT_READ`), `workspace.context` (compact JSON

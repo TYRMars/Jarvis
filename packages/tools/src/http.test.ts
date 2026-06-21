@@ -11,6 +11,7 @@ import {
   type FetchImpl,
   type FetchResponse,
 } from "./http.ts";
+import { htmlToMarkdown, looksLikeHtml } from "./html-markdown.ts";
 
 /** Build a fake FetchResponse over a body string/bytes + header map. */
 function fakeResponse(opts: {
@@ -253,4 +254,60 @@ test("strips auth/session response headers", async () => {
   assert.ok(out.includes("content-type: text/plain"));
   assert.doesNotMatch(out, /set-cookie/i);
   assert.doesNotMatch(out, /www-authenticate/i);
+});
+
+// ----------------------------------------------------- format: "markdown"
+
+test("htmlToMarkdown: converts headings, links, and lists", async () => {
+  const md = await htmlToMarkdown(
+    '<h1>Title</h1><p>Hello <a href="https://x.test/a">world</a>.</p><ul><li>one</li><li>two</li></ul>',
+  );
+  assert.match(md, /^# Title/m);
+  assert.match(md, /\[world\]\(https:\/\/x\.test\/a\)/);
+  assert.match(md, /[-*] one/);
+  assert.match(md, /[-*] two/);
+  assert.doesNotMatch(md, /<\/?(h1|p|a|ul|li)\b/i, "no raw tags remain");
+});
+
+test("looksLikeHtml: content-type decides, else sniffs the body", () => {
+  assert.equal(looksLikeHtml("text/html; charset=utf-8", ""), true);
+  assert.equal(looksLikeHtml("application/json", "<html>not really</html>"), false);
+  assert.equal(looksLikeHtml("text/plain", "<html>"), false);
+  assert.equal(looksLikeHtml(undefined, "<!DOCTYPE html><html><body>hi</body></html>"), true);
+  assert.equal(looksLikeHtml(undefined, "just some plain text"), false);
+});
+
+test("http.fetch format=markdown converts an HTML body", async () => {
+  const { fetchImpl } = stubFetch(
+    fakeResponse({
+      headers: { "content-type": "text/html" },
+      body: "<h1>Doc</h1><p>See <a href=\"/x\">here</a>.</p>",
+    }),
+  );
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/", format: "markdown" });
+  assert.match(out, /^HTTP 200 OK/);
+  assert.match(out, /# Doc/);
+  assert.match(out, /\[here\]\(\/x\)/);
+  assert.doesNotMatch(out, /<h1>|<p>|<a /i, "HTML tags are gone");
+});
+
+test("http.fetch format=markdown leaves a JSON body untouched", async () => {
+  const json = '{"a":1,"b":[2,3]}';
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "content-type": "application/json" }, body: json }),
+  );
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/", format: "markdown" });
+  assert.ok(out.endsWith(json), `JSON should pass through verbatim, got: ${out}`);
+});
+
+test("http.fetch default format is raw (HTML preserved)", async () => {
+  const html = "<h1>Doc</h1>";
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "content-type": "text/html" }, body: html }),
+  );
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+  assert.ok(out.endsWith(html), "raw HTML preserved by default");
 });

@@ -5,7 +5,11 @@
 > 帧 + `ask.text` 解 stub）；
 > **P0.2（编辑后 LSP 诊断回灌）已落地**（新 `@jarvis/lsp` 包 + `fs.{write,edit,patch}`
 > 追加 `<diagnostics>` 块 + `JARVIS_ENABLE_LSP` 门控；mock-server 端到端测试全绿）；
-> P0.3–P0.4 及 P1/P2 条目 Proposed。所有改动 typecheck/lint/test 全绿。
+> **P0.3（反应式上下文压缩最小切片）已落地**（从模型 `contextWindow` 推导默认压缩预算
+> + `SummarizingMemory` 改用结构化锚点摘要模板）；
+> **P0.4（原生 web 搜索 + HTML→Markdown）已落地**（`http.fetch` 加 `format:"markdown"`
+> 经 `node-html-markdown` 抽取；web 搜索复用 MCP 桥，文档化）；
+> P0 全部完成。P1/P2 条目 Proposed。所有改动 typecheck/lint/test 全绿。
 >
 > 来源：对 `opencode`（v1.17.9，Bun + Effect-TS）16 个能力维度做深度对比 +
 > 独立核验 Jarvis 现状后的借鉴清单。核验环节专门复查"Jarvis 是否已具备"，
@@ -183,3 +187,66 @@ approval + hitl（与 abort 信号联动）。
 didOpen/push 诊断/settle 窗口/多文件复用/缺失 server 降级；`packages/tools/src/
 diagnostics.test.ts` 验证 fs.{write,edit,patch} 注入。本机无 `typescript-language-server`，
 真实 server 集成测试留作后续（需 CI 装 server）。
+
+---
+
+## P0.3 详细设计：反应式上下文压缩最小切片（已落地）
+
+**目标**：让压缩**随模型上下文窗口自适应**，并显著改善摘要召回。此前 `JARVIS_MEMORY_TOKENS`
+未设时**完全不压缩**（每轮发全量历史，直到 provider 413）。
+
+### (a) 从 `contextWindow` 推导默认预算（`packages/jarvis-app/src/state.ts`）
+
+新增 `resolveMemoryBudget(config)`：显式 `JARVIS_MEMORY_TOKENS` 优先；否则用
+`lookupCapability(canonicalKind(provider), model)?.contextWindow`（`@jarvis/llm` 的
+能力目录，此前仅用于 UI 徽章）推导 `budget = contextWindow − reserved`，其中
+`reserved = clamp(0.2 × ctx, 4k, 20k)`（借鉴 opencode `overflow.ts` 的 `COMPACTION_BUFFER`
+上限）。未知模型 → `undefined` → 维持"不装 memory"的历史行为（纯增量，无回退风险）。
+`buildMemory` 与 `serverInfo.memory.budget_tokens` 均改用它。
+例：gpt-4o-mini 128k → 预算 108k；典型对话从不触发，超长对话改为压缩而非 413。
+
+### (b) 结构化锚点摘要模板（`packages/memory/src/summarizing.ts`）
+
+`DEFAULT_SUMMARY_PROMPT` 由自由段落换成 opencode `SUMMARY_TEMPLATE` 的结构化锚点
+（Goal / Constraints / Progress[Done/InProgress/Blocked] / Key Decisions / Next Steps /
+Critical Context / Relevant Files），给模型固定槽位、显著提升后续 turn 依赖事实的召回；
+输出以 `## Goal` 起，前导剥离器不误伤。`DEFAULT_SUMMARY_MAX_TOKENS` 400 → 800。
+
+**已知边界**：opencode 的 "update-merge"（回传旧摘要让模型修订而非重写）**本期不做**——
+`SummarizingMemory` 是单例共享、单槽全局缓存，无法安全取到**按会话**的旧摘要（会跨会话污染）。
+后续若需，要么按会话线程化摘要状态，要么给缓存槽加"旧 dropped 集是新集前缀"的守卫。
+
+### 验证
+
+`packages/jarvis-app/src/wiring.test.ts`（`resolveMemoryBudget` 显式/已知/未知三态 +
+`buildMemory` 已知模型派生 / 未知模型 undefined）；`packages/memory/src/summarizing.test.ts`
+（结构化模板含全部 section + 经真实 compaction 作为 system 提示送达 summariser）。
+
+---
+
+## P0.4 详细设计：原生 web 搜索 + HTML→Markdown 抽取（已落地）
+
+### (A) `http.fetch` HTML→Markdown（`packages/tools/src/http.ts` + `html-markdown.ts`）
+
+此前 `http.fetch` 返回**带 header 的截断原始 HTML**，对 LLM 读文档极不友好且烧 token。
+新增 `format` 参数（`raw` 默认 / `markdown`）：`markdown` 时把 HTML 响应转干净 Markdown，
+**非 HTML（JSON/XML/纯文本）原样透传**（`looksLikeHtml` 按 content-type 决策，缺失则嗅探
+body 前 1KB），所以模型可无脑传 `format:"markdown"` 而不会破坏 API 响应。转换走
+`node-html-markdown`（Node 原生、无 jsdom、号称最快），**lazy-import**——仅在真正请求
+markdown 时加载，保持启动精简；转换 best-effort，出错回退原文，绝不让 fetch 失败。
+现有 SSRF 防护与敏感 header 剥离全部保留。借鉴 opencode `tool/webfetch.ts`（其用 turndown，
+Node 侧改用更轻的 node-html-markdown）。
+
+### (B) web 搜索 —— 复用现有 MCP 桥（零自研代码）
+
+不新增原生 `web.search` 工具：Jarvis 的 `@jarvis/mcp` 桥已把任意远程 MCP server 的工具
+注册为 `<prefix>.<tool>`。把搜索类 MCP server 经 `JARVIS_MCP_SERVERS` 接入即可，例如
+`JARVIS_MCP_SERVERS='web=npx -y exa-mcp-server'` → 自动得到 `web.search` 等工具
+（API key 经该 server 自身的 env 注入；也可走 Composio 托管 MCP）。这正是 opencode
+`tool/mcp-websearch.ts` 的 `tools/call` 适配在 Jarvis 架构里的等价物，无需重复造轮子。
+
+### 验证
+
+`packages/tools/src/http.test.ts`：`htmlToMarkdown`（标题/链接/列表）、`looksLikeHtml`
+（content-type 决策 + 嗅探）、`format=markdown` 转 HTML、`format=markdown` 透传 JSON、
+默认 `raw` 保留 HTML。

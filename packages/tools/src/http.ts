@@ -5,6 +5,7 @@
 // `maxBytes` are truncated *on the byte boundary* (the Rust slices the raw
 // response bytes, then decodes lossily) with a trailing marker.
 import type { JsonValue, Tool, ToolCategory } from "@jarvis/core";
+import { htmlToMarkdown, looksLikeHtml } from "./html-markdown.ts";
 
 /** Default body cap: 256 KiB, matching the Rust `http_max_bytes` default. */
 export const HTTP_DEFAULT_MAX_BYTES = 262144;
@@ -126,7 +127,10 @@ export class HttpFetchTool implements Tool {
   readonly name = "http.fetch";
   readonly description =
     "Fetch an HTTP(S) URL. Returns status, response headers, and body. " +
-    "Supports GET and POST. Body is truncated if very large.";
+    "Supports GET and POST. Body is truncated if very large. " +
+    "To read an article or documentation page, pass `format: \"markdown\"` — " +
+    "HTML responses are converted to clean Markdown (JSON / plain-text bodies " +
+    "pass through unchanged), which is far more token-efficient than raw HTML.";
   readonly category: ToolCategory = "network";
   readonly cacheable = true;
 
@@ -163,6 +167,14 @@ export class HttpFetchTool implements Tool {
           type: "string",
           description: "Optional request body (POST only).",
         },
+        format: {
+          type: "string",
+          enum: ["raw", "markdown"],
+          description:
+            "Output format for the body. `raw` (default) returns it verbatim; " +
+            "`markdown` converts an HTML response to Markdown (non-HTML bodies " +
+            "are returned as-is).",
+        },
       },
       required: ["url"],
     };
@@ -183,6 +195,9 @@ export class HttpFetchTool implements Tool {
     if (method !== "GET" && method !== "POST") {
       throw new Error(`invalid method: ${method}`);
     }
+
+    // `markdown` requests HTML→Markdown extraction; anything else is verbatim.
+    const format = obj["format"] === "markdown" ? "markdown" : "raw";
 
     const init: { method: string; headers?: Record<string, string>; body?: string } = {
       method,
@@ -210,10 +225,13 @@ export class HttpFetchTool implements Tool {
     const resp = await this.#fetch(url, init);
 
     let headers = "";
+    let contentType: string | undefined;
     resp.headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if (lower === "content-type") contentType = value;
       // Drop auth/session headers so an upstream's secrets aren't echoed to the
       // model (P8.6).
-      if (SENSITIVE_RESPONSE_HEADERS.has(key.toLowerCase())) return;
+      if (SENSITIVE_RESPONSE_HEADERS.has(lower)) return;
       headers += `${key}: ${value}\n`;
     });
 
@@ -222,7 +240,15 @@ export class HttpFetchTool implements Tool {
     const slice = truncated ? buf.subarray(0, this.#maxBytes) : buf;
     // Lossy UTF-8 decode (replacement chars for invalid sequences), matching
     // Rust's `String::from_utf8_lossy`.
-    const body = new TextDecoder("utf-8", { fatal: false }).decode(slice);
+    const decoded = new TextDecoder("utf-8", { fatal: false }).decode(slice);
+
+    // Markdown extraction runs on the (possibly truncated) HTML slice; the
+    // Markdown is always smaller than its HTML source, so it stays within the
+    // byte cap without a second truncation pass. Non-HTML bodies pass through.
+    const body =
+      format === "markdown" && looksLikeHtml(contentType, decoded)
+        ? await htmlToMarkdown(decoded)
+        : decoded;
 
     let out = `HTTP ${statusLine(resp.status, resp.statusText)}\n${headers}\n${body}`;
     if (truncated) {

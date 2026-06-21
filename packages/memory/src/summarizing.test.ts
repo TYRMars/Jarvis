@@ -6,6 +6,7 @@ import { systemMessage, userMessage, assistantText, withCache } from "@jarvis/co
 
 import {
   SummarizingMemory,
+  DEFAULT_SUMMARY_PROMPT,
   stripSummaryPreamble,
   fingerprint,
   renderForSummary,
@@ -102,6 +103,33 @@ test("under budget skips the summariser", async () => {
   const out = await mem.compact(msgs);
   assert.equal(out.length, msgs.length);
   assert.equal(llm.calls, 0);
+});
+
+test("DEFAULT_SUMMARY_PROMPT is the structured anchor template, and reaches the summariser", async () => {
+  for (const section of [
+    "## Goal",
+    "## Constraints & Preferences",
+    "### Done",
+    "### In Progress",
+    "### Blocked",
+    "## Key Decisions",
+    "## Next Steps",
+    "## Critical Context",
+    "## Relevant Files",
+  ]) {
+    assert.ok(DEFAULT_SUMMARY_PROMPT.includes(section), `template missing section: ${section}`);
+  }
+  // It flows through as the summariser's system message on a real compaction.
+  const llm = new FakeLlm("## Goal\n- done");
+  const mem = new SummarizingMemory(llm, "test-model", 256);
+  await mem.compact([
+    sys("sys"),
+    user("turn 1"), asst("reply 1"),
+    user("turn 2 most recent"), asst("reply 2"),
+  ]);
+  assert.equal(llm.calls, 1);
+  const req = llm.captured[0]!;
+  assert.ok(req.messages[0]?.role === "system" && req.messages[0].content === DEFAULT_SUMMARY_PROMPT);
 });
 
 test("over budget inserts the summary and keeps the latest turn", async () => {
