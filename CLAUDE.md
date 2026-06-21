@@ -2,17 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **⚠️ Runtime is now Node/TypeScript (P8.2 — Rust decommissioned).** The Rust
-> workspace (`crates/harness-*`, `apps/jarvis`, `apps/jarvis-cli`,
+> **⚠️ Runtime is Node/TypeScript — Rust fully decommissioned (P8 complete).**
+> The Rust workspace (`crates/harness-*`, `apps/jarvis`, `apps/jarvis-cli`,
 > `apps/jarvis-desktop`, `Cargo.toml`) was removed; Jarvis runs entirely on the
 > **pnpm workspace under `packages/*`** + the `apps/jarvis-web` SPA. The Rust
 > source remains in git history (tag `rust-archive-pre-takedown`). Each Node
 > package mirrors the crate it was ported from (e.g. `@jarvis/core` ←
 > `harness-core`), so the architecture notes below still describe the *shape* of
 > the system — read them with `<crate>` → `@jarvis/<name>`,
-> `apps/jarvis/src/main.rs` → `packages/jarvis-app/src/main.ts`. A full prose
-> rewrite of this file is tracked as **P8.5**. Build/test via `make check`
-> (pnpm) or `pnpm -r typecheck && pnpm -r test`.
+> `apps/jarvis/src/main.rs` → `packages/jarvis-app/src/main.ts`. Build/test via
+> `make check` (pnpm) or `pnpm -r typecheck && pnpm -r test`.
+>
+> P8 close-out shipped the last contract gaps + non-blocking items: the
+> `/v1/memory/sync*` + `/v1/memory/includes*` routes are live (git/iCloud memory
+> sync ported — `@jarvis/tools` `memory.{sync,sync_setup,sync_setup_icloud,
+> sync_status}`); OpenTelemetry tracing emits `jarvis.agent.run` +
+> `gen_ai.tool.call` spans (P8.4); a security baseline review landed hardening +
+> findings (`docs/security/p8-security-baseline.md`, P8.6); and a Node perf
+> baseline exists (`make perf`, P8.3). README/ARCHITECTURE were rewritten
+> Node-native (P8.5).
 
 ## Project Overview
 
@@ -128,13 +136,17 @@ and served by the Node server via `JARVIS_WEB_DIST`.
 
 **Responses/reasoning knobs:** `CODEX_REASONING_SUMMARY` / `OPENAI_REASONING_SUMMARY` (`auto`/`concise`/`detailed` — required for reasoning models), `CODEX_INCLUDE_ENCRYPTED_REASONING` / `OPENAI_INCLUDE_ENCRYPTED_REASONING` (any value enables), `CODEX_SERVICE_TIER` / `OPENAI_SERVICE_TIER` (`auto`/`priority`/`flex`).
 
-**Server / workspace:** `JARVIS_ADDR` (`0.0.0.0:7001`), `JARVIS_FS_ROOT` (`.`, sandboxes `fs.*`/`git.*`/`code.grep`/`workspace.context` + `shell.exec` cwd; `--workspace <path>` CLI flag overrides), `JARVIS_NO_PROJECT_CONTEXT` (disable auto-loading `AGENTS.md`/`CLAUDE.md`/`AGENT.md`), `JARVIS_PROJECT_CONTEXT_BYTES` (cap, default 8 KiB), `RUST_LOG`.
+**Server / workspace:** `JARVIS_ADDR` (`0.0.0.0:7001`), `JARVIS_FS_ROOT` (`.`, sandboxes `fs.*`/`git.*`/`code.grep`/`workspace.context` + `shell.exec` cwd; `--workspace <path>` CLI flag overrides), `JARVIS_NO_PROJECT_CONTEXT` (disable auto-loading `AGENTS.md`/`CLAUDE.md`/`AGENT.md`), `JARVIS_PROJECT_CONTEXT_BYTES` (cap, default 8 KiB). (Logging is via `console`/`process.stderr`; there is no `RUST_LOG`-style level env in the Node runtime.)
 
-**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`).
+**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_HTTP_ALLOW_PRIVATE` (P8.6 SSRF guard is **on by default** — `http.fetch` blocks loopback/private/link-local/metadata hosts + non-http(s) schemes; set this to allow `localhost` dev servers), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`).
 
 **Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`). `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
 
-**Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in cargo features), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`), `JARVIS_MEMORY_MAX_ITEMS` (long-term Memory store retention cap; default `5000`, `0`/`off`/`unlimited` disables pruning; pinned rows are never pruned).
+**Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`), `JARVIS_MEMORY_MAX_ITEMS` (long-term Memory store retention cap; default `5000`, `0`/`off`/`unlimited` disables pruning; pinned rows are never pruned).
+
+**Markdown memory + sync** (the `memory.*` agent surface + `/v1/memory/*` routes; off by default): `JARVIS_ENABLE_MEMORY` (truthy registers `memory.{list,read,write,delete}` + `memory.include_*` and populates `AppState.memoryRuntime` so the REST routes work instead of 503-ing), `JARVIS_MEMORY_USER_ROOT` (parent of the user-scope `<root>/.jarvis/memory/` tree; defaults to the home dir), `JARVIS_MEMORY_SYNC_BACKEND` (`none` (default) / `git` / `icloud` — wires the matching `memory.{sync,sync_setup,sync_setup_icloud,sync_status}` tools + gates the `/v1/memory/sync*` routes).
+
+**Observability (OpenTelemetry, P8.4):** off unless enabled. `JARVIS_OTEL_ENABLED` (truthy → OTLP/HTTP exporter, honours the standard `OTEL_EXPORTER_OTLP_*` vars), `JARVIS_OTEL_CONSOLE` (print spans to stderr — verify/debug, no collector needed), or just set `OTEL_EXPORTER_OTLP_ENDPOINT`. The agent loop emits `jarvis.agent.run` + `gen_ai.tool.call` spans via `@opentelemetry/api` (no-op when disabled); the SDK is registered only in the `packages/jarvis-app` composition root (`otel.ts`).
 
 **Auto/Work mode** (`JARVIS_WORK_MODE` = `off` (default) / `auto`): `JARVIS_WORK_TICK_SECONDS` (`30`), `JARVIS_WORK_MAX_UNITS_PER_TICK` (`1` — per-tick burst), `JARVIS_WORK_MAX_CONCURRENT` (`2` — true global concurrency cap via a Semaphore; independent of the burst budget), `JARVIS_WORK_MAX_RETRIES` (`1`), `JARVIS_WORK_RUN_TIMEOUT_MS` (`600000`), `JARVIS_REVIEWER_AUTO_ACCEPT` (opt into reviewer-subagent dispatch on Review→Done under `Subagent` policy; default off).
 
@@ -377,7 +389,8 @@ prefixed names.
 - `/v1/subagents` (list) + `/v1/subagents/runs*` (run ledger / cancel).
 - `/v1/agent-profiles` — user identity bundles (name/provider/model/system prompt).
 - `/v1/providers` (+ `/default`) — runtime provider config (503 with no admin impl).
-- `/v1/memories` + `/v1/memory/sync/*` — Phase-1 memory store + sync backend.
+- `/v1/memories` — Phase-1 row-based memory store (`memories-routes.ts`).
+- `/v1/memory/sync_status` · `/sync` · `/sync_setup` · `/sync_setup_icloud` + `/v1/memory/includes` (GET/POST/DELETE) · `/includes/refresh` — git/iCloud memory-tree sync + include directives (`memory-sync-routes.ts`; invokes the `memory.*` tool impls directly per request from `AppState.memoryRuntime`, 503 when `JARVIS_ENABLE_MEMORY` is unset, backend-mismatch 503 for git/iCloud ops).
 - `/v1/learning/skill-usage` (+ `/report`) — skill-activation telemetry.
 - `/v1/doc-projects*` (+ `/:id/draft`) — append-only Markdown drafts.
 - `/v1/work/{overview,quality}` — dashboard aggregation (tolerates partial stores).
