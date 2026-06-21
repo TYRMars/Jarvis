@@ -37,7 +37,7 @@ services:
       # Default JSON store path inside the container. Persists via the
       # `jarvis-data` volume below.
       JARVIS_DB_URL: "json:///data/.local/share/jarvis/conversations"
-      # Uncomment to switch to Postgres (requires --features postgres build):
+      # Uncomment to switch to Postgres (backend is chosen by the URL scheme at runtime):
       # JARVIS_DB_URL: "postgres://jarvis:jarvis@postgres:5432/jarvis"
     volumes:
       - jarvis-data:/data
