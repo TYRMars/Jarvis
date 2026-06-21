@@ -152,6 +152,23 @@ test("caps results", async () => {
   assert.equal(occurrences, 5, `got: ${out}`);
 });
 
+test("clamps out-of-range max_results to the configured default", async () => {
+  const dir = await tempdir();
+  let content = "";
+  for (let i = 0; i < 50; i++) content += "match\n";
+  await write(path.join(dir, "a.txt"), content);
+  // Default cap of 3 lets us observe the fallback for invalid bounds.
+  const tool = new CodeGrepTool({ root: dir, maxResults: 3 });
+
+  // `0` (schema minimum is 1) must fall back to the default, not cap at 1.
+  const zero = await tool.invoke({ pattern: "match", max_results: 0 });
+  assert.equal(zero.split("a.txt:").length - 1, 3, `got: ${zero}`);
+
+  // A negative value must also fall back, not disable the count cap entirely.
+  const negative = await tool.invoke({ pattern: "match", max_results: -5 });
+  assert.equal(negative.split("a.txt:").length - 1, 3, `got: ${negative}`);
+});
+
 test("respects byte budget", async () => {
   const dir = await tempdir();
   // Each line is well over the byte budget collectively; many short matches.
