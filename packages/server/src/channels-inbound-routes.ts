@@ -448,6 +448,21 @@ class WeComAppInboundHandler implements ChannelInboundHandler {
     if (!constantTimeEq(Buffer.from(signature, "utf8"), Buffer.from(expected, "utf8"))) {
       throw new Error("signature mismatch");
     }
+
+    // Opt-in replay protection (P8.6): the signature already prevents forgery,
+    // but a captured valid callback can be replayed. When the operator sets
+    // `replay_window_secs` on the instance (recommended for internet-exposed
+    // receivers), reject callbacks whose timestamp is outside ±window. Default
+    // off so deployments with clock skew / deterministic test fixtures are
+    // unaffected. Nonce-dedup (true once-only delivery) is a documented
+    // follow-up — it needs shared state for multi-instance deployments.
+    const windowSecs = readNum(resolvedConfig, "replay_window_secs");
+    if (windowSecs !== undefined && windowSecs > 0) {
+      const ts = Number(timestamp);
+      if (!Number.isFinite(ts)) throw new Error("invalid timestamp");
+      const skew = Math.abs(Math.floor(Date.now() / 1000) - ts);
+      if (skew > windowSecs) throw new Error("timestamp outside replay window");
+    }
   }
 
   async handleGet(req: InboundRequest, resolvedConfig: JsonValue): Promise<AckPayload> {

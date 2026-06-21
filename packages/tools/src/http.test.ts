@@ -188,7 +188,8 @@ test("integration: hits a real local server via global fetch", async () => {
   const { port } = server.address() as AddressInfo;
 
   try {
-    const tool = new HttpFetchTool({}); // uses global fetch
+    // 127.0.0.1 is a loopback host → must opt out of the SSRF guard.
+    const tool = new HttpFetchTool({ blockPrivateHosts: false }); // uses global fetch
     const out = await tool.invoke({
       url: `http://127.0.0.1:${port}/`,
       method: "POST",
@@ -202,4 +203,54 @@ test("integration: hits a real local server via global fetch", async () => {
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+// ---------- SSRF guard + secret-header filtering (P8.6) --------------------
+
+test("rejects non-http(s) schemes", async () => {
+  const tool = new HttpFetchTool({ fetchImpl: stubFetch(fakeResponse({})).fetchImpl });
+  for (const url of ["file:///etc/passwd", "gopher://x/_", "data:text/plain,hi"]) {
+    await assert.rejects(() => tool.invoke({ url }), /unsupported URL scheme/, url);
+  }
+});
+
+test("SSRF guard (default on) blocks loopback / private / metadata hosts", async () => {
+  const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
+  const tool = new HttpFetchTool({ fetchImpl });
+  const blocked = [
+    "http://localhost/",
+    "http://127.0.0.1/",
+    "http://169.254.169.254/latest/meta-data/", // cloud metadata
+    "http://10.1.2.3/",
+    "http://192.168.0.1/",
+    "http://[::1]/",
+    "http://metadata.google.internal/",
+  ];
+  for (const url of blocked) {
+    await assert.rejects(() => tool.invoke({ url }), /private\/loopback host/, url);
+  }
+  assert.equal(calls.length, 0, "no request should reach fetch");
+});
+
+test("SSRF guard off allows private hosts; public hosts always allowed", async () => {
+  const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
+  const open = new HttpFetchTool({ fetchImpl, blockPrivateHosts: false });
+  await open.invoke({ url: "http://127.0.0.1:9/" });
+  const guarded = new HttpFetchTool({ fetchImpl });
+  await guarded.invoke({ url: "http://example.test/" }); // public → fine even guarded
+  assert.equal(calls.length, 2);
+});
+
+test("strips auth/session response headers", async () => {
+  const { fetchImpl } = stubFetch(
+    fakeResponse({
+      headers: { "content-type": "text/plain", "set-cookie": "sid=secret", "www-authenticate": "Basic" },
+      body: "ok",
+    }),
+  );
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+  assert.ok(out.includes("content-type: text/plain"));
+  assert.doesNotMatch(out, /set-cookie/i);
+  assert.doesNotMatch(out, /www-authenticate/i);
 });

@@ -32,6 +32,83 @@ export interface HttpFetchConfig {
   maxBytes?: number;
   /** Inject a `fetch` implementation (tests). Defaults to the global `fetch`. */
   fetchImpl?: FetchImpl;
+  /**
+   * Block requests to loopback / private / link-local / cloud-metadata hosts
+   * (SSRF guard, P8.6). Defaults to `true` — secure by default. The composition
+   * root flips it off via `JARVIS_HTTP_ALLOW_PRIVATE` when an operator wants the
+   * agent to reach `localhost` dev servers. Catches literal-IP targets (incl.
+   * `169.254.169.254`) + `localhost`; DNS-rebinding / redirect-to-internal are
+   * documented residuals (the FetchImpl seam hides post-redirect URLs).
+   */
+  blockPrivateHosts?: boolean;
+}
+
+/** Response headers never echoed back to the model — they can carry session /
+ * auth secrets from the upstream (P8.6). Lower-cased for comparison. */
+const SENSITIVE_RESPONSE_HEADERS = new Set([
+  "set-cookie",
+  "set-cookie2",
+  "www-authenticate",
+  "proxy-authenticate",
+  "authorization",
+]);
+
+/**
+ * Reject non-http(s) schemes and (when `blockPrivate`) loopback / private /
+ * link-local / cloud-metadata destinations. Throws a user-facing Error so the
+ * model sees why and can adapt. String/parse-based only — no DNS lookup, so it
+ * stays deterministic + offline (a hostname that *resolves* to a private IP is
+ * a documented residual).
+ */
+export function validateFetchUrl(raw: string, blockPrivate: boolean): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`invalid URL: ${raw}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`unsupported URL scheme \`${parsed.protocol}\` — only http/https allowed`);
+  }
+  if (!blockPrivate) return;
+
+  // Strip IPv6 brackets; lower-case the host for comparison.
+  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "metadata.google.internal" ||
+    isPrivateIp(host)
+  ) {
+    throw new Error(
+      `refusing to fetch private/loopback host \`${host}\` (SSRF guard; set JARVIS_HTTP_ALLOW_PRIVATE=1 to allow)`,
+    );
+  }
+}
+
+/** True if `host` is a literal IP in a loopback/private/link-local/reserved
+ * range (the SSRF-relevant set). Non-IP hostnames return false. */
+function isPrivateIp(host: string): boolean {
+  // IPv4 (incl. IPv4-mapped IPv6 `::ffff:a.b.c.d`).
+  const v4 = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const o = v4.slice(1, 5).map((n) => Number(n));
+    if (o.some((n) => n > 255)) return false;
+    const [a, b] = o as [number, number, number, number];
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 127) return true; // 127.0.0.0/8 loopback
+    if (a === 0) return true; // 0.0.0.0/8
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local + metadata
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+    return false;
+  }
+  // IPv6 loopback / unique-local / link-local.
+  if (host === "::1" || host === "::") return true;
+  if (host.startsWith("fc") || host.startsWith("fd")) return true; // fc00::/7 ULA
+  if (host.startsWith("fe80")) return true; // link-local
+  return false;
 }
 
 /**
@@ -55,9 +132,11 @@ export class HttpFetchTool implements Tool {
 
   readonly #maxBytes: number;
   readonly #fetch: FetchImpl;
+  readonly #blockPrivateHosts: boolean;
 
   constructor(config: HttpFetchConfig = {}) {
     this.#maxBytes = config.maxBytes ?? HTTP_DEFAULT_MAX_BYTES;
+    this.#blockPrivateHosts = config.blockPrivateHosts ?? true;
     const impl = config.fetchImpl ?? (globalThis.fetch as FetchImpl | undefined);
     if (!impl) {
       throw new Error("http.fetch: no fetch implementation available (pass fetchImpl)");
@@ -96,6 +175,8 @@ export class HttpFetchTool implements Tool {
     if (typeof url !== "string") {
       throw new Error("missing `url` argument");
     }
+    // SSRF guard + scheme allowlist (P8.6) before any network is touched.
+    validateFetchUrl(url, this.#blockPrivateHosts);
 
     const rawMethod = obj["method"];
     const method = (typeof rawMethod === "string" ? rawMethod : "GET").toUpperCase();
@@ -130,6 +211,9 @@ export class HttpFetchTool implements Tool {
 
     let headers = "";
     resp.headers.forEach((value, key) => {
+      // Drop auth/session headers so an upstream's secrets aren't echoed to the
+      // model (P8.6).
+      if (SENSITIVE_RESPONSE_HEADERS.has(key.toLowerCase())) return;
       headers += `${key}: ${value}\n`;
     });
 
