@@ -17,6 +17,18 @@ import { ProviderError, errorText } from "@jarvis/core";
 import type { ChatRequest, ChatResponse, LlmChunk, LlmProvider } from "@jarvis/core";
 
 /**
+ * Classify an HTTP status code as transient (worth retrying against the next
+ * provider) or fatal. 429 (rate limit), 408 (request timeout) and all 5xx
+ * (upstream server failures) are transient — a sibling provider may be healthy.
+ * Every other 4xx (auth, bad request, model-invalid, not-found, …) is fatal:
+ * the request is structurally wrong and the next provider shares the same
+ * surface, so retrying just burns quota.
+ */
+function isTransientStatus(status: number): boolean {
+  return status === 429 || status === 408 || status >= 500;
+}
+
+/**
  * One named entry in the fallback chain. `name` is informational (matches the
  * registry-side provider name when applicable) and is used to filter out a
  * self-referencing fallback.
@@ -32,15 +44,26 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
 }
 
 /**
- * Heuristic — is this error worth retrying against the next provider? Mirrors
- * the Rust `is_transient_error`: 4xx auth failures are *not* transient (the
- * next provider has the same auth surface), but 429 rate-limits, 5xx server
- * failures, and connection-level errors are.
+ * Is this error worth retrying against the next provider? 4xx auth/bad-request
+ * failures are *not* transient (the next provider has the same auth surface and
+ * the request is structurally wrong), but 429 rate-limits, 5xx server failures,
+ * and connection-level errors are.
  *
- * Matches against the lowercased error text (substring scan), so it works on
- * any thrown value — `ProviderError`, a raw `Error`, or a string.
+ * When the error carries a structured HTTP status (`ProviderError.status`, set
+ * by the providers on a non-OK response) we classify *on the status alone* and
+ * ignore the message body. The body is model/upstream-influenced — substring
+ * scanning it both over-retries fatal requests whose JSON incidentally contains
+ * "connection"/"timeout"/a request id with "500" and skips genuine 5xx whose
+ * body mentions "authentication". See issue #187.
+ *
+ * Only when no status is available — transport/connect errors, decode failures,
+ * or non-`ProviderError` throwables (raw `Error`, string) — do we fall back to
+ * the lowercased-substring heuristic, which is the only signal those carry.
  */
 export function isTransientError(err: unknown): boolean {
+  if (err instanceof ProviderError && typeof err.status === "number") {
+    return isTransientStatus(err.status);
+  }
   const msg = errorText(err).toLowerCase();
   // Definite-not-transient: auth + bad-request signals.
   const authOrBadRequest =

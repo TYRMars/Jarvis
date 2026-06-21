@@ -15,9 +15,19 @@ export class HarnessError extends Error {
 }
 
 export class ProviderError extends HarnessError {
-  constructor(message: string) {
+  /**
+   * The upstream HTTP status code, when the error originated from a non-OK
+   * response. `undefined` for transport / decode / logic errors that never
+   * reached (or got a status back from) the server. Carrying this as a
+   * structured field lets retry/fallback logic classify errors on the status
+   * rather than substring-scanning the (model/upstream-influenced) body.
+   */
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
     super(`llm provider error: ${message}`);
     this.name = "ProviderError";
+    this.status = status;
   }
 }
 
