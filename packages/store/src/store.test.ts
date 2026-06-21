@@ -76,6 +76,25 @@ export function contractTests(name: string, make: (dir: string) => Promise<Conve
     });
   });
 
+  // Regression for #181: a project's rows must surface even when many newer
+  // conversations in *other* projects exist. The old base impl scanned only
+  // the newest `limit * 4` rows globally, so a target row sitting behind that
+  // prefix silently vanished.
+  test(`${name}: listByProject finds rows behind many newer global rows`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      // The target project's only conversation, saved first (oldest).
+      await store.saveEnvelope("target", convo("t"), { project_id: "p1", lifecycle: "active" });
+      // 20 newer conversations in another project — well past any limit*4 of 5.
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 2));
+        await store.saveEnvelope(`other-${i}`, convo("o"), { project_id: "p2", lifecycle: "active" });
+      }
+      const rows = await store.listByProject("p1", 5);
+      assert.deepEqual(rows.map((r) => r.id), ["target"]);
+    });
+  });
+
   test(`${name}: delete returns true then false`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

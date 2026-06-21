@@ -315,6 +315,31 @@ export class SqliteConversationStore extends ConversationStoreBase {
     );
   }
 
+  /**
+   * Exact, indexed project query — overrides the base class's global scan.
+   * Uses `idx_conversations_project` (WHERE project_id = ?) so it returns the
+   * newest `limit` rows for the project regardless of how many newer rows other
+   * projects have (see #181).
+   */
+  listByProject(projectId: string, limit: number): Promise<ConversationRecord[]> {
+    const rows = this.#db
+      .prepare<[string, number], ConvRow & { id: string; message_count: number }>(
+        `SELECT id, project_id, lifecycle, message_count, created_at, updated_at
+         FROM conversations WHERE project_id = ? ORDER BY updated_at DESC LIMIT ?`,
+      )
+      .all(projectId, clampLimit(limit));
+    return Promise.resolve(
+      rows.map((r) => ({
+        id: r.id,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        message_count: r.message_count,
+        project_id: r.project_id ?? null,
+        lifecycle: (r.lifecycle as ConversationRecord["lifecycle"]) ?? "active",
+      })),
+    );
+  }
+
   delete(id: string): Promise<boolean> {
     const info = this.#db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
     return Promise.resolve(info.changes > 0);
@@ -1058,11 +1083,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
 // ---------- helpers ----------
 
 /**
- * SQLite's `LIMIT` treats a negative value as "no limit", which is the right
- * behaviour for `listByProject`'s `limit * 4` over-fetch but a foot-gun if a
- * caller passes a genuine negative. We clamp to `-1` (unlimited) only when the
- * caller explicitly asks for it via a non-positive over-fetch; here we simply
- * pass through, since every trait caller passes a sane positive cap.
+ * SQLite's `LIMIT` treats a negative value as "no limit". We truncate to an
+ * integer and pass through; a non-finite limit (e.g. the base class's
+ * `MAX_SAFE_INTEGER` "scan all" sentinel arriving via Infinity) maps to `-1`
+ * (unlimited). Every real trait caller passes a sane positive cap.
  */
 function clampLimit(limit: number): number {
   return Number.isFinite(limit) ? Math.trunc(limit) : -1;
