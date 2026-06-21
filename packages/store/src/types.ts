@@ -75,8 +75,12 @@ export abstract class ConversationStoreBase implements ConversationStore {
   }
 
   async listByProject(projectId: string, limit: number): Promise<ConversationRecord[]> {
-    const scanLimit = Math.max(limit, limit * 4);
-    const rows = await this.list(scanLimit);
+    // Scan every row, then filter by project and cap to `limit`. Backends with
+    // an indexed query (SQLite) override this. The previous `limit * 4` global
+    // prefix silently under-returned — or returned nothing — when a project's
+    // rows fell outside the newest few rows globally (see #181); for the
+    // in-memory / JSON-file path an O(N) full scan is what `list` already does.
+    const rows = await this.list(Number.MAX_SAFE_INTEGER);
     return rows.filter((r) => (r.project_id ?? null) === projectId).slice(0, limit);
   }
 }
