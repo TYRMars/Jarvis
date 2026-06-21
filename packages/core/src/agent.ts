@@ -30,7 +30,7 @@ import {
   type LlmProvider,
   type Usage,
 } from "./llm.ts";
-import { ToolRegistry, toolCategory, toolRequiresApproval, type Tool } from "./tool.ts";
+import { ToolRegistry, toolCategory, toolIsTerminal, toolRequiresApproval, type Tool } from "./tool.ts";
 import type { Approver, ApprovalDecision, ApprovalRequest } from "./approval.ts";
 import type { Memory } from "./memory.ts";
 import { withPlan, type PlanItem } from "./plan.ts";
@@ -110,11 +110,17 @@ export class Agent {
 
       const message = resp.message;
       if (isToolCallTurn(message, resp.finish_reason)) {
+        let terminal = false;
         for (const call of message.tool_calls) {
           const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
-          const output = await runOne(this.config.tools, call, approval?.[1]);
+          const decision = approval?.[1];
+          const output = await runOne(this.config.tools, call, decision);
           conversation.messages.push(toolResult(call.id, output));
+          if (executedTerminalTool(this.config.tools, call, decision)) terminal = true;
         }
+        // A tool flagged `isTerminal` ends the turn even if more tool calls
+        // followed it (the documented exit_plan / plan-mode-exit contract).
+        if (terminal) return [{ kind: "stopped", iterations: iter }, totalUsage];
         continue;
       }
 
@@ -185,6 +191,7 @@ export class Agent {
 
       const message = finish.message;
       if (isToolCallTurn(message, finish.finish_reason)) {
+        let terminal = false;
         for (const call of message.tool_calls) {
           // Resolve the approval decision, emitting the request BEFORE awaiting
           // the approver so an interactive transport can respond in time.
@@ -223,6 +230,13 @@ export class Agent {
 
           yield { type: "tool_end", id: call.id, name: call.name, content };
           conversation.messages.push(toolResult(call.id, content));
+          if (executedTerminalTool(this.config.tools, call, decision)) terminal = true;
+        }
+        // A tool flagged `isTerminal` ends the turn even if more tool calls
+        // followed it (the documented exit_plan / plan-mode-exit contract).
+        if (terminal) {
+          yield { type: "done", outcome: { kind: "stopped", iterations: iter }, conversation };
+          return;
         }
         continue;
       }
@@ -349,6 +363,20 @@ async function runOne(
   } catch (e) {
     return `tool error: ${errorText(e)}`;
   }
+}
+
+/**
+ * Did `call` run a tool flagged `isTerminal`? A denied call never executed, so
+ * it can't terminate the turn; tool-not-found likewise resolves to undefined.
+ */
+function executedTerminalTool(
+  tools: ToolRegistry,
+  call: ToolCall,
+  decision: ApprovalDecision | undefined,
+): boolean {
+  if (decision && decision.decision === "deny") return false;
+  const tool = tools.resolve(call.name);
+  return tool != null && toolIsTerminal(tool);
 }
 
 /**
