@@ -49,6 +49,10 @@ export function toolRequiresApproval(t: Tool): boolean {
   return t.requiresApproval ?? false;
 }
 
+export function toolIsTerminal(t: Tool): boolean {
+  return t.isTerminal ?? false;
+}
+
 export function toolIsConcurrencySafe(t: Tool): boolean {
   if (t.isConcurrencySafe) return t.isConcurrencySafe();
   return toolCategory(t) === "read";

@@ -96,6 +96,32 @@ class PlanningTool implements Tool {
   }
 }
 
+class TerminalTool implements Tool {
+  readonly name = "exit_plan";
+  readonly description = "ends the turn";
+  readonly parameters = { type: "object" };
+  readonly category = "read" as const;
+  readonly isTerminal = true;
+  calls = 0;
+  async invoke(): Promise<string> {
+    this.calls++;
+    return "exited";
+  }
+}
+
+function twoToolCallResponse(): ChatResponse {
+  return {
+    message: {
+      role: "assistant",
+      tool_calls: [
+        { id: "c1", name: "exit_plan", arguments: {} },
+        { id: "c2", name: "echo", arguments: { text: "after" } },
+      ],
+    },
+    finish_reason: "tool_calls",
+  };
+}
+
 async function collect(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
   const out: AgentEvent[] = [];
   for await (const e of gen) out.push(e);
@@ -222,6 +248,56 @@ test("run: throws MaxIterationsError when the loop never terminates", async () =
   await assert.rejects(() => agent.run({ messages: [userMessage("go")] }), MaxIterationsError);
 });
 
+test("run: a terminal tool ends the turn without re-prompting the LLM", async () => {
+  // Only one LLM call is scripted — if the loop re-prompted after the terminal
+  // tool ran, ScriptedProvider would throw "ran out of responses".
+  const provider = new ScriptedProvider([toolCallResponse("c1", "exit_plan", {})]);
+  const tool = new TerminalTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+  const conv: Conversation = { messages: [userMessage("go")] };
+
+  const outcome = await agent.run(conv);
+
+  assert.deepEqual(outcome, { kind: "stopped", iterations: 1 });
+  assert.equal(tool.calls, 1);
+  assert.equal(conv.messages.at(-1)?.role, "tool"); // last msg is the terminal tool result
+});
+
+test("run: terminal tool ends the turn even when later tool calls follow it", async () => {
+  const provider = new ScriptedProvider([twoToolCallResponse()]);
+  const terminal = new TerminalTool();
+  const echo = new EchoTool();
+  const tools = new ToolRegistry().register(terminal).register(echo);
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools });
+  const conv: Conversation = { messages: [userMessage("go")] };
+
+  const outcome = await agent.run(conv);
+
+  // Both tool calls in the turn still run; the turn ends afterward (no re-prompt).
+  assert.deepEqual(outcome, { kind: "stopped", iterations: 1 });
+  assert.equal(terminal.calls, 1);
+  assert.equal(echo.calls, 1);
+});
+
+test("run: a denied terminal tool does not end the turn", async () => {
+  const provider = new ScriptedProvider([toolCallResponse("c1", "exit_plan", {}), stopResponse("after")]);
+  // Make the terminal tool approval-gated so AlwaysDeny blocks it.
+  class GatedTerminalTool extends TerminalTool {
+    readonly requiresApproval = true;
+  }
+  const tool = new GatedTerminalTool();
+  const agent = new Agent(provider, {
+    ...defaultAgentConfig("m"),
+    tools: new ToolRegistry().register(tool),
+    approver: new AlwaysDeny(),
+  });
+
+  const outcome = await agent.run({ messages: [userMessage("go")] });
+
+  assert.equal(tool.calls, 0); // never executed
+  assert.deepEqual(outcome, { kind: "stopped", iterations: 2 }); // looped to the stop response
+});
+
 // --- streaming run ---------------------------------------------------------
 
 test("runStream: exactly one terminal `done` carrying the full conversation", async () => {
@@ -242,6 +318,22 @@ test("runStream: exactly one terminal `done` carrying the full conversation", as
   assert.ok(events.some((e) => e.type === "tool_start" && e.name === "echo"));
   assert.equal((events.find((e) => e.type === "tool_end") as { content: string }).content, "echo: hi");
   assert.ok(events.some((e) => e.type === "delta" && e.content === "final"));
+});
+
+test("runStream: a terminal tool ends the turn with a single done", async () => {
+  const provider = new ScriptedProvider([toolCallResponse("c1", "exit_plan", {})]);
+  const tool = new TerminalTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+
+  const terminals = events.filter((e) => e.type === "done" || e.type === "error");
+  assert.equal(terminals.length, 1);
+  assert.equal(events.at(-1)?.type, "done");
+  const done = terminals[0] as Extract<AgentEvent, { type: "done" }>;
+  assert.equal(done.outcome.kind, "stopped");
+  assert.ok(events.some((e) => e.type === "tool_end" && e.name === "exit_plan"));
+  assert.equal(tool.calls, 1);
 });
 
 test("runStream: a stream without a Finish chunk yields one error", async () => {
