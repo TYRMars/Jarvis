@@ -57,7 +57,12 @@ async function createWindow(): Promise<void> {
     center: true,
     show: false,
     title: "Jarvis",
-    backgroundColor: "#0b0b0d",
+    backgroundColor: "#00000000",
+    transparent: true,
+    vibrancy: "under-window",
+    visualEffectState: "active",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 18 },
     webPreferences: {
       preload: path.join(app.getAppPath(), "out", "preload", "index.cjs"),
       contextIsolation: true,

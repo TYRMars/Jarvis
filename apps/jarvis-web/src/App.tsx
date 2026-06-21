@@ -78,7 +78,17 @@ export function App() {
   // jumps you to a conversation.
   useShortcuts({ showHelp: showHelpOverlay });
 
-  const Router = isDesktopRuntime() ? HashRouter : BrowserRouter;
+  const desktopRuntime = isDesktopRuntime();
+  useEffect(() => {
+    document.documentElement.classList.toggle("jarvis-desktop-shell", desktopRuntime);
+    document.body.classList.toggle("jarvis-desktop-shell", desktopRuntime);
+    return () => {
+      document.documentElement.classList.remove("jarvis-desktop-shell");
+      document.body.classList.remove("jarvis-desktop-shell");
+    };
+  }, [desktopRuntime]);
+
+  const Router = desktopRuntime ? HashRouter : BrowserRouter;
 
   return (
     <Router>
