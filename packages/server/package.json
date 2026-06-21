@@ -28,6 +28,7 @@
     "@jarvis/store": "workspace:*",
     "@jarvis/subagents": "workspace:*",
     "@jarvis/todo": "workspace:*",
+    "@jarvis/tools": "workspace:*",
     "@jarvis/workflow": "workspace:*",
     "fastify": "^5.0.0",
     "node-pty": "^1.0.0"

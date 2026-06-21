@@ -27,12 +27,18 @@
 // (matching the Rust); the include tools return JSON (JSON.stringify, matching
 // the Rust `json!{...}.to_string()`).
 //
-// DEFERRED from the Rust port:
-//   - memory_sync.rs   — git sync of the agent's OWN memory tree (the
-//     `memory.{sync,sync_status,sync_setup}` tools). Not ported.
+// Git/iCloud sync (P8): memory_sync.rs is ported below — `memory.{sync,
+// sync_setup,sync_setup_icloud,sync_status}` wrap git pull/push/status + the
+// iCloud Drive folder setup. Wired into the agent only when a sync backend is
+// configured; the REST surface (`/v1/memory/sync*`) invokes the tool impls
+// directly. See packages/server/src/memory-sync-routes.ts.
+//
+// STILL DEFERRED from the Rust port:
 //   - memory_icloud.rs — iCloud lazy-stub materialization (`ensure_materialised`
 //     before reads). On macOS+iCloud the Rust pulls `.MEMORY.md.icloud` stubs
 //     down first; here reads hit the filesystem directly (a no-op off iCloud).
+//   - the background auto-sync ticker (`spawn_auto_sync_task`) — periodic sync
+//     is operator-triggered via the tool / REST route for now.
 //
 // Rust harness-core helpers with no Node equivalent are dropped (matching the
 // doc.* / todo.* ports): `summary_for_audit` (audit-row hint) and
@@ -305,6 +311,14 @@ function asObject(args: JsonValue): { [k: string]: JsonValue } {
 
 function asString(v: JsonValue | undefined): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+
+function asBool(v: JsonValue | undefined): boolean | undefined {
+  return typeof v === "boolean" ? v : undefined;
+}
+
+function asNumber(v: JsonValue | undefined): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
 // ===========================================================================
@@ -892,8 +906,12 @@ async function normaliseMemoryDir(candidate: string): Promise<string> {
  * spawn failure / timeout. Prepends the `protocol.*.allow` whitelist guard so
  * command-executing transports can never fire even if a bad URL slipped past
  * validation. The child inherits the parent environment (no `env` override —
- * the env-free convention forbids reading `process.env`). */
-function runGit(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+ * the env-free convention forbids reading `process.env`). `timeoutMs` defaults
+ * to {@link GIT_TIMEOUT_MS}; the sync tools pass a per-call budget. */
+function runGit(
+  args: string[],
+  timeoutMs: number = GIT_TIMEOUT_MS,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", [...gitProtocolGuardArgs(), ...args], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -905,8 +923,8 @@ function runGit(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: 
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      reject(new Error("git timed out"));
-    }, GIT_TIMEOUT_MS);
+      reject(new Error(`git timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
     child.stdout?.on("data", (b: Buffer) => {
       stdout += b.toString("utf8");
     });
@@ -1257,4 +1275,470 @@ export function registerMemoryTools(registry: ToolRegistry, config: MemoryToolsC
   registry.register(new MemoryIncludeListTool(roots));
   registry.register(new MemoryIncludeRemoveTool(roots));
   registry.register(new MemoryIncludeRefreshTool(roots));
+}
+
+// ===========================================================================
+// memory.sync / sync_setup / sync_setup_icloud / sync_status
+//
+// Git-as-transport network sync for the markdown memory tree (ported from
+// crates/harness-tools/src/memory_sync.rs). The operator points a memory dir
+// (`<scope_root>/.jarvis/memory/`) at a private git remote; these tools wrap
+// pull/push/status so the agent — or the Settings → Memory Sync REST panel —
+// keeps the tree in step without re-typing git commands. iCloud is a no-protocol
+// transport: files land under iCloud Drive and macOS syncs them.
+//
+// Opt-in: spawning the host `git` binary is more side-effectful than the rest of
+// the memory toolset, so the mutating tools are approval-gated and the server
+// only wires them when a memory runtime + sync backend are configured.
+// ===========================================================================
+
+/** Which sync transport the operator opted into. Mutually exclusive — the tool
+ * set + REST routes adapt so a git deployment never exposes iCloud-only ops and
+ * vice versa. Mirrors the Rust `MemorySyncBackend`. */
+export type MemorySyncBackend = "none" | "git" | "icloud";
+
+/** Parse a wire string into a {@link MemorySyncBackend}; `undefined` on garbage.
+ * Accepts the empty string / `off` / `disabled` as `none`. */
+export function memorySyncBackendFromWire(s: string): MemorySyncBackend | undefined {
+  switch (s.trim().toLowerCase()) {
+    case "":
+    case "none":
+    case "off":
+    case "disabled":
+      return "none";
+    case "git":
+      return "git";
+    case "icloud":
+    case "icloud-drive":
+      return "icloud";
+    default:
+      return undefined;
+  }
+}
+
+/** macOS iCloud Drive base path. `undefined` off macOS or when HOME is
+ * unresolvable. Env-free: derived from `os.homedir()`, not `process.env`. */
+export function icloudDriveRoot(): string | undefined {
+  if (process.platform !== "darwin") {
+    return undefined;
+  }
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    return undefined;
+  }
+  if (home === "") {
+    return undefined;
+  }
+  return path.join(home, "Library/Mobile Documents/com~apple~CloudDocs");
+}
+
+/** Resolved Jarvis memory subdir inside iCloud Drive, or `undefined` when iCloud
+ * Drive isn't available (non-macOS, HOME unresolvable, or the base dir is
+ * missing because iCloud Drive isn't enabled). */
+export async function icloudMemoryRoot(): Promise<string | undefined> {
+  const root = icloudDriveRoot();
+  if (root === undefined) {
+    return undefined;
+  }
+  if (!(await pathExists(root))) {
+    return undefined;
+  }
+  return path.join(root, "Jarvis");
+}
+
+/** Default per-git-call timeout for sync ops. Network pulls/pushes take a few
+ * seconds even on a healthy link; the model can pass a shorter `timeout_ms`. */
+const SYNC_DEFAULT_TIMEOUT_MS = 60_000;
+const SYNC_MAX_BYTES = 64 * 1024;
+
+/** `<scope_root>/.jarvis/memory/` for a sync op. Throws (user-facing) when the
+ * requested scope isn't configured. */
+function memoryDirFor(roots: MemoryRoots, scope: MemoryScope): string {
+  return path.join(rootFor(roots, scope), MEMORY_DIR);
+}
+
+function truncateTo(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) {
+    return s;
+  }
+  // Cut on a UTF-8 char boundary at or below maxBytes.
+  const buf = Buffer.from(s, "utf8").subarray(0, maxBytes);
+  let cut = buf.toString("utf8");
+  // toString may have produced a replacement char for a split sequence; drop a
+  // trailing partial codepoint by re-encoding and trimming if it grew.
+  while (Buffer.byteLength(cut, "utf8") > maxBytes && cut.length > 0) {
+    cut = cut.slice(0, -1);
+  }
+  return `${cut}\n[... truncated at ${maxBytes} bytes ...]\n`;
+}
+
+/** Run `git -C <dir> <args>` with the protocol guard + a per-call timeout, and
+ * truncate stdout/stderr to {@link SYNC_MAX_BYTES}. */
+async function runGitIn(
+  dir: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const r = await runGit(["-C", dir, ...args], timeoutMs);
+  return {
+    ok: r.ok,
+    stdout: truncateTo(r.stdout, SYNC_MAX_BYTES),
+    stderr: truncateTo(r.stderr, SYNC_MAX_BYTES),
+  };
+}
+
+/** Quick "is this dir a git work tree" probe. */
+async function isGitRepo(dir: string): Promise<boolean> {
+  if (!(await pathExists(dir))) {
+    return false;
+  }
+  try {
+    const { ok } = await runGitIn(dir, ["rev-parse", "--is-inside-work-tree"], 5_000);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Reject remote / branch names that look like a flag (`--upload-pack=…`) or
+ * carry whitespace, so the model can't smuggle an option through. */
+function validateRefName(kind: "remote" | "branch", name: string): void {
+  if (name.startsWith("-") || /\s/.test(name)) {
+    throw new Error(`invalid ${kind} name \`${name}\``);
+  }
+}
+
+function setupHint(dir: string): string {
+  return (
+    `memory dir \`${dir}\` is not a git repository.\n` +
+    `to set up sync:\n` +
+    `  1. create a private remote repo (GitHub / GitLab / self-hosted)\n` +
+    `  2. cd ${dir} && git init && git remote add origin <url>\n` +
+    `  3. git add . && git commit -m "seed" && git push -u origin main\n` +
+    `then re-run memory.sync.`
+  );
+}
+
+/** Build internal roots from the public config (user scope omitted when unset). */
+function rootsFromConfig(config: MemoryToolsConfig): MemoryRoots {
+  return config.userRoot !== undefined
+    ? { workspaceRoot: config.workspaceRoot, userRoot: config.userRoot }
+    : { workspaceRoot: config.workspaceRoot };
+}
+
+/** `memory.sync` — `git pull --rebase` then `git push` against the configured
+ * remote. Approval-gated (the push has an external effect). */
+export class MemorySyncTool implements Tool {
+  readonly name = "memory.sync";
+  readonly category: ToolCategory = "write";
+  readonly requiresApproval = true;
+  readonly description =
+    "Sync the memory tree with its configured git remote. Defaults to user " +
+    "scope (`~/.jarvis/memory/`). Runs `git pull --rebase` then `git push`; if " +
+    "either fails (merge conflict, auth, no remote, no network) returns the git " +
+    "stderr verbatim plus a hint. The memory dir must already be a git working " +
+    "tree — run `memory.sync_status` first to check, or follow the setup hint " +
+    "the tool prints on first use. Approval-gated because the push side has an " +
+    "external effect.";
+  readonly parameters: JsonValue = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      scope: { type: "string", enum: ["workspace", "user"], description: "Which memory tree to sync. Defaults to `user`." },
+      remote: { type: "string", description: "Optional remote name (defaults to `origin`)." },
+      branch: { type: "string", description: "Optional branch (defaults to the repo's current branch)." },
+      timeout_ms: { type: "integer", description: "Per-git-call timeout. Defaults to 60000 (60s)." },
+    },
+  };
+
+  readonly #config: MemoryToolsConfig;
+
+  constructor(config: MemoryToolsConfig) {
+    this.#config = config;
+  }
+
+  async invoke(args: JsonValue): Promise<string> {
+    const obj = asObject(args);
+    const scopeRaw = asString(obj["scope"]);
+    const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "user";
+    const dir = memoryDirFor(rootsFromConfig(this.#config), scope);
+    const timeoutMs = asNumber(obj["timeout_ms"]) ?? SYNC_DEFAULT_TIMEOUT_MS;
+
+    if (!(await isGitRepo(dir))) {
+      throw new Error(setupHint(dir));
+    }
+
+    const remote = asString(obj["remote"]) ?? "origin";
+    validateRefName("remote", remote);
+    const branch = asString(obj["branch"]);
+    if (branch !== undefined) {
+      validateRefName("branch", branch);
+    }
+
+    const report: { [k: string]: JsonValue } = { scope, dir, remote };
+
+    // Pull --rebase first so concurrent edits from other clones land cleanly.
+    const pullArgs = ["pull", "--rebase"];
+    if (branch !== undefined) {
+      pullArgs.push(remote, branch);
+    }
+    const pull = await runGitIn(dir, pullArgs, timeoutMs);
+    report["pull"] = { ok: pull.ok, stdout: pull.stdout.trim(), stderr: pull.stderr.trim() };
+    if (!pull.ok) {
+      report["hint"] =
+        "pull failed — run `git -C <dir> status` to inspect; resolve conflicts manually and re-run memory.sync.";
+      return JSON.stringify(report, null, 2);
+    }
+
+    // Push only after a clean pull.
+    const pushArgs = ["push"];
+    if (branch !== undefined) {
+      pushArgs.push(remote, branch);
+    }
+    const push = await runGitIn(dir, pushArgs, timeoutMs);
+    report["push"] = { ok: push.ok, stdout: push.stdout.trim(), stderr: push.stderr.trim() };
+    if (!push.ok) {
+      report["hint"] =
+        "push failed — common causes: remote not set, auth missing, or branch not tracking. " +
+        "Run `git -C <dir> push -u origin <branch>` once to establish tracking.";
+    }
+
+    const head = await runGitIn(dir, ["rev-parse", "HEAD"], 5_000);
+    if (head.ok) {
+      report["head"] = head.stdout.trim();
+    }
+    return JSON.stringify(report, null, 2);
+  }
+}
+
+/** `memory.sync_setup` — one-shot git init + remote add + seed commit + push. */
+export class MemorySyncSetupTool implements Tool {
+  readonly name = "memory.sync_setup";
+  readonly category: ToolCategory = "write";
+  readonly requiresApproval = true;
+  readonly description =
+    "One-shot setup for memory git sync: creates the memory dir if missing, runs " +
+    "`git init`, adds the given `remote_url` as `origin`, seeds an empty " +
+    "MEMORY.md, makes the initial commit, and (by default) pushes to origin. " +
+    "Idempotent guard: if the dir is already a git repo, the tool errors out " +
+    "unless `force=true`, in which case it just updates the remote URL in place. " +
+    "Approval-gated because this writes to disk and pushes to an external remote.";
+  readonly parameters: JsonValue = {
+    type: "object",
+    additionalProperties: false,
+    required: ["remote_url"],
+    properties: {
+      remote_url: { type: "string", description: "Git URL of the remote repo (ssh / https). Pre-created private repo recommended." },
+      scope: { type: "string", enum: ["workspace", "user"], description: "Which memory tree to set up. Defaults to `user`." },
+      branch: { type: "string", description: "Branch name for the initial commit + push. Defaults to `main`." },
+      push: { type: "boolean", description: "Push the initial commit after setup. Defaults to true." },
+      force: { type: "boolean", description: "When the dir is already a git repo, just update remote.origin.url instead of erroring. Defaults to false." },
+    },
+  };
+
+  readonly #config: MemoryToolsConfig;
+
+  constructor(config: MemoryToolsConfig) {
+    this.#config = config;
+  }
+
+  async invoke(args: JsonValue): Promise<string> {
+    const obj = asObject(args);
+    const remoteUrlRaw = asString(obj["remote_url"]);
+    if (remoteUrlRaw === undefined) {
+      throw new Error("missing `remote_url` argument");
+    }
+    const remoteUrl = remoteUrlRaw.trim();
+    if (remoteUrl === "") {
+      throw new Error("`remote_url` must not be empty");
+    }
+    // Refuse flags / command-executing transports — the URL goes verbatim into
+    // `git remote add` and is later pushed to.
+    validateGitUrl(remoteUrl);
+
+    const scopeRaw = asString(obj["scope"]);
+    const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "user";
+    const branch = asString(obj["branch"]) ?? "main";
+    validateRefName("branch", branch);
+    const push = asBool(obj["push"]) ?? true;
+    const force = asBool(obj["force"]) ?? false;
+
+    const dir = memoryDirFor(rootsFromConfig(this.#config), scope);
+    if (!(await pathExists(dir))) {
+      await fs.mkdir(dir, { recursive: true });
+    }
+
+    const report: { [k: string]: JsonValue } = { scope, dir, remote_url: remoteUrl, branch };
+
+    if (await isGitRepo(dir)) {
+      if (!force) {
+        throw new Error(
+          `memory dir \`${dir}\` is already a git repository. Pass \`force=true\` to just update the remote, or run \`memory.sync\` if you wanted to sync.`,
+        );
+      }
+      const hasOrigin = (await runGitIn(dir, ["config", "--get", "remote.origin.url"], 5_000)).ok;
+      const upd = hasOrigin
+        ? await runGitIn(dir, ["remote", "set-url", "origin", remoteUrl], 10_000)
+        : await runGitIn(dir, ["remote", "add", "origin", remoteUrl], 10_000);
+      report["remote_update"] = { ok: upd.ok, stdout: upd.stdout.trim(), stderr: upd.stderr.trim() };
+      if (!upd.ok) {
+        throw new Error(`failed to update origin remote: ${upd.stderr.trim()}`);
+      }
+      report["initialized"] = false;
+      return JSON.stringify(report, null, 2);
+    }
+
+    // Fresh setup. Each step short-circuits on failure with the exact stderr.
+    const mustGit = async (gitArgs: string[]): Promise<void> => {
+      const r = await runGitIn(dir, gitArgs, 10_000);
+      if (!r.ok) {
+        throw new Error(`git ${JSON.stringify(gitArgs)} failed: ${r.stderr.trim()}`);
+      }
+    };
+
+    await mustGit(["init", "-q", "-b", branch]);
+    await mustGit(["remote", "add", "origin", remoteUrl]);
+
+    const index = path.join(dir, INDEX_FILE);
+    if (!(await pathExists(index))) {
+      await fs.writeFile(index, "# Jarvis memory\n\nThis directory holds agent-maintained notes.\n");
+    }
+
+    await mustGit(["add", "-A"]);
+    // Inline author identity so the seed commit works on boxes without a global
+    // user.email/name; the overrides apply only to this one command.
+    await mustGit([
+      "-c", "user.email=jarvis@local",
+      "-c", "user.name=Jarvis",
+      "commit", "-q", "-m", "init: jarvis memory",
+    ]);
+    report["initialized"] = true;
+
+    if (push) {
+      const p = await runGitIn(dir, ["push", "-u", "origin", branch], SYNC_DEFAULT_TIMEOUT_MS);
+      report["push"] = { ok: p.ok, stdout: p.stdout.trim(), stderr: p.stderr.trim() };
+      if (!p.ok) {
+        report["hint"] =
+          "initial push failed — check the remote URL is reachable and you have credentials. " +
+          "Local repo is set up; fix the push manually with `git -C <dir> push -u origin <branch>`.";
+      }
+    } else {
+      report["hint"] = "local repo initialised; push skipped (push=false)";
+    }
+    return JSON.stringify(report, null, 2);
+  }
+}
+
+/** `memory.sync_setup_icloud` — create the iCloud Drive `Jarvis/` folder (macOS
+ * only) and return its path; macOS handles the rest. */
+export class MemoryICloudSetupTool implements Tool {
+  readonly name = "memory.sync_setup_icloud";
+  readonly category: ToolCategory = "write";
+  readonly requiresApproval = true;
+  readonly description =
+    "Set up iCloud Drive as the user-scope memory sync transport (macOS only). " +
+    "Creates a `Jarvis/` folder inside iCloud Drive's local mount and returns " +
+    "the absolute path. macOS then syncs that folder to every device signed " +
+    "into the same Apple ID — no Jarvis-side protocol needed. Caveats: " +
+    "macOS-only; the operator must have iCloud Drive enabled; first run may need " +
+    "`JARVIS_MEMORY_USER_ROOT` set to the returned path.";
+  readonly parameters: JsonValue = { type: "object", additionalProperties: false, properties: {} };
+
+  readonly #config: MemoryToolsConfig;
+
+  constructor(config: MemoryToolsConfig) {
+    this.#config = config;
+  }
+
+  async invoke(_args: JsonValue): Promise<string> {
+    void this.#config;
+    if (process.platform !== "darwin") {
+      throw new Error("iCloud Drive sync is macOS-only");
+    }
+    const driveRoot = icloudDriveRoot();
+    if (driveRoot === undefined) {
+      throw new Error("HOME unresolvable; cannot locate iCloud Drive");
+    }
+    if (!(await pathExists(driveRoot))) {
+      throw new Error(
+        `iCloud Drive base \`${driveRoot}\` does not exist. Enable iCloud Drive in System Settings first.`,
+      );
+    }
+    const target = path.join(driveRoot, "Jarvis");
+    await fs.mkdir(target, { recursive: true });
+    return JSON.stringify(
+      {
+        ok: true,
+        path: target,
+        hint: `Restart jarvis with \`JARVIS_MEMORY_USER_ROOT=${target}\` (or \`JARVIS_MEMORY_SYNC_BACKEND=icloud\`) to make this the active user-scope memory root.`,
+      },
+      null,
+      2,
+    );
+  }
+}
+
+/** `memory.sync_status` — read-only git state of the memory tree. */
+export class MemorySyncStatusTool implements Tool {
+  readonly name = "memory.sync_status";
+  readonly category: ToolCategory = "read";
+  readonly requiresApproval = false;
+  readonly description =
+    "Report the git sync state of the memory tree without making changes. " +
+    "Returns whether the dir is a git repo, the current branch, the configured " +
+    "remote URL, and `git status --porcelain` output. Use this to verify setup " +
+    "or inspect why a previous `memory.sync` call failed.";
+  readonly parameters: JsonValue = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      scope: { type: "string", enum: ["workspace", "user"], description: "Which memory tree to inspect. Defaults to `user`." },
+    },
+  };
+
+  readonly #config: MemoryToolsConfig;
+
+  constructor(config: MemoryToolsConfig) {
+    this.#config = config;
+  }
+
+  async invoke(args: JsonValue): Promise<string> {
+    const obj = asObject(args);
+    const scopeRaw = asString(obj["scope"]);
+    const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "user";
+    const dir = memoryDirFor(rootsFromConfig(this.#config), scope);
+
+    const report: { [k: string]: JsonValue } = { scope, dir };
+
+    if (!(await isGitRepo(dir))) {
+      report["is_git_repo"] = false;
+      report["setup_hint"] = setupHint(dir);
+      return JSON.stringify(report, null, 2);
+    }
+    report["is_git_repo"] = true;
+
+    const branch = await runGitIn(dir, ["rev-parse", "--abbrev-ref", "HEAD"], 5_000);
+    if (branch.ok) {
+      report["branch"] = branch.stdout.trim();
+    }
+    const remote = await runGitIn(dir, ["config", "--get", "remote.origin.url"], 5_000);
+    if (remote.ok) {
+      report["remote_url"] = remote.stdout.trim();
+    } else {
+      report["remote_url"] = null;
+      report["hint"] = "no `origin` remote — set one with `git remote add origin <url>`.";
+    }
+    const status = await runGitIn(dir, ["status", "--porcelain"], 5_000);
+    if (status.ok) {
+      report["dirty"] = status.stdout.trim() !== "";
+      report["status"] = status.stdout.trim();
+    }
+    const head = await runGitIn(dir, ["rev-parse", "HEAD"], 5_000);
+    if (head.ok) {
+      report["head"] = head.stdout.trim();
+    }
+    return JSON.stringify(report, null, 2);
+  }
 }

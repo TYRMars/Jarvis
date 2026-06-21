@@ -8,7 +8,9 @@
 // without mutating the real process.env. Everything here is synchronous,
 // side-effect-free parsing — no store / provider / fs work happens until the
 // provider/tools/state builders consume the returned config.
+import * as os from "node:os";
 import { ProfileRegistry, canonicalKind } from "@jarvis/llm";
+import { memorySyncBackendFromWire, type MemorySyncBackend } from "@jarvis/tools";
 
 /** Provider kinds the binary knows how to construct. */
 export type ProviderKind =
@@ -130,6 +132,18 @@ export interface JarvisConfig {
   /** Summary-mode model override; defaults to the primary model. */
   memoryModel?: string;
 
+  /**
+   * Enable the markdown `memory.*` surface + its `/v1/memory/*` REST routes
+   * (`JARVIS_ENABLE_MEMORY`, off by default). When on, `AppState.memoryRuntime`
+   * is populated so the sync/include routes work instead of 503-ing.
+   */
+  enableMemory: boolean;
+  /** Parent of the user-scope memory tree (`<root>/.jarvis/memory/`); defaults
+   * to the home dir. `undefined` disables user-scope memory. */
+  memoryUserRoot?: string;
+  /** Memory sync transport (`JARVIS_MEMORY_SYNC_BACKEND`: none/git/icloud). */
+  memorySyncBackend: MemorySyncBackend;
+
   mcpServers: McpServerSpec[];
   router: RouterConfigParsed;
   /**
@@ -154,6 +168,16 @@ function truthy(v: string | undefined): boolean {
   if (v === undefined) return false;
   const s = v.trim().toLowerCase();
   return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
+}
+
+/** Home dir, or undefined when unresolvable (→ user-scope memory disabled). */
+function homeDirOrUndefined(): string | undefined {
+  try {
+    const h = os.homedir();
+    return h === "" ? undefined : h;
+  } catch {
+    return undefined;
+  }
 }
 
 /** First non-empty value among the listed env keys, else undefined. */
@@ -267,6 +291,14 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
   const memoryTokensRaw = firstNonEmpty(env, "JARVIS_MEMORY_TOKENS");
   const memoryTokens = memoryTokensRaw === undefined ? undefined : parseIntOr(memoryTokensRaw, 0);
 
+  // Memory `memory.*` surface + sync routes. `userRoot` defaults to the home dir
+  // (so user-scope memory works out of the box); an unparseable backend falls
+  // back to `none` (sync disabled, includes still usable).
+  const enableMemory = truthy(env.JARVIS_ENABLE_MEMORY);
+  const memorySyncBackend =
+    memorySyncBackendFromWire(firstNonEmpty(env, "JARVIS_MEMORY_SYNC_BACKEND") ?? "none") ?? "none";
+  const memoryUserRoot = firstNonEmpty(env, "JARVIS_MEMORY_USER_ROOT") ?? homeDirOrUndefined();
+
   const router: RouterConfigParsed = {
     enabled: truthy(env.JARVIS_ROUTER_ENABLED),
     simple: firstNonEmpty(env, "JARVIS_ROUTER_TIER_SIMPLE"),
@@ -325,6 +357,9 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     memoryTokens,
     memoryMode: parseMemoryMode(env.JARVIS_MEMORY_MODE),
     memoryModel: firstNonEmpty(env, "JARVIS_MEMORY_MODEL"),
+    enableMemory,
+    memorySyncBackend,
+    memoryUserRoot,
 
     mcpServers: parseMcpServers(env.JARVIS_MCP_SERVERS),
     router,

@@ -355,6 +355,18 @@ export async function buildAppState(
     providerCatalog: buildProviderCatalog(config),
     ...(config.webDistDir !== undefined ? { webDistDir: config.webDistDir } : {}),
     ...(deps.learningMemory !== undefined ? { learningMemory: deps.learningMemory } : {}),
+    // Memory tree roots + sync backend backing /v1/memory/sync* + /includes*.
+    // Only populated when JARVIS_ENABLE_MEMORY is set, so the routes otherwise
+    // 503 ("memory tools not enabled").
+    ...(config.enableMemory
+      ? {
+          memoryRuntime: {
+            workspaceRoot: config.fsRoot,
+            ...(config.memoryUserRoot !== undefined ? { userRoot: config.memoryUserRoot } : {}),
+            backend: config.memorySyncBackend,
+          },
+        }
+      : {}),
   };
 
   return {

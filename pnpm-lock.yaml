@@ -287,6 +287,9 @@ importers:
       '@jarvis/todo':
         specifier: workspace:*
         version: link:../todo
+      '@jarvis/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@jarvis/workflow':
         specifier: workspace:*
         version: link:../workflow
