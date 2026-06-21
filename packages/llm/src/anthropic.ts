@@ -25,6 +25,7 @@
 // hasn't supplied one. Headers: `x-api-key`, `anthropic-version` (config,
 // default "2023-06-01").
 import { ProviderError, errorText } from "@jarvis/core";
+import { safeBody } from "./redact.ts";
 import type {
   CacheHint,
   ChatRequest,
@@ -80,13 +81,13 @@ export class AnthropicProvider implements LlmProvider {
     } catch (e) {
       throw new ProviderError(`read body: ${errorText(e)}`);
     }
-    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${text}`);
+    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${safeBody(text)}`);
 
     let parsed: AnthropicResponseRaw;
     try {
       parsed = JSON.parse(text) as AnthropicResponseRaw;
     } catch (e) {
-      throw new ProviderError(`decode: ${errorText(e)}; body=${text}`);
+      throw new ProviderError(`decode: ${errorText(e)}; body=${safeBody(text)}`);
     }
     return intoChatResponse(parsed);
   }
@@ -96,7 +97,7 @@ export class AnthropicProvider implements LlmProvider {
     const resp = await this.#post(body);
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      throw new ProviderError(`status ${resp.status}: ${text}`);
+      throw new ProviderError(`status ${resp.status}: ${safeBody(text)}`);
     }
     if (!resp.body) throw new ProviderError("stream response had no body");
     return sseChunks(resp.body, new StreamAccumulator());

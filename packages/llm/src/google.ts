@@ -22,6 +22,7 @@
 // closes the body, so the terminal `finish` is synthesised from accumulated
 // state once the HTTP body closes (with any usage chunk emitted just before).
 import { ProviderError, errorText } from "@jarvis/core";
+import { safeBody } from "./redact.ts";
 import type {
   ChatRequest,
   ChatResponse,
@@ -67,13 +68,13 @@ export class GoogleProvider implements LlmProvider {
     } catch (e) {
       throw new ProviderError(`read body: ${errorText(e)}`);
     }
-    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${text}`);
+    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${safeBody(text)}`);
 
     let parsed: GoogleResponseRaw;
     try {
       parsed = JSON.parse(text) as GoogleResponseRaw;
     } catch (e) {
-      throw new ProviderError(`decode: ${errorText(e)}; body=${text}`);
+      throw new ProviderError(`decode: ${errorText(e)}; body=${safeBody(text)}`);
     }
     return intoChatResponse(parsed);
   }
@@ -84,7 +85,7 @@ export class GoogleProvider implements LlmProvider {
     const resp = await this.#post(url, body);
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      throw new ProviderError(`status ${resp.status}: ${text}`);
+      throw new ProviderError(`status ${resp.status}: ${safeBody(text)}`);
     }
     if (!resp.body) throw new ProviderError("stream response had no body");
     return sseChunks(resp.body, new StreamAccumulator());

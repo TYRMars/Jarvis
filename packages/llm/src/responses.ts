@@ -26,6 +26,7 @@
 // `stream:false` outright, so `complete()` drives `completeStream()` and
 // collapses the chunks into a `ChatResponse` — the wire stays stream-only.
 import { ProviderError, errorText } from "@jarvis/core";
+import { safeBody } from "./redact.ts";
 import type {
   ChatRequest,
   ChatResponse,
@@ -266,7 +267,7 @@ export class ResponsesProvider implements LlmProvider {
       }
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
-        throw new ProviderError(`status ${resp.status}: ${text}`);
+        throw new ProviderError(`status ${resp.status}: ${safeBody(text)}`);
       }
       break;
     }

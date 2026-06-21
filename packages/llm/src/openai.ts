@@ -17,6 +17,7 @@
 //     surfaced first (issue #48 parity).
 //   * Optional `prompt_cache_key` auto-derived from (model, systems, tools).
 import { ProviderError, errorText } from "@jarvis/core";
+import { safeBody } from "./redact.ts";
 import type {
   ChatRequest,
   ChatResponse,
@@ -78,13 +79,13 @@ export class OpenAiProvider implements LlmProvider {
     } catch (e) {
       throw new ProviderError(`read body: ${errorText(e)}`);
     }
-    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${text}`);
+    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${safeBody(text)}`);
 
     let parsed: OaResponseRaw;
     try {
       parsed = JSON.parse(text) as OaResponseRaw;
     } catch (e) {
-      throw new ProviderError(`decode: ${errorText(e)}; body=${text}`);
+      throw new ProviderError(`decode: ${errorText(e)}; body=${safeBody(text)}`);
     }
     return intoChatResponse(parsed, nameMap);
   }
@@ -99,7 +100,7 @@ export class OpenAiProvider implements LlmProvider {
     const resp = await this.#post(request);
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      throw new ProviderError(`status ${resp.status}: ${text}`);
+      throw new ProviderError(`status ${resp.status}: ${safeBody(text)}`);
     }
     if (!resp.body) throw new ProviderError("stream response had no body");
     return sseChunks(resp.body, new StreamAccumulator(nameMap));

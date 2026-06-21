@@ -142,14 +142,39 @@ test("refresh: keeps existing refresh_token when the response omits a new one", 
   });
 });
 
-test("refresh: non-2xx surfaces status + body", async () => {
+test("refresh: non-2xx surfaces status but redacts the token-endpoint body", async () => {
+  await withTempDir(async (dir) => {
+    await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));
+    const secret = JSON.stringify({ error: "invalid_grant", refresh_token: "leaked-secret-xyz" });
+    const auth = await CodexAuth.loadFromCodexHome(dir, {
+      refreshUrl: "https://stub.test/oauth/token",
+      fetchImpl: async () => new Response(secret, { status: 400 }),
+    });
+    await assert.rejects(() => auth.refresh(), (e: unknown) => {
+      const msg = (e as Error).message;
+      assert.match(msg, /refresh failed: status 400/);
+      assert.match(msg, /<redacted \d+ bytes>/);
+      assert.doesNotMatch(msg, /leaked-secret-xyz/);
+      assert.doesNotMatch(msg, /invalid_grant/);
+      return true;
+    });
+  });
+});
+
+test("refresh: malformed 200 body is redacted, not interpolated", async () => {
   await withTempDir(async (dir) => {
     await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));
     const auth = await CodexAuth.loadFromCodexHome(dir, {
       refreshUrl: "https://stub.test/oauth/token",
-      fetchImpl: async () => new Response("bad token", { status: 400 }),
+      fetchImpl: async () => new Response("not json access_token=leaked", { status: 200 }),
     });
-    await assert.rejects(() => auth.refresh(), /refresh failed: status 400: bad token/);
+    await assert.rejects(() => auth.refresh(), (e: unknown) => {
+      const msg = (e as Error).message;
+      assert.match(msg, /decode refresh response/);
+      assert.match(msg, /<redacted \d+ bytes>/);
+      assert.doesNotMatch(msg, /leaked/);
+      return true;
+    });
   });
 });
 
