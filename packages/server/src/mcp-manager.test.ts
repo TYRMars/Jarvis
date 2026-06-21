@@ -69,6 +69,30 @@ test("wire <-> config round-trips snake/camel field names", () => {
   assert.deepEqual(configToWire(cfg).deny_tools, ["b"]);
 });
 
+test("configToWire redacts sensitive HTTP headers", () => {
+  const wire = configToWire({
+    prefix: "composio",
+    transport: {
+      type: "streamable-http",
+      url: "https://backend.composio.dev/v3/mcp/server?user_id=u",
+      headers: {
+        "x-api-key": "secret",
+        Authorization: "Bearer secret",
+        "x-safe-header": "visible",
+      },
+    },
+  });
+  assert.deepEqual(wire.transport, {
+    type: "streamable-http",
+    url: "https://backend.composio.dev/v3/mcp/server?user_id=u",
+    headers: {
+      "x-api-key": "__redacted__",
+      Authorization: "__redacted__",
+      "x-safe-header": "visible",
+    },
+  });
+});
+
 // ---------- manager unit ---------------------------------------------------
 
 test("add connects, registers tools, lists running", async () => {

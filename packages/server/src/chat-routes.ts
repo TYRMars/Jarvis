@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import {
   ChannelApprover,
+  ChannelHuman,
   approveDecision,
   assistantText,
   denyDecision,
@@ -21,6 +22,9 @@ import {
   type ApprovalDecision,
   type Approver,
   type Conversation,
+  type HitlResponse,
+  type HitlStatus,
+  type HumanLayer,
   type Message,
 } from "@jarvis/core";
 import { streamSse } from "./sse.ts";
@@ -115,7 +119,14 @@ interface WsFrame {
   id?: unknown;
   tool_call_id?: unknown;
   reason?: unknown;
+  // `hitl_response` (flat, as the web AskTextCard sends it).
+  request_id?: unknown;
+  status?: unknown;
+  payload?: unknown;
 }
+
+// Statuses the operator can return for a HITL request (mirrors core HitlStatus).
+const HITL_STATUSES = new Set(["approved", "denied", "submitted", "cancelled", "expired"]);
 
 function handleWsConnection(socket: WsSocket, state: AppState): void {
   let conv: Conversation = newConversation();
@@ -123,6 +134,8 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   let turnRunning = false;
   // tool_call_id → the ChannelApprover responder awaiting a decision.
   const pending = new Map<string, (d: ApprovalDecision) => void>();
+  // hitl request id → the ChannelHuman responder awaiting the operator's answer.
+  const pendingHitl = new Map<string, (r: HitlResponse) => void>();
 
   const send = (obj: unknown): void => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
@@ -132,6 +145,13 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   // its responder under the tool_call_id; an approve/deny frame resolves it.
   const approver: Approver = new ChannelApprover((p) => {
     pending.set(p.request.tool_call_id, p.respond);
+  });
+
+  // One HITL responder for the socket's lifetime: each `ask.*` request
+  // registers its responder under the request id; a `hitl_response` frame
+  // resolves it. Symmetric with the approver above.
+  const human: HumanLayer = new ChannelHuman((p) => {
+    pendingHitl.set(p.request.id, p.respond);
   });
 
   const runTurn = async (): Promise<void> => {
@@ -148,7 +168,7 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
           else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
         })
       : undefined;
-    const agent = state.createAgent(approver);
+    const agent = state.createAgent(approver, human);
     let cancelled = false;
     try {
       const it = (agent.runStream(conv) as AsyncIterable<AgentEvent>)[Symbol.asyncIterator]();
@@ -186,6 +206,11 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
     } finally {
       turnRunning = false;
       pending.clear();
+      // Drop any unanswered HITL responders. The web client cancels its stale
+      // cards on turn end (`finalizePendingHitls`); an awaiting tool whose turn
+      // was aborted lives only on the abandoned generator and is GC'd with it
+      // (same contract as the approval map above).
+      pendingHitl.clear();
     }
   };
 
@@ -276,6 +301,29 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         }
         pending.delete(msg.tool_call_id as string);
         respond(denyDecision(typeof msg.reason === "string" ? msg.reason : undefined));
+        return;
+      }
+      case "hitl_response": {
+        // Flat frame from the web AskTextCard:
+        // {type:"hitl_response", request_id, status, payload, reason}
+        const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+        const respond = requestId ? pendingHitl.get(requestId) : undefined;
+        if (!respond) {
+          send({ type: "error", message: "no pending hitl request" });
+          return;
+        }
+        const status: HitlStatus =
+          typeof msg.status === "string" && HITL_STATUSES.has(msg.status)
+            ? (msg.status as HitlStatus)
+            : "submitted";
+        const response: HitlResponse = {
+          request_id: requestId as string,
+          status,
+          payload: (msg.payload ?? null) as HitlResponse["payload"],
+          reason: typeof msg.reason === "string" ? msg.reason : null,
+        };
+        pendingHitl.delete(requestId as string);
+        respond(response);
         return;
       }
       default:

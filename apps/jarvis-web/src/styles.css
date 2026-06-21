@@ -60,6 +60,12 @@
   color-scheme: light;
   --bg: #ffffff;
   --sidebar-bg: #fafafa;
+  --sidebar-glass-bg: rgba(250, 250, 249, 0.62);
+  --sidebar-glass-border: rgba(215, 212, 205, 0.58);
+  --sidebar-glass-shadow: 0 18px 42px rgba(34, 32, 28, 0.055);
+  --sidebar-item-hover: rgba(38, 38, 36, 0.055);
+  --sidebar-item-active: rgba(38, 38, 36, 0.095);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.32);
   --panel: #ffffff;
   --panel-raised: #f6f6f5;
   --panel-hover: #eeeeec;
@@ -180,6 +186,12 @@
   color-scheme: dark;
   --bg: #090909;
   --sidebar-bg: #121212;
+  --sidebar-glass-bg: rgba(18, 18, 18, 0.66);
+  --sidebar-glass-border: rgba(64, 64, 64, 0.54);
+  --sidebar-glass-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+  --sidebar-item-hover: rgba(255, 255, 255, 0.072);
+  --sidebar-item-active: rgba(255, 255, 255, 0.12);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.055);
   --panel: #101010;
   --panel-raised: #171717;
   --panel-hover: #202020;
@@ -376,6 +388,27 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+html.jarvis-desktop-shell,
+body.jarvis-desktop-shell {
+  background: transparent;
+}
+
+html.jarvis-desktop-shell {
+  --desktop-titlebar-height: 38px;
+  --sidebar-glass-bg: rgba(250, 250, 249, 0.38);
+  --sidebar-glass-border: rgba(215, 212, 205, 0.34);
+  --sidebar-glass-shadow: 0 18px 42px rgba(34, 32, 28, 0.035);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.18);
+  --composer-scrim: rgba(255, 255, 255, 0);
+}
+
+html.jarvis-desktop-shell[data-theme="dark"] {
+  --sidebar-glass-bg: rgba(18, 18, 18, 0.42);
+  --sidebar-glass-border: rgba(82, 82, 82, 0.38);
+  --sidebar-glass-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.045);
+}
+
 button,
 select,
 textarea {
@@ -415,6 +448,25 @@ button {
   grid-template-areas: "sidebar chat rail";
   height: 100vh;
   min-height: 0;
+}
+
+.jarvis-desktop-shell #app {
+  position: relative;
+  height: 100vh;
+  padding-top: var(--desktop-titlebar-height);
+  background: transparent;
+  -webkit-app-region: no-drag;
+}
+
+.jarvis-desktop-shell #app::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 94px;
+  z-index: 1;
+  height: var(--desktop-titlebar-height);
+  -webkit-app-region: drag;
 }
 
 #sidebar { grid-area: sidebar; }
@@ -460,9 +512,20 @@ body.sidebar-closed #input-area {
   min-height: 0;
   margin: 10px 0 10px 10px;
   overflow: hidden;
-  background: var(--sidebar-bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background: var(--sidebar-glass-bg);
+  border: 1px solid var(--sidebar-glass-border);
+  border-radius: 11px;
+  box-shadow: var(--sidebar-glass-shadow);
+  background-clip: padding-box;
+  backdrop-filter: blur(22px) saturate(1.24);
+  -webkit-backdrop-filter: blur(22px) saturate(1.24);
+}
+
+.jarvis-desktop-shell #sidebar {
+  margin-top: 8px;
+  margin-bottom: 8px;
+  backdrop-filter: blur(34px) saturate(1.42);
+  -webkit-backdrop-filter: blur(34px) saturate(1.42);
 }
 
 .sidebar-topbar {
@@ -487,7 +550,7 @@ body.sidebar-closed #input-area {
 
 .ghost-icon:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-row {
@@ -517,12 +580,13 @@ body.sidebar-closed #input-area {
 
 .mode-tab:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-tab.active {
   color: var(--mode-text);
-  background: var(--mode-bg);
+  background: var(--sidebar-item-active);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
 }
 
 .mode-tab span {
@@ -554,11 +618,12 @@ body.sidebar-closed #input-area {
 
 .nav-item:hover {
   color: var(--text);
+  background: var(--sidebar-item-hover);
 }
 
 .nav-item.active {
   color: var(--text);
-  background: var(--panel-active);
+  background: var(--sidebar-item-active);
 }
 
 .sidebar-section {
@@ -591,10 +656,10 @@ body.sidebar-closed #input-area {
 
 .convo-auto-filter {
   display: inline-flex;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--sidebar-glass-border);
   border-radius: 999px;
   overflow: hidden;
-  background: transparent;
+  background: var(--sidebar-control-bg);
 }
 
 .convo-auto-filter-seg {
@@ -610,16 +675,16 @@ body.sidebar-closed #input-area {
 }
 
 .convo-auto-filter-seg + .convo-auto-filter-seg {
-  border-left: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-left: 1px solid var(--sidebar-glass-border);
 }
 
 .convo-auto-filter-seg:hover {
-  background: var(--surface-2, rgba(0, 0, 0, 0.04));
+  background: var(--sidebar-item-hover);
   color: var(--text);
 }
 
 .convo-auto-filter-seg.active {
-  background: var(--surface-2, rgba(0, 0, 0, 0.06));
+  background: var(--sidebar-item-active);
   color: var(--text);
 }
 
@@ -645,8 +710,8 @@ body.sidebar-closed #input-area {
 }
 
 .convo-group-toggle:hover {
-  background: var(--surface-2, rgba(0, 0, 0, 0.04));
-  border-color: var(--border, rgba(0, 0, 0, 0.08));
+  background: var(--sidebar-item-hover);
+  border-color: var(--sidebar-glass-border);
   color: var(--text);
 }
 
@@ -701,7 +766,7 @@ body.sidebar-closed #input-area {
 
 .mode-sidebar-row:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-sidebar-row span:last-child {
@@ -719,7 +784,7 @@ body.sidebar-closed #input-area {
 }
 
 .mode-sidebar-auto-switch:hover:not(:disabled) {
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-sidebar-auto-switch:focus-visible {
@@ -795,14 +860,14 @@ body.sidebar-closed #input-area {
 #running-list li:not(.convo-group-label):hover,
 #convo-list li:not(.convo-group-label):hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 #pinned-list li.active,
 #running-list li.active:not(.convo-group-label),
 #convo-list li.active:not(.convo-group-label) {
   color: var(--text);
-  background: var(--panel-active);
+  background: var(--sidebar-item-active);
 }
 
 #pinned-list .id,
@@ -847,6 +912,7 @@ body.sidebar-closed #input-area {
 
 .sidebar-footer {
   position: relative;
+  z-index: 30;
   flex: 0 0 auto;
   margin-top: auto;
   display: flex;
@@ -855,7 +921,12 @@ body.sidebar-closed #input-area {
   gap: 10px;
   padding: 12px 16px;
   color: var(--text-muted);
-  background: var(--sidebar-bg);
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--sidebar-glass-bg) 88%, var(--bg)),
+    transparent
+  );
+  border-top: 1px solid color-mix(in srgb, var(--sidebar-glass-border) 48%, transparent);
 }
 
 .account-chip {
@@ -875,7 +946,7 @@ body.sidebar-closed #input-area {
 .account-chip:hover,
 .account-chip[aria-expanded="true"] {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .account-chip span {
@@ -886,6 +957,7 @@ body.sidebar-closed #input-area {
 
 .account-menu-wrap {
   position: relative;
+  z-index: 80;
   min-width: 0;
 }
 
@@ -893,14 +965,16 @@ body.sidebar-closed #input-area {
   position: absolute;
   left: 0;
   bottom: calc(100% + 10px);
-  z-index: 70;
+  z-index: 120;
   width: 270px;
   padding: 10px;
   color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 96%, var(--panel-raised));
+  border: 1px solid var(--sidebar-glass-border);
   border-radius: 12px;
-  box-shadow: var(--shadow-popover);
+  box-shadow: 0 22px 48px rgba(27, 26, 24, 0.18), 0 4px 14px rgba(27, 26, 24, 0.08);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
 }
 
 .account-menu-title {
@@ -924,7 +998,7 @@ body.sidebar-closed #input-area {
 }
 
 .account-menu-row:hover {
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .account-menu-label {
@@ -936,7 +1010,7 @@ body.sidebar-closed #input-area {
 .account-menu-divider {
   height: 1px;
   margin: 8px 0;
-  background: var(--border-soft);
+  background: color-mix(in srgb, var(--sidebar-glass-border) 62%, transparent);
 }
 
 .account-menu-action {
@@ -956,7 +1030,7 @@ body.sidebar-closed #input-area {
 
 .account-menu-action:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 /* Settings link in the account dropdown — same row chrome as
@@ -976,12 +1050,12 @@ body.sidebar-closed #input-area {
   border-radius: 8px;
   text-decoration: none;
   font-size: var(--fs-14);
-  border-top: 1px solid var(--border-soft);
+  border-top: 1px solid color-mix(in srgb, var(--sidebar-glass-border) 62%, transparent);
   padding-top: 8px;
 }
 .account-menu-link:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 .account-menu-link svg {
   flex-shrink: 0;
@@ -8500,6 +8574,14 @@ body.approvals-open #panel {
     gap: 6px;
   }
   .settings-row-label { padding-top: 0; }
+  .settings-composio-form-head,
+  .settings-composio-pair {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  .settings-composio-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ---------- Projects ---------- */
@@ -12880,6 +12962,69 @@ select.settings-input {
 }
 .settings-mcp-health.error {
   color: #b91c1c;
+}
+
+/* ---- Composio connector management ---- */
+.settings-composio-form {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-composio-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-composio-form-head p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+  line-height: 1.45;
+}
+
+.settings-composio-title {
+  font-size: var(--fs-14);
+  font-weight: 650;
+}
+
+.settings-composio-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 12px;
+}
+
+.settings-composio-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.settings-composio-notice {
+  color: #15803d;
+  font-size: var(--fs-13);
+}
+
+.settings-composio-empty {
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+}
+
+.settings-composio-list {
+  margin-top: 4px;
+}
+
+.settings-composio-url {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .settings-form {

@@ -9,12 +9,16 @@ v7 (`/` → chat, `/settings` → settings center).
 ## Run
 
 ```
+# Hot-reload web dev (Vite on :5173, proxies the API to the Node server):
 npm install
-npm run build
-cargo run -p jarvis
+npm run dev
+
+# Or build the SPA + run the Node server with the embedded UI (one process,
+# served at :7001) — from the repo root:
+make dev
 ```
 
-Then open `http://localhost:7001/`. The page connects to
+Then open `http://localhost:7001/` (or the Vite URL in dev). The page connects to
 `ws://localhost:7001/v1/chat/ws` and uses the REST CRUD endpoints
 under `/v1/conversations/`. Persistence is optional: set
 `JARVIS_DB_URL` to enable the conversation rail.

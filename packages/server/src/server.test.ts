@@ -7,6 +7,7 @@ import {
   Agent,
   ToolRegistry,
   defaultAgentConfig,
+  requestHuman,
   type ChatRequest,
   type ChatResponse,
   type LlmChunk,
@@ -73,13 +74,25 @@ const dangerTool: Tool = {
   invoke: () => Promise.resolve("ran"),
 };
 
+// Surfaces a HITL question and returns the operator's answer (mirrors ask.text).
+const askTool: Tool = {
+  name: "ask.text",
+  description: "ask the operator",
+  parameters: { type: "object" },
+  category: "read",
+  invoke: async () => {
+    const r = await requestHuman({ id: "q1", transport: "text", kind: "input", title: "Your name?" });
+    return `hi ${String(r.payload)} [${r.status}]`;
+  },
+};
+
 function makeState(turns: ScriptTurn[], opts: { store?: MemoryConversationStore; tools?: ToolRegistry } = {}): AppState {
   const provider = new ScriptedProvider(turns);
   const tools = opts.tools ?? new ToolRegistry();
   return {
     store: opts.store,
-    createAgent: (approver) =>
-      new Agent(provider, { ...defaultAgentConfig("test-model"), tools, maxIterations: 5, approver }),
+    createAgent: (approver, human) =>
+      new Agent(provider, { ...defaultAgentConfig("test-model"), tools, maxIterations: 5, approver, human }),
   };
 }
 
@@ -326,6 +339,52 @@ test("WS: deny surfaces 'tool denied' and unknown approval id errors", async () 
     const toolEnd = await client.waitFor((f) => f.type === "tool_end");
     assert.match(toolEnd.content as string, /^tool denied: nope/);
     await client.waitFor((f) => f.type === "done");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: HITL flow — ask.text parks at hitl_request, response echoes and resolves it", async () => {
+  const tools = new ToolRegistry().register(askTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "tc1", name: "ask.text", arguments: {} }] }, { content: "finished" }], { tools }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "user", content: "go" });
+    // The agent parks awaiting the operator's answer.
+    const req = await client.waitFor((f) => f.type === "hitl_request");
+    assert.equal((req.request as { id: string }).id, "q1");
+    assert.equal((req.request as { title: string }).title, "Your name?");
+
+    // Answer with the flat frame the web AskTextCard sends.
+    client.send({ type: "hitl_response", request_id: "q1", status: "submitted", payload: "Ada", reason: null });
+
+    // The server echoes a nested hitl_response so the card resolves, then the
+    // operator's answer reaches the tool and the turn completes.
+    const echo = await client.waitFor((f) => f.type === "hitl_response");
+    assert.equal((echo.response as { status: string }).status, "submitted");
+    assert.equal((echo.response as { payload: string }).payload, "Ada");
+    const toolEnd = await client.waitFor((f) => f.type === "tool_end");
+    assert.equal(toolEnd.content as string, "hi Ada [submitted]");
+    await client.waitFor((f) => f.type === "done");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: hitl_response with no pending request errors", async () => {
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "x" }]));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "hitl_response", request_id: "nope", status: "submitted", payload: "x" });
+    const e = await client.waitFor((f) => f.type === "error");
+    assert.match(e.message as string, /no pending hitl request/);
   } finally {
     client.close();
     await app.close();

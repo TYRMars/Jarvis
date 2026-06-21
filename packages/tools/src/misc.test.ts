@@ -1,12 +1,12 @@
 // Tests for the always-on misc tool group: echo, time.now, ask.text,
 // plan.update, exit_plan, enter_plan_mode. Ported from the #[cfg(test)]
-// modules of the corresponding Rust files, plus the deferral behaviors for
-// ask.text / enter_plan_mode (no HITL / mode-signal channel in @jarvis/core).
+// modules of the corresponding Rust files. ask.text now routes through core's
+// HITL channel (`requestHuman`); enter_plan_mode is still a mode-signal stub.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { PlanItem } from "@jarvis/core";
-import { withPlan } from "@jarvis/core";
+import type { HitlRequest, HitlResponse, PlanItem } from "@jarvis/core";
+import { withHitl, withPlan } from "@jarvis/core";
 
 import { EchoTool } from "./echo.ts";
 import { TimeNowTool } from "./time.ts";
@@ -53,11 +53,26 @@ test("time.now: metadata", () => {
 
 // ------------------------------------------------------------- ask.text
 
-test("ask.text: defaults to input kind", async () => {
+test("ask.text: defaults to input kind; no transport → expired response", async () => {
   const out = await new AskTextTool().invoke({ title: "What?" });
-  const parsed = JSON.parse(out) as { deferred: string; request: { kind: string } };
-  assert.equal(parsed.deferred, "no HITL channel");
+  const parsed = JSON.parse(out) as { response: { status: string }; request: { kind: string } };
   assert.equal(parsed.request.kind, "input");
+  assert.equal(parsed.response.status, "expired");
+});
+
+test("ask.text: resolves through an installed HITL sink", async () => {
+  const sink = async (req: HitlRequest): Promise<HitlResponse> => ({
+    request_id: req.id,
+    status: "submitted",
+    payload: req.kind === "choice" ? "b" : "typed",
+  });
+  const out = await withHitl(sink, () =>
+    new AskTextTool().invoke({ kind: "choice", title: "Pick", options: ["a", "b"] }),
+  );
+  const parsed = JSON.parse(out) as { response: { status: string; payload: string }; request: { id: string } };
+  assert.equal(parsed.response.status, "submitted");
+  assert.equal(parsed.response.payload, "b");
+  assert.equal(parsed.response.status === "submitted" && parsed.request.id.startsWith("hitl_"), true);
 });
 
 test("ask.text: requires non-empty title", async () => {

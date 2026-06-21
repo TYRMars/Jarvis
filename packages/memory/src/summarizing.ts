@@ -62,25 +62,63 @@ import type { SummaryStore } from "./summary-store.ts";
 
 export type { SummaryStore } from "./summary-store.ts";
 
-/** Default summary prompt when the caller doesn't supply one. */
+/**
+ * Default summary prompt when the caller doesn't supply one.
+ *
+ * A STRUCTURED anchored template (borrowed from opencode's compaction
+ * `SUMMARY_TEMPLATE`) rather than a free paragraph: fixed sections give the
+ * model durable slots for goal / constraints / progress / decisions / next
+ * steps / critical context / files, which markedly improves recall of the facts
+ * later turns depend on. The output starts with `## Goal`, so the preamble
+ * stripper leaves it untouched (no opener match).
+ *
+ * NOTE: an "update-merge" variant (feed the prior summary back so the model
+ * revises rather than regenerates — opencode's `previousSummary` path) is
+ * deferred: `SummarizingMemory` is a single shared instance with one global
+ * cache slot, so there is no per-conversation prior summary that could be
+ * sourced safely without cross-conversation contamination.
+ */
 export const DEFAULT_SUMMARY_PROMPT = `\
-You are a conversation summariser. Compress the supplied excerpt into a \
-short paragraph. Preserve concrete facts, decisions, file paths, names, \
-numbers, and any in-flight tool results that later turns may rely on. \
-Do not invent details, do not editorialise, and do not add a preamble.
+You are compressing the earlier portion of a conversation into a durable, \
+structured summary that later turns will rely on. Output EXACTLY the Markdown \
+structure shown inside <template> and keep the section order unchanged. Do not \
+include the <template> tags in your response.
+<template>
+## Goal
+- [single-sentence task summary]
 
-BAD (do not do this):
-"The user wants me to summarise the conversation. I need to compress it into a short \
-paragraph. Key facts: ..."
+## Constraints & Preferences
+- [user constraints, preferences, specs, or "(none)"]
 
-GOOD:
-"User asked for a kanban review of the jarvis-roadmap project. Agent ran \
-requirement.list (30 items, 12 in_progress) and triage.scan_candidates (4 todo \
-markers). Decided to focus on Web UI experience cluster; user approved."
+## Progress
+### Done
+- [completed work or "(none)"]
 
-Output ONLY the summary content. No "The user wants me to...", no "I'll summarise...", \
-no "Here is a summary...", no "This excerpt..." — start directly with the substantive \
-fact, decision, or state.`;
+### In Progress
+- [current work or "(none)"]
+
+### Blocked
+- [blockers or "(none)"]
+
+## Key Decisions
+- [decision and why, or "(none)"]
+
+## Next Steps
+- [ordered next actions or "(none)"]
+
+## Critical Context
+- [important technical facts, errors, open questions, or "(none)"]
+
+## Relevant Files
+- [file or directory path: why it matters, or "(none)"]
+</template>
+
+Rules:
+- Keep every section, even when empty.
+- Use terse bullets, not prose paragraphs.
+- Preserve exact file paths, commands, error strings, identifiers, names, and numbers when known.
+- Do not invent details and do not editorialise.
+- Do not mention the summary process or that context was compacted — start directly with "## Goal".`;
 
 /**
  * Reserved budget (estimated tokens) carved out for the synthetic summary
@@ -89,8 +127,9 @@ fact, decision, or state.`;
  */
 const SUMMARY_RESERVE_TOKENS = 256;
 
-/** Cap on tokens the summarisation call may emit. */
-const DEFAULT_SUMMARY_MAX_TOKENS = 400;
+/** Cap on tokens the summarisation call may emit. Sized for the multi-section
+ * structured template (≈7 sections of terse bullets) rather than a paragraph. */
+const DEFAULT_SUMMARY_MAX_TOKENS = 800;
 
 /**
  * Consecutive summary-call failures that flip the circuit breaker open. While

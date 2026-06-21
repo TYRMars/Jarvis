@@ -15,13 +15,23 @@
 //      renamed `<prefix>.<tool>`. The returned clients are handed back so the
 //      caller keeps them alive for the process lifetime.
 //
-// Deferred (documented): the `memory.*` markdown surface, `channel.send`,
-// `roadmap.import`, `codex.run` / `claude_code.run` CLI sidecars, and the
-// `enter_plan_mode` coding-mode default — none are on the @jarvis/tools surface
-// or needed for the P1 server boot.
+// The `memory.*` markdown surface (list/read/write/delete + include directives +
+// git/iCloud sync) is wired below, gated on JARVIS_ENABLE_MEMORY (P8). Still
+// deferred (documented): `channel.send`, `roadmap.import`, `codex.run` /
+// `claude_code.run` CLI sidecars, and the `enter_plan_mode` coding-mode default.
 import { ToolRegistry, type LlmProvider } from "@jarvis/core";
-import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
-import { mcpClientConfig, type McpClient } from "@jarvis/mcp";
+import {
+  registerBuiltins,
+  registerMemoryTools,
+  MemorySyncTool,
+  MemorySyncSetupTool,
+  MemorySyncStatusTool,
+  MemoryICloudSetupTool,
+  type BuiltinsConfig,
+  type MemoryToolsConfig,
+} from "@jarvis/tools";
+import type { McpClient } from "@jarvis/mcp";
+import { LspManager } from "@jarvis/lsp";
 import { McpManager } from "@jarvis/server";
 import {
   InternalSubAgent,
@@ -44,6 +54,12 @@ export interface ToolRegistryBundle {
   mcpManager: McpManager;
   /** The subagent registry the adapters were built from (shared into AppState). */
   subagents: SubAgentRegistry;
+  /**
+   * LSP manager backing the post-edit diagnostics hook, when `JARVIS_ENABLE_LSP`
+   * is on and a write primitive is enabled. Holds long-lived language-server
+   * child processes — call `.dispose()` on shutdown. Absent otherwise.
+   */
+  lsp?: LspManager;
 }
 
 /** Dependency seam: how to build a fresh inner agent for an internal subagent. */
@@ -72,6 +88,7 @@ export async function buildToolRegistry(
   const builtins: BuiltinsConfig = {
     fsRoot: config.fsRoot,
     httpMaxBytes: config.gating.httpMaxBytes,
+    httpAllowPrivateHosts: config.gating.httpAllowPrivateHosts,
     enableFsWrite: config.gating.enableFsWrite,
     enableFsEdit: config.gating.enableFsEdit,
     enableFsPatch: config.gating.enableFsPatch,
@@ -91,7 +108,43 @@ export async function buildToolRegistry(
   if (stores.docs !== undefined) builtins.docs = stores.docs;
   if (stores.learningMemory !== undefined) builtins.learningMemory = stores.learningMemory;
 
+  // LSP-backed post-edit diagnostics: only meaningful when a write primitive is
+  // enabled (otherwise no edits to diagnose). Language servers are spawned on
+  // demand and PATH-probed, so an absent server cleanly no-ops.
+  const g = config.gating;
+  const lsp =
+    config.enableLsp && (g.enableFsWrite || g.enableFsEdit || g.enableFsPatch)
+      ? new LspManager({
+          root: config.fsRoot,
+          // Composition root reads the OS PATH so the library's server probe
+          // stays env-free (per the no-process.env rule for library packages).
+          search: { path: process.env.PATH, pathExt: process.env.PATHEXT },
+        })
+      : undefined;
+  if (lsp) builtins.diagnostics = (paths) => lsp.report(paths);
+
   registerBuiltins(registry, builtins);
+
+  // Markdown `memory.*` surface (list/read/write/delete + include directives)
+  // plus the git/iCloud sync tools, gated on JARVIS_ENABLE_MEMORY. The sync set
+  // adapts to the configured backend so a git deployment never sees iCloud-only
+  // tools and vice versa (mirrors the Rust `enable_memory` / `enable_memory_sync`
+  // wiring). The same tool impls back the `/v1/memory/*` REST routes.
+  if (config.enableMemory) {
+    const memoryConfig: MemoryToolsConfig =
+      config.memoryUserRoot !== undefined
+        ? { workspaceRoot: config.fsRoot, userRoot: config.memoryUserRoot }
+        : { workspaceRoot: config.fsRoot };
+    registerMemoryTools(registry, memoryConfig);
+    if (config.memorySyncBackend === "git") {
+      registry.register(new MemorySyncTool(memoryConfig));
+      registry.register(new MemorySyncSetupTool(memoryConfig));
+      registry.register(new MemorySyncStatusTool(memoryConfig));
+    } else if (config.memorySyncBackend === "icloud") {
+      registry.register(new MemoryICloudSetupTool(memoryConfig));
+      registry.register(new MemorySyncStatusTool(memoryConfig));
+    }
+  }
 
   // Built-in subagents + their `subagent.<name>` tool adapters. Only wired when
   // a createAgent factory is available (the inner loop needs a provider/tools).
@@ -110,10 +163,10 @@ export async function buildToolRegistry(
   // config fails the boot, same as the prior connectAllMcp.
   const mcpManager = new McpManager(registry);
   for (const s of config.mcpServers) {
-    await mcpManager.add(mcpClientConfig(s.prefix, s.command, s.args));
+    await mcpManager.add(s);
   }
 
-  return { registry, mcpClients: mcpManager.clients(), mcpManager, subagents };
+  return { registry, mcpClients: mcpManager.clients(), mcpManager, subagents, ...(lsp ? { lsp } : {}) };
 }
 
 /** Coding mode = any write/exec primitive enabled (mirrors the Rust switch). */

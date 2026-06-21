@@ -217,7 +217,7 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
 
 ## P8 — 收尾与下线 `phase:8`
 
-- [~] **8.1** 拆全部代理转发，Node 成为独立服务 `size:M` `area:server`
+- [x] **8.1** 拆全部代理转发，Node 成为独立服务 `size:M` `area:server`
       进行中（无代理层需拆——P0.5 代理中间件从未落地，Rust/Node 各自独立；本任务实为补齐 Node `/v1` 对 Rust 的契约缺口，缺口由 P7.10 契约冒烟测试发现，以 iOS/web 契约 + `apps/jarvis-ios/Tests` 黄金样本为准）：
       ✅ `GET /v1/providers` 只读目录（`{default, providers}`，model-picker 用；`buildProviderCatalog` 从配置 provider + capability catalog 构建，挂到 `AppState.providerCatalog`，路由独立于 ProviderAdmin、无 catalog 时回空表而非 503）。
       ✅ **`/v1` 全量契约审计完成** → [rust-decommission-p8-gaps.md](rust-decommission-p8-gaps.md)（70 个差距，按 blocker/quick-win/operator 分级 + 客户端消费 + 规模）。
@@ -231,16 +231,21 @@ P5 周边域 / P6 provider补全 可在 P3 后并行 → P7 apps(组合根+Elect
       ✅ `/v1/routing`×4(ModelRoutePolicy CRUD;summarization slot 接入 SummarizingMemory resolver,非空心)。
       ✅ workspace commit/PR(`/commit` + `/pr/preview` + `/pr`,git + gh)。
       ✅ requirement todos CRUD + batch + link + `/runs/:id/verify`(plan shell 执行器) + `/verification`(存储)。
-      ✅ memory-sync 簇(8 路由)注册为优雅 503 stub(web 面板 503-aware → "未配置";完整 git/iCloud 子系统留作后续,见 gaps 文档)。
-      **→ Node 已达 blocker 级平价(server 504 测试全绿)。**
+      ✅ memory-sync 簇(8 路由)从 503 stub 补成真实实现(P8:`memory.{sync,sync_setup,sync_setup_icloud,sync_status}` git/iCloud 工具移植 + include 路由接通;`memory-sync-routes.ts` 直接构造 tool impl 调用,`AppState.memoryRuntime` 接线,`JARVIS_ENABLE_MEMORY`/`JARVIS_MEMORY_SYNC_BACKEND` 门控)。
+      **→ Node 已达 blocker 级平价并补齐全部缺口(server 测试全绿)。**
 - [x] **8.2** ✅ 下线 Rust 服务 + 归档旧 crate `size:S` `area:infra`
       `git rm` 全部 Rust(`crates/`×20 + `apps/{jarvis,jarvis-cli,jarvis-desktop}` + `Cargo.toml/lock`);历史保留(tag `rust-archive-pre-takedown`)。
       Node 成为唯一运行时:Makefile/Dockerfile/docker-compose 改 Node;删 Rust CI(rust/release/desktop-release.yml,保留 node*/ios);CLAUDE.md 加横幅 + Commands 改 Node。
       余项归 8.5:CLAUDE.md/README/ARCHITECTURE 全文重写(架构段仍按 crate↔`@jarvis/*` 映射有效)。
-- [ ] **8.3** 性能/压测对照（chat 流式吞吐/延迟、内存占用） `size:M` `risk:high`
-- [ ] **8.4** OTel 全链路验证（`jarvis.agent.run` / `gen_ai.tool.call` span） `size:S`
-- [ ] **8.5** 重写 `CLAUDE.md` + 文档 + README `size:M` `area:infra`
-- [ ] **8.6** 安全基线复核（Electron contextIsolation、沙箱、OAuth、渠道签名） `size:M` `risk:high`
+- [x] **8.3** ✅ 性能基线（Rust 已下线,无对照对象 → 建 Node 自身基线）`size:M` `risk:high`
+      `scripts/perf-baseline.ts`(`make perf`):流式吞吐/TTFT、阻塞循环单轮延迟、内存,用确定性 stub provider。结论:harness 开销可忽略(~4.3M chunks/s 转发、亚微秒单轮、~80MB RSS),延迟由 provider/网络主导。见 [docs/observability/perf-baseline.md](../observability/perf-baseline.md)。
+- [x] **8.4** ✅ OTel 链路（`jarvis.agent.run` / `gen_ai.tool.call` span）`size:S`
+      `@jarvis/core` 经 `@opentelemetry/api` 发 span(无 SDK 时 no-op);SDK/exporter 在 `packages/jarvis-app/otel.ts` 组合根注册(`JARVIS_OTEL_ENABLED`/`JARVIS_OTEL_CONSOLE`/`OTEL_EXPORTER_OTLP_ENDPOINT`)。in-memory-exporter 测试断言两类 span 名+属性。
+- [x] **8.5** ✅ 重写 `CLAUDE.md` + README + ARCHITECTURE(Node-native) `size:M` `area:infra`
+- [x] **8.6** ✅ 安全基线复核 + 加固 `size:M` `risk:high`
+      6 维度对抗式审计(27 确认/27 驳回)。修:auth.json 0o600 + 刷新错误不泄漏 body、http.fetch SSRF 守卫 + 敏感响应头过滤、grep ReDoS 上限、sandbox 路径深度上限、WeCom 重放窗口(opt-in)。接受设计内的无鉴权 `/v1`(本地优先);余项见 [docs/security/p8-security-baseline.md](../security/p8-security-baseline.md)。
+
+**→ P8 收尾完成。Node 为唯一运行时,契约 + 非阻塞项全部落地。**
 
 ---
 
