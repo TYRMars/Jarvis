@@ -21,6 +21,7 @@
     "@jarvis/core": "workspace:*",
     "@jarvis/learning": "workspace:*",
     "@jarvis/llm": "workspace:*",
+    "@jarvis/lsp": "workspace:*",
     "@jarvis/mcp": "workspace:*",
     "@jarvis/memory": "workspace:*",
     "@jarvis/observability": "workspace:*",

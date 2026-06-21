@@ -1,15 +1,11 @@
 // Adapt external MCP servers as `@jarvis/core` Tool implementations.
 // Ported from harness-mcp/src/client.rs.
 //
-// Spawn an MCP server as a child process over stdio, discover its tools on
-// connect, and adapt each one into a harness `Tool` renamed `<prefix>.<name>`
-// so tools from multiple servers don't collide. Every remote tool call becomes
-// a `tools/call` JSON-RPC request under the hood.
-//
-// The Rust original models multiple transports via `McpTransport`; today only
-// `stdio` is fully wired. `http` / `streamable-http` are recognised by the API
-// surface but `connect` rejects them so callers (config, REST API, UI) can build
-// against the final shape now.
+// Connect to an MCP server, discover its tools, and adapt each one into a
+// harness `Tool` renamed `<prefix>.<name>` so tools from multiple servers don't
+// collide. Every remote tool call becomes a `tools/call` JSON-RPC request under
+// the hood. Stdio servers run as child processes; HTTP servers use MCP's
+// Streamable HTTP transport and may carry static request headers.
 //
 // The SDK `Client` owns the spawned child process through its
 // `StdioClientTransport`; `McpClient` owns that `Client` and exposes
@@ -20,6 +16,7 @@ import { type Tool, type ToolCategory, ToolRegistry } from "@jarvis/core";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 /** Identity advertised to the remote server during the MCP handshake. */
@@ -146,17 +143,7 @@ export class McpClient {
 
   /** Spawn / connect to the server described by `cfg` and perform the handshake. */
   static async connect(cfg: McpClientConfig): Promise<McpClient> {
-    if (cfg.transport.type !== "stdio") {
-      throw new McpError(
-        "http transport is not wired in this build (only stdio is supported)",
-      );
-    }
-    const { command, args, env } = cfg.transport;
-    const transport: Transport = new StdioClientTransport({
-      command,
-      ...(args ? { args } : {}),
-      ...(env ? { env } : {}),
-    });
+    const transport = buildTransport(cfg.transport);
     const client = new Client(CLIENT_INFO, { capabilities: {} });
     try {
       await client.connect(transport);
@@ -257,6 +244,31 @@ export class McpClient {
   /** Alias for `shutdown()` (drop semantics). */
   async close(): Promise<void> {
     await this.#close();
+  }
+}
+
+function buildTransport(transport: McpTransport): Transport {
+  switch (transport.type) {
+    case "stdio": {
+      const { command, args, env } = transport;
+      return new StdioClientTransport({
+        command,
+        ...(args ? { args } : {}),
+        ...(env ? { env } : {}),
+      });
+    }
+    case "http":
+    case "streamable-http": {
+      let url: URL;
+      try {
+        url = new URL(transport.url);
+      } catch {
+        throw new McpError(`invalid mcp ${transport.type} url: ${transport.url}`);
+      }
+      return new StreamableHTTPClientTransport(url, {
+        ...(transport.headers ? { requestInit: { headers: transport.headers } } : {}),
+      });
+    }
   }
 }
 

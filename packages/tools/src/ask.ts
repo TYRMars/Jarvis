@@ -6,35 +6,20 @@
 // argument. Future modalities can live beside it as `ask.voice`, `ask.video`,
 // etc. while reusing the same native HITL request/response protocol.
 //
-// DEFERRAL: the Rust version calls `harness_core::request_human(req)` which
-// publishes a PendingHitl over a task-local mpsc channel installed by the
-// agent loop / transport, then awaits the human's HitlResponse. @jarvis/core
-// does not yet expose a HITL channel (no `request_human` / `with_hitl`), so
-// this port is best-effort: it does the full arg validation and builds the
-// HitlRequest, but — having no transport to await — returns the request as
-// JSON tagged `"deferred": "no HITL channel"` so the agent loop has a textual
-// result and the clarification text is surfaced. Swap the body of #dispatch
-// for a real `requestHuman(req)` await once core lands the channel.
+// It builds a HitlRequest and hands it to `@jarvis/core`'s `requestHuman`,
+// which the streaming agent loop bridges to the transport's HumanLayer (the
+// WS `ChannelHuman`): the operator's card answer flows back as a HitlResponse.
+// The invoke returns `{request, response}` as JSON so the model sees both the
+// question it asked and the answer. Outside a HITL scope (blocking run / no
+// transport) `requestHuman` resolves an `expired` response, so it never hangs.
 import type { JsonValue } from "@jarvis/core";
 import type { Tool, ToolCategory } from "@jarvis/core";
+import { requestHuman } from "@jarvis/core";
+import type { HitlKind, HitlOption, HitlRequest } from "@jarvis/core";
 
-export type HitlKind = "confirm" | "input" | "choice" | "review";
-
-export interface HitlOption {
-  value: string;
-  label: string;
-}
-
-export interface HitlRequest {
-  id: string;
-  transport: "text" | "voice" | "video";
-  kind: HitlKind;
-  title: string;
-  body?: string;
-  options?: HitlOption[];
-  default_value?: JsonValue;
-  metadata?: JsonValue;
-}
+// Re-export the wire types so `@jarvis/tools` consumers keep importing them
+// from here even though they now live in `@jarvis/core`.
+export type { HitlKind, HitlOption, HitlRequest } from "@jarvis/core";
 
 let nextId = 1;
 function mintId(): string {
@@ -170,10 +155,12 @@ export class AskTextTool implements Tool {
     return this.#dispatch(req);
   }
 
-  // DEFERRED dispatch: no HITL transport in @jarvis/core yet. Return the built
-  // request as JSON so the clarification text reaches the model. Replace with
-  // `JSON.stringify(await requestHuman(req))` once core exposes the channel.
-  #dispatch(req: HitlRequest): Promise<string> {
-    return Promise.resolve(JSON.stringify({ deferred: "no HITL channel", request: req }));
+  // Surface the request to the operator via core's HITL channel and await the
+  // answer. The loop emits the `hitl_request` card and resolves this once the
+  // operator responds (or immediately with `expired` when no transport is
+  // installed). Return both sides as JSON so the model has the full exchange.
+  async #dispatch(req: HitlRequest): Promise<string> {
+    const response = await requestHuman(req);
+    return JSON.stringify({ request: req, response });
   }
 }

@@ -30,7 +30,8 @@ import {
   type BuiltinsConfig,
   type MemoryToolsConfig,
 } from "@jarvis/tools";
-import { mcpClientConfig, type McpClient } from "@jarvis/mcp";
+import type { McpClient } from "@jarvis/mcp";
+import { LspManager } from "@jarvis/lsp";
 import { McpManager } from "@jarvis/server";
 import {
   InternalSubAgent,
@@ -53,6 +54,12 @@ export interface ToolRegistryBundle {
   mcpManager: McpManager;
   /** The subagent registry the adapters were built from (shared into AppState). */
   subagents: SubAgentRegistry;
+  /**
+   * LSP manager backing the post-edit diagnostics hook, when `JARVIS_ENABLE_LSP`
+   * is on and a write primitive is enabled. Holds long-lived language-server
+   * child processes — call `.dispose()` on shutdown. Absent otherwise.
+   */
+  lsp?: LspManager;
 }
 
 /** Dependency seam: how to build a fresh inner agent for an internal subagent. */
@@ -101,6 +108,21 @@ export async function buildToolRegistry(
   if (stores.docs !== undefined) builtins.docs = stores.docs;
   if (stores.learningMemory !== undefined) builtins.learningMemory = stores.learningMemory;
 
+  // LSP-backed post-edit diagnostics: only meaningful when a write primitive is
+  // enabled (otherwise no edits to diagnose). Language servers are spawned on
+  // demand and PATH-probed, so an absent server cleanly no-ops.
+  const g = config.gating;
+  const lsp =
+    config.enableLsp && (g.enableFsWrite || g.enableFsEdit || g.enableFsPatch)
+      ? new LspManager({
+          root: config.fsRoot,
+          // Composition root reads the OS PATH so the library's server probe
+          // stays env-free (per the no-process.env rule for library packages).
+          search: { path: process.env.PATH, pathExt: process.env.PATHEXT },
+        })
+      : undefined;
+  if (lsp) builtins.diagnostics = (paths) => lsp.report(paths);
+
   registerBuiltins(registry, builtins);
 
   // Markdown `memory.*` surface (list/read/write/delete + include directives)
@@ -141,10 +163,10 @@ export async function buildToolRegistry(
   // config fails the boot, same as the prior connectAllMcp.
   const mcpManager = new McpManager(registry);
   for (const s of config.mcpServers) {
-    await mcpManager.add(mcpClientConfig(s.prefix, s.command, s.args));
+    await mcpManager.add(s);
   }
 
-  return { registry, mcpClients: mcpManager.clients(), mcpManager, subagents };
+  return { registry, mcpClients: mcpManager.clients(), mcpManager, subagents, ...(lsp ? { lsp } : {}) };
 }
 
 /** Coding mode = any write/exec primitive enabled (mirrors the Rust switch). */

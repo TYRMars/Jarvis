@@ -189,6 +189,8 @@ All environment variables are read by the composition root (`packages/jarvis-app
 | `JARVIS_FS_ROOT` | Default workspace root for filesystem, git, and shell tools (`--workspace <path>` overrides). |
 | `JARVIS_DB_URL` | Conversation/project store URL. Defaults to `json:///<data>/jarvis/conversations`; the scheme selects the backend (`json:` / `sqlite:` / `postgres://` / `mysql://`). |
 | `JARVIS_MCP_SERVERS` | Comma-separated external MCP servers, such as `fs=uvx mcp-server-filesystem /tmp`. |
+| `JARVIS_COMPOSIO_MCP_URL` | Full Composio MCP URL to register as a remote MCP server. |
+| `JARVIS_COMPOSIO_MCP_SERVER_ID`, `JARVIS_COMPOSIO_USER_ID`, `COMPOSIO_API_KEY` | Alternative Composio setup: Jarvis builds the MCP URL and sends `COMPOSIO_API_KEY` as `x-api-key`. |
 | `JARVIS_MEMORY_MODE` | Short-term memory mode: `window` (default) or `summary`. |
 | `JARVIS_MEMORY_TOKENS` | Heuristic short-term memory budget. |
 | `JARVIS_MEMORY_MODEL` | Model used for `summary` memory mode (defaults to `JARVIS_MODEL`). |
@@ -286,6 +288,15 @@ Or consume external MCP servers at runtime:
 
 ```bash
 export JARVIS_MCP_SERVERS='fs=uvx mcp-server-filesystem /tmp,git=uvx mcp-server-git'
+```
+
+Composio-managed MCP endpoints can be registered directly:
+
+```bash
+export COMPOSIO_API_KEY=...
+export JARVIS_COMPOSIO_MCP_SERVER_ID=mcp_...
+export JARVIS_COMPOSIO_USER_ID=user-123
+# or: export JARVIS_COMPOSIO_MCP_URL='https://backend.composio.dev/v3/mcp/...?...'
 ```
 
 ## Development

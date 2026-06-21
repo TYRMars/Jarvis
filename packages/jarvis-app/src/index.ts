@@ -13,6 +13,7 @@ export {
   loadConfig,
   defaultModel,
   parseAddr,
+  parseComposioMcpServer,
   parseMcpServers,
 } from "./config.ts";
 

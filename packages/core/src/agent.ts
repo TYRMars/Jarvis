@@ -15,9 +15,12 @@
 //   * runStream() yields `approval_request` BEFORE awaiting the approver so an
 //     interactive transport has a chance to decide; `tool_start`/`tool_end`
 //     always wrap the call (even on the deny path).
+//   * a tool calling `requestHuman` (e.g. `ask.text`) yields `hitl_request`
+//     BEFORE awaiting the operator and `hitl_response` once they answer, both
+//     between `tool_start` and `tool_end`. Only active when config.human is set.
 //
 // Deferred to later phases (documented in nodejs-rewrite-tasklist.zh-CN.md):
-// parallel tool dispatch, tool_filter (Plan Mode), session workspace, HITL,
+// parallel tool dispatch, tool_filter (Plan Mode), session workspace,
 // memory-compaction / subagent / fallback / mode events, Responses chaining.
 import type { Conversation } from "./conversation.ts";
 import { systemMessage, toolResult, type Message, type ToolCall } from "./message.ts";
@@ -35,6 +38,7 @@ import type { Approver, ApprovalDecision, ApprovalRequest } from "./approval.ts"
 import type { Memory } from "./memory.ts";
 import { withPlan, type PlanItem } from "./plan.ts";
 import { withProgress, type ToolProgress } from "./progress.ts";
+import { withHitl, type HumanLayer, type HitlRequest, type HitlResponse } from "./hitl.ts";
 import { errorText, MaxIterationsError, MemoryError } from "./error.ts";
 import type { JsonValue } from "./json.ts";
 import { context, trace, type Span } from "@opentelemetry/api";
@@ -48,6 +52,13 @@ export interface AgentConfig {
   temperature?: number;
   memory?: Memory;
   approver?: Approver;
+  /**
+   * Transport-facing HITL responder. When set, the streaming loop installs a
+   * `withHitl` sink so `ask.*` tools can surface a question via `requestHuman`
+   * and block on the operator's answer. Absent → `requestHuman` resolves
+   * `expired` and the tool returns without a human round-trip.
+   */
+  human?: HumanLayer;
   /** Replace a stale leading System message on resume. Default: true. */
   refreshSystemPromptOnResume: boolean;
 }
@@ -72,6 +83,8 @@ export type AgentEvent =
   | { type: "assistant_message"; message: Message; finish_reason: FinishReason }
   | { type: "approval_request"; id: string; name: string; arguments: JsonValue }
   | { type: "approval_decision"; id: string; name: string; decision: ApprovalDecision }
+  | { type: "hitl_request"; request: HitlRequest }
+  | { type: "hitl_response"; response: HitlResponse }
   | { type: "tool_start"; id: string; name: string; arguments: JsonValue }
   | { type: "tool_progress"; id: string; name: string; stream: string; chunk: string }
   | { type: "tool_end"; id: string; name: string; content: string }
@@ -231,14 +244,27 @@ export class Agent {
             yield { type: "tool_start", id: call.id, name: call.name, arguments: call.arguments };
 
             // Stream plan/progress emitted during invoke, live, then tool_end.
+            // When a HITL transport is wired (config.human), also install the
+            // human channel so `ask.*` tools can surface a question and block on
+            // the operator's answer: the sink emits `hitl_request` live, awaits
+            // the transport, then emits the `hitl_response` echo the card needs.
             const queue = new EventQueue<AgentEvent>();
             const planSink = (items: PlanItem[]): void => queue.push({ type: "plan_update", items });
             const progressSink = (p: ToolProgress): void =>
               queue.push({ type: "tool_progress", id: call.id, name: call.name, stream: p.stream, chunk: p.chunk });
-
-            const invoked = withPlan(planSink, () =>
-              withProgress(progressSink, () => runOne(this.config.tools, call, decision, span)),
-            ).finally(() => queue.close());
+            const human = this.config.human;
+            const hitlSink = async (req: HitlRequest): Promise<HitlResponse> => {
+              if (!human) return { request_id: req.id, status: "expired", reason: "no HITL transport available" };
+              queue.push({ type: "hitl_request", request: req });
+              const response = await human.request(req);
+              queue.push({ type: "hitl_response", response });
+              return response;
+            };
+            const dispatch = (): Promise<string> =>
+              withPlan(planSink, () =>
+                withProgress(progressSink, () => runOne(this.config.tools, call, decision, span)),
+              );
+            const invoked = (human ? withHitl(hitlSink, dispatch) : dispatch()).finally(() => queue.close());
 
             for await (const ev of queue.drain()) yield ev;
             const content = await invoked;

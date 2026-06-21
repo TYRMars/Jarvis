@@ -70,6 +70,20 @@ export {
 } from "./approval.ts";
 export { type PlanItem, type PlanStatus, emitPlan, planActive, withPlan } from "./plan.ts";
 export { type ToolProgress, emitProgress, progressActive, withProgress } from "./progress.ts";
+export {
+  type HitlKind,
+  type HitlOption,
+  type HitlRequest,
+  type HitlStatus,
+  type HitlResponse,
+  type HumanLayer,
+  type PendingHitl,
+  ChannelHuman,
+  expiredResponse,
+  requestHuman,
+  hitlActive,
+  withHitl,
+} from "./hitl.ts";
 export { type Memory } from "./memory.ts";
 export {
   type AgentConfig,

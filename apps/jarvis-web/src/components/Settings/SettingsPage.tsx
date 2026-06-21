@@ -190,6 +190,8 @@ const LEGACY_HASH_MAP: Record<string, { id: string; tab?: string }> = {
   providers: { id: "models" },
   "agent-profiles": { id: "subagents" },
   mcp: { id: "extensions", tab: "mcp" },
+  connectors: { id: "extensions", tab: "connectors" },
+  composio: { id: "extensions", tab: "connectors" },
   skills: { id: "extensions", tab: "skills" },
   plugins: { id: "extensions", tab: "plugins" },
   soul: { id: "persona" },

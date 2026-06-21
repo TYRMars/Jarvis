@@ -21,6 +21,7 @@ import type { MemoryStore as LearningMemoryStore } from "@jarvis/learning";
 import type { ActivityStore, DocStore, ProjectStore, RequirementStore } from "@jarvis/project";
 import type { TodoStore } from "@jarvis/todo";
 
+import type { DiagnosticsHook } from "./diagnostics.ts";
 import { AskTextTool } from "./ask.ts";
 import { ProjectChecksTool } from "./checks.ts";
 import { EchoTool } from "./echo.ts";
@@ -101,6 +102,14 @@ export interface BuiltinsConfig {
    * execution against the host is the most dangerous primitive in the toolbox.
    */
   enableShellExec?: boolean;
+  /**
+   * Optional post-write diagnostics hook (an `@jarvis/lsp`-backed reporter,
+   * supplied by the composition root when `JARVIS_ENABLE_LSP` is set). When
+   * present, `fs.write` / `fs.edit` / `fs.patch` append an LSP `<diagnostics>`
+   * block for the files they wrote, so the model sees errors its edit
+   * introduced. Best-effort: never blocks or breaks an edit. Absent → no change.
+   */
+  diagnostics?: DiagnosticsHook;
   /**
    * Default timeout (ms) for `shell.exec` invocations that don't supply one.
    * The model can still pass a smaller value per call. Defaults to 30000.
@@ -224,15 +233,18 @@ export function registerBuiltins(registry: ToolRegistry, config: BuiltinsConfig 
     registry.register(new EnterPlanModeTool());
   }
 
-  // Write / exec primitives: opt-in + approval-gated.
+  // Write / exec primitives: opt-in + approval-gated. The diagnostics hook
+  // (when configured) is threaded into each so a successful write surfaces the
+  // file's LSP errors back to the model.
+  const diagnostics = config.diagnostics;
   if (config.enableFsWrite ?? false) {
-    registry.register(new FsWriteTool({ root }));
+    registry.register(new FsWriteTool({ root, diagnostics }));
   }
   if (config.enableFsEdit ?? false) {
-    registry.register(new FsEditTool({ root }));
+    registry.register(new FsEditTool({ root, diagnostics }));
   }
   if (config.enableFsPatch ?? false) {
-    registry.register(new FsPatchTool({ root }));
+    registry.register(new FsPatchTool({ root, diagnostics }));
   }
   if (enableGitRead) {
     registry.register(new GitStatusTool({ root }));

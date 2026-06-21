@@ -1,7 +1,7 @@
 // Server-shared application state. Ported (minimal P2 subset) from
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
-import type { Agent, Approver, LlmProvider, ToolRegistry } from "@jarvis/core";
+import type { Agent, Approver, HumanLayer, LlmProvider, ToolRegistry } from "@jarvis/core";
 import type { ChatRunRegistry } from "./chat-runs.ts";
 import type { McpManager } from "./mcp-manager.ts";
 import type { RoutePolicyStore } from "./route-policy.ts";
@@ -109,10 +109,11 @@ export interface ServerInfo {
 export interface AppState {
   /**
    * Build an Agent for one request. The optional `approver` is the per-socket
-   * gate the WebSocket transport supplies (mirrors Rust `state.build_agent`).
-   * The blocking / SSE chat routes call this with no approver.
+   * gate the WebSocket transport supplies (mirrors Rust `state.build_agent`);
+   * the optional `human` is the per-socket HITL responder for `ask.*` tools.
+   * The blocking / SSE chat routes call this with neither.
    */
-  createAgent(approver?: Approver): Agent;
+  createAgent(approver?: Approver, human?: HumanLayer): Agent;
   /**
    * The shared tool registry that `createAgent` builds agents from. Surfaced
    * here so `GET /v1/tools` can list the catalog (including muted tools) and

@@ -114,6 +114,9 @@ importers:
       '@jarvis/llm':
         specifier: workspace:*
         version: link:../llm
+      '@jarvis/lsp':
+        specifier: workspace:*
+        version: link:../lsp
       '@jarvis/mcp':
         specifier: workspace:*
         version: link:../mcp
@@ -204,6 +207,8 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/lsp: {}
 
   packages/mcp:
     dependencies:

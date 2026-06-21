@@ -8500,6 +8500,14 @@ body.approvals-open #panel {
     gap: 6px;
   }
   .settings-row-label { padding-top: 0; }
+  .settings-composio-form-head,
+  .settings-composio-pair {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  .settings-composio-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ---------- Projects ---------- */
@@ -12880,6 +12888,69 @@ select.settings-input {
 }
 .settings-mcp-health.error {
   color: #b91c1c;
+}
+
+/* ---- Composio connector management ---- */
+.settings-composio-form {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-composio-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-composio-form-head p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+  line-height: 1.45;
+}
+
+.settings-composio-title {
+  font-size: var(--fs-14);
+  font-weight: 650;
+}
+
+.settings-composio-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 12px;
+}
+
+.settings-composio-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.settings-composio-notice {
+  color: #15803d;
+  font-size: var(--fs-13);
+}
+
+.settings-composio-empty {
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+}
+
+.settings-composio-list {
+  margin-top: 4px;
+}
+
+.settings-composio-url {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .settings-form {

@@ -44,6 +44,10 @@ export { FsFindTool } from "./fs-find.ts";
 export type { FsFindConfig } from "./fs-find.ts";
 export { FsPatchTool } from "./patch.ts";
 
+// Optional post-write diagnostics hook (LSP edit→verify loop). The composition
+// root supplies an `@jarvis/lsp`-backed implementation via `BuiltinsConfig`.
+export { withDiagnostics, type DiagnosticsHook } from "./diagnostics.ts";
+
 // Shell execution. Opt-in + approval-gated.
 export { ShellExecTool, SHELL_DEFAULT_MAX_BYTES, SHELL_DEFAULT_TIMEOUT_MS } from "./shell.ts";
 export type { ShellExecConfig } from "./shell.ts";

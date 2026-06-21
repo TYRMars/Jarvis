@@ -17,7 +17,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider, type Memory } from "@jarvis/core";
+import { Agent, ToolRegistry, type AgentConfig, type Approver, type HumanLayer, type LlmProvider, type Memory } from "@jarvis/core";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
@@ -290,17 +290,19 @@ export async function buildAppState(
   }
   const memory = buildMemory(config, provider, summaryStore, routePolicy);
 
-  const createAgent = (approver?: Approver): Agent => {
+  const createAgent = (approver?: Approver, human?: HumanLayer): Agent => {
     const agentConfig: AgentConfig = {
       model: config.model,
       systemPrompt,
       // The registry is shared (read-only at request time); the per-socket
-      // approver lives on AgentConfig, not the registry, so this is safe.
+      // approver / human responder live on AgentConfig, not the registry, so
+      // this is safe.
       tools: toolBundle.registry,
       maxIterations: 80,
       refreshSystemPromptOnResume: true,
     };
     if (approver !== undefined) agentConfig.approver = approver;
+    if (human !== undefined) agentConfig.human = human;
     if (memory !== undefined) agentConfig.memory = memory;
     return new Agent(provider, agentConfig);
   };

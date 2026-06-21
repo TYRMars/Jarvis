@@ -46,6 +46,7 @@ Status legend in each doc's header:
 | [otel-native-eval-harness.zh-CN.md](otel-native-eval-harness.zh-CN.md) | OTel 原生 trace 埋点 + Eval 评测看板 | In progress — span emission (`jarvis.agent.run` / `gen_ai.tool.call`) + ObservabilityStore + `/v1/observability/*` + `/v1/evals/*` read side; eval suite **runner/grader** + `jarvis eval` CLI pending |
 | [subagents.zh-CN.md](subagents.zh-CN.md) | SubAgent 体系（review / claude_code / codex / reader / batch） | Adopted — SubAgent trait + 4 built-ins + batch + recursion guard + reviewer auto-accept |
 | [nodejs-rewrite.zh-CN.md](nodejs-rewrite.zh-CN.md) | 用 Node.js/TS 重写服务端 + CLI（绞杀者迁移）；桌面 Tauri→Electron；Web/iOS 保留。执行清单见 [tasklist](nodejs-rewrite-tasklist.zh-CN.md) | Proposed — not started |
+| [opencode-borrow.zh-CN.md](opencode-borrow.zh-CN.md) | 借鉴 opencode：闭合「编辑→验证」（LSP 诊断回灌）与「暂停→交互」（HITL）环路 + 反应式压缩 / web 搜索 / Plan Mode / 快照回退 | In progress — **P0.1 HITL 原生问答接线** + **P0.2 编辑后 LSP 诊断回灌**（新 `@jarvis/lsp` 包 + `fs.{write,edit,patch}` 追加 `<diagnostics>`，`JARVIS_ENABLE_LSP` 门控，mock-server 测试全绿）已落地；P0.3–P0.4 / P1 / P2 pending |
 
 ## Product Alignment Audit
 
