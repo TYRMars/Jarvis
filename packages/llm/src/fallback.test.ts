@@ -169,3 +169,43 @@ test("isTransientError tolerates non-Error throwables (string / plain object)", 
   assert.equal(isTransientError("503 service unavailable"), true);
   assert.equal(isTransientError("401 unauthorized"), false);
 });
+
+// ---------- structured-status classification (issue #187) ----------
+
+test("isTransientError classifies on the structured status, not the body", () => {
+  // 5xx + 429 + 408 are transient regardless of what the body text says.
+  assert.equal(isTransientError(new ProviderError("status 500: anything", 500)), true);
+  assert.equal(isTransientError(new ProviderError("status 502: anything", 502)), true);
+  assert.equal(isTransientError(new ProviderError("status 503: anything", 503)), true);
+  assert.equal(isTransientError(new ProviderError("status 599: anything", 599)), true);
+  assert.equal(isTransientError(new ProviderError("status 429: anything", 429)), true);
+  assert.equal(isTransientError(new ProviderError("status 408: anything", 408)), true);
+  // Every other 4xx is fatal regardless of body text.
+  assert.equal(isTransientError(new ProviderError("status 400: anything", 400)), false);
+  assert.equal(isTransientError(new ProviderError("status 404: anything", 404)), false);
+  assert.equal(isTransientError(new ProviderError("status 422: anything", 422)), false);
+});
+
+test("isTransientError: fatal 4xx body mentioning transient words is NOT retried", () => {
+  // False-positive case from the issue: a 400/404 whose JSON body incidentally
+  // contains transient-sounding tokens (or a request id with 500/503) must
+  // stay fatal now that we classify on status.
+  const body =
+    'status 404: {"error":{"message":"model not found","request_id":"req_500_503","detail":"connection timeout network reset"}}';
+  assert.equal(isTransientError(new ProviderError(body, 404)), false);
+});
+
+test("isTransientError: genuine 5xx body mentioning auth words IS retried", () => {
+  // False-negative case from the issue: a real 500 whose body mentions
+  // "authentication" must still be treated as transient.
+  const body = 'status 500: {"error":{"message":"internal authentication subsystem error"}}';
+  assert.equal(isTransientError(new ProviderError(body, 500)), true);
+});
+
+test("isTransientError: status-less errors still use the substring heuristic", () => {
+  // Transport/connect errors carry no status — the substring scan is the only
+  // signal they have, so it must keep working.
+  assert.equal(isTransientError(new ProviderError("transport: error sending request for url")), true);
+  assert.equal(isTransientError(new ProviderError("connection reset by peer")), true);
+  assert.equal(isTransientError(new ProviderError("invalid api key")), false);
+});
