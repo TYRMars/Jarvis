@@ -102,15 +102,17 @@ export function newWorkflowRun(
 }
 
 /**
- * Mark the run finished (terminal status + `finished_at`). Terminal status is
- * sticky — a late call does not overwrite an existing terminal status.
- * Mirrors `WorkflowRun::finish`.
+ * Mark the run finished (terminal status + `finished_at`). The first terminal
+ * transition wins for BOTH fields — a late or duplicate call (e.g. the
+ * stale-run reaper firing after the run already finished in-process) does not
+ * overwrite the status or move `finished_at` to a later wall-clock time (which
+ * would skew the recorded duration). Mirrors `WorkflowRun::finish`.
  */
 export function finishWorkflowRun(run: WorkflowRun, status: WorkflowRunStatus): void {
   if (!workflowRunStatusIsTerminal(run.status)) {
     run.status = status;
+    run.finished_at = new Date().toISOString();
   }
-  run.finished_at = new Date().toISOString();
 }
 
 /** Append a step result. Mirrors `WorkflowRun::push_step`. */

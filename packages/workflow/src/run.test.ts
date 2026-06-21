@@ -52,6 +52,19 @@ test("finishWorkflowRun: terminal status is sticky", () => {
   assert.notEqual(run.finished_at, undefined);
 });
 
+test("finishWorkflowRun: finished_at is sticky on late/duplicate calls", async () => {
+  const run = newWorkflowRun("wf-1", "req-1");
+  finishWorkflowRun(run, "succeeded");
+  const firstFinishedAt = run.finished_at;
+  assert.notEqual(firstFinishedAt, undefined);
+  // Ensure wall-clock advances so a buggy unconditional rewrite would differ.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  // A late/duplicate finish (e.g. the stale-run reaper) must not move
+  // finished_at — the first terminal transition wins, so duration stays correct.
+  finishWorkflowRun(run, "failed");
+  assert.equal(run.finished_at, firstFinishedAt);
+});
+
 test("requirement_id skipped when absent (ad-hoc run)", () => {
   const run = newWorkflowRun("wf-1", undefined);
   assert.equal(run.requirement_id, undefined);
