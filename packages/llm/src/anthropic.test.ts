@@ -342,6 +342,32 @@ test("stream: unknown event type is ignored", () => {
   assert.equal(r.length, 0);
 });
 
+test("stream: content_block_delta for an unknown block index is skipped, not fatal", () => {
+  const acc = new StreamAccumulator();
+  // The `content_block_start` for index 1 is dropped/reordered; its delta
+  // arrives with no registered slot. This must not abort the stream — the
+  // already-accumulated text from index 0 has to survive to message_stop.
+  const out = ingestAll(acc, [
+    { type: "message_start", message: {} },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hel" } },
+    // Orphaned delta — no prior content_block_start for index 1.
+    { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "??" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "lo" } },
+    // A stop for the unknown block must also be harmless.
+    { type: "content_block_stop", index: 1 },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: {} },
+    { type: "message_stop" },
+  ]);
+  const deltas = out.filter((c) => c.type === "content_delta").map((c) => (c as { content: string }).content);
+  assert.deepEqual(deltas, ["Hel", "lo"]);
+  const finish = out.at(-1)!;
+  assert.ok(finish.type === "finish");
+  assert.equal(finish.finish_reason, "stop");
+  assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
+});
+
 // ---------- End-to-end via injected fetch ----------
 
 test("complete: parses text + tool_use blocks, maps usage", async () => {

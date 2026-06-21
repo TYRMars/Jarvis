@@ -500,7 +500,14 @@ export class StreamAccumulator {
         const index = ev.index ?? 0;
         const slot = this.#blocks[index];
         if (slot === undefined) {
-          throw new ProviderError(`delta for unknown block ${index}`);
+          // A delta whose `content_block_start` was dropped/reordered, or a
+          // forward-compatible block type we never registered. Lazily seed a
+          // `pending` slot and skip this fragment rather than aborting the
+          // whole stream — matches the quiet fall-through the other (slot,
+          // delta) mismatches below (and the OpenAI/Responses/Google
+          // accumulators) already use.
+          while (this.#blocks.length <= index) this.#blocks.push({ kind: "pending" });
+          break;
         }
         const delta = ev.delta;
         if (slot.kind === "text" && delta?.type === "text_delta" && delta.text) {
