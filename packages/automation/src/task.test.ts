@@ -180,6 +180,35 @@ test("reclaiming stale running once does not reschedule", () => {
   assert.equal(isDueAt(task, "2026-01-01T01:00:00Z"), false);
 });
 
+test("reclaiming corrupt running once (no last_run_at) does not resurrect it", () => {
+  // A `once` task crashed mid-run leaving a corrupt `running` row with no
+  // last_run_at. Reclaiming it must clear next_run_at, not recompute the
+  // original (now-past) run_at — otherwise the scheduler re-fires the one-shot.
+  const task: AutomationTask = {
+    ...newAutomationTask(
+      { title: "t", prompt: "p", schedule: scheduleOnce("2026-01-01T00:00:00Z") },
+      "2026-01-01T00:00:00.000Z",
+    ),
+    last_run_status: "running",
+    last_run_at: undefined,
+  };
+  assert.equal(isStaleRunning(task, "2026-01-01T01:00:00Z", 60_000), true);
+  markStaleReclaimed(task, "2026-01-01T01:00:00Z");
+  assert.equal(task.next_run_at, undefined);
+  assert.equal(isDueAt(task, "2026-01-01T01:00:00Z"), false);
+});
+
+test("reclaiming corrupt running interval (no last_run_at) reschedules from now", () => {
+  // The interval analogue: a corrupt `running` row with no last_run_at must
+  // resume ticking from `now`, not pin forever.
+  const task: AutomationTask = { ...intervalTask(), last_run_status: "running", last_run_at: undefined };
+  markStaleReclaimed(task, "2026-01-01T01:00:00Z");
+  assert.equal(task.last_run_status, "failed");
+  const next = task.next_run_at;
+  assert.ok(next !== undefined && next > "2026-01-01T01:00:00Z");
+  assert.equal(isDueAt(task, "2026-01-01T01:00:00Z"), false);
+});
+
 // ---------- manual-run bookkeeping ----------------------------------------
 
 test("manual run clears next_run_at for once task", () => {

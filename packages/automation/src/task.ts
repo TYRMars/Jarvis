@@ -228,9 +228,18 @@ export function isStaleRunning(task: AutomationTask, now: string, timeoutMs: num
  * `failed` with an explanatory error and recomputes `next_run_at` from the
  * schedule (anchored at the previous start) so an interval task resumes ticking
  * and a `once` task settles as done — rather than pinning forever.
+ *
+ * A reclaimed task was, by definition, already picked up (it was `running`), so
+ * its run counts as "previous" for scheduling even when the start timestamp is
+ * missing (the corrupt-row case `isStaleRunning` reclaims). We therefore anchor
+ * at `last_run_at ?? now`: without this fallback, `scheduleNextAfter` sees
+ * `previousRun === undefined` and a `once` schedule re-emits its original (now
+ * past) `run_at`, resurrecting the one-shot so the scheduler re-fires it.
  */
 export function markStaleReclaimed(task: AutomationTask, now: string): void {
-  const previousRunAt = task.last_run_at; // may be undefined
+  // `?? now`: treat a corrupt `running` row (no `last_run_at`) as having started
+  // now, so a `once` task settles as done instead of re-firing its past run_at.
+  const previousRunAt = task.last_run_at ?? now;
   setNextRunAt(task, scheduleNextAfter(task.schedule, previousRunAt, now));
   task.last_run_status = "failed";
   task.last_error = "run timed out; reclaimed by automation reaper (assumed abandoned)";
