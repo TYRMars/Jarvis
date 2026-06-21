@@ -142,6 +142,45 @@ function requirementTriageState(req: Requirement): TriageState {
 const HUMAN_ACTOR: ActivityActor = { type: "human" };
 const SYSTEM_ACTOR: ActivityActor = { type: "system" };
 
+// ---------- body field guards ----------------------------------------------
+//
+// The create/update handlers used to trust the declared TypeScript shape of
+// `req.body` and call `.trim()` / `.filter()` on fields with no runtime guard.
+// There's no Fastify/ajv schema on these routes, so a malformed JSON body (e.g.
+// `depends_on` as a string, `title` as a number) would throw a `TypeError` that
+// escapes the handler → Fastify returns 500 for what is really a 400. These
+// helpers mirror the `typeof`/`Array.isArray` checks the `/todos` handlers in
+// this same file already do, so a malformed body is reported as a client error.
+
+/** True iff every element of an array is a string. */
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+type FieldError = { error: string };
+
+/**
+ * Validate an optional string field. Returns `{ error }` on a type mismatch,
+ * otherwise `undefined` (the caller keeps reading `body[field]` as before).
+ */
+function checkOptionalString(value: unknown, field: string): FieldError | undefined {
+  if (value !== undefined && typeof value !== "string") {
+    return { error: `\`${field}\` must be a string` };
+  }
+  return undefined;
+}
+
+/**
+ * Validate an optional string-array field. Returns `{ error }` on a type
+ * mismatch (not an array, or a non-string element), otherwise `undefined`.
+ */
+function checkOptionalStringArray(value: unknown, field: string): FieldError | undefined {
+  if (value !== undefined && !isStringArray(value)) {
+    return { error: `\`${field}\` must be an array of strings` };
+  }
+  return undefined;
+}
+
 // ---------- request body shapes -------------------------------------------
 
 interface CreateBody {
@@ -209,6 +248,17 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
     const projectId = (req.params as { project_id: string }).project_id;
     const body = (req.body ?? {}) as CreateBody;
 
+    // Runtime type guards before any `.trim()` / `.filter()` — a malformed body
+    // is a 400, not a 500. (See the `/todos` handlers below for the precedent.)
+    for (const fieldError of [
+      checkOptionalString(body.title, "title"),
+      checkOptionalString(body.description, "description"),
+      checkOptionalStringArray(body.depends_on, "depends_on"),
+      checkOptionalStringArray(body.label_ids, "label_ids"),
+    ]) {
+      if (fieldError) return reply.code(400).send(fieldError);
+    }
+
     const title = (body.title ?? "").trim();
     if (title === "") {
       return reply.code(400).send({ error: "`title` must not be blank" });
@@ -257,6 +307,18 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
     if (!store) return reply;
     const id = (req.params as { id: string }).id;
     const body = (req.body ?? {}) as UpdateBody;
+
+    // Runtime type guards before any `.trim()` / `.filter()` — a malformed body
+    // is a 400, not a 500. (See the `/todos` handlers below for the precedent.)
+    for (const fieldError of [
+      checkOptionalString(body.title, "title"),
+      checkOptionalString(body.description, "description"),
+      checkOptionalStringArray(body.conversation_ids, "conversation_ids"),
+      checkOptionalStringArray(body.depends_on, "depends_on"),
+      checkOptionalStringArray(body.label_ids, "label_ids"),
+    ]) {
+      if (fieldError) return reply.code(400).send(fieldError);
+    }
 
     let item: Requirement | undefined;
     try {

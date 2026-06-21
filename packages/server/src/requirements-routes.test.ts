@@ -129,6 +129,64 @@ test("create rejects a blank title and an unknown status", async () => {
   await app.close();
 });
 
+test("create rejects malformed field types with 400, not 500", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(makeState(stores));
+  const post = (payload: Record<string, unknown>) =>
+    app.inject({ method: "POST", url: "/v1/projects/p/requirements", payload });
+
+  // numeric title → 400 (not a 500 from `(5 ?? "").trim()`).
+  const numTitle = await post({ title: 5 });
+  assert.equal(numTitle.statusCode, 400, numTitle.body);
+  assert.match((numTitle.json() as { error: string }).error, /`title` must be a string/);
+
+  // numeric description → 400.
+  const numDesc = await post({ title: "ok", description: 7 });
+  assert.equal(numDesc.statusCode, 400, numDesc.body);
+  assert.match((numDesc.json() as { error: string }).error, /`description` must be a string/);
+
+  // depends_on as a string (not an array) → 400.
+  const strDeps = await post({ title: "ok", depends_on: "r1" });
+  assert.equal(strDeps.statusCode, 400, strDeps.body);
+  assert.match((strDeps.json() as { error: string }).error, /`depends_on` must be an array of strings/);
+
+  // depends_on array with a non-string element → 400.
+  const badDeps = await post({ title: "ok", depends_on: ["r1", 2] });
+  assert.equal(badDeps.statusCode, 400, badDeps.body);
+  assert.match((badDeps.json() as { error: string }).error, /`depends_on` must be an array of strings/);
+
+  // label_ids as an object → 400.
+  const badLabels = await post({ title: "ok", label_ids: { a: 1 } });
+  assert.equal(badLabels.statusCode, 400, badLabels.body);
+  assert.match((badLabels.json() as { error: string }).error, /`label_ids` must be an array of strings/);
+  await app.close();
+});
+
+test("update rejects malformed field types with 400, not 500", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(makeState(stores));
+  const { id } = await createRequirement(app, "p", { title: "ok" });
+  const patch = (payload: Record<string, unknown>) =>
+    app.inject({ method: "PATCH", url: `/v1/requirements/${id}`, payload });
+
+  const numTitle = await patch({ title: 5 });
+  assert.equal(numTitle.statusCode, 400, numTitle.body);
+  assert.match((numTitle.json() as { error: string }).error, /`title` must be a string/);
+
+  const strDeps = await patch({ depends_on: "r1" });
+  assert.equal(strDeps.statusCode, 400, strDeps.body);
+  assert.match((strDeps.json() as { error: string }).error, /`depends_on` must be an array of strings/);
+
+  const badConvos = await patch({ conversation_ids: [1, 2] });
+  assert.equal(badConvos.statusCode, 400, badConvos.body);
+  assert.match((badConvos.json() as { error: string }).error, /`conversation_ids` must be an array of strings/);
+
+  const badLabels = await patch({ label_ids: "x" });
+  assert.equal(badLabels.statusCode, 400, badLabels.body);
+  assert.match((badLabels.json() as { error: string }).error, /`label_ids` must be an array of strings/);
+  await app.close();
+});
+
 // ---------- triage_state query filter ----------
 
 test("triage_state query filter: exact, synthetic `proposed`, and unknown→400", async () => {
