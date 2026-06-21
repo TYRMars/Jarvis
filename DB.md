@@ -42,19 +42,21 @@ multi-process / multi-server.
 
 ## Wire-up in the binary
 
-Set `JARVIS_DB_URL` and `apps/jarvis` opens the store at startup and
-places it on `AppState`:
+Set `JARVIS_DB_URL` and the composition root (`packages/jarvis-app`) opens
+the store at startup and places it on `AppState`:
 
 ```bash
 # Default — JSON files
-JARVIS_DB_URL=json:///Users/me/.local/share/jarvis/conversations cargo run -p jarvis
+JARVIS_DB_URL=json:///Users/me/.local/share/jarvis/conversations \
+  node --experimental-strip-types packages/jarvis-app/src/main.ts serve
 
 # Switch to sqlite when needed
-JARVIS_DB_URL=sqlite://./jarvis.db cargo run -p jarvis
+JARVIS_DB_URL=sqlite://./jarvis.db \
+  node --experimental-strip-types packages/jarvis-app/src/main.ts serve
 ```
 
-`jarvis init` writes the JSON URL into config.toml automatically
-when the user opts into persistence.
+`jarvis init` writes the JSON URL into the data dir automatically when the
+user opts into persistence.
 
 The HTTP layer reads the store via `harness-server`'s
 `/v1/conversations` CRUD routes plus the WebSocket `resume` / `new`
@@ -152,15 +154,14 @@ pub struct ConversationRecord {
 
 ## Adding a backend
 
-Copy the pattern from `crates/harness-store/src/sqlite.rs`:
+Copy the pattern from `packages/store/src/sqlite.ts`:
 
-1. New module `crates/harness-store/src/<backend>.rs` with a pool
-   wrapper, an idempotent `migrate()`, and a `ConversationStore` impl
-   that round-trips JSON + RFC-3339 timestamps.
-2. Gate the module and its sqlx feature via a cargo feature in
-   `crates/harness-store/Cargo.toml`.
-3. Add a `match` arm for the URL scheme in `connect()` in
-   `crates/harness-store/src/lib.rs`.
+1. New module `packages/store/src/<backend>.ts` with a pool wrapper, an
+   idempotent `migrate()`, and a `ConversationStore` impl that round-trips
+   JSON + RFC-3339 timestamps.
+2. Add the driver to `packages/store/package.json` (opt-in dependency).
+3. Add a branch for the URL scheme in `connect()` in
+   `packages/store/src/index.ts`.
 4. Add tests — mirror `sqlite.rs`'s in-module tests and the dispatcher
    test in `tests/connect.rs`. Skip Postgres / MySQL tests in CI if no
    server is available; use `#[ignore]` or env-gated `#[test]`s.

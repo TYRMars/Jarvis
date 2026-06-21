@@ -26,7 +26,8 @@ open JarvisiOS.xcodeproj
 1. 在 Mac 上启动服务器(需要先开启写/执行工具才能看到审批流程):
 
    ```bash
-   JARVIS_ENABLE_FS_WRITE=1 JARVIS_ENABLE_SHELL_EXEC=1 cargo run -p jarvis
+   JARVIS_ENABLE_FS_WRITE=1 JARVIS_ENABLE_SHELL_EXEC=1 \
+     node --experimental-strip-types packages/jarvis-app/src/main.ts serve
    ```
 
 2. App 内左上角 ⚙ 打开设置,填服务器地址:
