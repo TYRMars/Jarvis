@@ -153,3 +153,31 @@ test("buildAppState wires the domain stores into AppState", async () => {
   assert.equal(state.workspaceRoot, config.fsRoot);
   assert.ok(state.subagents !== undefined);
 });
+
+test("memoryRuntime: absent by default, wired when JARVIS_ENABLE_MEMORY is set", async () => {
+  const off = await buildAppState(loadConfig(FIXTURE_ENV), {
+    provider: new StubProvider("x"),
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  assert.equal(off.state.memoryRuntime, undefined, "no runtime without JARVIS_ENABLE_MEMORY");
+
+  const config = loadConfig({
+    ...FIXTURE_ENV,
+    JARVIS_ENABLE_MEMORY: "1",
+    JARVIS_MEMORY_SYNC_BACKEND: "git",
+    JARVIS_MEMORY_USER_ROOT: "/tmp/jarvis-user-mem",
+  });
+  assert.equal(config.enableMemory, true);
+  assert.equal(config.memorySyncBackend, "git");
+  const { state } = await buildAppState(config, {
+    provider: new StubProvider("x"),
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  assert.deepEqual(state.memoryRuntime, {
+    workspaceRoot: config.fsRoot,
+    userRoot: "/tmp/jarvis-user-mem",
+    backend: "git",
+  });
+});
