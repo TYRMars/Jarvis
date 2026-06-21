@@ -32,7 +32,10 @@ export interface ShellExecConfig {
 /** Accumulator state for one captured stream. */
 interface StreamBuf {
   buf: string;
+  /** Total bytes observed on the stream (UTF-8), including stripped newlines. */
   total: number;
+  /** Bytes currently held in `buf` (UTF-8); tracked to keep the cap check O(1). */
+  bufBytes: number;
   truncated: boolean;
 }
 
@@ -108,8 +111,8 @@ export class ShellExecTool implements Tool {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    const stdout: StreamBuf = { buf: "", total: 0, truncated: false };
-    const stderr: StreamBuf = { buf: "", total: 0, truncated: false };
+    const stdout: StreamBuf = { buf: "", total: 0, bufBytes: 0, truncated: false };
+    const stderr: StreamBuf = { buf: "", total: 0, bufBytes: 0, truncated: false };
     this.#accumulate(child.stdout, stdout);
     this.#accumulate(child.stderr, stderr);
 
@@ -176,13 +179,18 @@ export class ShellExecTool implements Tool {
     if (!stream) return;
     let pending = "";
     const onLine = (line: string) => {
-      out.total += line.length + 1; // +1 for the stripped newline
+      // +1 for the stripped newline; size in UTF-8 bytes, not UTF-16 code units,
+      // so multibyte output is capped and reported in real bytes (matches
+      // `fs.read`, `git.*`, and `code.grep`).
+      const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+      out.total += lineBytes;
       if (out.truncated) return;
-      if (out.buf.length + line.length + 1 > this.#maxBytes) {
+      if (out.bufBytes + lineBytes > this.#maxBytes) {
         out.truncated = true;
       } else {
         out.buf += line;
         out.buf += "\n";
+        out.bufBytes += lineBytes;
       }
     };
     stream.setEncoding("utf8");

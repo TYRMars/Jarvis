@@ -128,6 +128,24 @@ test("reports the full observed byte count even after truncation", posix, async 
   assert.ok(out.includes("stdout truncated at 8"), `got: ${out}`);
 });
 
+test("sizes and reports multibyte output in UTF-8 bytes, not chars", posix, async () => {
+  const root = await tempRoot();
+  const tool = new ShellExecTool({ root, maxBytes: 1024 });
+  // "你好" = 2 chars / 6 UTF-8 bytes; +1 for the line reader's stripped newline.
+  const out = await tool.invoke({ command: "printf '你好'" });
+  assert.ok(out.includes("--- stdout (7 bytes) ---"), `got: ${out}`);
+});
+
+test("truncates multibyte output at the real byte cap", posix, async () => {
+  const root = await tempRoot();
+  // 8 chars × 3 bytes = 24 bytes; a 10-byte cap must truncate even though the
+  // char count (8) is well under it.
+  const tool = new ShellExecTool({ root, maxBytes: 10 });
+  const out = await tool.invoke({ command: "printf '一二三四五六七八'" });
+  assert.ok(out.includes("stdout truncated at 10"), `got: ${out}`);
+  assert.ok(out.includes("--- stdout (25 bytes) ---"), `got: ${out}`);
+});
+
 test("missing command argument throws", async () => {
   const tool = new ShellExecTool({ root: "/tmp" });
   await assert.rejects(() => tool.invoke({}), /missing `command`/);

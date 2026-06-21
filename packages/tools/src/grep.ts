@@ -105,7 +105,9 @@ export class CodeGrepTool implements Tool {
       typeof obj.case_insensitive === "boolean" ? obj.case_insensitive : false;
 
     const maxResults =
-      typeof obj.max_results === "number" && Number.isFinite(obj.max_results)
+      typeof obj.max_results === "number" &&
+      Number.isFinite(obj.max_results) &&
+      obj.max_results >= 1
         ? Math.floor(obj.max_results)
         : this.#maxResults;
 
