@@ -24,6 +24,7 @@
 import { ProviderError, errorText } from "@jarvis/core";
 import { readFile, writeFile, rename } from "node:fs/promises";
 import * as path from "node:path";
+import { redactedMarker } from "./redact.ts";
 
 /**
  * OAuth client id used by the Codex CLI for ChatGPT login. We re-use it on
@@ -153,7 +154,7 @@ export class CodexAuth {
    * POST to the refresh endpoint with `grant_type=refresh_token` to rotate
    * the access token. On success, in-memory state and (if loaded from disk)
    * the on-disk auth.json are both updated. Failures throw with the upstream
-   * status / body text.
+   * status and a redacted body marker (never the raw token-endpoint body).
    */
   async refresh(): Promise<void> {
     const refreshToken = this.refreshToken;
@@ -183,18 +184,20 @@ export class CodexAuth {
     } catch (e) {
       throw new ProviderError(`refresh read body: ${errorText(e)}`);
     }
+    // The token endpoint can echo grant/token fragments in its body, so this
+    // path never interpolates it verbatim — only a redacted byte-count marker.
     if (!resp.ok) {
-      throw new ProviderError(`refresh failed: status ${resp.status}: ${body}`);
+      throw new ProviderError(`refresh failed: status ${resp.status}: ${redactedMarker(body)}`);
     }
 
     let parsed: { access_token?: unknown; refresh_token?: unknown };
     try {
       parsed = JSON.parse(body) as typeof parsed;
     } catch (e) {
-      throw new ProviderError(`decode refresh response: ${errorText(e)}; body=${body}`);
+      throw new ProviderError(`decode refresh response: ${errorText(e)}; body=${redactedMarker(body)}`);
     }
     if (typeof parsed.access_token !== "string") {
-      throw new ProviderError(`decode refresh response: missing access_token; body=${body}`);
+      throw new ProviderError(`decode refresh response: missing access_token; body=${redactedMarker(body)}`);
     }
 
     this.accessToken = parsed.access_token;
