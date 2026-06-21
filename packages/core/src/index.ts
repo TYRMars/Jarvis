@@ -79,3 +79,4 @@ export {
   defaultAgentConfig,
   ensureSystemPrompt,
 } from "./agent.ts";
+export { TRACER_NAME, startAgentSpan, endAgentSpan, withToolSpan } from "./tracing.ts";

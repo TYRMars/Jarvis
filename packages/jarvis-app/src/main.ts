@@ -31,6 +31,7 @@ import { loadConfig, parseAddr, type JarvisConfig } from "./config.ts";
 import { buildProvider } from "./provider.ts";
 import { buildAppState } from "./state.ts";
 import { codingMode } from "./tools.ts";
+import { startOtel } from "./otel.ts";
 
 /** A subcommand name; the default (no argv) is `serve`. */
 export type Subcommand = "serve" | "mcp-serve" | "init" | "login" | "status" | "workspace";
@@ -144,6 +145,18 @@ export async function openStores(config: JarvisConfig): Promise<StoreBundle> {
 
 /** `jarvis serve` — build everything and start the HTTP server. */
 export async function runServe(config: JarvisConfig): Promise<void> {
+  // Register the OTel TracerProvider first (no-op unless enabled) so the agent
+  // loop's jarvis.agent.run / gen_ai.tool.call spans are live. Flush on exit.
+  const otel = startOtel();
+  if (otel) {
+    process.stderr.write("[jarvis] OpenTelemetry tracing enabled\n");
+    const stop = (): void => {
+      void otel.shutdown().finally(() => process.exit(0));
+    };
+    process.once("SIGTERM", stop);
+    process.once("SIGINT", stop);
+  }
+
   const provider = await buildProvider(config);
   const stores = await openStores(config);
   const { state, systemPrompt } = await buildAppState(config, { provider, stores });
