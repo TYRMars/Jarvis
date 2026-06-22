@@ -130,7 +130,7 @@ and served by the Node server via `JARVIS_WEB_DIST`.
 
 **Server / workspace:** `JARVIS_ADDR` (`0.0.0.0:7001`), `JARVIS_FS_ROOT` (`.`, sandboxes `fs.*`/`git.*`/`code.grep`/`workspace.context` + `shell.exec` cwd; `--workspace <path>` CLI flag overrides), `JARVIS_NO_PROJECT_CONTEXT` (disable auto-loading `AGENTS.md`/`CLAUDE.md`/`AGENT.md`), `JARVIS_PROJECT_CONTEXT_BYTES` (cap, default 8 KiB), `RUST_LOG`.
 
-**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`).
+**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_HTTP_ALLOW_PRIVATE` (disables the on-by-default `http.fetch` SSRF guard so the agent may reach loopback/private/link-local/cloud-metadata hosts), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`).
 
 **Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`). `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
 

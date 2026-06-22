@@ -8,6 +8,7 @@ import type { Tool } from "@jarvis/core";
 import {
   HTTP_DEFAULT_MAX_BYTES,
   HttpFetchTool,
+  validateFetchUrl,
   type FetchImpl,
   type FetchResponse,
 } from "./http.ts";
@@ -175,6 +176,71 @@ test("default maxBytes is 256 KiB", async () => {
   assert.ok(out.endsWith(`[... truncated at ${HTTP_DEFAULT_MAX_BYTES} bytes ...]`));
 });
 
+// ---------------------------------------------------------------------------
+// SSRF guard (blockPrivateHosts, on by default)
+// ---------------------------------------------------------------------------
+
+test("SSRF guard: blocks loopback / private / link-local / metadata by default", async () => {
+  const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
+  const tool = new HttpFetchTool({ fetchImpl }); // guard on by default
+  for (const url of [
+    "http://localhost/",
+    "http://localhost:7001/admin",
+    "http://api.localhost/",
+    "http://127.0.0.1/",
+    "http://127.0.0.5/",
+    "http://10.0.0.1/",
+    "http://172.16.0.1/",
+    "http://192.168.1.1/",
+    "http://169.254.169.254/latest/meta-data/", // AWS/GCP metadata
+    "http://100.64.0.1/", // CGNAT
+    "http://[::1]/",
+    "http://[fd00::1]/", // unique-local
+    "http://[fe80::1]/", // link-local
+    "http://metadata.google.internal/",
+  ]) {
+    await assert.rejects(
+      () => tool.invoke({ url }),
+      /SSRF guard/,
+      `expected ${url} to be blocked`,
+    );
+  }
+  // Nothing reached the network.
+  assert.equal(calls.length, 0);
+});
+
+test("SSRF guard #200 bypass 1: IPv4-mapped IPv6 (::ffff:*) is blocked", () => {
+  // Node's URL normalizes [::ffff:127.0.0.1] → ::ffff:7f00:1 (no dots), which a
+  // dotted-decimal regex misses — decode the embedded IPv4 and re-check it.
+  assert.throws(() => validateFetchUrl("http://[::ffff:127.0.0.1]/", true), /SSRF guard/);
+  assert.throws(() => validateFetchUrl("http://[::ffff:169.254.169.254]/", true), /SSRF guard/);
+  assert.throws(() => validateFetchUrl("http://[::ffff:10.0.0.1]/", true), /SSRF guard/);
+  // A public IPv4-mapped address is still allowed.
+  assert.doesNotThrow(() => validateFetchUrl("http://[::ffff:8.8.8.8]/", true));
+});
+
+test("SSRF guard #200 bypass 2: trailing-dot localhost. is blocked", () => {
+  // `localhost.` keeps the trailing dot in hostname but resolves to 127.0.0.1.
+  assert.throws(() => validateFetchUrl("http://localhost./", true), /SSRF guard/);
+  assert.throws(() => validateFetchUrl("http://api.localhost./", true), /SSRF guard/);
+  assert.throws(() => validateFetchUrl("http://127.0.0.1./", true), /SSRF guard/);
+});
+
+test("SSRF guard: allows public hosts and rejects non-http(s) schemes", () => {
+  assert.doesNotThrow(() => validateFetchUrl("https://example.com/", true));
+  assert.doesNotThrow(() => validateFetchUrl("http://8.8.8.8/", true));
+  assert.throws(() => validateFetchUrl("file:///etc/passwd", true), /unsupported URL scheme/);
+  assert.throws(() => validateFetchUrl("ftp://example.com/", true), /unsupported URL scheme/);
+  assert.throws(() => validateFetchUrl("gopher://example.com/", false), /unsupported URL scheme/);
+});
+
+test("SSRF guard: blockPrivateHosts=false reaches loopback (opt-out)", async () => {
+  const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
+  const tool = new HttpFetchTool({ fetchImpl, blockPrivateHosts: false });
+  await tool.invoke({ url: "http://localhost:7001/" });
+  assert.equal(calls[0]?.url, "http://localhost:7001/");
+});
+
 test("integration: hits a real local server via global fetch", async () => {
   const server = createServer((req, res) => {
     let received = "";
@@ -188,7 +254,9 @@ test("integration: hits a real local server via global fetch", async () => {
   const { port } = server.address() as AddressInfo;
 
   try {
-    const tool = new HttpFetchTool({}); // uses global fetch
+    // 127.0.0.1 is a loopback host the SSRF guard blocks by default, so this
+    // integration test opts out of the guard (mirrors JARVIS_HTTP_ALLOW_PRIVATE).
+    const tool = new HttpFetchTool({ blockPrivateHosts: false }); // uses global fetch
     const out = await tool.invoke({
       url: `http://127.0.0.1:${port}/`,
       method: "POST",

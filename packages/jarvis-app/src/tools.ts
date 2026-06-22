@@ -72,6 +72,7 @@ export async function buildToolRegistry(
   const builtins: BuiltinsConfig = {
     fsRoot: config.fsRoot,
     httpMaxBytes: config.gating.httpMaxBytes,
+    httpBlockPrivateHosts: !config.gating.httpAllowPrivate,
     enableFsWrite: config.gating.enableFsWrite,
     enableFsEdit: config.gating.enableFsEdit,
     enableFsPatch: config.gating.enableFsPatch,
