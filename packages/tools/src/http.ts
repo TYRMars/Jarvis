@@ -32,6 +32,106 @@ export interface HttpFetchConfig {
   maxBytes?: number;
   /** Inject a `fetch` implementation (tests). Defaults to the global `fetch`. */
   fetchImpl?: FetchImpl;
+  /**
+   * Block requests to loopback / private / link-local / cloud-metadata hosts
+   * (SSRF guard). Defaults to `true` — secure by default. The composition root
+   * flips it off via `JARVIS_HTTP_ALLOW_PRIVATE` when an operator wants the
+   * agent to reach `localhost` dev servers / internal hosts. Catches literal-IP
+   * targets (incl. `169.254.169.254`, IPv4-mapped IPv6 `::ffff:127.0.0.1`, and
+   * trailing-dot `localhost.`) + `localhost`. String/parse-based only: a
+   * hostname that *resolves* to a private IP (DNS rebinding) and redirect hops
+   * are documented residuals (the FetchImpl seam hides post-redirect URLs).
+   */
+  blockPrivateHosts?: boolean;
+}
+
+/**
+ * Reject non-http(s) schemes and (when `blockPrivate`) loopback / private /
+ * link-local / cloud-metadata destinations. Throws a user-facing Error so the
+ * model sees why and can adapt. String/parse-based only — no DNS lookup, so it
+ * stays deterministic + offline.
+ */
+export function validateFetchUrl(raw: string, blockPrivate: boolean): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`invalid URL: ${raw}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`unsupported URL scheme \`${parsed.protocol}\` — only http/https allowed`);
+  }
+  if (!blockPrivate) return;
+
+  // Strip IPv6 brackets, lower-case, and drop a single trailing FQDN dot
+  // (`localhost.` resolves to `127.0.0.1` but wouldn't match `=== "localhost"`).
+  const host = parsed.hostname
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase()
+    .replace(/\.$/, "");
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "metadata.google.internal" ||
+    isPrivateIp(host)
+  ) {
+    throw new Error(
+      `refusing to fetch private/loopback host \`${host}\` (SSRF guard; set JARVIS_HTTP_ALLOW_PRIVATE=1 to allow)`,
+    );
+  }
+}
+
+/**
+ * Decode an IPv4-mapped IPv6 host to its dotted-decimal IPv4, or return null.
+ * Node's `URL` normalizes `[::ffff:127.0.0.1]` to the hex-compressed form
+ * `::ffff:7f00:1` (no dots), so a dotted-decimal regex alone never catches it —
+ * we accept both the dotted and the two-hex-group forms here.
+ */
+function embeddedMappedIpv4(host: string): string | null {
+  const rest = /^::ffff:(.+)$/.exec(host)?.[1];
+  if (rest === undefined) return null;
+  // Dotted-decimal embedded form (`::ffff:127.0.0.1`).
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(rest)) return rest;
+  // Two hex groups encoding the 32-bit IPv4 (Node's normalized form).
+  const hx = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest);
+  if (hx) {
+    const hi = parseInt(hx[1] ?? "0", 16);
+    const lo = parseInt(hx[2] ?? "0", 16);
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  }
+  return null;
+}
+
+/** True if `host` is a literal IP in a loopback/private/link-local/reserved
+ * range (the SSRF-relevant set). Non-IP hostnames return false. Handles
+ * IPv4-mapped IPv6 by decoding the embedded IPv4 and re-checking it. */
+function isPrivateIp(host: string): boolean {
+  // IPv4-mapped IPv6 (`::ffff:a.b.c.d`) → decode and re-check the embedded IPv4.
+  const mapped = embeddedMappedIpv4(host);
+  if (mapped) return isPrivateIp(mapped);
+
+  // Dotted-decimal IPv4.
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const o = v4.slice(1, 5).map((n) => Number(n));
+    if (o.some((n) => n > 255)) return false;
+    const [a, b] = o as [number, number, number, number];
+    if (a === 10) return true; // 10.0.0.0/8 private
+    if (a === 127) return true; // 127.0.0.0/8 loopback
+    if (a === 0) return true; // 0.0.0.0/8 "this host"
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local + cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+    return false;
+  }
+  // IPv6 literals (brackets stripped, lower-cased). Cover the broader reserved
+  // set, not just `::1`: unspecified, unique-local (fc00::/7), and the full
+  // link-local block (fe80::/10 → first hextet fe80–febf).
+  if (host === "::1" || host === "::") return true;
+  if (host.startsWith("fc") || host.startsWith("fd")) return true; // fc00::/7 unique-local
+  if (/^fe[89ab]/.test(host)) return true; // fe80::/10 link-local
+  return false;
 }
 
 /**
@@ -55,9 +155,11 @@ export class HttpFetchTool implements Tool {
 
   readonly #maxBytes: number;
   readonly #fetch: FetchImpl;
+  readonly #blockPrivateHosts: boolean;
 
   constructor(config: HttpFetchConfig = {}) {
     this.#maxBytes = config.maxBytes ?? HTTP_DEFAULT_MAX_BYTES;
+    this.#blockPrivateHosts = config.blockPrivateHosts ?? true;
     const impl = config.fetchImpl ?? (globalThis.fetch as FetchImpl | undefined);
     if (!impl) {
       throw new Error("http.fetch: no fetch implementation available (pass fetchImpl)");
@@ -96,6 +198,8 @@ export class HttpFetchTool implements Tool {
     if (typeof url !== "string") {
       throw new Error("missing `url` argument");
     }
+    // SSRF guard + scheme allowlist before any network is touched.
+    validateFetchUrl(url, this.#blockPrivateHosts);
 
     const rawMethod = obj["method"];
     const method = (typeof rawMethod === "string" ? rawMethod : "GET").toUpperCase();
