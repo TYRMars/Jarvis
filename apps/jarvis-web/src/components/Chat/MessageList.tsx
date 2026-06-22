@@ -168,6 +168,7 @@ export function MessageList() {
                 key={m.uid}
                 uid={m.uid}
                 content={m.content}
+                submittedContent={m.submittedContent}
                 userOrdinal={m.userOrdinal}
               />
             );

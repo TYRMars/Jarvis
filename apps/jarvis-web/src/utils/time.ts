@@ -23,7 +23,10 @@ export function relTime(iso: string | null | undefined): string {
   const hr = Math.floor(min / 60);
   if (hr < 24) return t("relHourAgo", hr);
   const day = Math.floor(hr / 24);
-  return t("relDayAgo", day);
+  if (day < 7) return t("relDayAgo", day);
+  if (day < 30) return t("relWeekAgo", Math.floor(day / 7));
+  if (day < 365) return t("relMonthAgo", Math.floor(day / 30));
+  return t("relYearAgo", Math.floor(day / 365));
 }
 
 /// Bucket label for the conversation rail: "Today" / "Yesterday" /

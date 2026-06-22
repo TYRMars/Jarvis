@@ -6,7 +6,13 @@
 // action yet) — kept so the visual frame matches the design while we
 // land the rest of the app, not because they do anything.
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { useAppStore } from "../store/appStore";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { ConvoList } from "./Sidebar/ConvoList";
@@ -35,6 +41,21 @@ import {
 } from "../services/docs";
 import { applyDocFilter } from "./Docs/useDocFilter";
 import { updateProject } from "../services/projects";
+import {
+  ArrowLeft,
+  ArrowRight,
+  FileText,
+  Icon,
+  LayoutDashboard,
+  List,
+  Clock,
+  PanelLeft,
+  Pin,
+  Plus,
+  Search,
+  Blocks,
+  Star,
+} from "./ui";
 
 export function AppSidebar() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
@@ -48,6 +69,8 @@ export function AppSidebar() {
   // list; both exist so quick at-a-glance narrowing doesn't have to
   // pop a modal.
   const openQuickSwitcher = () => setQuickOpen(true);
+  const goBack = () => window.history.back();
+  const goForward = () => window.history.forward();
 
   return (
     <aside id="sidebar" aria-label={t("sidebarAriaConversations")}>
@@ -62,52 +85,29 @@ export function AppSidebar() {
           aria-controls="sidebar"
           onClick={() => setSidebarOpen(!sidebarOpen)}
         >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <path d="M9 5v14" />
-          </svg>
+          <Icon icon={PanelLeft} size={17} strokeWidth={1.8} />
         </button>
         <button
-          id="open-quick-search"
           type="button"
-          className="ghost-icon"
-          title={t("sidebarSearch")}
-          aria-label={t("sidebarSearch")}
-          onClick={openQuickSwitcher}
+          className="ghost-icon sidebar-history-btn"
+          title={t("sidebarBack")}
+          aria-label={t("sidebarBack")}
+          onClick={goBack}
         >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.5-3.5" />
-          </svg>
+          <Icon icon={ArrowLeft} size={16} strokeWidth={1.8} />
+        </button>
+        <button
+          type="button"
+          className="ghost-icon sidebar-history-btn"
+          title={t("sidebarForward")}
+          aria-label={t("sidebarForward")}
+          onClick={goForward}
+        >
+          <Icon icon={ArrowRight} size={16} strokeWidth={1.8} />
         </button>
       </div>
 
-      <div className="mode-row" role="tablist" aria-label={t("sidebarModeAria")}>
-        <NavLink to="/" end className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h7" />
-            <path d="M17 8h.01" />
-            <path d="M21 8h.01" />
-          </svg>
-          <span>{t("sidebarModeChat")}</span>
-        </NavLink>
-        <NavLink to="/projects/overview" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m16 18 6-6-6-6" />
-            <path d="m8 6-6 6 6 6" />
-          </svg>
-          <span>{t("sidebarModeWork")}</span>
-        </NavLink>
-        <NavLink to="/docs" className={({ isActive }) => "mode-tab" + (isActive ? " active" : "")}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M6 3h9l3 3v15H6z" />
-            <path d="M14 3v4h4" />
-            <path d="M9 12h6" />
-            <path d="M9 16h6" />
-          </svg>
-          <span>{t("sidebarModeDoc")}</span>
-        </NavLink>
-      </div>
+      <PrimaryNav onSearch={openQuickSwitcher} />
 
       <ModeSidebarBody mode={modeForPath(location.pathname)} />
 
@@ -116,6 +116,53 @@ export function AppSidebar() {
         <ConnectionStatus />
       </div>
     </aside>
+  );
+}
+
+function PrimaryNav({ onSearch }: { onSearch: () => void }) {
+  return (
+    <nav className="primary-nav" aria-label={t("sidebarModeAria")}>
+      <NewConvoButton />
+      <button
+        id="open-quick-search"
+        type="button"
+        className="nav-item primary-nav-item"
+        title={t("sidebarSearch")}
+        aria-label={t("sidebarSearch")}
+        onClick={onSearch}
+      >
+        <Icon icon={Search} size={17} strokeWidth={1.85} />
+        <span>{t("sidebarSearch")}</span>
+        <kbd className="nav-shortcut" aria-hidden="true">⌘G</kbd>
+      </button>
+      <NavLink
+        to="/customize"
+        className={({ isActive }) =>
+          "nav-item primary-nav-item" + (isActive ? " active" : "")
+        }
+      >
+        <Icon icon={Blocks} size={17} strokeWidth={1.85} />
+        <span>{t("customizeNavPlugins")}</span>
+      </NavLink>
+      <NavLink
+        to="/projects/auto-mode"
+        className={({ isActive }) =>
+          "nav-item primary-nav-item" + (isActive ? " active" : "")
+        }
+      >
+        <Icon icon={Clock} size={17} strokeWidth={1.85} />
+        <span>{t("projectAutoOn")}</span>
+      </NavLink>
+      <NavLink
+        to="/docs"
+        className={({ isActive }) =>
+          "nav-item primary-nav-item sidebar-docs-link" + (isActive ? " active" : "")
+        }
+      >
+        <Icon icon={FileText} size={17} strokeWidth={1.85} />
+        <span>{t("sidebarModeDoc")}</span>
+      </NavLink>
+    </nav>
   );
 }
 
@@ -140,33 +187,6 @@ function ModeSidebarBody({ mode }: { mode: "chat" | "work" | "doc" }) {
 function ChatSidebarBody() {
   return (
     <>
-      <nav className="nav-list" aria-label={t("sidebarModeChat")}>
-        <NewConvoButton />
-        <NavLink
-          to="/customize"
-          className={({ isActive }) =>
-            "nav-item" + (isActive ? " active" : "")
-          }
-        >
-          <svg
-            width="17"
-            height="17"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M6.5 8.5h11l-.8 10.5a2 2 0 0 1-2 1.8H9.3a2 2 0 0 1-2-1.8L6.5 8.5Z" />
-            <path d="M9 8.5V7a3 3 0 0 1 6 0v1.5" />
-            <path d="M12 12v4" />
-            <path d="M10 14h4" />
-          </svg>
-          <span>{t("customize")}</span>
-        </NavLink>
-      </nav>
       <ConvoList />
     </>
   );
@@ -211,36 +231,21 @@ function WorkSidebarBody() {
     <>
       <nav className="nav-list" aria-label={t("sidebarModeWork")}>
         <button type="button" className="nav-item" onClick={openNewProject}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
+          <Icon icon={Plus} size={17} strokeWidth={1.9} />
           <span>{t("projectsNewBtn")}</span>
         </button>
         <NavLink
           to="/projects/overview"
           className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
         >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="3" y="3" width="7" height="9" rx="1" />
-            <rect x="14" y="3" width="7" height="5" rx="1" />
-            <rect x="14" y="12" width="7" height="9" rx="1" />
-            <rect x="3" y="16" width="7" height="5" rx="1" />
-          </svg>
+          <Icon icon={LayoutDashboard} size={17} strokeWidth={1.9} />
           <span>{t("sidebarNavWorkOverview")}</span>
         </NavLink>
         <NavLink
           to="/projects/list"
           className={({ isActive }) => "nav-item" + (isActive ? " active" : "")}
         >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M8 6h13" />
-            <path d="M8 12h13" />
-            <path d="M8 18h13" />
-            <path d="M3 6h.01" />
-            <path d="M3 12h.01" />
-            <path d="M3 18h.01" />
-          </svg>
+          <Icon icon={List} size={17} strokeWidth={1.9} />
           <span>{t("sidebarNavProjectList")}</span>
         </NavLink>
       </nav>
@@ -407,10 +412,7 @@ function DocSidebarBody() {
           className="nav-item"
           onClick={() => void openNew()}
         >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
+          <Icon icon={Plus} size={17} strokeWidth={1.9} />
           <span>{t("sidebarNewPage")}</span>
         </button>
       </nav>
@@ -424,7 +426,7 @@ function DocSidebarBody() {
         />
         <DocScopeRow
           label={t("docsScopePinned") || "Pinned"}
-          icon="★"
+          icon={<Icon icon={Star} size={13} strokeWidth={1.8} />}
           count={counts.pinned}
           active={sameScope(scope, { type: "pinned" })}
           onClick={() => onScope({ type: "pinned" })}
@@ -433,10 +435,7 @@ function DocSidebarBody() {
 
       <div className="sidebar-section mode-sidebar-section docs-rail-search">
         <label className="docs-rail-search-input">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <circle cx="11" cy="11" r="6.5" />
-            <path d="m20.5 20.5-3.7-3.7" />
-          </svg>
+          <Icon icon={Search} size={13} strokeWidth={2} />
           <input
             type="search"
             value={query}
@@ -470,7 +469,7 @@ function DocSidebarBody() {
                 >
                   {project.pinned ? (
                     <span className="docs-rail-row-pin" aria-hidden>
-                      <PinGlyph />
+                      <Icon icon={Pin} size={11} fill="currentColor" strokeWidth={1.8} />
                     </span>
                   ) : null}
                   <span className="docs-rail-row-main">
@@ -539,26 +538,12 @@ function docScopeLabel(scope: DocScope): string {
   }
 }
 
-function PinGlyph() {
-  return (
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="m12 2.8 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.6 3 1.1-6.2L2.9 9.4l6.3-.9L12 2.8Z" />
-    </svg>
-  );
-}
-
 interface DocScopeRowProps {
   label: string;
   count: number;
   active: boolean;
   onClick: () => void;
-  icon?: string;
+  icon?: ReactNode;
   monospace?: boolean;
 }
 

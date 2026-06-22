@@ -18,6 +18,7 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
   const { showHelp } = opts;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       const inEditable =
         e.target instanceof HTMLElement &&
         (e.target.tagName === "INPUT" ||

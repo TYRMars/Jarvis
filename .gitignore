@@ -24,3 +24,5 @@ dist/
 # Electron desktop (@jarvis/desktop) build output
 packages/desktop/out/
 packages/desktop/release/
+# Local test/debug artifacts (playwright captures, auto-test reports)
+output/

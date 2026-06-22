@@ -10,6 +10,20 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
+import {
+  ClipboardList,
+  Diff,
+  Files,
+  Icon,
+  ListChecks,
+  ListTodo,
+  PanelLeftOpen,
+  PanelRight,
+  Play,
+  SquareTerminal,
+  Trash2,
+  X,
+} from "../ui";
 
 /// Floating "open sidebar" affordance shown in the chat header when
 /// the sidebar is collapsed. Mirrors the in-sidebar toggle so the
@@ -31,11 +45,7 @@ export function OpenSidebarButton() {
       aria-expanded={false}
       onClick={() => setOpen(true)}
     >
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="5" width="18" height="14" rx="2" />
-        <path d="M9 5v14" />
-        <path d="m13 9 3 3-3 3" />
-      </svg>
+      <Icon icon={PanelLeftOpen} size={17} strokeWidth={1.8} />
     </button>
   );
 }
@@ -56,12 +66,7 @@ export function WorkspaceRailToggleButton() {
         setOpen(!open);
       }}
     >
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="4" width="18" height="16" rx="2" />
-        <path d="M15 4v16" />
-        <path d="m7 9 1.5 1.5L12 7" />
-        <path d="M7 15h4" />
-      </svg>
+      <Icon icon={PanelRight} size={17} strokeWidth={1.8} />
     </button>
   );
 }
@@ -77,10 +82,7 @@ export function CloseWorkspaceRailButton() {
       aria-label={t("wkSpaceClose")}
       onClick={() => setOpen(false)}
     >
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M18 6 6 18" />
-        <path d="m6 6 12 12" />
-      </svg>
+      <Icon icon={X} size={15} strokeWidth={2} />
     </button>
   );
 }
@@ -96,10 +98,7 @@ export function ClosePlanCardButton() {
       aria-label={t("wkSpaceClose")}
       onClick={() => setOpen(false)}
     >
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M18 6 6 18" />
-        <path d="m6 6 12 12" />
-      </svg>
+      <Icon icon={X} size={15} strokeWidth={2} />
     </button>
   );
 }
@@ -115,11 +114,7 @@ export function ClearTasksButton() {
       aria-label={t("wkSpaceClearTasks")}
       onClick={() => clearTasks()}
     >
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3 6h18" />
-        <path d="M8 6V4h8v2" />
-        <path d="m19 6-1 14H6L5 6" />
-      </svg>
+      <Icon icon={Trash2} size={15} strokeWidth={1.9} />
     </button>
   );
 }
@@ -134,10 +129,7 @@ export function CloseApprovalsButton() {
       aria-label={t("wkSpaceClose")}
       onClick={() => document.body.classList.remove("approvals-open")}
     >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M18 6 6 18" />
-        <path d="m6 6 12 12" />
-      </svg>
+      <Icon icon={X} size={16} strokeWidth={2} />
     </button>
   );
 }
@@ -170,13 +162,13 @@ export function WorkspacePanelMenu() {
     icon: ReactNode;
     shortcut?: string;
   }> = [
-    { key: "preview",      labelKey: "panelPreview",   fallback: "Preview",   icon: <PlayIcon />, shortcut: "⇧⌘P" },
-    { key: "diff",         labelKey: "panelDiff",      fallback: "Diff",      icon: <DiffIcon />, shortcut: "⇧⌘D" },
-    { key: "terminal",     labelKey: "panelTerminal",  fallback: "Terminal",  icon: <TerminalIcon />, shortcut: "^`" },
-    { key: "files",        labelKey: "panelFiles",     fallback: "Files",     icon: <FilesIcon />, shortcut: "⇧⌘F" },
-    { key: "tasks",        labelKey: "tasks",          fallback: "Tasks",     icon: <TasksIcon /> },
-    { key: "changeReport", labelKey: "changeReportTitle", fallback: "Change report", icon: <ReportIcon /> },
-    { key: "plan",         labelKey: "plan",           fallback: "Plan",      icon: <PlanIcon /> },
+    { key: "preview",      labelKey: "panelPreview",   fallback: "Preview",   icon: <Icon icon={Play} size={13} strokeWidth={2} />, shortcut: "⇧⌘P" },
+    { key: "diff",         labelKey: "panelDiff",      fallback: "Diff",      icon: <Icon icon={Diff} size={13} strokeWidth={2} />, shortcut: "⇧⌘D" },
+    { key: "terminal",     labelKey: "panelTerminal",  fallback: "Terminal",  icon: <Icon icon={SquareTerminal} size={13} strokeWidth={2} />, shortcut: "^`" },
+    { key: "files",        labelKey: "panelFiles",     fallback: "Files",     icon: <Icon icon={Files} size={13} strokeWidth={2} /> },
+    { key: "tasks",        labelKey: "tasks",          fallback: "Tasks",     icon: <Icon icon={ListTodo} size={13} strokeWidth={2} /> },
+    { key: "changeReport", labelKey: "changeReportTitle", fallback: "Change report", icon: <Icon icon={ClipboardList} size={13} strokeWidth={2} /> },
+    { key: "plan",         labelKey: "plan",           fallback: "Plan",      icon: <Icon icon={ListChecks} size={13} strokeWidth={2} /> },
   ];
 
   return (
@@ -194,10 +186,7 @@ export function WorkspacePanelMenu() {
           setOpen(!open);
         }}
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="3" y="4" width="18" height="16" rx="2" />
-          <path d="M9 4v16" />
-        </svg>
+        <Icon icon={PanelRight} size={15} strokeWidth={1.9} />
       </button>
       <div
         id="workspace-panel-menu"
@@ -232,74 +221,4 @@ export function WorkspacePanelMenu() {
 function tx(key: string, fallback: string): string {
   const v = t(key);
   return v === key ? fallback : v;
-}
-
-// ---- Inline icons (12px, single-stroke) for the panel menu ----
-
-function PlayIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polygon points="6 4 20 12 6 20 6 4" />
-    </svg>
-  );
-}
-
-function DiffIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-    </svg>
-  );
-}
-
-function TerminalIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="4 17 10 11 4 5" />
-      <line x1="12" y1="19" x2="20" y2="19" />
-    </svg>
-  );
-}
-
-function FilesIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-    </svg>
-  );
-}
-
-function TasksIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="3" width="7" height="7" rx="1" />
-      <rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="3" y="14" width="7" height="7" rx="1" />
-      <rect x="14" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
-
-function ReportIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M5 3h10l4 4v14H5z" />
-      <path d="M14 3v5h5" />
-      <path d="M8 13h8" />
-      <path d="M8 17h5" />
-    </svg>
-  );
-}
-
-function PlanIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="3 6 6 9 11 4" />
-      <polyline points="3 13 6 16 11 11" />
-      <line x1="14" y1="7" x2="21" y2="7" />
-      <line x1="14" y1="14" x2="21" y2="14" />
-    </svg>
-  );
 }

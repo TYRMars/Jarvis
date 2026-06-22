@@ -2,7 +2,7 @@
 // workspace-rail toggle), error banner, scrolling message list,
 // composer footer with model menu + usage badge.
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Banner } from "./Banner";
 import { ChatHeader } from "./ChatHeader";
 import { FallbackBanner } from "./FallbackBanner";
@@ -16,8 +16,8 @@ import { ModeChangedToast } from "./Approvals/ModeChangedToast";
 import { PlanModeBanner } from "./Approvals/PlanModeBanner";
 import { PlanProposedCard } from "./Approvals/PlanProposedCard";
 import { ModelMenu } from "./ModelMenu/ModelMenu";
-import { PermissionModeChip } from "./Composer/PermissionModeChip";
 import { EffortLevelSelector } from "./Composer/EffortLevelSelector";
+import { ContextWindowBadge } from "./ContextWindowBadge";
 import { UsageBadge } from "./UsageBadge";
 import { ComposerShoulder } from "./ComposerShoulder";
 import { ComposerProjectRail } from "./Composer/ComposerProjectRail";
@@ -27,6 +27,7 @@ import { pickedRouting } from "../services/socket";
 import { slashCommands } from "../services/slash_commands";
 import { useAppStore } from "../store/appStore";
 import { t } from "../utils/i18n";
+import { FileText, Icon, Mic, Plus, SquareTerminal } from "./ui";
 
 export function AppChatPane() {
   const pendingAsk = useAppStore((s) => {
@@ -87,38 +88,28 @@ export function AppChatPane() {
             Either way the rail sits above the input as part of the
             existing context surface — not a separate row that
             disappears between session-state transitions. */}
-        {inSession ? <ComposerShoulder /> : <ComposerProjectRail />}
         <Composer
           slashCommands={slashCommands}
           pickedRouting={pickedRouting}
+          contextRow={(
+            <div className="composer-meta-context">
+              {inSession ? <ComposerShoulder /> : <ComposerProjectRail />}
+            </div>
+          )}
           metaChildren={(
             <>
-              {inSession ? (
-                <div className="composer-actions">
-                  <ModeBadge />
-                  <PermissionModeChip />
-                  <EffortLevelSelector />
-                  <ComposerToolButton label={t("chatCoreOpenDocs")} onClick={() => { window.location.href = "/docs"; }}>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M8 6h8" />
-                      <path d="M8 10h8" />
-                      <path d="M8 14h5" />
-                      <rect x="5" y="3" width="14" height="18" rx="2" />
-                    </svg>
-                  </ComposerToolButton>
-                  <CommandSeedButton />
-                  <VoiceInputButton />
-                  <CommandSeedButton compact />
-                  <UsageBadge />
-                </div>
-              ) : (
-                <div className="composer-actions">
-                  <ModeBadge />
-                  <span className="meta-dot">+</span>
-                  <UsageBadge />
-                </div>
-              )}
-              <ModelMenu />
+              <div className="composer-actions composer-meta-controls">
+                <ModeBadge />
+                <ComposerUtilityButtons />
+                <UsageBadge />
+              </div>
+              {/* Right cluster (Claude-Code order): model, then thinking
+                  level, then the compact context-window ring. */}
+              <div className="composer-model-cluster">
+                <ModelMenu />
+                <EffortLevelSelector />
+                <ContextWindowBadge />
+              </div>
             </>
           )}
         />
@@ -127,28 +118,118 @@ export function AppChatPane() {
   );
 }
 
-function CommandSeedButton({ compact = false }: { compact?: boolean }) {
-  const value = useAppStore((s) => s.composerValue);
-  const setValue = useAppStore((s) => s.setComposerValue);
+export function ComposerUtilityButtons() {
   return (
-    <ComposerToolButton
-      label={compact ? t("chatCoreMoreComposerActions") : t("chatCoreAddCommand")}
-      onClick={() => {
-        setValue(value.trim().startsWith("/") ? value : "/");
-        requestAnimationFrame(() => document.getElementById("input")?.focus());
-      }}
-    >
-      {compact ? (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m6 9 6 6 6-6" />
-        </svg>
-      ) : (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 5v14" />
-          <path d="M5 12h14" />
-        </svg>
-      )}
-    </ComposerToolButton>
+    <div className="composer-tool-group" role="group" aria-label={t("chatCoreComposerTools")}>
+      <ComposerAddMenuButton />
+      <VoiceInputButton />
+      <ComposerToolButton label={t("chatCoreOpenDocs")} onClick={() => { window.location.href = "/docs"; }}>
+        <Icon icon={FileText} size={15} />
+      </ComposerToolButton>
+    </div>
+  );
+}
+
+function ComposerAddMenuButton() {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const firstItemRef = useRef<HTMLButtonElement | null>(null);
+  const secondItemRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const runAction = (eventName: "jarvis:composer-pick-files" | "jarvis:composer-open-slash") => {
+    setOpen(false);
+    window.dispatchEvent(new CustomEvent(eventName));
+  };
+
+  const onTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowDown") return;
+    event.preventDefault();
+    setOpen(true);
+    requestAnimationFrame(() => firstItemRef.current?.focus());
+  };
+
+  const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      requestAnimationFrame(() => document.getElementById("composer-add-trigger")?.focus());
+      return;
+    }
+    if (
+      event.key === "ArrowDown" ||
+      event.key === "ArrowUp" ||
+      event.key === "Home" ||
+      event.key === "End"
+    ) {
+      event.preventDefault();
+      const items = [firstItemRef.current, secondItemRef.current].filter(Boolean);
+      if (items.length === 0) return;
+      const current = document.activeElement;
+      const currentIndex = items.findIndex((item) => item === current);
+      const nextIndex = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowUp"
+            ? (currentIndex <= 0 ? items.length - 1 : currentIndex - 1)
+            : (currentIndex + 1) % items.length;
+      items[nextIndex]?.focus();
+    }
+  };
+
+  return (
+    <div className="composer-add-menu" ref={rootRef}>
+      <ComposerToolButton
+        id="composer-add-trigger"
+        label={t("chatCoreAddContext")}
+        ariaExpanded={open}
+        ariaHasPopup="menu"
+        onKeyDown={onTriggerKeyDown}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon icon={Plus} size={16} />
+      </ComposerToolButton>
+      {open ? (
+        <div className="composer-add-popover" role="menu" onKeyDown={onMenuKeyDown}>
+          <button
+            ref={firstItemRef}
+            type="button"
+            role="menuitem"
+            className="composer-add-item"
+            onClick={() => runAction("jarvis:composer-pick-files")}
+          >
+            <Icon icon={FileText} size={16} />
+            <span>
+              <strong>{t("chatCoreAttachFiles")}</strong>
+              <small>{t("chatCoreAttachFilesDesc")}</small>
+            </span>
+          </button>
+          <button
+            ref={secondItemRef}
+            type="button"
+            role="menuitem"
+            className="composer-add-item"
+            onClick={() => runAction("jarvis:composer-open-slash")}
+          >
+            <Icon icon={SquareTerminal} size={16} />
+            <span>
+              <strong>{t("chatCoreSlashCommands")}</strong>
+              <small>{t("chatCoreSlashCommandsDesc")}</small>
+            </span>
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -182,26 +263,40 @@ function VoiceInputButton() {
         recognition.start();
       }}
     >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
-        <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
-        <path d="M12 18v3" />
-      </svg>
+      <Icon icon={Mic} size={16} />
     </ComposerToolButton>
   );
 }
 
 function ComposerToolButton({
+  id,
   label,
+  ariaExpanded,
+  ariaHasPopup,
+  onKeyDown,
   onClick,
   children,
 }: {
+  id?: string;
   label: string;
+  ariaExpanded?: boolean;
+  ariaHasPopup?: "menu";
+  onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
-    <button type="button" className="composer-tool-btn" aria-label={label} title={label} onClick={onClick}>
+    <button
+      id={id}
+      type="button"
+      className="composer-tool-btn"
+      aria-label={label}
+      aria-expanded={ariaExpanded}
+      aria-haspopup={ariaHasPopup}
+      title={label}
+      onKeyDown={onKeyDown}
+      onClick={onClick}
+    >
       {children}
     </button>
   );

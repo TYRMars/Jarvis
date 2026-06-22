@@ -29,7 +29,7 @@ export interface ChatSlice {
   /// Append a synthetic system message (e.g. the `/help` overlay).
   /// Renders as a `system` `<UiMessage>` in the chat list.
   pushSystemMessage: (content: string) => void;
-  pushUserMessage: (content: string) => string;
+  pushUserMessage: (content: string, submittedContent?: string) => string;
   startAssistant: () => string;
   appendDelta: (text: string) => void;
   finalizeAssistant: (msg: {
@@ -83,13 +83,13 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
     }));
   },
 
-  pushUserMessage: (content) => {
+  pushUserMessage: (content, submittedContent) => {
     const uid = nextUid("u");
     const userOrdinal = get().messages.filter((m) => m.kind === "user").length;
     set((s) => ({
       messages: [
         ...s.messages,
-        { uid, kind: "user", content, userOrdinal },
+        { uid, kind: "user", content, submittedContent, userOrdinal },
       ],
       emptyHintIdShort: null,
     }));
@@ -247,6 +247,7 @@ export const createChatSlice: StateCreator<FullState, [], [], ChatSlice> = (
           uid: nextUid("u"),
           kind: "user",
           content: m.content,
+          submittedContent: m.content,
           userOrdinal,
         });
         userOrdinal++;

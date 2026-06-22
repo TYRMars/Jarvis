@@ -152,6 +152,33 @@ export function initialEffort(): string {
   return safeGet("jarvis.effort") || "medium";
 }
 
+// ---- Per-model effort --------------------------------------------
+//
+// Thinking-level is a per-model setting: each model remembers its own
+// effort so switching models recalls the right level (a reasoning
+// model can sit at "high" while a cheap chat model stays at "low").
+// Keyed by the model id (the part after `|` in a routing string; ""
+// for server-default). The global `jarvis.effort` is kept as the
+// fallback for models we haven't seen yet.
+
+export function initialEffortByModel(): Record<string, string> {
+  try {
+    const raw = safeGet("jarvis.effortByModel");
+    if (!raw) return {};
+    return JSON.parse(raw) || {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveEffortByModel(map: Record<string, string>): void {
+  try {
+    localStorage.setItem("jarvis.effortByModel", JSON.stringify(map));
+  } catch {
+    // see savePinned
+  }
+}
+
 /// Sticky default for the model menu — what new conversations get
 /// when there's no per-conversation override saved. Empty string =
 /// "let the server's registry default win". Persisted under
@@ -324,7 +351,8 @@ export function initialConvoVisibility(): ConvoVisibility {
 
 export function initialConvoSectionOrder(): ConvoSectionOrder {
   const saved = safeGet("jarvis.convoSectionOrder");
-  return saved === "conversationsFirst" ? "conversationsFirst" : "projectsFirst";
+  if (saved === "projectsFirst" || saved === "conversationsFirst") return saved;
+  return "conversationsFirst";
 }
 
 /// Recents-section auto/manual filter. "all" shows everything,

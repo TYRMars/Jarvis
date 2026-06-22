@@ -48,15 +48,15 @@ export function AppearanceLayoutSection({ tab, onTabChange }: Props = {}) {
     <Section
       id="appearance-layout"
       titleKey="settingsAppearanceLayoutTitle"
-      titleFallback="Appearance & Layout"
+      titleFallback="Appearance"
       descKey="settingsAppearanceLayoutDesc"
-      descFallback="Theme, language, and which panels show up in the chat surface."
+      descFallback="Theme, language, and chat surface layout."
     >
       <Tabs
         items={items}
         value={tab ?? DEFAULT_APPEARANCE_LAYOUT_TAB}
         onChange={(id) => onTabChange?.(id as AppearanceLayoutTab)}
-        ariaLabel={tx("settingsAppearanceLayoutTitle", "Appearance & Layout")}
+        ariaLabel={tx("settingsAppearanceLayoutTitle", "Appearance")}
       />
     </Section>
   );

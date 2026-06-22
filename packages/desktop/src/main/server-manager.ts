@@ -55,6 +55,8 @@ export interface ServerManagerDeps {
   webDist: string;
   /** Base environment to derive the server env from (defaults to process.env). */
   env?: NodeJS.ProcessEnv;
+  /** Reuse an already-running `jarvis serve` on :7001 instead of embedding. */
+  reuseExternalServer?: boolean;
 }
 
 export class ServerManager {
@@ -62,6 +64,7 @@ export class ServerManager {
   private readonly prefsDir: string;
   private readonly webDist: string;
   private readonly baseEnv: NodeJS.ProcessEnv;
+  private readonly reuseExternalServer: boolean;
 
   private app: ServerHandle | null = null;
   /** Live MCP child processes owned by the current embedded server (if any). */
@@ -77,6 +80,7 @@ export class ServerManager {
     this.prefsDir = deps.prefsDir;
     this.webDist = deps.webDist;
     this.baseEnv = deps.env ?? process.env;
+    this.reuseExternalServer = deps.reuseExternalServer ?? false;
   }
 
   /** Load persisted prefs and resolve the initial workspace. Call once at startup. */
@@ -91,8 +95,9 @@ export class ServerManager {
   }
 
   /**
-   * Reuse a running external server when one is already healthy at the default
-   * loopback origin; otherwise start our own embedded instance.
+   * Reuse a running external server only when the caller explicitly allows it
+   * and one is already healthy at the default loopback origin; otherwise start
+   * our own embedded instance.
    *
    * `forceEmbedded` skips the external-reuse probe and always starts our own
    * server — used by `restart()` when the user explicitly re-pins a workspace,
@@ -100,7 +105,11 @@ export class ServerManager {
    * (mirrors the Tauri shell, whose restart calls `start_sidecar` directly).
    */
   async ensureServer(opts: { forceEmbedded?: boolean } = {}): Promise<void> {
-    if (!opts.forceEmbedded && (await probeHealth(DEFAULT_EXTERNAL_ORIGIN))) {
+    if (
+      this.reuseExternalServer &&
+      !opts.forceEmbedded &&
+      (await probeHealth(DEFAULT_EXTERNAL_ORIGIN))
+    ) {
       this.apiOrigin = DEFAULT_EXTERNAL_ORIGIN;
       this.kind = "external";
       this.lastError = null;

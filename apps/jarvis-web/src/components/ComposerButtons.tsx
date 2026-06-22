@@ -7,11 +7,12 @@
 import { useAppStore } from "../store/appStore";
 import { requestInterrupt } from "../services/socket";
 import { t } from "../utils/i18n";
+import { ArrowRight, Icon, Square } from "./ui";
 
-export function SendButton() {
+export function SendButton({ canSend }: { canSend?: boolean }) {
   const inFlight = useAppStore((s) => s.inFlight);
   const value = useAppStore((s) => s.composerValue);
-  const empty = !value.trim();
+  const ready = canSend ?? Boolean(value.trim());
   return (
     <button
       type="submit"
@@ -19,12 +20,9 @@ export function SendButton() {
       className={"send-btn" + (inFlight ? " hidden" : "")}
       title={t("send")}
       data-i18n-title="send"
-      disabled={inFlight || empty}
+      disabled={inFlight || !ready}
     >
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M5 12h14" />
-        <path d="m12 5 7 7-7 7" />
-      </svg>
+      <Icon icon={ArrowRight} size={17} strokeWidth={2.2} />
     </button>
   );
 }
@@ -41,9 +39,7 @@ export function StopButton() {
       aria-label={t("stop")}
       onClick={() => requestInterrupt()}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <rect x="6" y="6" width="12" height="12" rx="1" />
-      </svg>
+      <Icon icon={Square} size={14} fill="currentColor" strokeWidth={0} />
     </button>
   );
 }

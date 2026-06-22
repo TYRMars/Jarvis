@@ -24,6 +24,7 @@ import {
   initialConvoSortBy,
   initialConvoVisibility,
   initialEffort,
+  initialEffortByModel,
   initialLang,
   initialPlanCardOpen,
   initialSidebarOpen,
@@ -35,6 +36,7 @@ import {
   loadTitleOverrides,
   safeSet,
   saveConvoRouting,
+  saveEffortByModel,
   savePinned,
   saveTitleOverrides,
 } from "../persistence";
@@ -54,6 +56,17 @@ import type {
 function sortTodosByUpdatedDesc(items: TodoItem[]): TodoItem[] {
   return items.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 }
+
+/// The model id a routing string points at — the part after `|`, or
+/// "" for the empty "server default" routing. Used to key per-model
+/// effort so each model keeps its own thinking level.
+function modelKeyFromRouting(routing: string): string {
+  if (!routing) return "";
+  const idx = routing.indexOf("|");
+  return idx >= 0 ? routing.slice(idx + 1) : routing;
+}
+
+const COMPOSER_HISTORY_LIMIT = 50;
 
 /// One folder's branch / worktree pick made in the composer project
 /// rail before a session starts. `active_path` is what the harness
@@ -89,6 +102,10 @@ export interface CoreSlice {
   /// imperative composer used to read straight from the DOM; the
   /// React `<Composer>` uses this as its sole source of truth.
   composerValue: string;
+  /// Recent prompts for in-session keyboard recall. Kept memory-only:
+  /// prompt history can contain sensitive context and should not be
+  /// written to localStorage without an explicit product decision.
+  composerHistory: string[];
   /// Pasted-blob sidecar for the composer. See `PastedBlobs`.
   pastedBlobs: PastedBlobs;
 
@@ -134,9 +151,14 @@ export interface CoreSlice {
   /// (even one matching the server default) is sent on every send/
   /// resume frame.
   routing: string;
-  /// Effort level surfaced in the model menu's right column. Persisted
-  /// to localStorage by `setEffort`.
+  /// Effort / thinking level for the *currently routed* model. This is
+  /// the live value the composer's effort chip reads. Persisted to
+  /// localStorage by `setEffort` as the global fallback.
   effort: EffortLevel;
+  /// Per-model effort overrides, keyed by model id. Switching models
+  /// recalls that model's saved level (see `setRouting`). Different
+  /// models genuinely carry different thinking levels.
+  effortByModel: Record<string, EffortLevel>;
   /// Whether the model dropdown is currently open. Drives both the
   /// `<ModelMenu>` visibility and the `aria-expanded` on its trigger.
   modelMenuOpen: boolean;
@@ -203,6 +225,7 @@ export interface CoreSlice {
   setUsage: (u: UsageSnapshot) => void;
 
   setComposerValue: (v: string) => void;
+  pushComposerHistory: (text: string) => void;
   addPastedBlob: (text: string) => string;
   gcPastedBlobs: () => void;
   expandPastedPlaceholders: (text: string) => string;
@@ -269,6 +292,7 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   usage: { prompt: 0, completion: 0, cached: 0, reasoning: 0, calls: 0 },
 
   composerValue: "",
+  composerHistory: [],
   pastedBlobs: {},
 
   sidebarOpen: initialSidebarOpen(),
@@ -290,6 +314,7 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   providers: [],
   routing: "",
   effort: initialEffort() as EffortLevel,
+  effortByModel: initialEffortByModel() as Record<string, EffortLevel>,
   modelMenuOpen: false,
   quickOpen: false,
   todos: [],
@@ -330,6 +355,16 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
 
   // ---- Composer ----
   setComposerValue: (v) => set({ composerValue: v }),
+  pushComposerHistory: (text) => {
+    const entry = text.trim();
+    if (!entry) return;
+    set((s) => {
+      const withoutDuplicate = s.composerHistory.filter((item) => item !== entry);
+      return {
+        composerHistory: [...withoutDuplicate, entry].slice(-COMPOSER_HISTORY_LIMIT),
+      };
+    });
+  },
   addPastedBlob: (text) => {
     const token =
       Math.floor(Date.now() / 1000).toString(16).slice(-4) +
@@ -418,6 +453,14 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
     set((s) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const next: any = { routing: value };
+      // Recall this model's saved thinking level so switching models
+      // restores the effort the user last picked for it. Fall back to
+      // the current (global) effort for models we haven't seen yet.
+      const recalled = s.effortByModel[modelKeyFromRouting(value)];
+      if (recalled && recalled !== s.effort) {
+        next.effort = recalled;
+        safeSet("jarvis.effort", recalled);
+      }
       // Persist this routing on the active conversation so resuming
       // restores the same provider+model. Skip when no conversation
       // is open or the value is unchanged.
@@ -434,7 +477,14 @@ export const createCoreSlice: StateCreator<FullState, [], [], CoreSlice> = (set,
   },
   setEffort: (value) => {
     safeSet("jarvis.effort", value);
-    set({ effort: value });
+    set((s) => {
+      // Pin this level to the currently routed model *and* keep it as
+      // the global fallback, so the choice sticks per-model and seeds
+      // models we haven't configured yet.
+      const next = { ...s.effortByModel, [modelKeyFromRouting(s.routing)]: value };
+      saveEffortByModel(next);
+      return { effort: value, effortByModel: next };
+    });
   },
   setModelMenuOpen: (open) => set({ modelMenuOpen: open }),
   setQuickOpen: (v) => set({ quickOpen: v }),

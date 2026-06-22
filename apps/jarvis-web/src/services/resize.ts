@@ -21,8 +21,13 @@ export function installResize(
   if (!handle) return;
   // Restore last persisted width on first install.
   const saved = parseInt(localStorage.getItem(storageKey) || "", 10);
-  if (Number.isFinite(saved) && saved >= min && saved <= max) {
-    document.documentElement.style.setProperty(cssVar, `${saved}px`);
+  if (Number.isFinite(saved)) {
+    if (saved >= min && saved <= max) {
+      document.documentElement.style.setProperty(cssVar, `${saved}px`);
+    } else {
+      localStorage.removeItem(storageKey);
+      document.documentElement.style.removeProperty(cssVar);
+    }
   }
   handle.addEventListener("mousedown", (e: MouseEvent) => {
     e.preventDefault();

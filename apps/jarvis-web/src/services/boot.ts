@@ -23,9 +23,11 @@ import { refreshConvoList } from "./conversations";
 import { loadProviders } from "./providers";
 import { refreshProjects } from "./projects";
 import { refreshChatRuns, startChatRunPolling } from "./chatRuns";
-import { initDesktopRuntime } from "./desktop";
+import { initDesktopRuntime, isDesktopRuntime } from "./desktop";
 
 let booted = false;
+const DESKTOP_LAYOUT_MIGRATION_KEY = "jarvis.layout.desktop.codexRestore";
+const DESKTOP_LAYOUT_MIGRATION_VERSION = "2026-06-22-sidebar-303";
 
 /// Idempotent — React Strict Mode mounts effects twice in dev, and
 /// we only want to open one WebSocket / register one set of side-
@@ -57,7 +59,18 @@ export function boot(): void {
   installCodeBlockCopyAffordances();
 
   // 4. Sidebar / approval-rail width drag handles.
-  installResize("resize-sidebar", "--sidebar-width", "jarvis.layout.sidebar", 200, 520);
+  // Desktop has a Codex-style narrow rail. Old web-era saved widths
+  // up to 520px make the macOS shell look like a split-pane debugger,
+  // so clamp/ignore those values when running inside Electron/Tauri.
+  const desktop = isDesktopRuntime();
+  if (desktop) migrateDesktopLayout();
+  installResize(
+    "resize-sidebar",
+    "--sidebar-width",
+    "jarvis.layout.sidebar",
+    desktop ? 260 : 200,
+    desktop ? 340 : 520,
+  );
   installResize("resize-rail", "--rail-width", "jarvis.layout.rail", 320, 760, /*invert=*/ true);
 
   // 5. Network + WS — in Tauri, first ask the desktop shell for the
@@ -75,6 +88,18 @@ function startNetwork(): void {
   void refreshProjects();
   installConnectivityListeners();
   connect();
+}
+
+function migrateDesktopLayout(): void {
+  try {
+    if (localStorage.getItem(DESKTOP_LAYOUT_MIGRATION_KEY) === DESKTOP_LAYOUT_MIGRATION_VERSION) {
+      return;
+    }
+    localStorage.removeItem("jarvis.layout.sidebar");
+    localStorage.setItem(DESKTOP_LAYOUT_MIGRATION_KEY, DESKTOP_LAYOUT_MIGRATION_VERSION);
+  } catch {
+    // Best-effort only: private windows or locked storage should not block boot.
+  }
 }
 
 /// Walk `[data-i18n]`, `[data-i18n-placeholder]`, `[data-i18n-title]`
