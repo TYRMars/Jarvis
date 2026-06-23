@@ -32,6 +32,7 @@ import type {
 import type { AutomationStore } from "@jarvis/automation";
 import type { EvalStore, ObservabilityStore } from "@jarvis/observability";
 import type { SubAgentRegistry, SubAgentRunStore } from "@jarvis/subagents";
+import type { ModelCapabilityLike } from "./provider-admin-routes.ts";
 import type {
   ConnectorAccountStore,
   ProjectBindingStore,
@@ -58,6 +59,14 @@ export interface ProviderListEntry {
   is_default: boolean;
   /** Canonical provider kind; omitted when unknown. */
   kind?: string;
+  /**
+   * Per-provider model capability snapshots — the same `capabilityCatalog`
+   * entries the web/iOS pickers read to render tools/vision/reasoning/64k+
+   * badges and to gate the reasoning-effort / JSON-schema controls. Mirrors
+   * `harness_server::ProviderInfo.capabilities`. Omitted when unknown; clients
+   * fall back to `[]`.
+   */
+  capabilities?: ModelCapabilityLike[];
 }
 
 /** Read-only provider/model catalog returned by `GET /v1/providers`. */

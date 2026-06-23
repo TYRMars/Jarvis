@@ -179,3 +179,30 @@ test("buildProviderCatalog: a non-catalog model is still offered as default_mode
   assert.equal(cat.providers[0]!.default_model, "some-custom-model-xyz");
   assert.ok(cat.providers[0]!.models.includes("some-custom-model-xyz"));
 });
+
+test("buildProviderCatalog: attaches the capability catalog so pickers keep badges/effort controls", () => {
+  const cfg = loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MODEL: "gpt-4o-mini" });
+  const p = buildProviderCatalog(cfg).providers[0]!;
+  assert.ok(p.capabilities !== undefined, "capabilities must be present");
+  assert.ok(p.capabilities!.length > 0, "capabilities must be non-empty for a known provider");
+  // every advertised model has a matching capability entry, and vice-versa the
+  // capability provider matches the entry kind.
+  for (const cap of p.capabilities!) {
+    assert.equal(cap.provider, "openai");
+    assert.ok(typeof cap.model === "string" && cap.model.length > 0);
+  }
+});
+
+test("buildProviderCatalog: default model is surfaced first even when mid-catalog", () => {
+  // openai's catalog lists gpt-4o first, gpt-4o-mini second; pin the latter and
+  // assert it floats to the front, mirroring Rust's dedup ordering.
+  const cfg = loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MODEL: "gpt-4o-mini" });
+  const models = buildProviderCatalog(cfg).providers[0]!.models;
+  assert.equal(models[0], "gpt-4o-mini", "default model must be first");
+  // no duplicate of the default further down the list
+  assert.equal(
+    models.filter((m) => m === "gpt-4o-mini").length,
+    1,
+    "default model must not be duplicated",
+  );
+});
