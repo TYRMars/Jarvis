@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
+import type { Agent, AgentEvent, ApprovalDecision, Approver, Conversation } from "@jarvis/core";
 import { ChatRunRegistry } from "./chat-runs.ts";
-import { registerChatRoutes } from "./chat-routes.ts";
+import { handleWsConnection, registerChatRoutes } from "./chat-routes.ts";
 import type { AppState } from "./state.ts";
 
 function agentUnused(): never {
@@ -105,4 +106,100 @@ test("GET /v1/chat/runs is a bare array; events + interrupt round-trip", async (
   // now terminal → 404
   assert.equal((await app.inject({ method: "POST", url: "/v1/chat/runs/c1/interrupt" })).statusCode, 404);
   await app.close();
+});
+
+// ---------- WS close handling (issue #202) --------------------------------
+
+const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+/** Minimal fake `ws` socket capturing listeners by event name + sent frames. */
+function fakeSocket() {
+  const listeners = new Map<string, (data: { toString(): string }) => void>();
+  const sent: Record<string, unknown>[] = [];
+  const socket = {
+    OPEN: 1,
+    readyState: 1,
+    send(s: string) {
+      sent.push(JSON.parse(s) as Record<string, unknown>);
+    },
+    on(event: string, fn: (data: { toString(): string }) => void) {
+      listeners.set(event, fn);
+    },
+  };
+  return { socket, listeners, sent };
+}
+
+/**
+ * Agent whose turn parks on a single gated tool awaiting the approver — the
+ * disconnect-mid-approval scenario from issue #202. Records the decision the
+ * tool ultimately receives so the test can assert the close drain.
+ */
+function parkingAgentState(extra?: Partial<AppState>): {
+  state: AppState;
+  decision: () => ApprovalDecision | undefined;
+} {
+  let resolved: ApprovalDecision | undefined;
+  const state = {
+    createAgent(approver?: Approver): Agent {
+      const fake = {
+        runStream(conv: Conversation) {
+          return (async function* (): AsyncGenerator<AgentEvent> {
+            const d = await approver!.approve({
+              tool_call_id: "tc1",
+              tool_name: "shell.exec",
+              arguments: {},
+              category: "exec",
+            });
+            resolved = d;
+            yield { type: "done", conversation: conv } as AgentEvent;
+          })();
+        },
+      };
+      return fake as unknown as Agent;
+    },
+    ...extra,
+  } as AppState;
+  return { state, decision: () => resolved };
+}
+
+test("ws registers a close handler that denies pending approvals (issue #202)", async () => {
+  const { socket, listeners } = fakeSocket();
+  const { state, decision } = parkingAgentState();
+
+  handleWsConnection(socket as never, state);
+  assert.ok(listeners.has("close"), "regression: ws must register a `close` handler");
+
+  // Start a turn (non-persisted) → it parks awaiting the approval.
+  listeners.get("message")!({ toString: () => JSON.stringify({ type: "user", content: "hi" }) });
+  await flush();
+  assert.equal(decision(), undefined, "tool still parked before disconnect");
+
+  // Disconnect mid-approval: the parked tool must be unblocked with a deny so
+  // its generator can settle (instead of pinning the turn forever).
+  listeners.get("close")!({ toString: () => "" });
+  await flush();
+  assert.equal(decision()?.decision, "deny", "close drains the pending approval as a deny");
+});
+
+test("ws close marks the persisted run cancelled in the registry (issue #202)", async () => {
+  const { socket, listeners } = fakeSocket();
+  const reg = new ChatRunRegistry();
+  const { state } = parkingAgentState({ chatRuns: reg });
+
+  handleWsConnection(socket as never, state);
+
+  // `new` sets persistedId (no store needed) → the turn is registry-tracked.
+  listeners.get("message")!({ toString: () => JSON.stringify({ type: "new", id: "conv-1" }) });
+  await flush();
+  listeners.get("message")!({ toString: () => JSON.stringify({ type: "user", content: "hi" }) });
+  await flush();
+  assert.equal(reg.list(false).find((r) => r.conversation_id === "conv-1")?.status, "running");
+
+  listeners.get("close")!({ toString: () => "" });
+  await flush();
+  assert.equal(
+    reg.list(false).find((r) => r.conversation_id === "conv-1")?.status,
+    "cancelled",
+    "socket close cancels the persisted run (not just the REST interrupt route)",
+  );
 });
