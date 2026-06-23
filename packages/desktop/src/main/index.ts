@@ -19,6 +19,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 
 import { IPC, type DesktopStatus, type OpenResult } from "../shared/ipc.ts";
 import { LogBuffer } from "./logs.ts";
+import { isNavigationAllowed, originOf } from "./navigation.ts";
 import { ServerManager } from "./server-manager.ts";
 
 const WINDOW_WIDTH = 1280;
@@ -33,6 +34,10 @@ let manager: ServerManager | null = null;
 let webDist = "";
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
+// The origin the privileged renderer is pinned to. Starts null (only the
+// bundled file:// SPA is reachable) and tracks the embedded-server origin once
+// we navigate to it — the port can change across restarts.
+let allowedOrigin: string | null = null;
 
 /**
  * Resolve the built web SPA directory:
@@ -71,6 +76,23 @@ async function createWindow(): Promise<void> {
     if (mainWindow === win) mainWindow = null;
   });
 
+  // Pin the privileged renderer to the known origin(s). Without this, any
+  // in-page navigation (malicious link, injected redirect, window.open) could
+  // move the renderer to an arbitrary origin that inherits the preload IPC
+  // surface — see navigation.ts.
+  win.webContents.on("will-navigate", (e, url) => {
+    if (!isNavigationAllowed(url, allowedOrigin)) {
+      e.preventDefault();
+      logs.push(`Blocked navigation to ${url}`);
+    }
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    // Never spawn a second privileged window. Open genuine web links in the
+    // user's default browser; deny everything else outright.
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+
   // 7.6: load the bundled SPA from disk first (instant first paint / fallback).
   try {
     await win.loadFile(path.join(webDist, "index.html"));
@@ -90,6 +112,8 @@ async function createWindow(): Promise<void> {
 async function navigateToServer(win: BrowserWindow, status: DesktopStatus): Promise<void> {
   if (win.isDestroyed() || !status.server_running) return;
   try {
+    // Allow the renderer to live at this origin before we navigate it there.
+    allowedOrigin = originOf(status.api_origin);
     await win.loadURL(status.api_origin);
   } catch (e) {
     logs.push(`Navigate to ${status.api_origin} failed: ${String(e)}`);
