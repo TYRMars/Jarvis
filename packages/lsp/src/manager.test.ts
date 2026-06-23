@@ -86,6 +86,46 @@ test("LspManager.report: reuses one server across multiple files", async () => {
   });
 });
 
+test("LspManager.report: re-edit does not return the stale pre-edit error array (#203)", async () => {
+  // False positive guard: agent fixes a file and re-edits; if the server
+  // re-publishes slower than settleMs the loop must NOT report the old error.
+  await withWorkspace(async (dir) => {
+    const file = join(dir, "x.mock");
+    await writeFile(file, "@@ERROR@@ boom");
+    const manager = new LspManager({ root: dir, registry: mockRegistry(".mock"), timeoutMs: 4000, settleMs: 120 });
+    try {
+      const first = await manager.report([file]);
+      assert.match(first, /mock error: boom/, "first pass (didOpen) reports the error");
+
+      // Fix it, but make the re-publish outrun the settle window (@@SLOW@@).
+      await writeFile(file, "now clean @@SLOW@@");
+      const second = await manager.report([file]);
+      assert.equal(second, "", "re-edit must settle on the fresh clean push, not the cached error");
+    } finally {
+      await manager.dispose();
+    }
+  });
+});
+
+test("LspManager.report: re-edit surfaces a newly-introduced error on a slow server (#203)", async () => {
+  // False negative guard: agent breaks a previously-clean file; a slow
+  // re-publish must not let the cached empty array hide the new error.
+  await withWorkspace(async (dir) => {
+    const file = join(dir, "x.mock");
+    await writeFile(file, "all good");
+    const manager = new LspManager({ root: dir, registry: mockRegistry(".mock"), timeoutMs: 4000, settleMs: 120 });
+    try {
+      assert.equal(await manager.report([file]), "", "first pass (didOpen) is clean");
+
+      await writeFile(file, "@@ERROR@@ regression @@SLOW@@");
+      const second = await manager.report([file]);
+      assert.match(second, /mock error: regression/, "re-edit must wait for the fresh push carrying the new error");
+    } finally {
+      await manager.dispose();
+    }
+  });
+});
+
 test("LspManager.report: unsupported extension is a no-op", async () => {
   await withWorkspace(async (dir) => {
     const file = join(dir, "note.txt");
