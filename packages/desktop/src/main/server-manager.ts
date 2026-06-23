@@ -206,6 +206,19 @@ export class ServerManager {
       this.lastError = errMessage(e);
       this.kind = "stopped";
       this.app = null;
+      // buildAppState may have spawned MCP children and handed ownership back to
+      // us at `this.mcpClients`. If `serve()` (or anything after that assignment)
+      // threw, `stop()` is not on this path, so reap them here — otherwise every
+      // failed start orphans a child process group per configured MCP server, and
+      // a re-entry would overwrite `this.mcpClients` and leak them permanently.
+      if (this.mcpClients.length > 0) {
+        await Promise.all(
+          this.mcpClients.map((c) =>
+            c.shutdown().catch((err) => this.logs.push(`Error closing MCP client: ${errMessage(err)}`)),
+          ),
+        );
+        this.mcpClients = [];
+      }
       this.logs.push(`Failed to start embedded Jarvis server: ${this.lastError}`);
     }
   }
