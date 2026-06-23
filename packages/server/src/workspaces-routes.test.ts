@@ -132,3 +132,29 @@ test("forget requires a path query parameter (400)", async () => {
   assert.equal(res.statusCode, 400);
   await app.close();
 });
+
+/**
+ * A backend whose `touch` always throws — stands in for a disk-write /
+ * SQLite failure. Input validation has already passed by the time `touch`
+ * is called, so the only thing left to fail is the store I/O.
+ */
+class FailingTouchStore extends MemoryWorkspaceStore {
+  override touch(): Promise<string> {
+    return Promise.reject(new Error("disk write failed"));
+  }
+}
+
+test("touch surfaces a backend/I-O failure as 500, not 400", async () => {
+  const app = await buildApp({ createAgent: agentUnused, workspaces: new FailingTouchStore() });
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/workspaces",
+    payload: { path: "/work/alpha" },
+  });
+  // A store fault is a server-side condition: it must map to 500 (matching
+  // the sibling GET/DELETE handlers), not 400 — a 400 would mislabel an infra
+  // failure as bad client input and confuse monitoring/alerting.
+  assert.equal(res.statusCode, 500);
+  assert.equal((res.json() as { error: string }).error, "disk write failed");
+  await app.close();
+});
