@@ -81,6 +81,23 @@ function errMsg(e: unknown): string {
 }
 
 /**
+ * Clamp a WebSocket close reason to the protocol limit. A close frame's payload
+ * is <= 125 bytes (2 for the code + <= 123 for the reason), and `ws` validates
+ * the reason in *bytes* before initiating the close — an over-long reason throws
+ * `RangeError` instead of being truncated. A reason with multibyte characters
+ * (CJK, emoji) can exceed 123 bytes well under 123 chars, so we measure and
+ * truncate by bytes on a UTF-8 boundary (`fatal: false` drops a trailing
+ * partial code point rather than emitting U+FFFD).
+ */
+function clampReason(msg: string): string {
+  const buf = Buffer.from(msg, "utf8");
+  if (buf.length <= 123) return msg;
+  return new TextDecoder("utf-8", { fatal: false, ignoreBOM: true })
+    .decode(buf.subarray(0, 123))
+    .replace(/�+$/, "");
+}
+
+/**
  * Resolve the workspace root for one request. A `?root=<abs>` override wins over
  * `AppState.workspaceRoot`; it must be absolute, NUL/newline/CR-free, and
  * `realpath` to an existing directory (anything else -> 400, already sent). When
@@ -211,9 +228,13 @@ function runTerminal(socket: WebSocket, shell: string, cwd: string, cols: number
     // Surface the spawn failure as a close frame (the panel renders it as a
     // session error) rather than leaving a half-open socket.
     try {
-      socket.close(1011, `spawn shell: ${errMsg(e)}`.slice(0, 120));
+      socket.close(1011, clampReason(`spawn shell: ${errMsg(e)}`));
     } catch {
-      /* socket already gone */
+      try {
+        socket.close(1011);
+      } catch {
+        /* socket already gone */
+      }
     }
     return;
   }
@@ -395,8 +416,15 @@ async function handleTerminalWs(socket: WebSocket, req: FastifyRequest, state: A
 function closeWith(socket: WebSocket, httpStatus: number, msg: string): void {
   const code = httpStatus >= 500 ? 1011 : 1008;
   try {
-    socket.close(code, msg.slice(0, 120));
+    socket.close(code, clampReason(msg));
   } catch {
-    /* socket already gone */
+    // `ws` rejects an over-long/invalid reason *before* closing, so a throw here
+    // means the socket is still open — tear it down with no reason rather than
+    // leaking the upgraded connection.
+    try {
+      socket.close(code);
+    } catch {
+      /* socket already gone */
+    }
   }
 }
