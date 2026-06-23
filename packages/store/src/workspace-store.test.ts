@@ -157,3 +157,39 @@ test("json-file: missing file opens to an empty registry", async () => {
     assert.equal(await store.lookup("anything"), undefined);
   });
 });
+
+// Regression for the lost-update race: concurrent mutations share one
+// in-memory `#state` across the `await` inside `#flush`. Without the
+// serialization queue a `bind` whose snapshot predates a concurrent `touch`
+// (or two touches) overwrites workspaces.json and silently drops the other's
+// change. Fire many overlapping mutations of both kinds and assert every one
+// survives — both in memory AND on disk after a reopen.
+test("json-file: concurrent touch/bind/forget don't clobber each other", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileWorkspaceStore.open(dir);
+
+    const N = 30;
+    const ops: Promise<unknown>[] = [];
+    for (let i = 0; i < N; i++) {
+      ops.push(store.touch(`/work/p${i}`, `p${i}`));
+      ops.push(store.bind(`conv-${i}`, `/work/p${i}`));
+    }
+    await Promise.all(ops);
+
+    // Recent is capped at MAX_RECENT but every binding must be intact —
+    // none was dropped by an interleaved last-writer-wins flush.
+    for (let i = 0; i < N; i++) {
+      assert.equal(await store.lookup(`conv-${i}`), `/work/p${i}`, `binding conv-${i} survived`);
+    }
+    assert.equal((await store.listRecent()).length, MAX_RECENT, "recent capped, not corrupted");
+
+    // The on-disk file must agree with memory after the dust settles.
+    const reopened = await JsonFileWorkspaceStore.open(dir);
+    for (let i = 0; i < N; i++) {
+      assert.equal(await reopened.lookup(`conv-${i}`), `/work/p${i}`, `binding conv-${i} persisted`);
+    }
+    const raw = await readFile(path.join(dir, "workspaces.json"), "utf8");
+    const parsed = JSON.parse(raw) as { by_conversation: Record<string, string> };
+    assert.equal(Object.keys(parsed.by_conversation).length, N, "all bindings on disk");
+  });
+});

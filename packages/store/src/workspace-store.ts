@@ -121,10 +121,36 @@ function emptyFile(): WorkspacesFile {
 export class JsonFileWorkspaceStore implements WorkspaceStore {
   readonly #path: string;
   #state: WorkspacesFile;
+  // Tail of a promise chain that serializes mutations. Each read-modify-write
+  // (`touch`/`forget`/`bind`/`unbind`) does its work behind `#serialize`, so
+  // two overlapping callers can't interleave at the `await` inside `#flush`
+  // and clobber the shared `#state` (lost-update on workspaces.json). Pure
+  // reads (`listRecent`/`get`/`lookup`) don't queue — they read `#state`
+  // synchronously, which always reflects the latest applied mutation.
+  //
+  // This guards a single in-process store instance (the shape the server and
+  // the Rust original use). Cross-process writers to the same file are out of
+  // scope here — that's what the SQLite backend is for.
+  #mutations: Promise<void> = Promise.resolve();
 
   private constructor(filePath: string, state: WorkspacesFile) {
     this.#path = filePath;
     this.#state = state;
+  }
+
+  /**
+   * Run `mutate` after every previously-queued mutation has settled,
+   * serializing the shared read-modify-write so concurrent callers apply in
+   * order. A rejection is isolated to its own caller — the chain's tail is
+   * mapped back to a resolved promise so one failure can't poison the queue.
+   */
+  #serialize<T>(mutate: () => Promise<T>): Promise<T> {
+    const run = this.#mutations.then(mutate);
+    this.#mutations = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /**
@@ -150,15 +176,19 @@ export class JsonFileWorkspaceStore implements WorkspaceStore {
     return Promise.resolve(this.#state.recent.map((e) => ({ ...e })));
   }
 
-  async touch(p: string, name?: string): Promise<string> {
-    this.#state.recent = applyTouch(this.#state.recent, p, name);
-    await this.#flush();
-    return p;
+  touch(p: string, name?: string): Promise<string> {
+    return this.#serialize(async () => {
+      this.#state.recent = applyTouch(this.#state.recent, p, name);
+      await this.#flush();
+      return p;
+    });
   }
 
-  async forget(p: string): Promise<void> {
-    this.#state.recent = this.#state.recent.filter((e) => e.path !== p);
-    await this.#flush();
+  forget(p: string): Promise<void> {
+    return this.#serialize(async () => {
+      this.#state.recent = this.#state.recent.filter((e) => e.path !== p);
+      await this.#flush();
+    });
   }
 
   get(p: string): Promise<WorkspaceEntry | undefined> {
@@ -166,14 +196,18 @@ export class JsonFileWorkspaceStore implements WorkspaceStore {
     return Promise.resolve(e ? { ...e } : undefined);
   }
 
-  async bind(conversationId: string, p: string): Promise<void> {
-    this.#state.by_conversation[conversationId] = p;
-    await this.#flush();
+  bind(conversationId: string, p: string): Promise<void> {
+    return this.#serialize(async () => {
+      this.#state.by_conversation[conversationId] = p;
+      await this.#flush();
+    });
   }
 
-  async unbind(conversationId: string): Promise<void> {
-    delete this.#state.by_conversation[conversationId];
-    await this.#flush();
+  unbind(conversationId: string): Promise<void> {
+    return this.#serialize(async () => {
+      delete this.#state.by_conversation[conversationId];
+      await this.#flush();
+    });
   }
 
   lookup(conversationId: string): Promise<string | undefined> {
