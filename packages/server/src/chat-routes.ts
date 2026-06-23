@@ -117,12 +117,26 @@ interface WsFrame {
   reason?: unknown;
 }
 
-function handleWsConnection(socket: WsSocket, state: AppState): void {
+export function handleWsConnection(socket: WsSocket, state: AppState): void {
   let conv: Conversation = newConversation();
   let persistedId: string | undefined;
   let turnRunning = false;
+  let closed = false;
   // tool_call_id → the ChannelApprover responder awaiting a decision.
   const pending = new Map<string, (d: ApprovalDecision) => void>();
+  // Aborts the in-flight turn when the socket closes — independent of whether
+  // the conversation is persisted. The chatRuns registry only tracks persisted
+  // ids, so without this a disconnect on a non-persisted (or pre-`new`) turn
+  // has no abort path and orphans the agent loop (issue #202).
+  const socketClosed = new AbortController();
+
+  // Resolve every parked approval as a deny so the awaiting tool's `invoke`
+  // returns and its generator can settle (and be GC'd) instead of pinning the
+  // turn forever. Safe to call repeatedly.
+  const drainPending = (reason: string): void => {
+    for (const respond of pending.values()) respond(denyDecision(reason));
+    pending.clear();
+  };
 
   const send = (obj: unknown): void => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
@@ -135,25 +149,34 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   });
 
   const runTurn = async (): Promise<void> => {
+    if (closed) return;
     turnRunning = true;
     // Only persisted conversations are tracked (the routes key by id). `start`
     // returns the AbortSignal the loop races against so an interrupt request
     // (from the REST route, on another connection) stops emission promptly.
     const runId = persistedId;
     const signal = runId && state.chatRuns ? state.chatRuns.start(runId) : undefined;
-    // Built ONCE so we don't leak an abort listener per event.
-    const abortP: Promise<"aborted"> | undefined = signal
-      ? new Promise<"aborted">((resolve) => {
-          if (signal.aborted) resolve("aborted");
-          else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
-        })
-      : undefined;
+    // Race the loop against EITHER the chatRuns interrupt signal (persisted;
+    // REST interrupt from another connection) OR this socket closing. The
+    // socket-close path is unconditional, so non-persisted turns abort too.
+    // Built ONCE (not per event) and the listeners are removed in `finally`.
+    const onAbort = (): void => resolveAbort("aborted");
+    let resolveAbort!: (v: "aborted") => void;
+    const abortP = new Promise<"aborted">((resolve) => {
+      resolveAbort = resolve;
+    });
+    if (socketClosed.signal.aborted || signal?.aborted) {
+      resolveAbort("aborted");
+    } else {
+      socketClosed.signal.addEventListener("abort", onAbort, { once: true });
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }
     const agent = state.createAgent(approver);
     let cancelled = false;
     try {
       const it = (agent.runStream(conv) as AsyncIterable<AgentEvent>)[Symbol.asyncIterator]();
       for (;;) {
-        const raced = abortP ? await Promise.race([it.next(), abortP]) : await it.next();
+        const raced = await Promise.race([it.next(), abortP]);
         if (raced === "aborted") {
           cancelled = true;
           break;
@@ -184,6 +207,8 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
       send({ type: "error", message });
       if (runId && state.chatRuns) state.chatRuns.finish(runId, "failed", message);
     } finally {
+      socketClosed.signal.removeEventListener("abort", onAbort);
+      signal?.removeEventListener("abort", onAbort);
       turnRunning = false;
       pending.clear();
     }
@@ -285,5 +310,17 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
 
   socket.on("message", (data) => {
     void onFrame(data.toString());
+  });
+
+  // Client disconnect: abort the in-flight turn and unblock any parked tool so
+  // the run can't orphan (issue #202). The per-socket controller covers the
+  // non-persisted case; `interrupt` also marks the persisted run cancelled in
+  // the registry so its status/AbortSignal stay consistent with this path.
+  socket.on("close", () => {
+    if (closed) return;
+    closed = true;
+    socketClosed.abort();
+    if (persistedId && state.chatRuns) state.chatRuns.interrupt(persistedId);
+    drainPending("client disconnected");
   });
 }
