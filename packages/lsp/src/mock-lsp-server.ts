@@ -8,9 +8,16 @@
 // "empty then populated" sequence mirrors tsserver and exercises the client's
 // settle window (it must resolve with the later, populated push).
 //
+// The marker `@@SLOW@@` delays the ENTIRE publish (both the empty and any
+// populated array) by `SLOW_PUBLISH_MS`, modelling a server whose re-compute
+// outruns the client's settle window — used to reproduce the stale-diagnostics
+// bug on re-edit (#203).
+//
 // Run as: `node --experimental-strip-types mock-lsp-server.ts` (the path is
 // passed by the test through a custom LanguageRegistry).
 import { Buffer } from "node:buffer";
+
+const SLOW_PUBLISH_MS = 300;
 
 interface RpcMessage {
   jsonrpc?: string;
@@ -25,29 +32,33 @@ function send(msg: Record<string, unknown>): void {
   process.stdout.write(payload);
 }
 
-function publish(uri: string, errorMessage: string | null): void {
-  send({
-    method: "textDocument/publishDiagnostics",
-    params: { uri, diagnostics: [] },
-  });
-  if (errorMessage !== null) {
-    setTimeout(() => {
-      send({
-        method: "textDocument/publishDiagnostics",
-        params: {
-          uri,
-          diagnostics: [
-            {
-              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
-              severity: 1,
-              source: "mock",
-              message: errorMessage,
-            },
-          ],
-        },
-      });
-    }, 30);
-  }
+function publish(uri: string, errorMessage: string | null, slow: boolean): void {
+  const emit = (): void => {
+    send({
+      method: "textDocument/publishDiagnostics",
+      params: { uri, diagnostics: [] },
+    });
+    if (errorMessage !== null) {
+      setTimeout(() => {
+        send({
+          method: "textDocument/publishDiagnostics",
+          params: {
+            uri,
+            diagnostics: [
+              {
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+                severity: 1,
+                source: "mock",
+                message: errorMessage,
+              },
+            ],
+          },
+        });
+      }, 30);
+    }
+  };
+  if (slow) setTimeout(emit, SLOW_PUBLISH_MS);
+  else emit();
 }
 
 function docFromParams(params: unknown): { uri: string; text: string } | null {
@@ -75,7 +86,8 @@ function handle(msg: RpcMessage): void {
       const doc = docFromParams(msg.params);
       if (!doc) return;
       const match = /@@ERROR@@\s*([^\n]*)/.exec(doc.text);
-      publish(doc.uri, match ? `mock error: ${(match[1] ?? "").trim()}` : null);
+      const slow = doc.text.includes("@@SLOW@@");
+      publish(doc.uri, match ? `mock error: ${(match[1] ?? "").trim()}` : null, slow);
       return;
     }
     default:

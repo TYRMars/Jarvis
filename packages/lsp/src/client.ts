@@ -109,6 +109,13 @@ export class LspClient {
     } else {
       const version = prev + 1;
       this.#opened.set(uri, version);
+      // Drop the previous version's cached diagnostics BEFORE re-syncing. LSP
+      // `publishDiagnostics` does not echo a version, so we cannot tell a stale
+      // push from a fresh one; clearing here makes `#waitForDiagnostics`'
+      // already-landed guard a no-op on re-edit, so the settle window resolves
+      // against the publish for THIS change rather than the pre-edit array. See
+      // #203 (edit→verify loop reporting stale diagnostics).
+      this.#diagnostics.delete(uri);
       this.#notify("textDocument/didChange", {
         textDocument: { uri, version },
         contentChanges: [{ text }],
