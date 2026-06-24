@@ -175,6 +175,144 @@ test("default maxBytes is 256 KiB", async () => {
   assert.ok(out.endsWith(`[... truncated at ${HTTP_DEFAULT_MAX_BYTES} bytes ...]`));
 });
 
+// ---- SSRF guard (blockPrivateHosts, on by default) -------------------------
+
+/** A fetch stub that returns canned responses in sequence and records calls. */
+function sequenceFetch(
+  responses: FetchResponse[],
+): { fetchImpl: FetchImpl; calls: Array<{ url: string; init: Parameters<FetchImpl>[1] }> } {
+  const calls: Array<{ url: string; init: Parameters<FetchImpl>[1] }> = [];
+  let i = 0;
+  const fetchImpl: FetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    const resp = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    return resp;
+  };
+  return { fetchImpl, calls };
+}
+
+const BLOCKED_HOSTS = [
+  "http://127.0.0.1/",
+  "http://127.255.255.254/",
+  "http://localhost/",
+  "http://localhost./", // trailing-dot FQDN (#200)
+  "http://sub.localhost/",
+  "http://169.254.169.254/latest/meta-data/", // cloud metadata
+  "http://10.0.0.1/",
+  "http://172.16.0.1/",
+  "http://192.168.1.1/",
+  "http://0.0.0.0/",
+  "http://100.64.0.1/", // CGNAT
+  "http://2130706433/", // decimal 127.0.0.1 (#207)
+  "http://0177.0.0.1/", // octal (#207)
+  "http://0x7f000001/", // hex (#207)
+  "http://0x7f.0.0.1/", // mixed hex (#207)
+  "http://[::1]/", // IPv6 loopback
+  "http://[::ffff:127.0.0.1]/", // IPv4-mapped IPv6 (#200)
+  "http://[::ffff:169.254.169.254]/", // mapped metadata (#200)
+  "http://[fc00::1]/", // unique-local
+  "http://[fe80::1]/", // link-local
+];
+
+for (const url of BLOCKED_HOSTS) {
+  test(`SSRF guard blocks ${url}`, async () => {
+    const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "secret" }));
+    const tool = new HttpFetchTool({ fetchImpl }); // guard on by default
+    await assert.rejects(() => tool.invoke({ url }), /private\/internal host|invalid URL/);
+    assert.equal(calls.length, 0, "must not have issued any request");
+  });
+}
+
+test("SSRF guard allows public hosts", async () => {
+  const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
+  const tool = new HttpFetchTool({ fetchImpl });
+  await tool.invoke({ url: "http://example.com/" });
+  await tool.invoke({ url: "http://8.8.8.8/" });
+  assert.equal(calls.length, 2);
+});
+
+test("SSRF guard rejects non-http(s) schemes", async () => {
+  const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "x" }));
+  const tool = new HttpFetchTool({ fetchImpl });
+  await assert.rejects(
+    () => tool.invoke({ url: "file:///etc/passwd" }),
+    /unsupported URL scheme/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("blockPrivateHosts:false disables the guard", async () => {
+  const { fetchImpl, calls } = stubFetch(fakeResponse({ body: "ok" }));
+  const tool = new HttpFetchTool({ fetchImpl, blockPrivateHosts: false });
+  await tool.invoke({ url: "http://127.0.0.1/" });
+  assert.equal(calls.length, 1);
+});
+
+test("redirects are followed manually and re-validated (the #206 fix)", async () => {
+  // A public host 302s to the metadata endpoint — the second hop must be blocked
+  // and the internal response never fetched.
+  const { fetchImpl, calls } = sequenceFetch([
+    fakeResponse({
+      status: 302,
+      statusText: "Found",
+      headers: { location: "http://169.254.169.254/latest/meta-data/iam/" },
+    }),
+    fakeResponse({ body: "IAM-CREDS" }), // must never be reached
+  ]);
+  const tool = new HttpFetchTool({ fetchImpl });
+  await assert.rejects(
+    () => tool.invoke({ url: "http://evil.example/redir" }),
+    /private\/internal host/,
+  );
+  assert.equal(calls.length, 1, "must stop at the redirect, not fetch the metadata host");
+  assert.equal(calls[0]?.init?.redirect, "manual");
+});
+
+test("redirect to a public host is followed", async () => {
+  const { fetchImpl, calls } = sequenceFetch([
+    fakeResponse({ status: 301, statusText: "Moved", headers: { location: "http://b.example/" } }),
+    fakeResponse({ status: 200, statusText: "OK", body: "landed" }),
+  ]);
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://a.example/" });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.url, "http://b.example/");
+  assert.ok(out.includes("landed"));
+});
+
+test("relative redirect Location resolves against the current URL", async () => {
+  const { fetchImpl, calls } = sequenceFetch([
+    fakeResponse({ status: 302, statusText: "Found", headers: { location: "/next" } }),
+    fakeResponse({ status: 200, statusText: "OK", body: "ok" }),
+  ]);
+  const tool = new HttpFetchTool({ fetchImpl });
+  await tool.invoke({ url: "http://a.example/start" });
+  assert.equal(calls[1]?.url, "http://a.example/next");
+});
+
+test("POST downgrades to GET without a body on a 302 redirect", async () => {
+  const { fetchImpl, calls } = sequenceFetch([
+    fakeResponse({ status: 302, statusText: "Found", headers: { location: "http://b.example/" } }),
+    fakeResponse({ status: 200, statusText: "OK", body: "ok" }),
+  ]);
+  const tool = new HttpFetchTool({ fetchImpl });
+  await tool.invoke({ url: "http://a.example/", method: "POST", body: "payload" });
+  assert.equal(calls[1]?.init?.method, "GET");
+  assert.equal(calls[1]?.init?.body, undefined);
+});
+
+test("too many redirects is rejected", async () => {
+  const loop = fakeResponse({
+    status: 302,
+    statusText: "Found",
+    headers: { location: "http://a.example/loop" },
+  });
+  const { fetchImpl } = sequenceFetch([loop]);
+  const tool = new HttpFetchTool({ fetchImpl });
+  await assert.rejects(() => tool.invoke({ url: "http://a.example/" }), /too many redirects/);
+});
+
 test("integration: hits a real local server via global fetch", async () => {
   const server = createServer((req, res) => {
     let received = "";
@@ -188,7 +326,8 @@ test("integration: hits a real local server via global fetch", async () => {
   const { port } = server.address() as AddressInfo;
 
   try {
-    const tool = new HttpFetchTool({}); // uses global fetch
+    // Loopback is fetched on purpose here — opt out of the SSRF guard.
+    const tool = new HttpFetchTool({ blockPrivateHosts: false }); // uses global fetch
     const out = await tool.invoke({
       url: `http://127.0.0.1:${port}/`,
       method: "POST",

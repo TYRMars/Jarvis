@@ -65,6 +65,13 @@ export interface BuiltinsConfig {
    */
   httpMaxBytes?: number;
   /**
+   * When `false`, `http.fetch` may connect to private / internal hosts
+   * (loopback, link-local, RFC-1918). Defaults to `true` (block them — the
+   * secure-by-default SSRF guard). The composition root flips this off when
+   * `JARVIS_HTTP_ALLOW_PRIVATE` is set.
+   */
+  httpBlockPrivateHosts?: boolean;
+  /**
    * Cap on file size (in bytes) for `fs.read`. Files larger than this are
    * truncated with a trailing marker so a single `fs.read` can't blow the
    * LLM context window. Defaults to 256 KiB.
@@ -193,7 +200,12 @@ export function registerBuiltins(registry: ToolRegistry, config: BuiltinsConfig 
   // Always-on, read-only group.
   registry.register(new EchoTool());
   registry.register(new TimeNowTool());
-  registry.register(new HttpFetchTool({ maxBytes: httpMaxBytes }));
+  registry.register(
+    new HttpFetchTool({
+      maxBytes: httpMaxBytes,
+      blockPrivateHosts: config.httpBlockPrivateHosts ?? true,
+    }),
+  );
   registry.register(new FsReadTool({ root, maxBytes: fsMaxBytes }));
   registry.register(new FsListTool({ root }));
   registry.register(new CodeGrepTool({ root }));
