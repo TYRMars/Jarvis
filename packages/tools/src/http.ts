@@ -102,13 +102,82 @@ function embeddedMappedIpv4(host: string): string | null {
   return null;
 }
 
+/**
+ * Canonicalize the non-dotted-quad IPv4 notations the platform resolver still
+ * honours to dotted-decimal, or return null when `host` isn't one of them:
+ *   - bare 32-bit decimal  — `2130706433`        → `127.0.0.1`
+ *   - octal octets         — `0177.0.0.1`        → `127.0.0.1`
+ *   - hex octets / whole   — `0x7f.0.0.1` / `0x7f000001`
+ *   - 1–3 part shorthand   — `127.1`             → `127.0.0.1`
+ *
+ * Mirrors the C `inet_aton` rules: 1–4 dot-separated parts, each part decimal /
+ * octal (leading `0`) / hex (`0x`), the final part absorbing the remaining
+ * low-order bytes.
+ *
+ * Node's WHATWG `URL` already folds these to dotted-quad before
+ * `validateFetchUrl` sees the host, so within `http.fetch` this is
+ * defense-in-depth — it keeps `isPrivateIp` sound as a standalone primitive for
+ * any caller that hands it a raw, non-URL-normalized host string (#207).
+ */
+function numericIpv4ToDotted(host: string): string | null {
+  const h = host.toLowerCase();
+  // Fast reject: only digits / hex / `x` / dots can form a numeric IPv4.
+  if (!/^[0-9a-fx.]+$/.test(h)) return null;
+  const parts = h.split(".");
+  if (parts.length < 1 || parts.length > 4) return null;
+
+  const nums: number[] = [];
+  for (const part of parts) {
+    let n: number;
+    if (/^0x[0-9a-f]+$/.test(part)) {
+      n = parseInt(part.slice(2), 16);
+    } else if (/^0[0-7]+$/.test(part)) {
+      n = parseInt(part, 8);
+    } else if (/^[0-9]+$/.test(part)) {
+      n = parseInt(part, 10);
+    } else {
+      return null; // empty / malformed part (`127..1`, `0x`, `0xfg`, `cafe`)
+    }
+    if (!Number.isInteger(n) || n < 0) return null;
+    nums.push(n);
+  }
+
+  // inet_aton: each leading part is exactly one byte; the final part fills the
+  // remaining low-order bytes (so `a.b` is a, then b across the low 3 bytes).
+  const last = nums[nums.length - 1] ?? 0;
+  const leading = nums.slice(0, -1);
+  if (leading.some((b) => b > 0xff)) return null;
+  const remainingBytes = 4 - leading.length;
+  const maxLast = Math.pow(256, remainingBytes) - 1;
+  if (last > maxLast) return null;
+
+  let value = 0;
+  for (const b of leading) value = value * 256 + b;
+  value = value * Math.pow(256, remainingBytes) + last;
+  if (value > 0xffffffff) return null;
+
+  return [
+    Math.floor(value / 0x1000000) & 0xff,
+    Math.floor(value / 0x10000) & 0xff,
+    Math.floor(value / 0x100) & 0xff,
+    value & 0xff,
+  ].join(".");
+}
+
 /** True if `host` is a literal IP in a loopback/private/link-local/reserved
  * range (the SSRF-relevant set). Non-IP hostnames return false. Handles
- * IPv4-mapped IPv6 by decoding the embedded IPv4 and re-checking it. */
-function isPrivateIp(host: string): boolean {
+ * IPv4-mapped IPv6 by decoding the embedded IPv4 and re-checking it, and
+ * non-dotted-quad numeric IPv4 notation by canonicalizing it first. */
+export function isPrivateIp(host: string): boolean {
   // IPv4-mapped IPv6 (`::ffff:a.b.c.d`) → decode and re-check the embedded IPv4.
   const mapped = embeddedMappedIpv4(host);
   if (mapped) return isPrivateIp(mapped);
+
+  // Non-dotted-quad numeric IPv4 (bare decimal / octal / hex / shorthand) →
+  // canonicalize and re-check. The `!== host` guard avoids re-entering on an
+  // already-dotted-quad host (which round-trips to itself). (#207)
+  const numeric = numericIpv4ToDotted(host);
+  if (numeric !== null && numeric !== host) return isPrivateIp(numeric);
 
   // Dotted-decimal IPv4.
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);

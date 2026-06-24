@@ -8,6 +8,7 @@ import type { Tool } from "@jarvis/core";
 import {
   HTTP_DEFAULT_MAX_BYTES,
   HttpFetchTool,
+  isPrivateIp,
   validateFetchUrl,
   type FetchImpl,
   type FetchResponse,
@@ -224,6 +225,48 @@ test("SSRF guard #200 bypass 2: trailing-dot localhost. is blocked", () => {
   assert.throws(() => validateFetchUrl("http://localhost./", true), /SSRF guard/);
   assert.throws(() => validateFetchUrl("http://api.localhost./", true), /SSRF guard/);
   assert.throws(() => validateFetchUrl("http://127.0.0.1./", true), /SSRF guard/);
+});
+
+test("SSRF guard #207: numeric IPv4 notation resolves to a private range", () => {
+  // Node's WHATWG `URL` already canonicalizes these to dotted-quad before the
+  // guard runs, so they're blocked end-to-end today …
+  for (const url of [
+    "http://2130706433/", // bare decimal → 127.0.0.1
+    "http://0177.0.0.1/", // octal octet → 127.0.0.1
+    "http://0x7f.0.0.1/", // hex octet → 127.0.0.1
+    "http://0x7f000001/", // whole-host hex → 127.0.0.1
+    "http://017700000001/", // whole-host octal → 127.0.0.1
+    "http://127.1/", // 2-part shorthand → 127.0.0.1
+    "http://3232235521/", // bare decimal → 192.168.0.1
+  ]) {
+    assert.throws(() => validateFetchUrl(url, true), /SSRF guard/, `expected ${url} blocked`);
+  }
+
+  // … and `isPrivateIp` is now sound on the same notation as a standalone
+  // primitive, independent of any URL canonicalization by the caller (#207).
+  for (const host of [
+    "2130706433",
+    "0177.0.0.1",
+    "0x7f.0.0.1",
+    "0x7f000001",
+    "017700000001",
+    "127.1",
+    "0xa000001", // 10.0.0.1 private
+    "0xa9fea9fe", // 169.254.169.254 metadata
+    "3232235521", // 192.168.0.1
+  ]) {
+    assert.equal(isPrivateIp(host), true, `expected ${host} private`);
+  }
+
+  // Public numeric forms are normalized but stay allowed (no over-block).
+  assert.equal(isPrivateIp("134744072"), false); // 8.8.8.8
+  assert.equal(isPrivateIp("0x08080808"), false); // 8.8.8.8
+  assert.doesNotThrow(() => validateFetchUrl("http://134744072/", true));
+
+  // Genuine hostnames (incl. hex-looking labels) are not mistaken for numbers.
+  assert.equal(isPrivateIp("example.com"), false);
+  assert.equal(isPrivateIp("cafe.example"), false);
+  assert.equal(isPrivateIp("0x7f.0.0.1.evil.example"), false);
 });
 
 test("SSRF guard: allows public hosts and rejects non-http(s) schemes", () => {
