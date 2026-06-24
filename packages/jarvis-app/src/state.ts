@@ -160,6 +160,7 @@ function innerBuiltinsConfig(config: JarvisConfig, stores: ToolStores): Builtins
   const c: BuiltinsConfig = {
     fsRoot: config.fsRoot,
     httpMaxBytes: config.gating.httpMaxBytes,
+    httpBlockPrivateHosts: config.gating.httpBlockPrivateHosts,
     enableFsWrite: config.gating.enableFsWrite,
     enableFsEdit: config.gating.enableFsEdit,
     enableFsPatch: config.gating.enableFsPatch,
