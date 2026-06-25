@@ -149,6 +149,36 @@ test("health returns tool count; replace validates; reload restores stopped on f
   assert.equal(m3.get("srv")!.status, "stopped");
 });
 
+test("replace restores a stopped slot (last-known-good config) when the new config fails", async () => {
+  let failNow = false;
+  const flaky: McpConnect = async (cfg) => {
+    if (failNow) throw new Error("boom");
+    return fakeConnect()(cfg);
+  };
+  const reg = new ToolRegistry();
+  const m = new McpManager(reg, flaky);
+  const good = stdio("srv");
+  await m.add(good); // running with last-known-good config
+  assert.equal(m.get("srv")!.status, "running");
+
+  // In-place edit whose new config fails to connect.
+  failNow = true;
+  const bad: McpClientConfig = { prefix: "srv", transport: { type: "stdio", command: "y", args: [] } };
+  await assert.rejects(m.replace("srv", bad));
+
+  // Slot survives as Stopped (not destroyed), carrying the previous config so
+  // a subsequent reload uses the last-known-good command.
+  const slot = m.get("srv");
+  assert.ok(slot, "slot must not be dropped after a failed replace");
+  assert.equal(slot!.status, "stopped");
+  assert.deepEqual(slot!.config, good);
+
+  // Recovery path works: reload now succeeds against the restored config.
+  failNow = false;
+  await m.reload("srv");
+  assert.equal(m.get("srv")!.status, "running");
+});
+
 // ---------- routes ---------------------------------------------------------
 
 async function buildApp(state: AppState) {
