@@ -193,9 +193,21 @@ export class McpManager {
     if (cfg.prefix !== prefix) {
       throw new McpManagerError(`body prefix '${cfg.prefix}' does not match path '${prefix}'`, 400);
     }
-    if (!this.#slots.has(prefix)) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
+    const prev = this.#slots.get(prefix);
+    if (!prev) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
+    const prevConfig = prev.config;
     await this.remove(prefix);
-    return this.add(cfg);
+    try {
+      return await this.add(cfg);
+    } catch (e) {
+      // Restore a Stopped slot with the previous (last-known-good) config so a
+      // failed in-place edit doesn't destroy the registration; retry/reload can
+      // recover. Mirrors reload()'s rollback.
+      if (!this.#slots.has(prefix)) {
+        this.#slots.set(prefix, { config: prevConfig, tools: [], status: "stopped" });
+      }
+      throw e;
+    }
   }
 
   /** Restart using the slot's stored config; restore a Stopped slot on failure. */
