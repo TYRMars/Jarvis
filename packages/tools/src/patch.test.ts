@@ -96,6 +96,50 @@ diff --git a/b.txt b/b.txt
   assert.equal(await read("b.txt"), "BETA\n");
 });
 
+test("two same-file sections compose cumulatively (no silent clobber)", async () => {
+  // Regression for #210: a multi-file diff with two sections targeting the
+  // same path used to apply each against the unmodified on-disk original and
+  // let Phase 2's last write win, silently dropping the first section's edit.
+  await writeFile(join(dir, "f.txt"), "L1\nL2\nL3\n");
+  const tool = new FsPatchTool({ root: dir });
+  const diff = `--- a/f.txt
++++ b/f.txt
+@@ -1 +1 @@
+-L1
++X1
+--- a/f.txt
++++ b/f.txt
+@@ -3 +3 @@
+-L3
++X3
+`;
+  const out = await tool.invoke({ diff });
+  // Both edits land; the file is listed once (collapsed), not twice.
+  assert.equal(await read("f.txt"), "X1\nL2\nX3\n");
+  assert.ok(out.includes("applied 1 file(s)"), `got: ${out}`);
+  assert.equal(out.match(/M f\.txt/g)?.length, 1, `got: ${out}`);
+});
+
+test("create then modify the same new file in one diff", async () => {
+  const tool = new FsPatchTool({ root: dir });
+  const diff = `--- /dev/null
++++ b/n.txt
+@@ -0,0 +1,2 @@
++a
++b
+--- a/n.txt
++++ b/n.txt
+@@ -2 +2 @@
+-b
++B
+`;
+  const out = await tool.invoke({ diff });
+  // Net effect: a brand-new file, reported once as added.
+  assert.equal(await read("n.txt"), "a\nB\n");
+  assert.ok(out.includes("A n.txt"), `got: ${out}`);
+  assert.ok(out.includes("applied 1 file(s)"), `got: ${out}`);
+});
+
 test("rejects path escape", async () => {
   const tool = new FsPatchTool({ root: dir });
   const diff = `--- a/../etc/passwd

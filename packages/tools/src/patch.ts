@@ -43,6 +43,19 @@ interface PlannedWrite {
   removed: number;
 }
 
+// Per-path accumulator threading a file's evolving in-memory content across
+// multiple blocks that target it within a single multi-file diff.
+interface Accum {
+  rel: string;
+  abs: string;
+  /** Did the file exist on disk before this whole `invoke` call? */
+  existedBefore: boolean;
+  /** Current in-memory content; `null` means absent/deleted. */
+  content: string | null;
+  added: number;
+  removed: number;
+}
+
 type PatchAction =
   | { action: "create"; path: string }
   | { action: "delete"; path: string }
@@ -107,7 +120,15 @@ export class FsPatchTool implements Tool {
 
     // Phase 1: parse + apply against in-memory copies. Nothing touches disk
     // until every block succeeds.
-    const planned: PlannedWrite[] = [];
+    //
+    // Blocks are accumulated per resolved target path so that two or more
+    // sections of one multi-file diff that touch the SAME file compose
+    // cumulatively instead of clobbering: each block applies against the prior
+    // block's in-memory result (its `content`), never a fresh on-disk read.
+    // Without this, Phase 2 would write each block's independently-derived
+    // result in turn and the last one would silently overwrite the earlier
+    // edits (data loss with no error).
+    const accums = new Map<string, Accum>();
     for (const block of blocks) {
       const parsed = parsePatch(block);
       if (parsed.length === 0) {
@@ -116,47 +137,80 @@ export class FsPatchTool implements Tool {
       const patch = parsed[0]!;
 
       const action = classify(patch.oldFileName, patch.newFileName);
+      const path = action.path;
+      const abs = resolveTarget(root, path);
+      const prior = accums.get(abs);
+      const { added, removed } = countLines(block);
 
       switch (action.action) {
         case "create": {
-          const path = action.path;
-          const abs = resolveTarget(root, path);
-          if (await pathExists(abs)) {
+          // "Exists" is the cumulative view: a prior block in this same call may
+          // have already created (or deleted) the path in memory.
+          const existsNow = prior ? prior.content !== null : await pathExists(abs);
+          if (existsNow) {
             throw new Error(`create patch targets existing file \`${path}\``);
           }
           const newText = applyOrThrow("", patch, `apply create patch on \`${path}\``);
-          const { added, removed } = countLines(block);
-          planned.push({ rel: path, abs, kind: "created", newText, added, removed });
+          accums.set(abs, {
+            rel: prior?.rel ?? path,
+            abs,
+            existedBefore: prior?.existedBefore ?? false,
+            content: newText,
+            added: (prior?.added ?? 0) + added,
+            removed: (prior?.removed ?? 0) + removed,
+          });
           break;
         }
         case "delete": {
-          const path = action.path;
-          const abs = resolveTarget(root, path);
-          if (!(await isFile(abs))) {
+          const original = await currentContent(prior, abs, `read \`${path}\` to delete`);
+          if (original === null) {
             throw new Error(`delete patch targets missing file \`${path}\``);
           }
-          const original = await readText(abs, `read \`${path}\` to delete`);
           // Sanity-check: the patch's "after" should be empty.
           const result = applyOrThrow(original, patch, `apply delete patch on \`${path}\``);
           if (result !== "") {
             throw new Error(`delete patch on \`${path}\` left non-empty content`);
           }
-          const { added, removed } = countLines(block);
-          planned.push({ rel: path, abs, kind: "deleted", newText: null, added, removed });
+          accums.set(abs, {
+            rel: prior?.rel ?? path,
+            abs,
+            existedBefore: prior?.existedBefore ?? true,
+            content: null,
+            added: (prior?.added ?? 0) + added,
+            removed: (prior?.removed ?? 0) + removed,
+          });
           break;
         }
         case "modify": {
-          const path = action.path;
-          const abs = resolveTarget(root, path);
-          if (!(await isFile(abs))) {
+          const original = await currentContent(prior, abs, `read \`${path}\` to modify`);
+          if (original === null) {
             throw new Error(`modify patch targets missing file \`${path}\``);
           }
-          const original = await readText(abs, `read \`${path}\` to modify`);
           const newText = applyOrThrow(original, patch, `apply patch on \`${path}\``);
-          const { added, removed } = countLines(block);
-          planned.push({ rel: path, abs, kind: "modified", newText, added, removed });
+          accums.set(abs, {
+            rel: prior?.rel ?? path,
+            abs,
+            existedBefore: prior?.existedBefore ?? true,
+            content: newText,
+            added: (prior?.added ?? 0) + added,
+            removed: (prior?.removed ?? 0) + removed,
+          });
           break;
         }
+      }
+    }
+
+    // Collapse each path's accumulated state into a single planned write (Map
+    // preserves first-touch insertion order). A file that was created and then
+    // deleted within the same call nets to nothing and is dropped.
+    const planned: PlannedWrite[] = [];
+    for (const a of accums.values()) {
+      if (a.content === null) {
+        if (!a.existedBefore) continue; // created then deleted → no-op
+        planned.push({ rel: a.rel, abs: a.abs, kind: "deleted", newText: null, added: a.added, removed: a.removed });
+      } else {
+        const kind: ChangeKind = a.existedBefore ? "modified" : "created";
+        planned.push({ rel: a.rel, abs: a.abs, kind, newText: a.content, added: a.added, removed: a.removed });
       }
     }
 
@@ -360,6 +414,20 @@ function applyOrThrow(source: string, patch: ParsedDiff, context: string): strin
     throw new Error(`${context}: hunk did not apply cleanly`);
   }
   return result;
+}
+
+// Current in-memory content for a target: the prior block's result if this
+// path was already touched in this call, otherwise the on-disk original.
+// Returns `null` when the file is absent (never existed, or deleted by a prior
+// block) so callers can reject modify/delete-after-delete uniformly.
+async function currentContent(
+  prior: Accum | undefined,
+  abs: string,
+  context: string,
+): Promise<string | null> {
+  if (prior !== undefined) return prior.content;
+  if (!(await isFile(abs))) return null;
+  return readText(abs, context);
 }
 
 async function readText(abs: string, context: string): Promise<string> {

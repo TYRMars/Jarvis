@@ -149,6 +149,42 @@ test("health returns tool count; replace validates; reload restores stopped on f
   assert.equal(m3.get("srv")!.status, "stopped");
 });
 
+test("replace restores the slot as stopped (last-known-good config) when the new config fails to connect", async () => {
+  const reg = new ToolRegistry();
+  let failNow = false;
+  const flaky: McpConnect = async (cfg) => {
+    if (failNow) throw new Error("boom");
+    return fakeConnect({ srv: ["a", "b"] })(cfg);
+  };
+  const m = new McpManager(reg, flaky);
+  // Original, working registration.
+  const good = { ...stdio("srv"), denyTools: ["a"] };
+  await m.add(good);
+  assert.equal(m.get("srv")!.status, "running");
+  assert.ok(reg.contains("srv.a") && reg.contains("srv.b"));
+
+  // In-place edit whose new config can't connect.
+  failNow = true;
+  await assert.rejects(
+    m.replace("srv", stdio("srv")),
+    (e) => e instanceof McpManagerError && e.status === 400,
+  );
+
+  // Slot survives as Stopped under the previous (last-known-good) config —
+  // the old tools are unregistered, but the server is still in the catalog.
+  const info = m.get("srv");
+  assert.ok(info, "slot must survive a failed replace");
+  assert.equal(info!.status, "stopped");
+  assert.deepEqual(info!.config.deny_tools, ["a"]); // previous config preserved
+  assert.equal(reg.contains("srv.a"), false);
+
+  // It is still reloadable (not a permanently-dropped prefix). Recovery works.
+  failNow = false;
+  const tools = await m.reload("srv");
+  assert.deepEqual(tools, ["srv.a", "srv.b"]);
+  assert.equal(m.get("srv")!.status, "running");
+});
+
 // ---------- routes ---------------------------------------------------------
 
 async function buildApp(state: AppState) {

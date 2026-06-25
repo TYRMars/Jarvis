@@ -193,9 +193,19 @@ export class McpManager {
     if (cfg.prefix !== prefix) {
       throw new McpManagerError(`body prefix '${cfg.prefix}' does not match path '${prefix}'`, 400);
     }
-    if (!this.#slots.has(prefix)) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
+    const prev = this.#slots.get(prefix);
+    if (!prev) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
+    const prevConfig = prev.config;
     await this.remove(prefix);
-    return this.add(cfg);
+    try {
+      return await this.add(cfg);
+    } catch (e) {
+      // Mirror reload(): a failed replace must not destroy the slot. Restore it
+      // as Stopped under the last-known-good config so the operator can retry
+      // or reload() without re-adding the server from scratch.
+      this.#slots.set(prefix, { config: prevConfig, tools: [], status: "stopped" });
+      throw e;
+    }
   }
 
   /** Restart using the slot's stored config; restore a Stopped slot on failure. */
