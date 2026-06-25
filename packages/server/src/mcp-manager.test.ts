@@ -147,6 +147,21 @@ test("health returns tool count; replace validates; reload restores stopped on f
   failNow = true;
   await assert.rejects(m3.reload("srv"));
   assert.equal(m3.get("srv")!.status, "stopped");
+
+  // replace where the connection now fails → slot preserved (last-known-good
+  // config) as Stopped + throws, so the registration is not destroyed.
+  let replaceFail = false;
+  const flaky2: McpConnect = async (cfg) => {
+    if (replaceFail) throw new Error("boom");
+    return fakeConnect({ srv: ["a"] })(cfg);
+  };
+  const m4 = new McpManager(new ToolRegistry(), flaky2);
+  await m4.add({ ...stdio("srv"), denyTools: ["old"] }); // running, last-known-good config
+  replaceFail = true;
+  await assert.rejects(m4.replace("srv", { ...stdio("srv"), denyTools: ["new"] }));
+  const survived = m4.get("srv")!;
+  assert.equal(survived.status, "stopped");
+  assert.deepEqual(survived.config.deny_tools, ["old"]); // restored prior config
 });
 
 // ---------- routes ---------------------------------------------------------
