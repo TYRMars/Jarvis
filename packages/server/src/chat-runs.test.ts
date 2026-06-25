@@ -32,6 +32,27 @@ test("registry tracks status transitions from events", () => {
   assert.equal(reg.list(false)[0]!.status, "running");
 });
 
+test("hitl_request pauses the run as waiting_hitl; hitl_response/delta resumes it", () => {
+  const reg = new ChatRunRegistry();
+  reg.start("c1");
+
+  // A native HITL question blocks the turn on the operator.
+  reg.event("c1", { type: "hitl_request", id: "h1", kind: "input", prompt: "name?" });
+  assert.equal(reg.list(false)[0]!.status, "waiting_hitl");
+  assert.equal(reg.list(false)[0]!.current_tool, null);
+
+  // The operator's answer resumes the turn.
+  reg.event("c1", { type: "hitl_response", id: "h1", answer: "Ada" });
+  assert.equal(reg.list(false)[0]!.status, "running");
+
+  // A streamed delta also recovers a stalled HITL pause (resume without an
+  // explicit response frame).
+  reg.event("c1", { type: "hitl_request", id: "h2", kind: "confirm", prompt: "ok?" });
+  assert.equal(reg.list(false)[0]!.status, "waiting_hitl");
+  reg.event("c1", { type: "delta", content: "continuing" });
+  assert.equal(reg.list(false)[0]!.status, "running");
+});
+
 test("finish is sticky-terminal; activeOnly filters", () => {
   const reg = new ChatRunRegistry();
   reg.start("c1");

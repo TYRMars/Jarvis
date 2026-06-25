@@ -94,13 +94,26 @@ export class ChatRunRegistry {
     if (type === "approval_request") {
       st.record.status = "waiting_approval";
       st.record.current_tool = null;
+    } else if (type === "hitl_request") {
+      // Native HITL pause (ask.text etc.): the turn is blocked on the operator,
+      // not actively working. Mirror the approval_request → waiting_approval arm.
+      st.record.status = "waiting_hitl";
+      st.record.current_tool = null;
     } else if (type === "tool_start") {
       st.record.status = "running";
       st.record.current_tool = (frame as { name?: string }).name ?? null;
     } else if (type === "tool_end") {
       st.record.current_tool = null;
-    } else if (type === "approval_decision" || type === "delta") {
+    } else if (type === "hitl_response") {
+      // Operator answered → the turn resumes.
+      if (st.record.status === "waiting_hitl") st.record.status = "running";
+    } else if (type === "approval_decision") {
       if (st.record.status === "waiting_approval") st.record.status = "running";
+    } else if (type === "delta") {
+      // Streamed output means the turn resumed from whichever pause it was in.
+      if (st.record.status === "waiting_approval" || st.record.status === "waiting_hitl") {
+        st.record.status = "running";
+      }
     }
     st.events.push({ conversation_id: conversationId, seq, timestamp: now, frame });
     if (st.events.length > MAX_EVENTS) st.events.shift();
