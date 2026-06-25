@@ -121,6 +121,10 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   let conv: Conversation = newConversation();
   let persistedId: string | undefined;
   let turnRunning = false;
+  // Set before the first `await` in resume/new so a `user` frame racing through
+  // the store I/O window can't start a turn against a conversation we're about to
+  // reassign (TOCTOU vs. the synchronous `turnRunning` flag).
+  let busy = false;
   // tool_call_id → the ChannelApprover responder awaiting a decision.
   const pending = new Map<string, (d: ApprovalDecision) => void>();
 
@@ -190,7 +194,7 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   };
 
   const guardIdle = (): boolean => {
-    if (turnRunning) {
+    if (turnRunning || busy) {
       send({ type: "error", message: "turn in progress" });
       return false;
     }
@@ -233,29 +237,42 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
           send({ type: "error", message: "`resume` frame requires id" });
           return;
         }
-        const loaded = await state.store.load(msg.id);
-        if (!loaded) {
-          send({ type: "error", message: "conversation not found" });
-          return;
+        // Claim the socket before the store I/O so a racing `user` frame can't
+        // start a turn against the conversation we're about to replace.
+        busy = true;
+        try {
+          const loaded = await state.store.load(msg.id);
+          if (!loaded) {
+            send({ type: "error", message: "conversation not found" });
+            return;
+          }
+          conv = loaded;
+          persistedId = msg.id;
+          send({ type: "resumed", id: msg.id });
+        } finally {
+          busy = false;
         }
-        conv = loaded;
-        persistedId = msg.id;
-        send({ type: "resumed", id: msg.id });
         return;
       }
       case "new": {
         if (!guardIdle()) return;
         const id = typeof msg.id === "string" && msg.id ? msg.id : randomUUID();
-        conv = newConversation();
-        persistedId = id;
-        if (state.store) {
-          try {
-            await state.store.save(id, conv);
-          } catch (e) {
-            send({ type: "error", message: `save failed: ${errorText(e)}` });
+        // Claim the socket before the store I/O (see `resume`).
+        busy = true;
+        try {
+          conv = newConversation();
+          persistedId = id;
+          if (state.store) {
+            try {
+              await state.store.save(id, conv);
+            } catch (e) {
+              send({ type: "error", message: `save failed: ${errorText(e)}` });
+            }
           }
+          send({ type: "session", id });
+        } finally {
+          busy = false;
         }
-        send({ type: "session", id });
         return;
       }
       case "approve": {

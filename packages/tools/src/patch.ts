@@ -107,7 +107,16 @@ export class FsPatchTool implements Tool {
 
     // Phase 1: parse + apply against in-memory copies. Nothing touches disk
     // until every block succeeds.
+    //
+    // A single diff may carry multiple blocks for the same path (LLMs often emit
+    // a second `--- a/f`/`+++ b/f` section instead of another hunk). We thread
+    // each block's result forward as the base for the next block targeting that
+    // path so repeated `modify` sections compose cumulatively instead of the last
+    // write silently clobbering the earlier ones. Ambiguous same-path combinations
+    // (a create or delete colliding with an already-planned entry) are rejected
+    // explicitly rather than dropped.
     const planned: PlannedWrite[] = [];
+    const plannedByAbs = new Map<string, number>();
     for (const block of blocks) {
       const parsed = parsePatch(block);
       if (parsed.length === 0) {
@@ -121,17 +130,24 @@ export class FsPatchTool implements Tool {
         case "create": {
           const path = action.path;
           const abs = resolveTarget(root, path);
+          if (plannedByAbs.has(abs)) {
+            throw new Error(`create patch targets \`${path}\` already modified earlier in this diff`);
+          }
           if (await pathExists(abs)) {
             throw new Error(`create patch targets existing file \`${path}\``);
           }
           const newText = applyOrThrow("", patch, `apply create patch on \`${path}\``);
           const { added, removed } = countLines(block);
+          plannedByAbs.set(abs, planned.length);
           planned.push({ rel: path, abs, kind: "created", newText, added, removed });
           break;
         }
         case "delete": {
           const path = action.path;
           const abs = resolveTarget(root, path);
+          if (plannedByAbs.has(abs)) {
+            throw new Error(`delete patch targets \`${path}\` already modified earlier in this diff`);
+          }
           if (!(await isFile(abs))) {
             throw new Error(`delete patch targets missing file \`${path}\``);
           }
@@ -142,18 +158,36 @@ export class FsPatchTool implements Tool {
             throw new Error(`delete patch on \`${path}\` left non-empty content`);
           }
           const { added, removed } = countLines(block);
+          plannedByAbs.set(abs, planned.length);
           planned.push({ rel: path, abs, kind: "deleted", newText: null, added, removed });
           break;
         }
         case "modify": {
           const path = action.path;
           const abs = resolveTarget(root, path);
+          const prevIdx = plannedByAbs.get(abs);
+          if (prevIdx !== undefined) {
+            // Compose against the earlier block's result for this path.
+            const prev = planned[prevIdx]!;
+            if (prev.kind === "deleted") {
+              throw new Error(`modify patch targets \`${path}\` already deleted earlier in this diff`);
+            }
+            const base = prev.newText ?? "";
+            const newText = applyOrThrow(base, patch, `apply patch on \`${path}\``);
+            const { added, removed } = countLines(block);
+            // Keep the original kind (created stays created); accumulate counts.
+            prev.newText = newText;
+            prev.added += added;
+            prev.removed += removed;
+            break;
+          }
           if (!(await isFile(abs))) {
             throw new Error(`modify patch targets missing file \`${path}\``);
           }
           const original = await readText(abs, `read \`${path}\` to modify`);
           const newText = applyOrThrow(original, patch, `apply patch on \`${path}\``);
           const { added, removed } = countLines(block);
+          plannedByAbs.set(abs, planned.length);
           planned.push({ rel: path, abs, kind: "modified", newText, added, removed });
           break;
         }

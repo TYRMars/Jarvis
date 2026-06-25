@@ -32,6 +32,21 @@ test("registry tracks status transitions from events", () => {
   assert.equal(reg.list(false)[0]!.status, "running");
 });
 
+test("hitl_request marks waiting_hitl; hitl_response restores running (#211)", () => {
+  const reg = new ChatRunRegistry();
+  reg.start("c1");
+  reg.event("c1", { type: "tool_start", id: "t1", name: "ask.text", arguments: {} });
+  assert.equal(reg.list(false)[0]!.current_tool, "ask.text");
+
+  reg.event("c1", { type: "hitl_request", id: "h1" });
+  let rec = reg.list(false)[0]!;
+  assert.equal(rec.status, "waiting_hitl");
+  assert.equal(rec.current_tool, null);
+
+  reg.event("c1", { type: "hitl_response", id: "h1" });
+  assert.equal(reg.list(false)[0]!.status, "running");
+});
+
 test("finish is sticky-terminal; activeOnly filters", () => {
   const reg = new ChatRunRegistry();
   reg.start("c1");

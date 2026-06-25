@@ -94,11 +94,16 @@ export class ChatRunRegistry {
     if (type === "approval_request") {
       st.record.status = "waiting_approval";
       st.record.current_tool = null;
+    } else if (type === "hitl_request") {
+      st.record.status = "waiting_hitl";
+      st.record.current_tool = null;
     } else if (type === "tool_start") {
       st.record.status = "running";
       st.record.current_tool = (frame as { name?: string }).name ?? null;
     } else if (type === "tool_end") {
       st.record.current_tool = null;
+    } else if (type === "hitl_response") {
+      if (st.record.status === "waiting_hitl") st.record.status = "running";
     } else if (type === "approval_decision" || type === "delta") {
       if (st.record.status === "waiting_approval") st.record.status = "running";
     }
