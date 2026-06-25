@@ -96,6 +96,45 @@ diff --git a/b.txt b/b.txt
   assert.equal(await read("b.txt"), "BETA\n");
 });
 
+test("two blocks targeting the same file compose cumulatively (#210)", async () => {
+  await writeFile(join(dir, "f.txt"), "L1\nL2\nL3\n");
+  const tool = new FsPatchTool({ root: dir });
+  const diff = `--- a/f.txt
++++ b/f.txt
+@@ -1 +1 @@
+-L1
++X1
+--- a/f.txt
++++ b/f.txt
+@@ -3 +3 @@
+-L3
++X3
+`;
+  const out = await tool.invoke({ diff });
+  assert.ok(out.includes("M f.txt"), `got: ${out}`);
+  // Both edits must land — earlier block must not be clobbered by the later write.
+  assert.equal(await read("f.txt"), "X1\nL2\nX3\n");
+});
+
+test("rejects create colliding with an earlier same-path block (#210)", async () => {
+  await writeFile(join(dir, "f.txt"), "L1\n");
+  const tool = new FsPatchTool({ root: dir });
+  const diff = `--- a/f.txt
++++ b/f.txt
+@@ -1 +1 @@
+-L1
++X1
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1 @@
++brand new
+`;
+  const err = await expectError(tool.invoke({ diff }));
+  assert.ok(/already modified/.test(err.message), `got: ${err.message}`);
+  // The original file is untouched (phase 1 failed before any disk write).
+  assert.equal(await read("f.txt"), "L1\n");
+});
+
 test("rejects path escape", async () => {
   const tool = new FsPatchTool({ root: dir });
   const diff = `--- a/../etc/passwd
