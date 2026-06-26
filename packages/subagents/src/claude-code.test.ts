@@ -5,7 +5,7 @@
 // without the real binary.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -159,6 +159,44 @@ process.exit(0);
     assert.equal(toolEnd.event.name, "Read");
     assert.equal(toolEnd.event.output, "body");
   }
+});
+
+test("a `--` separator precedes the task so a flag-shaped task can't inject argv (#223)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-claude-argv-"));
+  const argvFile = path.join(dir, "argv.json");
+  const fakeJs = path.join(dir, "fake-claude.mjs");
+  // Fake CLI: record the argv it was handed, then emit a minimal success run.
+  await writeFile(
+    fakeJs,
+    `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));
+process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok", is_error: false }) + "\\n");
+process.exit(0);
+`,
+    "utf8",
+  );
+  const fake = path.join(dir, "fake-claude.sh");
+  // "$@" forwards every appended flag verbatim so we observe the real argv.
+  await writeFile(fake, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeJs)} "$@"\n`, "utf8");
+  await chmod(fake, 0o755);
+
+  const sub = new ClaudeCodeSubAgent({ claude_bin: fake });
+  // A task that *looks* like a dangerous flag — it must land as a positional.
+  const task = "--add-dir / && do the refactor";
+  await withSubagent(
+    () => {},
+    () => sub.invoke({ task, workspace_root: dir }),
+  );
+
+  const argv: string[] = JSON.parse(await readFile(argvFile, "utf8"));
+  const sep = argv.lastIndexOf("--");
+  assert.ok(sep !== -1, "expected a `--` end-of-options separator in argv");
+  // The task is the final positional, immediately after the separator.
+  assert.equal(argv[argv.length - 1], task);
+  assert.equal(argv[sep + 1], task);
+  // bypassPermissions (and every other flag) is parsed *before* the separator,
+  // so the flag-shaped task can never reach claude's argv parser as a flag.
+  assert.ok(argv.indexOf("bypassPermissions") < sep);
 });
 
 test("requiresApproval is true (workspace-mutating)", () => {
