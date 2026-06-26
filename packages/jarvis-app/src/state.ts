@@ -127,9 +127,24 @@ export async function resolveSystemPrompt(config: JarvisConfig): Promise<string>
 }
 
 /**
+ * Truncate `s` to at most `maxBytes` UTF-8 bytes, cutting on a character
+ * boundary so a multi-byte sequence is never split. `String.slice` counts
+ * UTF-16 code units, so it can't enforce a byte budget for CJK/emoji text.
+ */
+function truncateToBytes(s: string, maxBytes: number): string {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= maxBytes) return s;
+  let end = maxBytes;
+  // Walk back off any UTF-8 continuation byte (0b10xxxxxx) so the cut lands at
+  // the start of a character rather than mid-sequence.
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString("utf8");
+}
+
+/**
  * Load the workspace's project-context files (AGENTS.md / CLAUDE.md / AGENT.md)
  * and concatenate them, each wrapped in `=== project context: <name> ===`,
- * capped at `maxBytes`. Returns undefined when none exist.
+ * capped at `maxBytes` (UTF-8 bytes). Returns undefined when none exist.
  */
 export async function loadProjectContext(fsRoot: string, maxBytes: number): Promise<string | undefined> {
   const blocks: string[] = [];
@@ -144,9 +159,16 @@ export async function loadProjectContext(fsRoot: string, maxBytes: number): Prom
     if (body.trim() === "") continue;
     const remaining = maxBytes - total;
     if (remaining <= 0) break;
-    const truncated = body.length > remaining ? `${body.slice(0, remaining)}\n[...truncated]` : body;
-    blocks.push(`=== project context: ${name} ===\n${truncated}`);
-    total += truncated.length;
+    let piece: string;
+    if (Buffer.byteLength(body, "utf8") > remaining) {
+      const marker = "\n[...truncated]";
+      const room = Math.max(0, remaining - Buffer.byteLength(marker, "utf8"));
+      piece = `${truncateToBytes(body, room)}${marker}`;
+    } else {
+      piece = body;
+    }
+    blocks.push(`=== project context: ${name} ===\n${piece}`);
+    total += Buffer.byteLength(piece, "utf8");
   }
   return blocks.length > 0 ? blocks.join("\n\n") : undefined;
 }

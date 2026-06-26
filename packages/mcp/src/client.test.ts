@@ -301,6 +301,66 @@ test("connectAllMcp skips disabled entries", async () => {
   assert.equal(registry.names().length, 0);
 });
 
+test("connectAllMcp rolls back earlier servers' tools when a later server fails", async () => {
+  // Server "a" connects and registers a tool; server "b" then fails to connect.
+  // The catch block must close "a" AND unregister "a.echo" so the shared
+  // registry is left exactly as it was before the call (no zombie adapter
+  // pointing at a closed transport).
+  const registry = new ToolRegistry();
+  let aClosed = false;
+  // A real in-memory client for server "a" with a spy close().
+  const { transport } = buildServer([ECHO]);
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const aClient = new Client({ name: "jarvis-test", version: "0.0.0" }, { capabilities: {} });
+  await aClient.connect(transport);
+  const wrapped = McpClient.fromHandle(
+    "a",
+    aClient as unknown as McpClientHandle,
+    async () => {
+      aClosed = true;
+      await aClient.close();
+    },
+  );
+
+  const configs: McpClientConfig[] = [
+    { prefix: "a", transport: stdioTransport("unused") },
+    { prefix: "b", transport: stdioTransport("unused") },
+  ];
+  const connect = async (cfg: McpClientConfig): Promise<McpClient> => {
+    if (cfg.prefix === "a") return wrapped;
+    throw new McpError("failed to connect to mcp server 'b': boom");
+  };
+
+  await assert.rejects(
+    () => connectAllMcp(configs, registry, connect),
+    /failed to connect to mcp server 'b'/,
+  );
+  assert.equal(aClosed, true, "earlier client should be closed on rollback");
+  assert.equal(registry.contains("a.echo"), false, "earlier tools must be unregistered");
+  assert.equal(registry.names().length, 0, "registry restored to pre-call state");
+});
+
+test("connectAllMcp keeps registered tools on full success", async () => {
+  const registry = new ToolRegistry();
+  const a = await linkedClient("a", [ECHO]);
+  const b = await linkedClient("b", [ADD]);
+  const configs: McpClientConfig[] = [
+    { prefix: "a", transport: stdioTransport("unused") },
+    { prefix: "b", transport: stdioTransport("unused") },
+  ];
+  const queue = [a, b];
+  const connect = async (): Promise<McpClient> => queue.shift()!;
+
+  const clients = await connectAllMcp(configs, registry, connect);
+  try {
+    assert.equal(clients.length, 2);
+    assert.equal(registry.contains("a.echo"), true);
+    assert.equal(registry.contains("b.add"), true);
+  } finally {
+    await Promise.all(clients.map((c) => c.close()));
+  }
+});
+
 test("shutdown closes the underlying session", async () => {
   let closed = false;
   const handle: McpClientHandle = {
