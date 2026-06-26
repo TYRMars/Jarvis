@@ -128,10 +128,27 @@ export class HttpFetchTool implements Tool {
 
     const resp = await this.#fetch(url, init);
 
+    // Bound the header block by bytes, mirroring the body cap below. Without
+    // this an upstream returning very large / very many headers produces an
+    // arbitrarily large tool result that bypasses the body guard entirely.
+    const encoder = new TextEncoder();
     let headers = "";
+    let headerBytes = 0;
+    let headersTruncated = false;
     resp.headers.forEach((value, key) => {
-      headers += `${key}: ${value}\n`;
+      if (headersTruncated) return;
+      const line = `${key}: ${value}\n`;
+      const lineBytes = encoder.encode(line).length;
+      if (headerBytes + lineBytes > this.#maxBytes) {
+        headersTruncated = true;
+        return;
+      }
+      headers += line;
+      headerBytes += lineBytes;
     });
+    if (headersTruncated) {
+      headers += `[... response headers truncated at ${this.#maxBytes} bytes ...]\n`;
+    }
 
     const buf = new Uint8Array(await resp.arrayBuffer());
     const truncated = buf.length > this.#maxBytes;
