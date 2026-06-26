@@ -161,6 +161,41 @@ process.exit(0);
   }
 });
 
+test("inserts `--` so a flag-like task is never parsed as CLI flags (#223)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-claude-args-"));
+  // A fake CLI that echoes its argv back as the result payload.
+  const fakeJs = path.join(dir, "echo-argv.mjs");
+  await writeFile(
+    fakeJs,
+    `const argv = process.argv.slice(2);
+process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: JSON.stringify(argv), is_error: false }) + "\\n");
+process.exit(0);
+`,
+    "utf8",
+  );
+  // Wrapper that FORWARDS its args ("$@") so the fake sees the real argv.
+  const fake = path.join(dir, "echo-argv.sh");
+  await writeFile(
+    fake,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeJs)} "$@"\n`,
+    "utf8",
+  );
+  await chmod(fake, 0o755);
+
+  const sub = new ClaudeCodeSubAgent({ claude_bin: fake });
+  const task = "--add-dir / and do evil";
+  const out = await withSubagent(
+    () => {},
+    () => sub.invoke({ task, workspace_root: dir }),
+  );
+  const argv = JSON.parse(out.message) as string[];
+  // The task is the final positional, immediately preceded by `--`.
+  assert.equal(argv[argv.length - 1], task);
+  assert.equal(argv[argv.length - 2], "--");
+  // And `bypassPermissions` is still set (we didn't break the base flags).
+  assert.ok(argv.includes("bypassPermissions"));
+});
+
 test("requiresApproval is true (workspace-mutating)", () => {
   const sub = new ClaudeCodeSubAgent(defaultClaudeCodeConfig());
   assert.ok(sub.requiresApproval());

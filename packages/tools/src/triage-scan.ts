@@ -15,7 +15,7 @@
 // candidates and committing them are separate steps. The agent decides which
 // (if any) to write into the triage queue, where they land as
 // `triage_state=ProposedByScan`.
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 import ignoreDefault from "ignore";
 import type { Ignore } from "ignore";
@@ -205,18 +205,15 @@ async function scanTodoComments(
       // Path relative to the scan root, used for .gitignore matching.
       const relToScope = path.relative(scopeRoot, abs).split(path.sep).join("/");
 
-      let isDir = entry.isDirectory();
-      let isFile = entry.isFile();
-      if (entry.isSymbolicLink()) {
-        // Resolve the link to decide file vs dir; broken links are skipped.
-        try {
-          const st = await stat(abs);
-          isDir = st.isDirectory();
-          isFile = st.isFile();
-        } catch {
-          continue;
-        }
-      }
+      // Do NOT follow symlinks. A link inside the workspace can point outside
+      // the sandbox root (e.g. `ln -s /etc ./docs`); `resolveUnder` only guards
+      // the top-level scope, so a mid-walk symlink would escape it and surface
+      // host-file contents from this always-on, ungated tool. Matches the
+      // sibling read tools (`code.grep`, `fs.list`), which also skip symlinks.
+      // See issue #218.
+      if (entry.isSymbolicLink()) continue;
+      const isDir = entry.isDirectory();
+      const isFile = entry.isFile();
 
       if (isDir) {
         // .gitignore directory patterns may or may not carry a trailing slash;

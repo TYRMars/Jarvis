@@ -217,7 +217,7 @@ export class PluginManager {
     // at the installed copy.
     const staged: Array<{ entry: SkillEntry; rel: string }> = [];
     for (const rel of manifest.skills) {
-      const abs = path.join(source, rel);
+      const abs = resolveContainedSkill(source, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       let raw: string;
       try {
@@ -376,7 +376,7 @@ export class PluginManager {
 
     // Skills: re-load each one and insert.
     for (const rel of manifest.skills) {
-      const abs = path.join(entry.install_dir, rel);
+      const abs = resolveContainedSkill(entry.install_dir, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       const raw = await readFile(skillMd, "utf8");
       const parsed = parseSkill(raw);
@@ -487,4 +487,19 @@ function isNotFound(e: unknown): boolean {
 function errText(e: unknown): string {
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+/**
+ * Resolve a manifest `skills` entry against the plugin directory, rejecting any
+ * path that escapes it. A malicious/typo'd `plugin.json` could otherwise use
+ * `../../etc/secret` or an absolute path to read arbitrary host files and inject
+ * their contents into the agent's system prompt as a "skill". See issue #219.
+ */
+function resolveContainedSkill(base: string, rel: string): string {
+  const abs = path.resolve(base, rel);
+  const within = path.relative(base, abs);
+  if (within === ".." || within.startsWith(".." + path.sep) || path.isAbsolute(within)) {
+    throw PluginManagerError.skill(`skill path escapes plugin directory: ${rel}`);
+  }
+  return abs;
 }

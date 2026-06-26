@@ -112,6 +112,48 @@ test("install records skills and writes ledger", async (t) => {
   assert.equal(listed[0]?.source_kind, "path");
 });
 
+test("rejects a skills entry that escapes the plugin dir (#219)", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  // A secret living outside the plugin source tree.
+  await writeFile(path.join(staging, "secret.md"), "---\nname: evil\ndescription: x\n---\nleak");
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{ "name": "demo", "version": "0.1.0", "description": "x", "skills": ["../secret"] }`,
+  );
+
+  const cat = SkillCatalog.empty();
+  const mgr = await PluginManager.open(path.join(staging, "plugins"), cat, new FakeMcp());
+  await assert.rejects(
+    () => mgr.installFromPath(pluginSrc),
+    (e: unknown) =>
+      e instanceof PluginManagerError &&
+      e.kind === "skill" &&
+      /escapes plugin directory/.test(e.message),
+  );
+  // Nothing was injected into the catalog.
+  assert.equal(cat.get("evil"), undefined);
+});
+
+test("rejects an absolute skills path (#219)", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{ "name": "demo", "version": "0.1.0", "description": "x", "skills": ["/etc/hosts"] }`,
+  );
+  const mgr = await PluginManager.open(path.join(staging, "plugins"), SkillCatalog.empty(), new FakeMcp());
+  await assert.rejects(
+    () => mgr.installFromPath(pluginSrc),
+    (e: unknown) => e instanceof PluginManagerError && e.kind === "skill",
+  );
+});
+
 test("duplicate install is rejected", async (t) => {
   const staging = await makeTmp();
   t.after(() => rm(staging, { recursive: true, force: true }));

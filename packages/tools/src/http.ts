@@ -128,21 +128,39 @@ export class HttpFetchTool implements Tool {
 
     const resp = await this.#fetch(url, init);
 
+    // Bound the header block by the same byte budget as the body. An upstream
+    // returning very large or very many headers would otherwise blow past
+    // `maxBytes` with no truncation signal (the body guard never sees them).
+    // See issue #222.
+    const enc = new TextEncoder();
     let headers = "";
+    let headerBytes = 0;
+    let headersTruncated = false;
     resp.headers.forEach((value, key) => {
-      headers += `${key}: ${value}\n`;
+      if (headersTruncated) return;
+      const line = `${key}: ${value}\n`;
+      const lineBytes = enc.encode(line).length;
+      if (headerBytes + lineBytes > this.#maxBytes) {
+        headersTruncated = true;
+        return;
+      }
+      headers += line;
+      headerBytes += lineBytes;
     });
 
     const buf = new Uint8Array(await resp.arrayBuffer());
-    const truncated = buf.length > this.#maxBytes;
-    const slice = truncated ? buf.subarray(0, this.#maxBytes) : buf;
+    const bodyTruncated = buf.length > this.#maxBytes;
+    const slice = bodyTruncated ? buf.subarray(0, this.#maxBytes) : buf;
     // Lossy UTF-8 decode (replacement chars for invalid sequences), matching
     // Rust's `String::from_utf8_lossy`.
     const body = new TextDecoder("utf-8", { fatal: false }).decode(slice);
 
     let out = `HTTP ${statusLine(resp.status, resp.statusText)}\n${headers}\n${body}`;
-    if (truncated) {
-      out += `\n\n[... truncated at ${this.#maxBytes} bytes ...]`;
+    if (headersTruncated || bodyTruncated) {
+      const what = [headersTruncated ? "headers" : null, bodyTruncated ? "body" : null]
+        .filter((p): p is string => p !== null)
+        .join(" and ");
+      out += `\n\n[... truncated ${what} at ${this.#maxBytes} bytes ...]`;
     }
     return out;
   }

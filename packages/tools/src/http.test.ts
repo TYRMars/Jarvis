@@ -142,7 +142,7 @@ test("body is truncated at maxBytes on a byte boundary with a marker", async () 
   const out = await tool.invoke({ url: "http://example.test/" });
 
   // header block is empty here, so: "HTTP 200 OK\n\n" + body + marker
-  assert.equal(out, "HTTP 200 OK\n\n01234567\n\n[... truncated at 8 bytes ...]");
+  assert.equal(out, "HTTP 200 OK\n\n01234567\n\n[... truncated body at 8 bytes ...]");
 });
 
 test("truncation counts bytes, not characters (multi-byte safe)", async () => {
@@ -153,7 +153,7 @@ test("truncation counts bytes, not characters (multi-byte safe)", async () => {
   const tool = new HttpFetchTool({ maxBytes, fetchImpl });
   const out = await tool.invoke({ url: "http://example.test/" });
   assert.ok(out.startsWith("HTTP 200 OK\n\n"));
-  assert.ok(out.endsWith("[... truncated at 3 bytes ...]"));
+  assert.ok(out.endsWith("[... truncated body at 3 bytes ...]"));
   // The first "é" (2 bytes) survives, the third byte is a dangling lead byte → replacement.
   assert.ok(out.includes("é"));
 });
@@ -166,13 +166,40 @@ test("no truncation marker when body fits exactly", async () => {
   assert.equal(out, "HTTP 200 OK\n\n1234");
 });
 
+test("response headers are byte-bounded and signal truncation (#222)", async () => {
+  // A single oversized header must not blow past maxBytes, and the marker must
+  // fire even though the body is empty/within budget.
+  const maxBytes = 16;
+  const big = "x".repeat(1000);
+  const { fetchImpl } = stubFetch(fakeResponse({ headers: { "x-big": big }, body: "" }));
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+
+  // The header line (`x-big: xxx...\n`) exceeds the cap, so it is dropped whole.
+  assert.equal(out.includes(big), false);
+  assert.ok(out.includes("[... truncated headers at 16 bytes ...]"));
+  // Header block stays under the byte budget.
+  const headerBlock = out.slice("HTTP 200 OK\n".length, out.indexOf("\n\n"));
+  assert.ok(new TextEncoder().encode(headerBlock).length <= maxBytes);
+});
+
+test("truncation marker names both headers and body when both clip (#222)", async () => {
+  const maxBytes = 8;
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "x-big": "y".repeat(100) }, body: "0123456789" }),
+  );
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+  assert.ok(out.endsWith("[... truncated headers and body at 8 bytes ...]"));
+});
+
 test("default maxBytes is 256 KiB", async () => {
   assert.equal(HTTP_DEFAULT_MAX_BYTES, 262144);
   const big = "a".repeat(HTTP_DEFAULT_MAX_BYTES + 100);
   const { fetchImpl } = stubFetch(fakeResponse({ body: big }));
   const tool = new HttpFetchTool({ fetchImpl }); // no maxBytes override
   const out = await tool.invoke({ url: "http://example.test/" });
-  assert.ok(out.endsWith(`[... truncated at ${HTTP_DEFAULT_MAX_BYTES} bytes ...]`));
+  assert.ok(out.endsWith(`[... truncated body at ${HTTP_DEFAULT_MAX_BYTES} bytes ...]`));
 });
 
 test("integration: hits a real local server via global fetch", async () => {
