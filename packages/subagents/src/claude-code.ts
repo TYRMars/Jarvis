@@ -115,7 +115,10 @@ export class ClaudeCodeSubAgent implements SubAgent {
     const args = ["--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"];
     if (this.#config.model !== undefined) args.push("--model", this.#config.model);
     if (this.#config.extra_args && this.#config.extra_args.length > 0) args.push(...this.#config.extra_args);
-    args.push(input.task); // final positional
+    // `--` ends option parsing so a `task` beginning with `-`/`--` is always
+    // treated as a positional, never smuggled in as a flag (e.g. `--add-dir /`)
+    // that would escalate the bypassPermissions child. See issue #223.
+    args.push("--", input.task); // final positional, guarded by the `--` above
 
     const startEvent: SubAgentEvent = { kind: "started", task: input.task };
     if (this.#config.model !== undefined) startEvent.model = this.#config.model;

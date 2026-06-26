@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { JsonValue, Tool } from "@jarvis/core";
@@ -60,6 +60,25 @@ test("respects gitignore", async () => {
   const cs = v.candidates as Array<Record<string, JsonValue>>;
   assert.equal(cs.length, 1);
   assert.equal(cs[0]!.path, "kept.rs");
+});
+
+test("does not follow symlinks out of the sandbox (#218)", async () => {
+  // A symlink inside the workspace pointing outside it must NOT be traversed,
+  // otherwise the always-on, ungated tool surfaces host-file contents.
+  const scope = await tempDir();
+  const outside = await tempDir();
+  await write(path.join(outside, "secret.rs"), "// TODO: out-of-sandbox secret\n");
+  await write(path.join(scope, "kept.rs"), "// TODO: in-sandbox\n");
+  // Link a dir and a file from inside the scope to outside it.
+  await symlink(outside, path.join(scope, "linked-dir"));
+  await symlink(path.join(outside, "secret.rs"), path.join(scope, "linked-file.rs"));
+
+  const tool = new TriageScanTool({ root: scope });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "kept.rs");
+  assert.equal(JSON.stringify(cs).includes("secret"), false);
 });
 
 test("limit caps results", async () => {
