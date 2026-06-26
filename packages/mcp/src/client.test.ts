@@ -301,6 +301,58 @@ test("connectAllMcp skips disabled entries", async () => {
   assert.equal(registry.names().length, 0);
 });
 
+test("connectAllMcp rolls back earlier servers' tools when a later connect fails", async () => {
+  const registry = new ToolRegistry();
+  // A builtin under an untouched prefix must survive the rollback.
+  registry.register({
+    name: "fs.read",
+    description: "builtin",
+    parameters: { type: "object" },
+    async invoke() {
+      return "builtin";
+    },
+  });
+
+  const { handle } = mockHandle(() => ({ content: [] }), [
+    { name: "echo", inputSchema: { type: "object" } },
+    { name: "add", inputSchema: { type: "object" } },
+  ]);
+  let closedGood = false;
+  const good = McpClient.fromHandle("ok", handle, async () => {
+    closedGood = true;
+  });
+
+  const configs: McpClientConfig[] = [
+    { prefix: "ok", transport: stdioTransport("unused") },
+    { prefix: "bad", transport: stdioTransport("unused") },
+  ];
+  const connect = async (cfg: McpClientConfig): Promise<McpClient> => {
+    if (cfg.prefix === "bad") throw new McpError("connect failed");
+    return good;
+  };
+
+  await assert.rejects(connectAllMcp(configs, registry, connect), /connect failed/);
+
+  // The opened client is closed; the earlier server's tools are rolled back so
+  // no `RemoteTool` survives pointing at the closed session; the failed server
+  // never added anything; an unrelated builtin is left untouched.
+  assert.equal(closedGood, true);
+  assert.equal(registry.contains("ok.echo"), false);
+  assert.equal(registry.contains("ok.add"), false);
+  assert.equal(registry.contains("bad.echo"), false);
+  assert.equal(registry.resolveUnchecked("fs.read")?.description, "builtin");
+
+  // A fully-successful connect still registers everything.
+  const registry2 = new ToolRegistry();
+  const clients = await connectAllMcp(
+    [{ prefix: "ok", transport: stdioTransport("unused") }],
+    registry2,
+    async () => good,
+  );
+  assert.equal(clients.length, 1);
+  assert.deepEqual(registry2.names().sort(), ["ok.add", "ok.echo"]);
+});
+
 test("shutdown closes the underlying session", async () => {
   let closed = false;
   const handle: McpClientHandle = {
