@@ -76,6 +76,22 @@ export function probe(claudeBin: string): Promise<void> {
 
 const STDERR_CAP = 64 * 1024;
 
+/**
+ * Build the argv for the `claude` CLI. The caller-controlled `task` is always
+ * placed after a `--` end-of-options separator so a `task` beginning with
+ * `-`/`--` can never be parsed by claude's own CLI as a flag (e.g. `--add-dir
+ * /`), which would otherwise escalate this already-`bypassPermissions` run.
+ * `task` can be influenced by untrusted content the model ingested, so the
+ * separator is mandatory, not cosmetic.
+ */
+export function buildClaudeArgs(config: ClaudeCodeConfig, task: string): string[] {
+  const args = ["--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"];
+  if (config.model !== undefined) args.push("--model", config.model);
+  if (config.extra_args && config.extra_args.length > 0) args.push(...config.extra_args);
+  args.push("--", task);
+  return args;
+}
+
 export class ClaudeCodeSubAgent implements SubAgent {
   readonly name = "claude_code";
   readonly description = DESCRIPTION;
@@ -112,10 +128,7 @@ export class ClaudeCodeSubAgent implements SubAgent {
       emitSubagent({ subagent_id: id, subagent_name: this.name, event });
     };
 
-    const args = ["--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"];
-    if (this.#config.model !== undefined) args.push("--model", this.#config.model);
-    if (this.#config.extra_args && this.#config.extra_args.length > 0) args.push(...this.#config.extra_args);
-    args.push(input.task); // final positional
+    const args = buildClaudeArgs(this.#config, input.task);
 
     const startEvent: SubAgentEvent = { kind: "started", task: input.task };
     if (this.#config.model !== undefined) startEvent.model = this.#config.model;
