@@ -175,6 +175,40 @@ test("default maxBytes is 256 KiB", async () => {
   assert.ok(out.endsWith(`[... truncated at ${HTTP_DEFAULT_MAX_BYTES} bytes ...]`));
 });
 
+test("response headers are bounded by maxBytes with a truncation marker", async () => {
+  // Many small headers whose combined size blows past the cap. Each line is
+  // "h<NN>: <40 bytes>\n" ≈ 50 bytes; 40 of them ≈ 2 KiB > the 200-byte cap.
+  const headers: Record<string, string> = {};
+  for (let i = 0; i < 40; i++) headers[`h${String(i).padStart(2, "0")}`] = "v".repeat(40);
+  const { fetchImpl } = stubFetch(fakeResponse({ headers, body: "ok" }));
+  const tool = new HttpFetchTool({ maxBytes: 200, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+
+  // The emitted header block (everything between the status line and the blank
+  // line that precedes the body) must stay within the cap, plus the marker.
+  assert.ok(out.includes("[... response headers truncated at 200 bytes ...]"));
+  const headerBlock = out.split("\n\n")[0]!.split("\n").slice(1).join("\n");
+  const markerBytes = new TextEncoder().encode(
+    "[... response headers truncated at 200 bytes ...]\n",
+  ).length;
+  assert.ok(
+    new TextEncoder().encode(headerBlock).length <= 200 + markerBytes,
+    "header block must be bounded by the byte cap",
+  );
+  // Body still present and untruncated.
+  assert.ok(out.endsWith("\n\nok"));
+});
+
+test("small header blocks are emitted verbatim with no marker", async () => {
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "x-a": "1", "x-b": "2" }, body: "ok" }),
+  );
+  const tool = new HttpFetchTool({ maxBytes: 200, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+  assert.equal(out, "HTTP 200 OK\nx-a: 1\nx-b: 2\n\nok");
+  assert.equal(out.includes("truncated"), false);
+});
+
 test("integration: hits a real local server via global fetch", async () => {
   const server = createServer((req, res) => {
     let received = "";
