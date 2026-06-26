@@ -115,7 +115,14 @@ export class ClaudeCodeSubAgent implements SubAgent {
     const args = ["--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"];
     if (this.#config.model !== undefined) args.push("--model", this.#config.model);
     if (this.#config.extra_args && this.#config.extra_args.length > 0) args.push(...this.#config.extra_args);
-    args.push(input.task); // final positional
+    // `--` end-of-options separator: the child runs under bypassPermissions, and
+    // `input.task` is caller-/model-influenced (it can echo untrusted file/URL
+    // content). Without this, a task beginning with `-`/`--` would be parsed by
+    // claude's own argv parser as a flag (e.g. `--add-dir /`, `--mcp-config`),
+    // escalating the run beyond the approved task. The separator forces the task
+    // to always be a positional. See issue #223.
+    args.push("--");
+    args.push(input.task); // final positional, after the `--` guard
 
     const startEvent: SubAgentEvent = { kind: "started", task: input.task };
     if (this.#config.model !== undefined) startEvent.model = this.#config.model;
