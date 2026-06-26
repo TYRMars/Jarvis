@@ -487,3 +487,25 @@ test("loadProjectContext: returns undefined when no instruction files exist", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("loadProjectContext: caps on UTF-8 bytes, not UTF-16 code units (CJK)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-cli-ctx-cjk-"));
+  try {
+    // Each '汉' is 3 UTF-8 bytes but 1 UTF-16 code unit. A naive `.length` cap
+    // would let ~3x the byte budget through. Write 1000 CJK chars (3000 bytes).
+    const body = "汉".repeat(1000);
+    await writeFile(path.join(dir, "AGENTS.md"), body);
+    const cap = 300; // bytes
+    const ctx = await loadProjectContext(dir, cap);
+    assert.ok(ctx);
+    // The whole returned block (header + truncated body + marker) must stay
+    // within a tight multiple of the byte budget — never the ~3x UTF-16 blowup.
+    const bytes = Buffer.byteLength(ctx, "utf8");
+    assert.ok(bytes <= cap + 64, `expected <= ${cap + 64} bytes, got ${bytes}`);
+    assert.match(ctx, /\[\.\.\.truncated\]/);
+    // Truncation must land on a char boundary — no replacement char / mojibake.
+    assert.doesNotMatch(ctx, /�/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

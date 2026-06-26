@@ -122,11 +122,29 @@ export async function loadProjectContext(
     if (body.trim() === "") continue;
     const remaining = maxBytes - total;
     if (remaining <= 0) break;
-    const truncated = body.length > remaining ? `${body.slice(0, remaining)}\n[...truncated]` : body;
+    // `maxBytes` is a UTF-8 *byte* budget. Measure and truncate on byte length
+    // (not `.length`/`.slice`, which count UTF-16 code units) so a CJK-heavy
+    // context file can't overshoot the configured cap ~3x.
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    const truncated = bodyBytes > remaining ? `${sliceToBytes(body, remaining)}\n[...truncated]` : body;
     blocks.push(`=== project context: ${name} ===\n${truncated}`);
-    total += truncated.length;
+    total += Buffer.byteLength(truncated, "utf8");
   }
   return blocks.length > 0 ? blocks.join("\n\n") : undefined;
+}
+
+/** Slice `s` to at most `maxBytes` UTF-8 bytes, never splitting a code point. */
+function sliceToBytes(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+  let cut = "";
+  let used = 0;
+  for (const ch of s) {
+    const next = used + Buffer.byteLength(ch, "utf8");
+    if (next > maxBytes) break;
+    cut += ch;
+    used = next;
+  }
+  return cut;
 }
 
 /**

@@ -13,9 +13,13 @@ import { assistantText, defaultCompleteStream } from "@jarvis/core";
 import { makeMemoryStores } from "@jarvis/store";
 import { buildServer } from "@jarvis/server";
 
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { loadConfig } from "./config.ts";
 import { buildProvider } from "./provider.ts";
-import { buildAppState } from "./state.ts";
+import { buildAppState, loadProjectContext } from "./state.ts";
 
 /** A fixture env — passed explicitly so we never read/mutate process.env. */
 const FIXTURE_ENV: Record<string, string | undefined> = {
@@ -152,4 +156,22 @@ test("buildAppState wires the domain stores into AppState", async () => {
   assert.equal(state.workflows, stores.workflows);
   assert.equal(state.workspaceRoot, config.fsRoot);
   assert.ok(state.subagents !== undefined);
+});
+
+test("loadProjectContext caps on UTF-8 bytes, not UTF-16 code units (CJK)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-app-ctx-cjk-"));
+  try {
+    // '汉' = 3 UTF-8 bytes / 1 UTF-16 code unit. A `.length` cap would overshoot
+    // the byte budget ~3x; the byte-accurate cap must keep it bounded.
+    await writeFile(path.join(dir, "AGENTS.md"), "汉".repeat(1000));
+    const cap = 300; // bytes
+    const ctx = await loadProjectContext(dir, cap);
+    assert.ok(ctx);
+    const bytes = Buffer.byteLength(ctx, "utf8");
+    assert.ok(bytes <= cap + 64, `expected <= ${cap + 64} bytes, got ${bytes}`);
+    assert.match(ctx, /\[\.\.\.truncated\]/);
+    assert.doesNotMatch(ctx, /�/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

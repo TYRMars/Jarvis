@@ -301,6 +301,48 @@ test("connectAllMcp skips disabled entries", async () => {
   assert.equal(registry.names().length, 0);
 });
 
+test("connectAllMcp rolls back registered tools when a later server fails", async () => {
+  // First server connects + registers fine; the second `connect` throws. The
+  // registry must NOT keep the first server's tools (they'd point at a closed
+  // transport), and the first client must be closed.
+  const registry = new ToolRegistry();
+  let closed = false;
+  const first = McpClient.fromHandle(
+    "srv1",
+    {
+      async listTools() {
+        return { tools: [{ name: "echo", description: "e", inputSchema: { type: "object" } }] };
+      },
+      async callTool() {
+        return { content: [] };
+      },
+    },
+    async () => {
+      closed = true;
+    },
+  );
+
+  let calls = 0;
+  const connect = async (): Promise<McpClient> => {
+    calls += 1;
+    if (calls === 1) return first;
+    throw new Error("second server boom");
+  };
+
+  await assert.rejects(
+    () =>
+      connectAllMcp(
+        [mcpClientConfig("srv1", "unused"), mcpClientConfig("srv2", "unused")],
+        registry,
+        connect,
+      ),
+    /second server boom/,
+  );
+
+  assert.deepEqual(registry.names(), [], "first server's tools must be unregistered on rollback");
+  assert.equal(closed, true, "first client must be closed on rollback");
+});
+
 test("shutdown closes the underlying session", async () => {
   let closed = false;
   const handle: McpClientHandle = {

@@ -10,12 +10,37 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   ClaudeCodeSubAgent,
+  buildClaudeArgs,
   defaultClaudeCodeConfig,
   probe,
   parseSdkMessage,
   stringifyToolResult,
 } from "./claude-code.ts";
 import { withSubagent, type SubAgentFrame } from "./subagent.ts";
+
+test("buildClaudeArgs puts the task after a `--` separator (no arg injection)", () => {
+  const cfg = defaultClaudeCodeConfig();
+  // A task that begins with `--` must NOT be parsed by claude's CLI as a flag.
+  const malicious = "--add-dir / and do the thing";
+  const args = buildClaudeArgs(cfg, malicious);
+  const sep = args.indexOf("--");
+  assert.ok(sep >= 0, "argv must contain a `--` end-of-options separator");
+  // The task is the final positional, immediately after `--`.
+  assert.equal(args[args.length - 1], malicious);
+  assert.equal(args.indexOf("--"), args.length - 2);
+  // Nothing the task contains can appear before the separator as a flag.
+  assert.ok(!args.slice(0, sep).includes(malicious));
+});
+
+test("buildClaudeArgs keeps a single trailing `--` even with extra_args", () => {
+  const cfg = { ...defaultClaudeCodeConfig(), model: "claude-x", extra_args: ["--foo", "bar"] };
+  const args = buildClaudeArgs(cfg, "do work");
+  assert.deepEqual(args.slice(-2), ["--", "do work"]);
+  // extra_args land before the separator; exactly one `--` separator is added.
+  assert.equal(args.filter((a) => a === "--").length, 1);
+  assert.ok(args.includes("--foo") && args.includes("bar"));
+  assert.deepEqual(args.slice(0, 2), ["--print", "--output-format"]);
+});
 
 test("parses an assistant text block", () => {
   const msg = parseSdkMessage('{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}');
