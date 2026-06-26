@@ -166,6 +166,28 @@ test("no truncation marker when body fits exactly", async () => {
   assert.equal(out, "HTTP 200 OK\n\n1234");
 });
 
+test("response headers are byte-bounded with a marker", async () => {
+  // Many/large headers must not bypass the body cap. With a tiny maxBytes the
+  // header block is clipped and a marker is emitted; the byte guard holds.
+  const maxBytes = 24;
+  const headers: Record<string, string> = {};
+  for (let i = 0; i < 50; i++) headers[`x-h${i}`] = "v".repeat(40);
+  const { fetchImpl } = stubFetch(fakeResponse({ headers, body: "ok" }));
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+
+  assert.ok(out.includes(`[... headers truncated at ${maxBytes} bytes ...]`));
+  // The header portion (before the blank-line separator) stays within the cap
+  // plus the marker line — it no longer grows unbounded with upstream headers.
+  const headerBlock = out.split("\n\n")[0] ?? "";
+  // Drop the "HTTP ..." status line; what's left is the bounded header lines.
+  const headerLines = headerBlock.split("\n").slice(1).join("\n");
+  assert.ok(
+    new TextEncoder().encode(headerLines).length <=
+      maxBytes + new TextEncoder().encode(`[... headers truncated at ${maxBytes} bytes ...]\n`).length,
+  );
+});
+
 test("default maxBytes is 256 KiB", async () => {
   assert.equal(HTTP_DEFAULT_MAX_BYTES, 262144);
   const big = "a".repeat(HTTP_DEFAULT_MAX_BYTES + 100);

@@ -217,7 +217,7 @@ export class PluginManager {
     // at the installed copy.
     const staged: Array<{ entry: SkillEntry; rel: string }> = [];
     for (const rel of manifest.skills) {
-      const abs = path.join(source, rel);
+      const abs = resolveSkillPath(source, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       let raw: string;
       try {
@@ -376,7 +376,7 @@ export class PluginManager {
 
     // Skills: re-load each one and insert.
     for (const rel of manifest.skills) {
-      const abs = path.join(entry.install_dir, rel);
+      const abs = resolveSkillPath(entry.install_dir, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       const raw = await readFile(skillMd, "utf8");
       const parsed = parseSkill(raw);
@@ -466,6 +466,24 @@ async function writeLedger(root: string, ledger: Map<string, InstalledPlugin>): 
 }
 
 // ---------- small helpers ----------
+
+/**
+ * Resolve a manifest `skills` entry under `base` and guarantee it stays inside
+ * `base`. A `plugin.json` is untrusted input: without this, a `skills` value
+ * like `../../../etc/secret` makes `path.join(base, rel)` escape the plugin
+ * directory, letting install read an arbitrary file and inject its contents
+ * into the agent's system prompt as a "skill" (and persist a `SkillEntry.path`
+ * pointing outside the plugins root). Rejects `..`-escaping and absolute-
+ * resolving entries; returns the contained join otherwise.
+ */
+function resolveSkillPath(base: string, rel: string): string {
+  const abs = path.join(base, rel);
+  const relTo = path.relative(base, abs);
+  if (relTo === ".." || relTo.startsWith(`..${path.sep}`) || path.isAbsolute(relTo)) {
+    throw PluginManagerError.skill(`skill path \`${rel}\` escapes the plugin directory`);
+  }
+  return abs;
+}
 
 function cloneEntry(e: InstalledPlugin): InstalledPlugin {
   return structuredClone(e);

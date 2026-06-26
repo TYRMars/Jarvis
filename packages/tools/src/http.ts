@@ -128,20 +128,38 @@ export class HttpFetchTool implements Tool {
 
     const resp = await this.#fetch(url, init);
 
+    // Bound the accumulated header block by bytes, mirroring the body cap. A
+    // hostile or buggy upstream can return arbitrarily large/many headers; left
+    // uncapped they bypass the body guard and blow past `maxBytes` with no
+    // truncation signal to the model.
+    const encoder = new TextEncoder();
     let headers = "";
+    let headerBytes = 0;
+    let headersTruncated = false;
     resp.headers.forEach((value, key) => {
-      headers += `${key}: ${value}\n`;
+      if (headersTruncated) return;
+      const line = `${key}: ${value}\n`;
+      const lineBytes = encoder.encode(line).length;
+      if (headerBytes + lineBytes > this.#maxBytes) {
+        headersTruncated = true;
+        return;
+      }
+      headers += line;
+      headerBytes += lineBytes;
     });
+    if (headersTruncated) {
+      headers += `[... headers truncated at ${this.#maxBytes} bytes ...]\n`;
+    }
 
     const buf = new Uint8Array(await resp.arrayBuffer());
-    const truncated = buf.length > this.#maxBytes;
-    const slice = truncated ? buf.subarray(0, this.#maxBytes) : buf;
+    const bodyTruncated = buf.length > this.#maxBytes;
+    const slice = bodyTruncated ? buf.subarray(0, this.#maxBytes) : buf;
     // Lossy UTF-8 decode (replacement chars for invalid sequences), matching
     // Rust's `String::from_utf8_lossy`.
     const body = new TextDecoder("utf-8", { fatal: false }).decode(slice);
 
     let out = `HTTP ${statusLine(resp.status, resp.statusText)}\n${headers}\n${body}`;
-    if (truncated) {
+    if (bodyTruncated) {
       out += `\n\n[... truncated at ${this.#maxBytes} bytes ...]`;
     }
     return out;
