@@ -301,6 +301,38 @@ test("connectAllMcp skips disabled entries", async () => {
   assert.equal(registry.names().length, 0);
 });
 
+test("connectAllMcp rolls back earlier servers' tools when a later one fails", async () => {
+  // First server spawns and registers `good.echo`; the second config points at
+  // a nonexistent binary, so its connect throws. The catch must unregister the
+  // already-inserted tools (not leave them pointing at a closed transport).
+  const { fileURLToPath } = await import("node:url");
+  const fixture = fileURLToPath(new URL("./fixtures/stdio-echo-server.mjs", import.meta.url));
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "builtin.keep",
+    description: "preexisting",
+    parameters: { type: "object" },
+    async invoke() {
+      return "ok";
+    },
+  });
+
+  await assert.rejects(() =>
+    connectAllMcp(
+      [
+        { prefix: "good", transport: stdioTransport(process.execPath, [fixture]) },
+        { prefix: "bad", transport: stdioTransport("jarvis-nonexistent-binary-xyz-9f3a") },
+      ],
+      registry,
+    ),
+  );
+
+  // The good server's `good.echo` was rolled back; the preexisting builtin
+  // (registered by the caller, not connectAllMcp) is untouched.
+  assert.equal(registry.has("good.echo"), false);
+  assert.deepEqual(registry.names(), ["builtin.keep"]);
+});
+
 test("shutdown closes the underlying session", async () => {
   let closed = false;
   const handle: McpClientHandle = {

@@ -479,6 +479,32 @@ test("loadProjectContext: concatenates present instruction files, skips absent o
   }
 });
 
+test("loadProjectContext: caps on UTF-8 bytes, not UTF-16 code units (CJK-safe)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-cli-ctx-bytes-"));
+  try {
+    // 300 CJK chars: 300 UTF-16 code units, but 900 UTF-8 bytes.
+    const body = "字".repeat(300);
+    await writeFile(path.join(dir, "AGENTS.md"), body);
+    const maxBytes = 120;
+    const ctx = await loadProjectContext(dir, maxBytes);
+    assert.ok(ctx);
+    // The injected block (header + truncated body) must respect the *byte*
+    // budget — never the ~3x overshoot a code-unit cap would allow. The header
+    // wrapper adds a fixed prefix; assert the body slice fits the budget.
+    const marker = "=== project context: AGENTS.md ===\n";
+    const slice = ctx.slice(ctx.indexOf(marker) + marker.length).replace(/\n\[\.\.\.truncated\]$/, "");
+    assert.ok(
+      Buffer.byteLength(slice, "utf8") <= maxBytes,
+      `body slice ${Buffer.byteLength(slice, "utf8")} bytes > ${maxBytes}`,
+    );
+    // And truncation must land on a whole character (no replacement chars).
+    assert.ok(!slice.includes("�"));
+    assert.match(ctx, /\[\.\.\.truncated\]/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("loadProjectContext: returns undefined when no instruction files exist", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "jarvis-cli-ctx-empty-"));
   try {

@@ -166,6 +166,22 @@ test("no truncation marker when body fits exactly", async () => {
   assert.equal(out, "HTTP 200 OK\n\n1234");
 });
 
+test("response headers are byte-bounded by maxBytes with a marker", async () => {
+  // Many large headers that, accumulated, would dwarf the body cap.
+  const headers: Record<string, string> = {};
+  for (let i = 0; i < 50; i++) headers[`x-pad-${i}`] = "v".repeat(100);
+  const { fetchImpl } = stubFetch(fakeResponse({ headers, body: "ok" }));
+  const maxBytes = 64;
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+  // The whole output must not blow past the budget by orders of magnitude:
+  // the header block is clipped at maxBytes and a marker is emitted.
+  assert.ok(out.includes("[... response headers truncated at 64 bytes ...]"));
+  // Header portion (before the blank-line body separator) stays within budget.
+  const headerBlock = out.slice(out.indexOf("\n") + 1, out.indexOf("\n\n"));
+  assert.ok(headerBlock.length <= maxBytes, `header block ${headerBlock.length} > ${maxBytes}`);
+});
+
 test("default maxBytes is 256 KiB", async () => {
   assert.equal(HTTP_DEFAULT_MAX_BYTES, 262144);
   const big = "a".repeat(HTTP_DEFAULT_MAX_BYTES + 100);
