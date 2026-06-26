@@ -487,3 +487,33 @@ test("loadProjectContext: returns undefined when no instruction files exist", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("loadProjectContext: caps a CJK body on real UTF-8 bytes, not UTF-16 code units", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-cli-ctx-bytes-"));
+  try {
+    // Each CJK char is 3 UTF-8 bytes but 1 UTF-16 code unit. 1000 chars =
+    // 3000 bytes. With the old `.length`/`.slice` accounting a 600-byte cap
+    // would have admitted ~600 chars (~1800 bytes), 3× over budget.
+    const body = "你".repeat(1000);
+    await writeFile(path.join(dir, "AGENTS.md"), body);
+
+    const maxBytes = 600;
+    const ctx = await loadProjectContext(dir, maxBytes);
+    assert.ok(ctx);
+    assert.match(ctx, /\[\.\.\.truncated\]/);
+
+    // The kept CJK content (everything before the marker / header) must fit the
+    // byte budget — the whole block's overhead is just the header + marker.
+    const cjkBytes = Buffer.byteLength(ctx.replace(/[^一-鿿]/g, ""), "utf8");
+    assert.ok(
+      cjkBytes <= maxBytes,
+      `kept ${cjkBytes} bytes of CJK content, expected <= ${maxBytes}`,
+    );
+    // And it must keep *some* content (not truncate to nothing).
+    assert.ok(cjkBytes > 0);
+    // No replacement character — proves we sliced on a char boundary.
+    assert.doesNotMatch(ctx, /�/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
