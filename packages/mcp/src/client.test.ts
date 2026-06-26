@@ -301,6 +301,50 @@ test("connectAllMcp skips disabled entries", async () => {
   assert.equal(registry.names().length, 0);
 });
 
+test("connectAllMcp rolls back earlier servers' tools when a later server fails", async () => {
+  // The registry arrives pre-populated (e.g. builtins) and the caller keeps
+  // using it after the failure, so the rollback must remove ONLY the tools the
+  // failed batch added — not the pre-existing ones.
+  const registry = new ToolRegistry();
+  registry.register(new RemoteTool("builtin.keep", "", { type: "object" }, "keep", {
+    async listTools() {
+      return { tools: [] };
+    },
+    async callTool() {
+      return { content: [] };
+    },
+  }));
+
+  // A working first server that registers ok.echo / ok.add, with close tracking.
+  const { handle } = mockHandle(() => ({ content: [{ type: "text", text: "ok" }] }), [ECHO, ADD]);
+  let firstClosed = false;
+  const firstClient = McpClient.fromHandle("ok", handle, async () => {
+    firstClosed = true;
+  });
+
+  const connect = async (cfg: McpClientConfig): Promise<McpClient> => {
+    if (cfg.prefix === "ok") return firstClient;
+    throw new McpError(`failed to connect to mcp server '${cfg.prefix}'`);
+  };
+
+  await assert.rejects(
+    () =>
+      connectAllMcp(
+        [mcpClientConfig("ok", "unused"), mcpClientConfig("bad", "unused")],
+        registry,
+        connect,
+      ),
+    /failed to connect to mcp server 'bad'/,
+  );
+
+  // The pre-existing builtin survives; the failed batch's tools are gone.
+  assert.deepEqual(registry.names().sort(), ["builtin.keep"]);
+  assert.equal(registry.has("ok.echo"), false);
+  assert.equal(registry.has("ok.add"), false);
+  // The already-opened client was closed during rollback.
+  assert.equal(firstClosed, true);
+});
+
 test("shutdown closes the underlying session", async () => {
   let closed = false;
   const handle: McpClientHandle = {
