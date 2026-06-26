@@ -217,7 +217,7 @@ export class PluginManager {
     // at the installed copy.
     const staged: Array<{ entry: SkillEntry; rel: string }> = [];
     for (const rel of manifest.skills) {
-      const abs = path.join(source, rel);
+      const abs = resolveContained(source, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       let raw: string;
       try {
@@ -376,7 +376,7 @@ export class PluginManager {
 
     // Skills: re-load each one and insert.
     for (const rel of manifest.skills) {
-      const abs = path.join(entry.install_dir, rel);
+      const abs = resolveContained(entry.install_dir, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       const raw = await readFile(skillMd, "utf8");
       const parsed = parseSkill(raw);
@@ -478,6 +478,22 @@ async function isDir(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Reject a manifest `skills` entry that escapes the plugin's own directory.
+ * `manifest.skills` is only type-validated as a string[]; an entry like
+ * `../../../etc/secret` (or an absolute path) would otherwise be read and its
+ * contents injected into the agent system prompt as a "skill". Returns the
+ * contained join, or throws if `rel` resolves outside `base`.
+ */
+function resolveContained(base: string, rel: string): string {
+  const abs = path.resolve(base, rel);
+  const within = path.relative(base, abs);
+  if (within === "" || within.startsWith("..") || path.isAbsolute(within)) {
+    throw PluginManagerError.skill(`skill path escapes plugin directory: ${rel}`);
+  }
+  return abs;
 }
 
 function isNotFound(e: unknown): boolean {

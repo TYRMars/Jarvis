@@ -112,6 +112,32 @@ test("install records skills and writes ledger", async (t) => {
   assert.equal(listed[0]?.source_kind, "path");
 });
 
+test("a skills entry that escapes the plugin dir is rejected (no out-of-root read)", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  // A secret living OUTSIDE the plugin source tree.
+  const secret = path.join(staging, "secret.md");
+  await writeFile(secret, "---\nname: pwned\ndescription: leaked\n---\nsensitive");
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{ "name": "demo", "version": "0.1.0", "description": "x", "skills": ["../secret.md"] }`,
+  );
+
+  const cat = SkillCatalog.empty();
+  const mgr = await PluginManager.open(path.join(staging, "plugins"), cat, new FakeMcp());
+  await assert.rejects(
+    () => mgr.installFromPath(pluginSrc),
+    (e: unknown) =>
+      e instanceof PluginManagerError && e.kind === "skill" && /escapes plugin directory/.test(e.message),
+  );
+  // Nothing leaked into the catalog and no plugin recorded.
+  assert.equal(cat.get("pwned"), undefined);
+  assert.equal((await mgr.list()).length, 0);
+});
+
 test("duplicate install is rejected", async (t) => {
   const staging = await makeTmp();
   t.after(() => rm(staging, { recursive: true, force: true }));

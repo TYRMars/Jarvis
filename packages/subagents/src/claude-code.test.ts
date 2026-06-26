@@ -161,6 +161,47 @@ process.exit(0);
   }
 });
 
+test("the task is passed after a `--` separator so leading-dash tasks can't inject flags", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-claude-args-"));
+  const argvOut = path.join(dir, "argv.json");
+  const fakeJs = path.join(dir, "fake-claude.mjs");
+  // Capture the argv the child saw, then emit a minimal successful transcript.
+  await writeFile(
+    fakeJs,
+    `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(argvOut)}, JSON.stringify(process.argv.slice(2)));
+process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok", is_error: false }) + "\\n");
+process.exit(0);
+`,
+    "utf8",
+  );
+  const fake = path.join(dir, "fake-claude.sh");
+  // Forward the appended flags to the node script ("$@") so we can inspect them.
+  await writeFile(
+    fake,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeJs)} "$@"\n`,
+    "utf8",
+  );
+  await chmod(fake, 0o755);
+
+  const sub = new ClaudeCodeSubAgent({ claude_bin: fake });
+  const malicious = "--add-dir /etc";
+  await withSubagent(
+    () => {},
+    () => sub.invoke({ task: malicious, workspace_root: dir }),
+  );
+
+  const { readFile } = await import("node:fs/promises");
+  const argv: string[] = JSON.parse(await readFile(argvOut, "utf8"));
+  const sep = argv.indexOf("--");
+  assert.ok(sep >= 0, "a `--` end-of-options separator must be present");
+  // The task is the final positional, sitting after `--`.
+  assert.equal(argv[argv.length - 1], malicious);
+  assert.ok(sep < argv.length - 1, "the task must come after the `--` separator");
+  // Nothing before `--` is the task itself — it can't be parsed as a flag.
+  assert.ok(!argv.slice(0, sep).includes(malicious));
+});
+
 test("requiresApproval is true (workspace-mutating)", () => {
   const sub = new ClaudeCodeSubAgent(defaultClaudeCodeConfig());
   assert.ok(sub.requiresApproval());

@@ -102,6 +102,25 @@ export function buildTools(config: CliConfig): ToolRegistry {
 }
 
 /**
+ * Truncate `s` so its UTF-8 encoding is at most `maxBytes`, never splitting a
+ * multi-byte character (a partial code point would decode to a replacement
+ * char and waste budget). Returns the longest whole-character prefix that fits.
+ */
+function truncateUtf8(s: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+  let bytes = 0;
+  let end = 0;
+  for (const ch of s) {
+    const chBytes = Buffer.byteLength(ch, "utf8");
+    if (bytes + chBytes > maxBytes) break;
+    bytes += chBytes;
+    end += ch.length;
+  }
+  return s.slice(0, end);
+}
+
+/**
  * Load the workspace's project-context files (AGENTS.md / CLAUDE.md / AGENT.md)
  * and concatenate them, each wrapped in `=== project context: <name> ===`,
  * capped at `maxBytes`. Returns undefined when none exist or context is off.
@@ -122,9 +141,17 @@ export async function loadProjectContext(
     if (body.trim() === "") continue;
     const remaining = maxBytes - total;
     if (remaining <= 0) break;
-    const truncated = body.length > remaining ? `${body.slice(0, remaining)}\n[...truncated]` : body;
+    // `maxBytes` is a UTF-8 *byte* budget, not a UTF-16 code-unit count, so a
+    // CJK-heavy context file (each char up to 3 bytes) cannot overshoot it.
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    let truncated: string;
+    if (bodyBytes > remaining) {
+      truncated = `${truncateUtf8(body, remaining)}\n[...truncated]`;
+    } else {
+      truncated = body;
+    }
     blocks.push(`=== project context: ${name} ===\n${truncated}`);
-    total += truncated.length;
+    total += Buffer.byteLength(truncated, "utf8");
   }
   return blocks.length > 0 ? blocks.join("\n\n") : undefined;
 }

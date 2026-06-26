@@ -373,14 +373,20 @@ export async function connectAllMcp(
   registry: ToolRegistry,
 ): Promise<McpClient[]> {
   const clients: McpClient[] = [];
+  const registered: string[] = [];
   try {
     for (const cfg of configs) {
       if (cfg.enabled === false) continue;
       const client = await McpClient.connect(cfg);
       clients.push(client);
-      await client.registerInto(registry, cfg);
+      registered.push(...(await client.registerInto(registry, cfg)));
     }
   } catch (e) {
+    // Roll back the partially-populated registry: a later server's failure must
+    // not leave earlier servers' tools registered against a now-closed
+    // transport (their `invoke()` would dispatch to a dead session). Unregister
+    // every tool inserted so far, then reap the opened clients.
+    for (const name of registered) registry.unregister(name);
     await Promise.all(clients.map((c) => c.close().catch(() => {})));
     throw e;
   }

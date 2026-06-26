@@ -95,6 +95,28 @@ test("rejects path escape", async () => {
   );
 });
 
+test("does not follow symlinks out of the sandbox", async () => {
+  // A symlink inside the workspace pointing outside it must not be traversed —
+  // otherwise this always-on, ungated read tool leaks host files. Both a
+  // symlinked directory and a symlinked file are exercised.
+  const { symlink } = await import("node:fs/promises");
+  const inside = await tempDir();
+  const outside = await tempDir();
+  await write(path.join(outside, "secret.rs"), "// TODO: secret outside the sandbox\n");
+  await write(path.join(inside, "real.rs"), "// TODO: legitimate in-sandbox marker\n");
+  // ./link-dir -> <outside>, and ./link-file -> <outside>/secret.rs
+  await symlink(outside, path.join(inside, "link-dir"));
+  await symlink(path.join(outside, "secret.rs"), path.join(inside, "link-file"));
+
+  const tool = new TriageScanTool({ root: inside });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  // Only the genuine in-sandbox marker is surfaced; nothing reached via a link.
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "real.rs");
+  assert.ok(!JSON.stringify(v).includes("secret outside the sandbox"));
+});
+
 test("does not require approval", () => {
   const tool: Tool = new TriageScanTool({ root: "." });
   assert.equal(tool.requiresApproval ?? false, false);
