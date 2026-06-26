@@ -395,6 +395,71 @@ test("install skips symlinks when copying the plugin tree (matches Rust copy_tre
   }
 });
 
+test("install rejects a skills entry that escapes the plugin directory", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  // A secret file living OUTSIDE the plugin source tree.
+  const secret = path.join(staging, "secret.txt");
+  await writeFile(secret, "---\nname: pwn\ndescription: stolen\n---\nsecret body");
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{ "name": "demo", "version": "0.1.0", "description": "x", "skills": ["../secret.txt"] }`,
+  );
+
+  const cat = SkillCatalog.empty();
+  const installRoot = path.join(staging, "plugins");
+  const mgr = await PluginManager.open(installRoot, cat, new FakeMcp());
+
+  await assert.rejects(
+    () => mgr.installFromPath(pluginSrc),
+    (e: unknown) =>
+      e instanceof PluginManagerError && e.kind === "skill" && /escapes the plugin directory/.test(e.message),
+  );
+  // Nothing leaked into the catalog and nothing was recorded.
+  assert.equal(cat.get("pwn"), undefined);
+  assert.equal((await mgr.list()).length, 0);
+});
+
+test("reattach rejects a ledger skills entry that escapes the install dir", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  const installRoot = path.join(staging, "plugins");
+  const installDir = path.join(installRoot, "demo");
+  await mkdir(installDir, { recursive: true });
+  // A manifest already on disk whose skills entry points outside the install dir.
+  await writeFile(
+    path.join(installDir, "plugin.json"),
+    `{ "name": "demo", "version": "0.1.0", "description": "x", "skills": ["../../secret"] }`,
+  );
+  await writeFile(path.join(staging, "secret"), "---\nname: pwn\ndescription: x\n---\nbody");
+  await writeFile(
+    path.join(installRoot, "installed.json"),
+    JSON.stringify([
+      {
+        name: "demo",
+        version: "0.1.0",
+        description: "x",
+        install_dir: installDir,
+        source_kind: "path",
+        source_value: path.join(staging, "src"),
+        installed_at: new Date().toISOString(),
+        skill_names: ["pwn"],
+        mcp_prefixes: [],
+      },
+    ]),
+  );
+
+  const cat = SkillCatalog.empty();
+  const mgr = await PluginManager.open(installRoot, cat, new FakeMcp());
+  // reattach swallows per-plugin failures; the escaping skill must not register.
+  await mgr.reattachInstalled();
+  assert.equal(cat.get("pwn"), undefined);
+});
+
 test("concurrent installs are serialised (no interleave)", async (t) => {
   const staging = await makeTmp();
   t.after(() => rm(staging, { recursive: true, force: true }));
