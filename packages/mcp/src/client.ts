@@ -366,22 +366,29 @@ function describe(e: unknown): string {
  * `registry`. Returns the still-connected clients so the caller keeps them
  * alive for the lifetime of the agent. Disabled entries (`enabled === false`)
  * are skipped silently. On any failure the already-opened clients are closed
- * before the error propagates.
+ * AND every tool registered by earlier servers in this call is unregistered, so
+ * the shared registry is never left holding `RemoteTool` adapters that point at
+ * a now-closed transport. (We unregister the names we inserted rather than
+ * trying to restore any same-named entry they displaced: leaving our own zombie
+ * adapter in a displaced slot would defeat the purpose.)
  */
 export async function connectAllMcp(
   configs: McpClientConfig[],
   registry: ToolRegistry,
+  connect: (cfg: McpClientConfig) => Promise<McpClient> = McpClient.connect,
 ): Promise<McpClient[]> {
   const clients: McpClient[] = [];
+  const registered: string[] = [];
   try {
     for (const cfg of configs) {
       if (cfg.enabled === false) continue;
-      const client = await McpClient.connect(cfg);
+      const client = await connect(cfg);
       clients.push(client);
-      await client.registerInto(registry, cfg);
+      registered.push(...(await client.registerInto(registry, cfg)));
     }
   } catch (e) {
     await Promise.all(clients.map((c) => c.close().catch(() => {})));
+    for (const name of registered) registry.unregister(name);
     throw e;
   }
   return clients;
