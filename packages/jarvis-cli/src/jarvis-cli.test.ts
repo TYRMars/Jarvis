@@ -487,3 +487,32 @@ test("loadProjectContext: returns undefined when no instruction files exist", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("loadProjectContext: caps on UTF-8 bytes, not UTF-16 units, for CJK content", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-cli-ctx-cjk-"));
+  try {
+    // 1000 CJK chars = 3000 UTF-8 bytes but only 1000 UTF-16 code units. The
+    // old .length/.slice path would have admitted all 3000 bytes under a
+    // 1500-byte cap; the byte-accurate path must keep the result within budget.
+    const body = "字".repeat(1000);
+    await writeFile(path.join(dir, "AGENTS.md"), body);
+
+    const maxBytes = 1500;
+    const ctx = await loadProjectContext(dir, maxBytes);
+    assert.ok(ctx);
+    assert.match(ctx, /\[\.\.\.truncated\]/, "long CJK body should be truncated");
+
+    // The injected CJK content must not exceed the configured byte budget.
+    const inner = ctx.replace(/^=== project context: AGENTS\.md ===\n/, "");
+    const cjkOnly = inner.replace("\n[...truncated]", "");
+    assert.ok(
+      Buffer.byteLength(cjkOnly, "utf8") <= maxBytes,
+      `truncated body ${Buffer.byteLength(cjkOnly, "utf8")} bytes must be <= ${maxBytes}`,
+    );
+    // And it must cut on a character boundary — no replacement char from a
+    // split multi-byte sequence.
+    assert.doesNotMatch(cjkOnly, /�/, "must not split a multi-byte character");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
