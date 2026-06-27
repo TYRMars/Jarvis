@@ -127,9 +127,27 @@ export async function resolveSystemPrompt(config: JarvisConfig): Promise<string>
 }
 
 /**
+ * Truncate `s` to at most `maxBytes` UTF-8 bytes without splitting a
+ * multi-byte character. The cap (`JARVIS_PROJECT_CONTEXT_BYTES`) is a *byte*
+ * budget, so accounting must use UTF-8 byte lengths — `String.length` /
+ * `.slice()` count UTF-16 code units and would overshoot ~3x for CJK-heavy
+ * context files.
+ */
+function truncateToBytes(s: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= maxBytes) return s;
+  // Back the cut point off any UTF-8 continuation byte (0b10xxxxxx) so we land
+  // on a character boundary rather than mid-sequence.
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return buf.toString("utf8", 0, end);
+}
+
+/**
  * Load the workspace's project-context files (AGENTS.md / CLAUDE.md / AGENT.md)
  * and concatenate them, each wrapped in `=== project context: <name> ===`,
- * capped at `maxBytes`. Returns undefined when none exist.
+ * capped at `maxBytes` UTF-8 bytes. Returns undefined when none exist.
  */
 export async function loadProjectContext(fsRoot: string, maxBytes: number): Promise<string | undefined> {
   const blocks: string[] = [];
@@ -144,9 +162,12 @@ export async function loadProjectContext(fsRoot: string, maxBytes: number): Prom
     if (body.trim() === "") continue;
     const remaining = maxBytes - total;
     if (remaining <= 0) break;
-    const truncated = body.length > remaining ? `${body.slice(0, remaining)}\n[...truncated]` : body;
+    const truncated =
+      Buffer.byteLength(body, "utf8") > remaining
+        ? `${truncateToBytes(body, remaining)}\n[...truncated]`
+        : body;
     blocks.push(`=== project context: ${name} ===\n${truncated}`);
-    total += truncated.length;
+    total += Buffer.byteLength(truncated, "utf8");
   }
   return blocks.length > 0 ? blocks.join("\n\n") : undefined;
 }

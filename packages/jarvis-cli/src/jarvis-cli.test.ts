@@ -487,3 +487,30 @@ test("loadProjectContext: returns undefined when no instruction files exist", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("loadProjectContext: caps on UTF-8 bytes (not UTF-16 units) and never splits a CJK char", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-cli-ctx-bytes-"));
+  try {
+    // 100 CJK chars = 300 UTF-8 bytes but only 100 UTF-16 code units. A
+    // length-based cap would let all 300 bytes through under a 200-byte budget.
+    const body = "中".repeat(100);
+    await writeFile(path.join(dir, "AGENTS.md"), body);
+
+    const maxBytes = 200;
+    const ctx = await loadProjectContext(dir, maxBytes);
+    assert.ok(ctx);
+    assert.match(ctx, /\[\.\.\.truncated\]/);
+
+    // The retained context body (sans header/marker) must respect the byte cap.
+    const header = "=== project context: AGENTS.md ===\n";
+    const content = ctx.slice(ctx.indexOf(header) + header.length).replace(/\n\[\.\.\.truncated\]$/, "");
+    assert.ok(
+      Buffer.byteLength(content, "utf8") <= maxBytes,
+      `content was ${Buffer.byteLength(content, "utf8")} bytes, cap ${maxBytes}`,
+    );
+    // No mojibake: every retained char is a whole "中" (no split sequence).
+    assert.match(content, /^中+$/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
