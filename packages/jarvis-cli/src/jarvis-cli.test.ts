@@ -487,3 +487,25 @@ test("loadProjectContext: returns undefined when no instruction files exist", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("loadProjectContext: caps on UTF-8 bytes (not UTF-16 units) for CJK content", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-cli-ctx-cjk-"));
+  try {
+    // 1000 CJK chars: 1000 UTF-16 code units but 3000 UTF-8 bytes. A code-unit
+    // cap would let the whole body through; a byte cap must truncate it.
+    const body = "界".repeat(1000);
+    await writeFile(path.join(dir, "AGENTS.md"), body);
+    const cap = 300;
+    const ctx = await loadProjectContext(dir, cap);
+    assert.ok(ctx);
+    assert.match(ctx, /\[\.\.\.truncated\]/);
+    // The injected CJK payload must respect the byte budget (header + marker are
+    // ASCII and small); assert the body slice itself stays at/under the cap.
+    const payload = ctx.replace(/^=== project context: AGENTS\.md ===\n/, "").replace(/\n\[\.\.\.truncated\]$/, "");
+    assert.ok(Buffer.byteLength(payload, "utf8") <= cap, `payload ${Buffer.byteLength(payload, "utf8")} > ${cap}`);
+    // No mojibake: every char must be a whole 界, never a split surrogate/byte.
+    assert.match(payload, /^界+$/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
