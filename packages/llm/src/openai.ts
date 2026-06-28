@@ -308,6 +308,15 @@ function parseToolCall(id: string, name: string, rawArgs: string): ToolCall {
 }
 
 function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]): FinishReason {
+  // A populated `tool_calls` array is authoritative: the agent loop only
+  // dispatches tools when finish_reason === "tool_calls", so we must map to it
+  // regardless of the reported reason. Genuine OpenAI sends "tool_calls" here,
+  // but OpenAI-compatible backends (Ollama / LM Studio / vLLM / Kimi) are known
+  // to emit `{ finish_reason: "stop", tool_calls: [...] }`; passing that "stop"
+  // through verbatim would silently drop the tool calls and dead-end the turn.
+  if (toolCalls.length > 0) {
+    return "tool_calls";
+  }
   switch (raw) {
     case "stop":
       return "stop";
@@ -317,7 +326,7 @@ function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]):
       return "length";
     case null:
     case undefined:
-      return toolCalls.length > 0 ? "tool_calls" : "stop";
+      return "stop";
     default:
       return { other: raw };
   }
