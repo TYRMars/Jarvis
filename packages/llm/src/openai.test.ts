@@ -222,6 +222,61 @@ test("complete: parses choices, restores tool name, maps usage", async () => {
   assert.equal(resp.usage?.cached_prompt_tokens, 4);
 });
 
+// Regression: OpenAI-compatible backends (Ollama / LM Studio / vLLM / Kimi) may
+// report finish_reason:"stop" alongside a populated tool_calls array. A populated
+// tool_calls array must be treated as authoritative so the agent loop dispatches
+// the tools instead of ending the turn. See issue #246.
+test("complete: explicit finish_reason 'stop' with tool_calls maps to tool_calls", async () => {
+  const responseBody = {
+    choices: [
+      {
+        message: {
+          content: null,
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "fs_read", arguments: '{"path":"a.txt"}' } }],
+        },
+        finish_reason: "stop",
+      },
+    ],
+  };
+  const provider = new OpenAiProvider({
+    apiKey: "sk-test",
+    fetchImpl: async () => new Response(JSON.stringify(responseBody), { status: 200 }),
+  });
+  const resp = await provider.complete(
+    req({
+      model: "kimi-k2-thinking",
+      messages: [{ role: "user", content: "read a.txt" }],
+      tools: [{ name: "fs.read", description: "d", parameters: { type: "object" } }],
+    }),
+  );
+  assert.equal(resp.finish_reason, "tool_calls"); // overridden from explicit "stop"
+  const m = resp.message as Extract<Message, { role: "assistant" }>;
+  assert.equal(m.tool_calls?.[0]?.name, "fs.read");
+});
+
+test("completeStream: finish 'stop' with tool_calls maps to tool_calls", async () => {
+  const sse =
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"fs_read","arguments":"{}"}}]}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+    "data: [DONE]\n\n";
+  const provider = new OpenAiProvider({
+    apiKey: "sk-test",
+    fetchImpl: async () => new Response(sse, { status: 200 }),
+  });
+  const stream = await provider.completeStream(
+    req({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ name: "fs.read", description: "d", parameters: { type: "object" } }],
+    }),
+  );
+  const events: LlmChunk[] = [];
+  for await (const c of stream) events.push(c);
+  const finish = events.find((e) => e.type === "finish") as Extract<LlmChunk, { type: "finish" }>;
+  assert.equal(finish.finish_reason, "tool_calls"); // overridden from explicit "stop"
+  assert.equal((finish.message as Extract<Message, { role: "assistant" }>).tool_calls?.[0]?.name, "fs.read");
+});
+
 test("complete: non-2xx surfaces status + body as ProviderError", async () => {
   const provider = new OpenAiProvider({
     apiKey: "sk-test",
