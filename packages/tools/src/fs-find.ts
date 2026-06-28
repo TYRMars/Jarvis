@@ -16,6 +16,7 @@ import ignore from "ignore";
 import type { Ignore } from "ignore";
 import type { JsonValue, Tool, ToolCategory } from "@jarvis/core";
 import { resolveUnder } from "./sandbox.ts";
+import { loadIgnoreFiles } from "./ignore-walk.ts";
 
 // The `ignore` package is CommonJS exporting a callable factory as its default.
 // Under NodeNext without `esModuleInterop` the default binding's type collapses
@@ -29,8 +30,6 @@ const DEFAULT_MAX_RESULTS = 500;
 // hidden files (dotfiles) and the `.git` directory are skipped, in addition
 // to `.gitignore` / `.ignore` rules discovered while walking.
 const STANDARD_IGNORE_PATTERNS = [".git/", ".*"];
-
-const IGNORE_FILES = [".gitignore", ".ignore"];
 
 /** Configuration for `fs.find`. */
 export interface FsFindConfig {
@@ -127,7 +126,7 @@ export class FsFindTool implements Tool {
     // files are layered on as we descend. The emitted paths are relative to
     // `root` (the display root), which may differ from `scopeRoot`.
     const ig = ignoreFactory().add(STANDARD_IGNORE_PATTERNS);
-    await this.#loadIgnoreFiles(ig, scopeRoot, "");
+    await loadIgnoreFiles(ig, scopeRoot, "");
 
     type Frame = { dir: string; relFromScope: string };
     const stack: Frame[] = [{ dir: scopeRoot, relFromScope: "" }];
@@ -156,7 +155,7 @@ export class FsFindTool implements Tool {
             continue;
           }
           const childDir = path.join(frame.dir, entry.name);
-          await this.#loadIgnoreFiles(ig, childDir, childRelScope);
+          await loadIgnoreFiles(ig, childDir, childRelScope);
           subdirs.push({ dir: childDir, relFromScope: childRelScope });
         } else if (entry.isFile()) {
           if (ig.ignores(childRelScope)) {
@@ -194,62 +193,4 @@ export class FsFindTool implements Tool {
     }
     return out;
   }
-
-  /**
-   * Add the contents of any `.gitignore` / `.ignore` files found in `dir` to
-   * `ig`, anchoring relative to `relPrefix` (the dir's path relative to the
-   * scope root) so nested ignore rules match correctly.
-   */
-  async #loadIgnoreFiles(ig: Ignore, dir: string, relPrefix: string): Promise<void> {
-    for (const fname of IGNORE_FILES) {
-      try {
-        const raw = await fs.readFile(path.join(dir, fname), "utf8");
-        const anchored = anchorPatterns(raw, relPrefix);
-        if (anchored.length > 0) ig.add(anchored);
-      } catch {
-        // No such ignore file in this directory.
-      }
-    }
-  }
-}
-
-/**
- * Anchor gitignore patterns from a file located at `relPrefix` so they match
- * paths relative to the scope root. Patterns without a leading `/` or interior
- * slash apply to any depth (gitignore semantics) so they're left as-is; the
- * `ignore` package will still match them against the deeper relative paths.
- * We keep this conservative: when there's a prefix, prepend it so a rooted or
- * pathful pattern stays scoped to the subtree it was declared in.
- */
-function anchorPatterns(raw: string, relPrefix: string): string[] {
-  const out: string[] = [];
-  for (const lineRaw of raw.split(/\r?\n/)) {
-    const line = lineRaw.replace(/\s+$/, "");
-    if (line === "" || line.startsWith("#")) continue;
-    if (!relPrefix) {
-      out.push(line);
-      continue;
-    }
-    let negate = false;
-    let body = line;
-    if (body.startsWith("!")) {
-      negate = true;
-      body = body.slice(1);
-    }
-    // A pattern that is rooted (leading `/`) or contains an interior slash is
-    // relative to the directory the ignore file lives in; anchor it under the
-    // prefix. A bare-name pattern applies at any depth, so leave it global.
-    const rooted = body.startsWith("/");
-    const hasInteriorSlash = body.replace(/\/$/, "").includes("/");
-    let anchored: string;
-    if (rooted) {
-      anchored = `${relPrefix}${body}`;
-    } else if (hasInteriorSlash) {
-      anchored = `${relPrefix}/${body}`;
-    } else {
-      anchored = body;
-    }
-    out.push(negate ? `!${anchored}` : anchored);
-  }
-  return out;
 }

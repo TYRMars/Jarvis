@@ -1,8 +1,9 @@
 // Regex-based code search. Ported from harness-tools/src/grep.rs.
 //
-// Walks the sandbox root respecting `.gitignore` (root file) and skipping
-// the `.git` directory and hidden dotfiles/dirs (mirroring the Rust `ignore`
-// crate's standard filters), reads each candidate file as UTF-8, and reports
+// Walks the sandbox root respecting `.gitignore` / `.ignore` files discovered
+// at every directory (not just the root) and skipping the `.git` directory and
+// hidden dotfiles/dirs (mirroring the Rust `ignore` crate's standard filters),
+// reads each candidate file as UTF-8, and reports
 // lines matching the supplied regex. Binary / non-UTF-8 files are skipped
 // silently — they would otherwise return garbage to the model.
 //
@@ -17,6 +18,7 @@ import type { Tool, ToolCategory } from "@jarvis/core";
 import type { JsonValue } from "@jarvis/core";
 
 import { resolveUnder } from "./sandbox.ts";
+import { loadIgnoreFiles } from "./ignore-walk.ts";
 
 // The `ignore` package is CommonJS exporting a callable factory as its default.
 // Under NodeNext with `verbatimModuleSyntax` the default binding's type
@@ -135,13 +137,18 @@ export class CodeGrepTool implements Tool {
       }
     }
 
-    // Root .gitignore matcher (relative paths from the sandbox root).
+    // Ignore matcher built from `.gitignore` / `.ignore` files discovered at
+    // every directory while walking (not just the root), so a nested ignore
+    // file excludes its subtree the same way `fs.find` does. All paths handed
+    // to it are relative to `this.#root` (the display root), so each ignore
+    // file is anchored at its directory's path relative to that root.
     const gitignore = ignore();
-    try {
-      const content = await readFile(path.join(this.#root, ".gitignore"), "utf8");
-      gitignore.add(content);
-    } catch {
-      // No .gitignore is fine.
+    // Load the root rules first, then the scope root's own rules (anchored at
+    // its display-relative prefix) when the search is scoped to a subdir.
+    await loadIgnoreFiles(gitignore, this.#root, "");
+    const scopeRel = path.relative(this.#root, scopeRoot).split(path.sep).join("/");
+    if (scopeRel !== "") {
+      await loadIgnoreFiles(gitignore, scopeRoot, scopeRel);
     }
 
     let out = "";
@@ -178,6 +185,9 @@ export class CodeGrepTool implements Tool {
         if (entry.isDirectory()) {
           // `ignore` wants a trailing slash to match directory rules.
           if (gitignore.ignores(posixRel + "/") || gitignore.ignores(posixRel)) continue;
+          // Layer in any `.gitignore` / `.ignore` declared in this directory
+          // before descending, anchored at its display-relative path.
+          await loadIgnoreFiles(gitignore, absPath, posixRel);
           stack.push(absPath);
           continue;
         }
