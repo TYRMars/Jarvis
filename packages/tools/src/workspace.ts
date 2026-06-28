@@ -250,12 +250,13 @@ async function gatherGit(root: string): Promise<GitInfo | null> {
   return { branch, head, dirty };
 }
 
-interface GitResult {
+export interface GitResult {
   ok: boolean;
   stdout: string;
 }
 
-function runGitCapture(root: string, args: string[]): Promise<GitResult> {
+// Exported for tests (stderr-drain regression, #248).
+export function runGitCapture(root: string, args: string[]): Promise<GitResult> {
   return new Promise((resolve) => {
     const child = spawn("git", ["-C", root, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -276,6 +277,11 @@ function runGitCapture(root: string, args: string[]): Promise<GitResult> {
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
     });
+    // Drain stderr so a stderr flood (>OS pipe buffer, ~64 KiB) can't block
+    // the child and force the SIGKILL path — which would misreport a real git
+    // repo as vcs:"none". We discard the bytes; only the exit code matters
+    // here. Matches the stderr drain in memory-tools.ts::runGit.
+    child.stderr?.on("data", () => {});
     child.on("error", () => finish({ ok: false, stdout: "" }));
     child.on("close", (code) => finish({ ok: code === 0, stdout }));
   });
