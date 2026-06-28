@@ -101,6 +101,28 @@ test("list filters by status", async () => {
   assert.equal((backlog["items"] as Array<{ title: string }>)[0].title, "still-open");
 });
 
+test("list clamps a negative limit to 1 instead of dropping the last row", async () => {
+  const { rs } = fixtures();
+  await seed(rs, "p", "one");
+  await seed(rs, "p", "two");
+  await seed(rs, "p", "three");
+  const tool = new RequirementListTool(rs);
+  // A negative limit must not reach slice(0, -N) (which would silently drop the
+  // last N rows); it is clamped to the schema minimum of 1.
+  const out = parse(await tool.invoke({ project_id: "p", limit: -1 }));
+  assert.equal(out["count"], 1);
+});
+
+test("list caps at limit when positive", async () => {
+  const { rs } = fixtures();
+  await seed(rs, "p", "one");
+  await seed(rs, "p", "two");
+  await seed(rs, "p", "three");
+  const tool = new RequirementListTool(rs);
+  const out = parse(await tool.invoke({ project_id: "p", limit: 2 }));
+  assert.equal(out["count"], 2);
+});
+
 test("list rejects blank project_id", async () => {
   const { rs } = fixtures();
   const tool = new RequirementListTool(rs);
