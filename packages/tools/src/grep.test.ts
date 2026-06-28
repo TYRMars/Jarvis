@@ -180,6 +180,32 @@ test("respects root .gitignore", async () => {
   assert.ok(!out.includes("artifact.txt"), `got: ${out}`);
 });
 
+test("respects a nested .gitignore (not just the root one)", async () => {
+  const dir = await tempdir();
+  // A subdirectory ignore file must exclude its own subtree — the bug was that
+  // only the root .gitignore was loaded, so nested-ignored files leaked through.
+  await write(path.join(dir, "src/.gitignore"), "secret.txt\n");
+  await write(path.join(dir, "src/secret.txt"), "needle\n");
+  await write(path.join(dir, "src/kept.txt"), "needle\n");
+  const tool = new CodeGrepTool({ root: dir });
+
+  const out = await tool.invoke({ pattern: "needle" });
+  assert.ok(out.includes("src/kept.txt"), `got: ${out}`);
+  assert.ok(!out.includes("secret.txt"), `got: ${out}`);
+});
+
+test("respects a nested .ignore file", async () => {
+  const dir = await tempdir();
+  await write(path.join(dir, "data/.ignore"), "blob.txt\n");
+  await write(path.join(dir, "data/blob.txt"), "needle\n");
+  await write(path.join(dir, "data/visible.txt"), "needle\n");
+  const tool = new CodeGrepTool({ root: dir });
+
+  const out = await tool.invoke({ pattern: "needle" });
+  assert.ok(out.includes("data/visible.txt"), `got: ${out}`);
+  assert.ok(!out.includes("blob.txt"), `got: ${out}`);
+});
+
 test("skips .git directory and dotfiles", async () => {
   const dir = await tempdir();
   await write(path.join(dir, ".git/config"), "needle\n");
