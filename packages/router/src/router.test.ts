@@ -271,14 +271,14 @@ test("same provider preserves + unstamps the chain handle, re-stamps the reply",
   const resp = await rp.complete({
     model: "x",
     messages: [],
-    previous_response_id: stampResponseId("openai", "resp_xyz"),
+    previous_response_id: stampResponseId("openai", "gpt-4o-mini", "resp_xyz"),
     chain_origin: 3,
   });
   // Provider saw the UNSTAMPED id + the origin.
   assert.equal(openai.lastPrev, "resp_xyz");
   assert.equal(openai.lastOrigin, 3);
   // Reply id is re-stamped for the next turn.
-  assert.equal(resp.response_id, stampResponseId("openai", "resp_xyz"));
+  assert.equal(resp.response_id, stampResponseId("openai", "gpt-4o-mini", "resp_xyz"));
 });
 
 test("cross provider clears the foreign chain handle", async () => {
@@ -292,12 +292,59 @@ test("cross provider clears the foreign chain handle", async () => {
   await rp.complete({
     model: "x",
     messages: [],
-    previous_response_id: stampResponseId("openai", "resp_xyz"),
+    previous_response_id: stampResponseId("openai", "gpt-4o-mini", "resp_xyz"),
     chain_origin: 3,
   });
   // The handle was minted by openai but this turn routes to anthropic → dropped.
   assert.equal(anthropic.lastPrev, null);
   assert.equal(anthropic.lastOrigin, null);
+});
+
+test("same provider, different model drops the chain handle (#245)", async () => {
+  // simple → openai/gpt-5-mini, complex → openai/gpt-5: same provider, two
+  // models. A handle minted by gpt-5-mini must NOT be forwarded to a gpt-5
+  // request (a Responses previous_response_id is bound to its model → 400).
+  const openai = new RecordingProvider("openai", "resp_new");
+  const map = new Map<string, LlmProvider>([["openai", openai]]);
+  const cfg = new RouterConfig(modelRef("openai", "gpt-4o-mini"))
+    .withTier("simple", modelRef("openai", "gpt-5-mini"))
+    .withTier("complex", modelRef("openai", "gpt-5"));
+  const rp = new RoutingProvider(new RecordingProvider("fb"), map, cfg, new FixedClassifier("complex"));
+
+  const resp = await rp.complete({
+    model: "x",
+    messages: [],
+    // Handle minted on a prior `simple` turn (gpt-5-mini).
+    previous_response_id: stampResponseId("openai", "gpt-5-mini", "resp_xyz"),
+    chain_origin: 3,
+  });
+  // Routed to gpt-5; the gpt-5-mini handle is dropped, not forwarded.
+  assert.equal(openai.lastModel, "gpt-5");
+  assert.equal(openai.lastPrev, null);
+  assert.equal(openai.lastOrigin, null);
+  // The fresh reply is stamped with the model that produced it.
+  assert.equal(resp.response_id, stampResponseId("openai", "gpt-5", "resp_new"));
+});
+
+test("same provider, same model preserves the chain handle across tiers (#245)", async () => {
+  // Both tiers map to the same (provider, model) → the handle is still valid
+  // and must be forwarded (unstamped) so chaining keeps working.
+  const openai = new RecordingProvider("openai", "resp_new");
+  const map = new Map<string, LlmProvider>([["openai", openai]]);
+  const cfg = new RouterConfig(modelRef("openai", "gpt-4o-mini"))
+    .withTier("simple", modelRef("openai", "gpt-5"))
+    .withTier("complex", modelRef("openai", "gpt-5"));
+  const rp = new RoutingProvider(new RecordingProvider("fb"), map, cfg, new FixedClassifier("complex"));
+
+  await rp.complete({
+    model: "x",
+    messages: [],
+    previous_response_id: stampResponseId("openai", "gpt-5", "resp_xyz"),
+    chain_origin: 3,
+  });
+  assert.equal(openai.lastModel, "gpt-5");
+  assert.equal(openai.lastPrev, "resp_xyz");
+  assert.equal(openai.lastOrigin, 3);
 });
 
 test("untagged chain handle is cleared conservatively", async () => {
@@ -326,13 +373,13 @@ test("complete does NOT mutate the caller's request object", async () => {
   const req: ChatRequest = {
     model: "original",
     messages: [],
-    previous_response_id: stampResponseId("openai", "resp_xyz"),
+    previous_response_id: stampResponseId("openai", "gpt-4o-mini", "resp_xyz"),
     chain_origin: 7,
   };
   await rp.complete(req);
   // Caller's object is untouched.
   assert.equal(req.model, "original");
-  assert.equal(req.previous_response_id, stampResponseId("openai", "resp_xyz"));
+  assert.equal(req.previous_response_id, stampResponseId("openai", "gpt-4o-mini", "resp_xyz"));
   assert.equal(req.chain_origin, 7);
 });
 
@@ -350,7 +397,7 @@ test("completeStream rewrites the model, delegates, and re-stamps the finish id"
   const stream = await rp.completeStream({
     model: "x",
     messages: [],
-    previous_response_id: stampResponseId("openai", "resp_xyz"),
+    previous_response_id: stampResponseId("openai", "gpt-4o-mini", "resp_xyz"),
     chain_origin: 3,
   });
   let last: LlmChunk | undefined;
@@ -360,6 +407,6 @@ test("completeStream rewrites the model, delegates, and re-stamps the finish id"
   assert.ok(last && last.type === "finish");
   // Cross-provider → chain cleared on the way in.
   assert.match(body({ message: last.message, finish_reason: "stop" }), /anthropic:claude-opus\|prev=none\|origin=none/);
-  // Finish id re-stamped with the routed provider.
-  assert.equal(last.response_id, stampResponseId("anthropic", "resp_xyz"));
+  // Finish id re-stamped with the routed provider and model.
+  assert.equal(last.response_id, stampResponseId("anthropic", "claude-opus", "resp_xyz"));
 });
