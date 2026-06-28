@@ -113,6 +113,23 @@ test("list rejects unknown status", async () => {
   await assert.rejects(() => tool.invoke({ project_id: "p", status: "zomg" }), /unknown status/);
 });
 
+test("list clamps a negative limit to >=1 instead of dropping rows", async () => {
+  // Regression for #249: a negative `limit` (schema `minimum: 1` not enforced
+  // at runtime) reached `slice(0, -1)` and silently dropped the last row.
+  const { rs } = fixtures();
+  await seed(rs, "p", "one");
+  await seed(rs, "p", "two");
+  await seed(rs, "p", "three");
+  const tool = new RequirementListTool(rs);
+  const out = parse(await tool.invoke({ project_id: "p", limit: -1 }));
+  // Clamped to 1 — never returns the full list minus one (would be 2 here).
+  assert.equal(out["count"], 1);
+  assert.equal((out["items"] as Array<{ title: string }>).length, 1);
+
+  const zero = parse(await tool.invoke({ project_id: "p", limit: 0 }));
+  assert.equal(zero["count"], 1);
+});
+
 // ---------- requirement.start ----------
 
 test("start flips backlog to in_progress and records activity", async () => {
