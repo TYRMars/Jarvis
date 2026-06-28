@@ -101,6 +101,18 @@ test("list filters by status", async () => {
   assert.equal((backlog["items"] as Array<{ title: string }>)[0].title, "still-open");
 });
 
+test("list clamps a negative limit to 1 instead of dropping the last row", async () => {
+  const { rs } = fixtures();
+  await seed(rs, "p", "alpha");
+  await seed(rs, "p", "beta");
+  await seed(rs, "p", "gamma");
+  const tool = new RequirementListTool(rs);
+  // Pre-fix `slice(0, -1)` silently dropped the last row and returned 2 of 3.
+  const out = parse(await tool.invoke({ project_id: "p", limit: -1 }));
+  assert.equal(out["count"], 1);
+  assert.equal((out["items"] as Array<{ title: string }>).length, 1);
+});
+
 test("list rejects blank project_id", async () => {
   const { rs } = fixtures();
   const tool = new RequirementListTool(rs);
