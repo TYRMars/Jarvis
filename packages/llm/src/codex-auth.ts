@@ -10,8 +10,9 @@
 //     refresh token + the path so `refresh()` can rotate the access token in
 //     place and write it back atomically.
 //
-// On a 401 from the Responses backend the provider locks this struct and calls
-// `refresh()`, which POSTs `grant_type=refresh_token` to
+// On a 401 from the Responses backend the provider calls `refresh()` — which
+// coalesces concurrent callers via a single-flight guard (see `refresh`) — to
+// POST `grant_type=refresh_token` to
 // `https://auth.openai.com/oauth/token` with the SAME `client_id` the Codex
 // CLI uses (we extend the same session, not impersonate a different client).
 // The endpoint is overridable for tests via the constructor config.
@@ -41,8 +42,9 @@ export interface StaticAuthInit {
 
 /**
  * Working credentials for the Codex Responses backend. Cheap to construct
- * (just a few strings); the provider keeps a single instance behind an
- * async mutex so refresh-on-401 is serialised.
+ * (just a few strings). Refresh-on-401 is serialised by a single-flight guard
+ * inside {@link CodexAuth.refresh} so concurrent 401s collapse into one network
+ * refresh rather than replaying the rotating refresh token.
  */
 export class CodexAuth {
   accessToken: string;
@@ -61,6 +63,15 @@ export class CodexAuth {
   readonly #refreshUrl: string;
   /** Injected `fetch` (tests / proxies). Defaults to global fetch. */
   readonly #fetch: typeof fetch;
+  /**
+   * Single-flight guard for {@link refresh}. While a refresh is in flight this
+   * holds its promise; concurrent callers await it instead of firing their own
+   * `grant_type=refresh_token` POST. Without this, two racers that both 401 on
+   * the same expired token would both replay the SAME rotating refresh token —
+   * under refresh-token rotation the second POST is a replay that invalidates
+   * the freshly-issued session. Cleared once the refresh settles.
+   */
+  #inflightRefresh: Promise<void> | null = null;
 
   private constructor(init: {
     accessToken: string;
@@ -154,8 +165,28 @@ export class CodexAuth {
    * the access token. On success, in-memory state and (if loaded from disk)
    * the on-disk auth.json are both updated. Failures throw with the upstream
    * status / body text.
+   *
+   * Single-flight: concurrent calls coalesce onto one network refresh so a
+   * rotating refresh token is never replayed by a racing caller (see
+   * {@link #inflightRefresh}). Once the in-flight refresh settles the guard is
+   * cleared, so a later genuine 401 can refresh again.
    */
   async refresh(): Promise<void> {
+    const inflight = this.#inflightRefresh;
+    if (inflight !== null) {
+      return inflight;
+    }
+    const run = this.#doRefresh();
+    this.#inflightRefresh = run;
+    try {
+      await run;
+    } finally {
+      this.#inflightRefresh = null;
+    }
+  }
+
+  /** The actual refresh round-trip; serialised by {@link refresh}. */
+  async #doRefresh(): Promise<void> {
     const refreshToken = this.refreshToken;
     if (refreshToken === null) {
       throw new ProviderError("no refresh_token available; static-token mode cannot refresh");

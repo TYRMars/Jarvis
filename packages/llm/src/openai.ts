@@ -308,6 +308,16 @@ function parseToolCall(id: string, name: string, rawArgs: string): ToolCall {
 }
 
 function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]): FinishReason {
+  // A non-empty tool_calls array is authoritative: OpenAI-compatible backends
+  // (Ollama / LM Studio / vLLM / Kimi) are known to report finish_reason "stop"
+  // alongside populated tool_calls. The agent loop only dispatches tools when
+  // the reason is "tool_calls", so an explicit "stop" here would silently drop
+  // the calls and end the turn. Treat "stop" (and missing) as "tool_calls" when
+  // tool calls are present. "length" is left as-is — it signals truncation, so
+  // the tool-call arguments may be incomplete and must not be dispatched.
+  if (toolCalls.length > 0 && (raw === "stop" || raw === null || raw === undefined)) {
+    return "tool_calls";
+  }
   switch (raw) {
     case "stop":
       return "stop";
@@ -317,7 +327,7 @@ function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]):
       return "length";
     case null:
     case undefined:
-      return toolCalls.length > 0 ? "tool_calls" : "stop";
+      return "stop";
     default:
       return { other: raw };
   }

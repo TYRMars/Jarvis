@@ -129,6 +129,40 @@ test("refresh: posts grant_type=refresh_token + client_id; updates token in memo
   });
 });
 
+test("refresh: concurrent callers coalesce into a single network round-trip (single-flight)", async () => {
+  await withTempDir(async (dir) => {
+    await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));
+
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      // Hold the round-trip open so both racers are in flight before either
+      // resolves — replays the rotating refresh token if not coalesced.
+      await gate;
+      return new Response(JSON.stringify({ access_token: "new-at", refresh_token: "rt-2" }), { status: 200 });
+    };
+
+    const auth = await CodexAuth.loadFromCodexHome(dir, { refreshUrl: "https://stub.test/oauth/token", fetchImpl });
+
+    const a = auth.refresh();
+    const b = auth.refresh();
+    release();
+    await Promise.all([a, b]);
+
+    assert.equal(calls, 1, "two concurrent refresh() calls must POST exactly once");
+    assert.equal(auth.accessToken, "new-at");
+    assert.equal(auth.refreshToken, "rt-2");
+
+    // After settling, the guard is cleared so a genuine later 401 can refresh again.
+    await auth.refresh();
+    assert.equal(calls, 2);
+  });
+});
+
 test("refresh: keeps existing refresh_token when the response omits a new one", async () => {
   await withTempDir(async (dir) => {
     await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));
