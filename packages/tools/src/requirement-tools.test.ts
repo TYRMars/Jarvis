@@ -113,6 +113,20 @@ test("list rejects unknown status", async () => {
   await assert.rejects(() => tool.invoke({ project_id: "p", status: "zomg" }), /unknown status/);
 });
 
+test("list rejects limit below the schema minimum (no silent slice(0,-1))", async () => {
+  const { rs } = fixtures();
+  await seed(rs, "p", "alpha");
+  await seed(rs, "p", "beta");
+  const tool = new RequirementListTool(rs);
+  // A negative limit must be rejected, not reach `slice(0, -1)` which would
+  // silently drop the last row and return a truncated list.
+  await assert.rejects(() => tool.invoke({ project_id: "p", limit: -1 }), />= 1/);
+  await assert.rejects(() => tool.invoke({ project_id: "p", limit: 0 }), />= 1/);
+  // A valid limit still works and a non-numeric limit falls back to the default.
+  const ok = parse(await tool.invoke({ project_id: "p", limit: 1 }));
+  assert.equal(ok["count"], 1);
+});
+
 // ---------- requirement.start ----------
 
 test("start flips backlog to in_progress and records activity", async () => {

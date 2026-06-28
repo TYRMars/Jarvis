@@ -184,7 +184,15 @@ export class RequirementListTool implements Tool {
     const limitRaw = obj["limit"];
     let limit = DEFAULT_LIST_LIMIT;
     if (typeof limitRaw === "number" && Number.isFinite(limitRaw)) {
-      limit = Math.min(Math.trunc(limitRaw), MAX_LIST_LIMIT);
+      const truncated = Math.trunc(limitRaw);
+      // Mirror the JSON-schema `minimum: 1` at runtime. Without this guard a
+      // negative/zero limit flows into `items.slice(0, limit)` — `slice(0, -1)`
+      // silently drops the last row, handing the model a truncated list with
+      // no cap signal.
+      if (truncated < 1) {
+        throw new Error("requirement.list: `limit` must be >= 1");
+      }
+      limit = Math.min(truncated, MAX_LIST_LIMIT);
     }
     let items = await this.#store.list(projectId);
     if (statusFilter !== undefined) {
