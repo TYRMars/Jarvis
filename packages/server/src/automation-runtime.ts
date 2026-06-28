@@ -208,9 +208,13 @@ export async function automationTick(
   let spawned = 0;
   for (const task of tasks) {
     // Reap tasks pinned `running` by a lost worker before evaluating due-ness —
-    // without this they never reschedule again.
+    // without this they never reschedule again. A run still alive in *this*
+    // process holds a claim, so skip reaping it however long it legitimately
+    // runs (mirrors the workflow reaper's `gate.isActive(run.id)` guard);
+    // otherwise a healthy long run is flipped to `failed` and rescheduled
+    // while still executing.
     let current = task;
-    if (isStaleRunning(current, now, staleThresholdMs)) {
+    if (isStaleRunning(current, now, staleThresholdMs) && !claims.isClaimed(current.id)) {
       const reclaimed = structuredClone(current);
       markStaleReclaimed(reclaimed, now);
       try {
