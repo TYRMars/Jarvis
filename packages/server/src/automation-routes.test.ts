@@ -45,6 +45,17 @@ class StubProvider implements LlmProvider {
   }
 }
 
+/** A provider whose `complete` never resolves — models a hung provider call. */
+class HangingProvider implements LlmProvider {
+  complete(_req: ChatRequest): Promise<ChatResponse> {
+    return new Promise<ChatResponse>(() => {});
+  }
+  async *completeStream(_req: ChatRequest): AsyncGenerator<LlmChunk> {
+    await new Promise<void>(() => {});
+    yield { type: "finish", message: assistantText("unreachable"), finish_reason: "stop" };
+  }
+}
+
 function makeAgent(provider: LlmProvider): Agent {
   return new Agent(provider, defaultAgentConfig("stub-model"));
 }
@@ -424,6 +435,27 @@ test("automationTick spawns a run for a due task, marks it succeeded", async () 
   const final = await store.get(due.id);
   assert.equal(final?.last_run_status, "succeeded");
   assert.equal(final?.run_count, 1);
+});
+
+test("automationTick bounds a hung run by runTimeoutMs and marks it failed", async () => {
+  const store = new MemoryAutomationStore();
+  const provider = new HangingProvider();
+  const claims = new AutomationClaims();
+  const deps = makeDeps(store, provider, claims);
+
+  const due = await triggerSeed(store, scheduleInterval(3600), "2000-01-01T00:00:00.000Z");
+
+  // Without a wall-clock bound this run would never settle; the short timeout
+  // must surface a clean failure instead of pinning the slot forever.
+  const spawned = await automationTick(
+    deps,
+    { runTimeoutMs: 25 },
+    { awaitRuns: true, now: "2100-01-01T00:00:00.000Z" },
+  );
+  assert.equal(spawned, 1);
+  const final = await store.get(due.id);
+  assert.equal(final?.last_run_status, "failed");
+  assert.match(final?.last_error ?? "", /wall-clock budget/);
 });
 
 test("automationTick skips a paused task and one with no due next_run_at", async () => {

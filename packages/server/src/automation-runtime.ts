@@ -29,6 +29,7 @@ import {
   type Conversation,
 } from "@jarvis/core";
 import { defaultMetadata, type ConversationMetadata, type ConversationStore } from "@jarvis/store";
+import { TimeoutError, withTimeout } from "./auto-mode.ts";
 import {
   isDueAt,
   isStaleRunning,
@@ -278,7 +279,8 @@ export async function runAutomation(
       return;
     }
 
-    const result = await executeTask(deps, working);
+    const runTimeoutMs = Math.max(1, config.runTimeoutMs ?? DEFAULT_AUTOMATION_RUN_TIMEOUT_MS);
+    const result = await executeTask(deps, working, runTimeoutMs);
 
     // Reload so a mutation the run itself made to the row isn't clobbered.
     let latest: AutomationTask | undefined;
@@ -316,6 +318,7 @@ export async function runAutomation(
 async function executeTask(
   deps: AutomationDeps,
   task: AutomationTask,
+  runTimeoutMs: number,
 ): Promise<{ error?: string }> {
   let agent: Agent;
   try {
@@ -333,8 +336,16 @@ async function executeTask(
   conversation.messages.push(userMessage(task.prompt));
 
   try {
-    await agent.run(conversation);
+    // Bound the run by the documented per-run wall-clock budget, matching the
+    // sibling runtimes (auto-mode `withTimeout`, workflow `runWithTimeout`).
+    // Without this a hung provider call or runaway tool loop runs unbounded and
+    // pins an agent slot — the reaper can flip the row to `failed` at the
+    // staleness threshold but cannot actually stop the run.
+    await withTimeout(agent.run(conversation), runTimeoutMs);
   } catch (e) {
+    if (e instanceof TimeoutError) {
+      return { error: `automation run exceeded ${runTimeoutMs}ms wall-clock budget` };
+    }
     return { error: errorText(e) };
   }
 
