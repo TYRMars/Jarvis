@@ -443,6 +443,39 @@ test("automationTick skips a paused task and one with no due next_run_at", async
   assert.equal(provider.runs, 0);
 });
 
+test("automationTick does not reap a stale-running task whose run is still claimed in-process", async () => {
+  const store = new MemoryAutomationStore();
+  const provider = new StubProvider();
+  const claims = new AutomationClaims();
+  const deps = makeDeps(store, provider, claims);
+
+  // A `running` task whose run started long ago → isStaleRunning is true.
+  const seeded = await triggerSeed(store, scheduleInterval(3600), "2100-01-01T00:00:00.000Z");
+  seeded.last_run_status = "running";
+  seeded.last_run_at = "2000-01-01T00:00:00.000Z";
+  await store.upsert(seeded);
+
+  // The run is still alive in this process (claim held) → must NOT be reaped.
+  const release = claims.tryClaim(seeded.id);
+  assert.ok(release);
+  const spawned = await automationTick(deps, {}, { awaitRuns: true, now: "2100-01-01T00:00:00.000Z" });
+  assert.equal(spawned, 0, "the in-flight claim blocks a re-spawn");
+  assert.equal(
+    (await store.get(seeded.id))?.last_run_status,
+    "running",
+    "a live claimed run is left running, not flipped to failed",
+  );
+
+  // Once the claim is released, a genuinely-lost run is reclaimed as before.
+  release!();
+  await automationTick(deps, {}, { awaitRuns: true, now: "2100-01-01T00:00:00.000Z" });
+  assert.equal(
+    (await store.get(seeded.id))?.last_run_status,
+    "failed",
+    "an unclaimed stale run is still reaped",
+  );
+});
+
 test("triggerAutomationNow returns conflict when an isolated claim is held", async () => {
   const store = new MemoryAutomationStore();
   const provider = new StubProvider();
