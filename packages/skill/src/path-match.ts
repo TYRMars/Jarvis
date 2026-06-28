@@ -29,7 +29,15 @@ export function globMatches(pattern: string, path: string): boolean {
   const enc = new TextEncoder();
   const pat = enc.encode(pattern);
   const txt = enc.encode(normalised);
-  return matchesAt(pat, 0, txt, 0);
+  // Memoize match results keyed on the (pattern-pos, text-pos) the recursion
+  // re-enters at. Without this, a pattern with several `**`/`*` tokens against a
+  // non-matching tail re-explores the same states exponentially — catastrophic
+  // backtracking that blocks the single-threaded event loop (a DoS: skill
+  // `paths` come from semi-trusted SKILL.md frontmatter). With it, the number of
+  // distinct states is bounded by pattern-length × path-length, so matching is
+  // linear in that product.
+  const memo = new Map<number, boolean>();
+  return matchesAt(pat, 0, txt, 0, memo);
 }
 
 /**
@@ -44,7 +52,30 @@ const STAR = 0x2a; // *
 const SLASH = 0x2f; // /
 const QUESTION = 0x3f; // ?
 
-function matchesAt(pat: Uint8Array, piStart: number, txt: Uint8Array, tiStart: number): boolean {
+function matchesAt(
+  pat: Uint8Array,
+  piStart: number,
+  txt: Uint8Array,
+  tiStart: number,
+  memo: Map<number, boolean>,
+): boolean {
+  // Each recursive re-entry is memoized on its (piStart, tiStart) state so the
+  // `**`/`*` retry loops below can't re-explore a state they've already settled.
+  const key = piStart * (txt.length + 1) + tiStart;
+  const cached = memo.get(key);
+  if (cached !== undefined) return cached;
+  const result = matchesFrom(pat, piStart, txt, tiStart, memo);
+  memo.set(key, result);
+  return result;
+}
+
+function matchesFrom(
+  pat: Uint8Array,
+  piStart: number,
+  txt: Uint8Array,
+  tiStart: number,
+  memo: Map<number, boolean>,
+): boolean {
   let pi = piStart;
   let ti = tiStart;
   while (pi < pat.length) {
@@ -56,7 +87,7 @@ function matchesAt(pat: Uint8Array, piStart: number, txt: Uint8Array, tiStart: n
       if (pat[next] === SLASH) next += 1;
       // Try matching the remainder at every position from current onward.
       for (;;) {
-        if (matchesAt(pat, next, txt, ti)) return true;
+        if (matchesAt(pat, next, txt, ti, memo)) return true;
         if (ti >= txt.length) return false;
         ti += 1;
       }
@@ -65,7 +96,7 @@ function matchesAt(pat: Uint8Array, piStart: number, txt: Uint8Array, tiStart: n
       // `*` — match any run of non-`/` within one segment.
       const next = pi + 1;
       for (;;) {
-        if (matchesAt(pat, next, txt, ti)) return true;
+        if (matchesAt(pat, next, txt, ti, memo)) return true;
         if (ti >= txt.length || txt[ti] === SLASH) return false;
         ti += 1;
       }

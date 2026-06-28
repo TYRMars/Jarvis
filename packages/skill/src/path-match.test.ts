@@ -58,3 +58,21 @@ test("anyGlobMatches short-circuits", () => {
 test("anyGlobMatches over an empty pattern list is false", () => {
   assert.ok(!anyGlobMatches([], "anything"));
 });
+
+test("pathological `**` pattern does not catastrophically backtrack (DoS guard)", () => {
+  // Many `**` tokens against a long tail that never matches the trailing literal
+  // is the classic exponential-backtracking shape. With memoization it resolves
+  // in well under a second; without it this hangs for minutes (#242).
+  const pattern = "a" + "**".repeat(20) + "b";
+  const path = "a" + "x".repeat(60); // never ends in `b`
+  const start = process.hrtime.bigint();
+  assert.ok(!globMatches(pattern, path));
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(elapsedMs < 500, `match took ${elapsedMs.toFixed(1)}ms — expected near-instant`);
+});
+
+test("memoization preserves correctness for many-`**` matching cases", () => {
+  // The same shape, but the tail does match — must still return true.
+  assert.ok(globMatches("a" + "**".repeat(20) + "b", "a" + "x/".repeat(20) + "b"));
+  assert.ok(globMatches("**/**/**/*.ts", "a/b/c/d/e.ts"));
+});
