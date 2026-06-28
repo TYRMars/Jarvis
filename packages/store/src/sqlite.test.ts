@@ -8,6 +8,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import Database from "better-sqlite3";
+
 import { newConversation, userMessage, type Conversation } from "@jarvis/core";
 import { newProject, newRequirement } from "@jarvis/project";
 import { newWorkflowDefinition, newWorkflowRun } from "@jarvis/workflow";
@@ -96,6 +98,30 @@ test("sqlite::memory: internal __memory__ id with ':' round-trips", async () => 
   await store.save(id, convo("summary"));
   assert.equal((await store.load(id))?.messages.length, 1);
   assert.ok((await store.list(10)).some((r) => r.id === id));
+});
+
+test("sqlite: legacy bare-array conversation blob still loads (messages-only, #240)", async () => {
+  // Rows written before the chaining anchor was persisted stored the blob as a
+  // bare `Message[]`. decodeConvBlob must tolerate that shape.
+  await withTempDir(async (dir) => {
+    const url = dbUrl(dir);
+    const raw = new Database(resolveSqlitePath(url));
+    raw.exec(`CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY, blob TEXT NOT NULL, project_id TEXT,
+      lifecycle TEXT NOT NULL DEFAULT 'active', message_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL);`);
+    const now = new Date().toISOString();
+    raw
+      .prepare("INSERT INTO conversations (id, blob, lifecycle, message_count, created_at, updated_at) VALUES (?, ?, 'active', 1, ?, ?)")
+      .run("legacy", JSON.stringify(convo("old").messages), now, now);
+    raw.close();
+
+    const store = SqliteConversationStore.open(url);
+    const loaded = await store.load("legacy");
+    assert.equal(loaded?.messages.length, 1);
+    assert.equal(loaded?.last_response_id ?? null, null);
+    assert.equal(loaded?.last_response_chain_origin ?? null, null);
+  });
 });
 
 test("sqlite::memory: every store in connectAll shares ONE database", async () => {

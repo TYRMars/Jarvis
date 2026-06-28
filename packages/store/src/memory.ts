@@ -12,6 +12,9 @@ interface Row {
   created_at: string;
   updated_at: string;
   messages: Conversation["messages"];
+  // Responses-API chaining anchor (see json-file.ts).
+  last_response_id?: string | null;
+  last_response_chain_origin?: number | null;
   metadata: ConversationMetadata;
 }
 
@@ -25,6 +28,8 @@ export class MemoryConversationStore extends ConversationStoreBase {
       created_at: createdAt,
       updated_at: now,
       messages: [...conversation.messages],
+      last_response_id: conversation.last_response_id ?? null,
+      last_response_chain_origin: conversation.last_response_chain_origin ?? null,
       metadata: { project_id: metadata.project_id ?? null, lifecycle: metadata.lifecycle },
     });
     return Promise.resolve();
@@ -33,7 +38,10 @@ export class MemoryConversationStore extends ConversationStoreBase {
   loadEnvelope(id: string): Promise<[Conversation, ConversationMetadata] | undefined> {
     const row = this.#rows.get(id);
     if (!row) return Promise.resolve(undefined);
-    return Promise.resolve([{ messages: [...row.messages] }, { ...row.metadata }]);
+    const conv: Conversation = { messages: [...row.messages] };
+    if (row.last_response_id != null) conv.last_response_id = row.last_response_id;
+    if (row.last_response_chain_origin != null) conv.last_response_chain_origin = row.last_response_chain_origin;
+    return Promise.resolve([conv, { ...row.metadata }]);
   }
 
   list(limit: number): Promise<ConversationRecord[]> {

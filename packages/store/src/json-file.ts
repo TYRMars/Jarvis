@@ -21,6 +21,11 @@ interface OnDiskConversation {
   created_at: string;
   updated_at: string;
   messages: Message[];
+  // Responses-API chaining anchor. Persisted so chaining survives a
+  // reload/restart (otherwise buildRequest falls back to re-sending the full
+  // history). Omitted when unset (non-Responses conversations).
+  last_response_id?: string;
+  last_response_chain_origin?: number;
   project_id?: string;
   lifecycle?: "archived" | "abandoned"; // omitted when default ("active")
 }
@@ -58,6 +63,10 @@ export class JsonFileConversationStore extends ConversationStoreBase {
       updated_at: now,
       messages: conversation.messages,
     };
+    if (conversation.last_response_id != null) stored.last_response_id = conversation.last_response_id;
+    if (conversation.last_response_chain_origin != null) {
+      stored.last_response_chain_origin = conversation.last_response_chain_origin;
+    }
     if (metadata.project_id != null) stored.project_id = metadata.project_id;
     if (metadata.lifecycle !== "active") stored.lifecycle = metadata.lifecycle;
 
@@ -68,6 +77,10 @@ export class JsonFileConversationStore extends ConversationStoreBase {
     const stored = await readJsonFile<OnDiskConversation>(this.#pathFor(id));
     if (!stored) return undefined;
     const conv: Conversation = { messages: stored.messages };
+    if (stored.last_response_id != null) conv.last_response_id = stored.last_response_id;
+    if (stored.last_response_chain_origin != null) {
+      conv.last_response_chain_origin = stored.last_response_chain_origin;
+    }
     const meta: ConversationMetadata = {
       project_id: stored.project_id ?? null,
       lifecycle: stored.lifecycle ?? "active",

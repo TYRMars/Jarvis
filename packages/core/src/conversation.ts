@@ -1,7 +1,8 @@
 // Mutable conversation state. Ported from harness-core/src/conversation.rs.
 // The agent appends to `messages` on every turn. `last_response_id` /
-// `last_response_chain_origin` carry Responses-API chaining state (unused
-// until the Responses provider lands; round-trips harmlessly otherwise).
+// `last_response_chain_origin` carry Responses-API chaining state and are
+// persisted by every ConversationStore backend, so the chaining anchor
+// survives a reload/restart.
 import { systemMessage, type Message } from "./message.ts";
 
 export interface Conversation {

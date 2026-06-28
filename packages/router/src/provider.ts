@@ -14,31 +14,40 @@ import type { Classifier } from "./classify.ts";
 import type { RouterConfig, Tier } from "./tier.ts";
 
 /**
- * Separator that stamps a routed `response_id` with the name of the provider
+ * Separator that stamps a routed `response_id` with the provider AND model
  * that minted it. ASCII unit separator (U+001F) — it never appears in a real
- * provider name or a provider-issued id, so the split back into
- * `(provider, id)` is unambiguous and round-trips losslessly.
+ * provider name, model name, or a provider-issued id, so the split back into
+ * `(provider, model, id)` is unambiguous and round-trips losslessly.
+ *
+ * The model is part of the stamp because an OpenAI Responses
+ * `previous_response_id` is bound to the model that produced it: forwarding a
+ * handle minted by model A into a request for model B (same provider, different
+ * tier) is rejected with a 400. So both dimensions must match before we chain.
  */
 const CHAIN_PROVIDER_SEP = "";
 
 /**
- * Prefix a provider-issued `response_id` with the routed provider name so the
- * *next* turn can tell which backend's server-side state the id refers to.
- * Inverse of `unstampResponseId`.
+ * Prefix a provider-issued `response_id` with the routed provider name AND
+ * model so the *next* turn can tell both which backend's server-side state the
+ * id refers to and which model it is bound to. Inverse of `unstampResponseId`.
  */
-export function stampResponseId(provider: string, id: string): string {
-  return `${provider}${CHAIN_PROVIDER_SEP}${id}`;
+export function stampResponseId(provider: string, model: string, id: string): string {
+  return `${provider}${CHAIN_PROVIDER_SEP}${model}${CHAIN_PROVIDER_SEP}${id}`;
 }
 
 /**
- * Split a stamped id back into `[provider, originalId]`. Returns `undefined`
- * for an unstamped id (e.g. one minted before routing was enabled), which the
- * caller treats as "not safe to chain". Splits on the FIRST separator only.
+ * Split a stamped id back into `[provider, model, originalId]`. Returns
+ * `undefined` for an unstamped id (e.g. one minted before routing was enabled,
+ * or before the model dimension was added to the stamp), which the caller
+ * treats as "not safe to chain". Splits on the FIRST two separators only, so a
+ * separator inside the id (it shouldn't occur) is preserved.
  */
-export function unstampResponseId(stamped: string): [string, string] | undefined {
-  const idx = stamped.indexOf(CHAIN_PROVIDER_SEP);
-  if (idx === -1) return undefined;
-  return [stamped.slice(0, idx), stamped.slice(idx + 1)];
+export function unstampResponseId(stamped: string): [string, string, string] | undefined {
+  const first = stamped.indexOf(CHAIN_PROVIDER_SEP);
+  if (first === -1) return undefined;
+  const second = stamped.indexOf(CHAIN_PROVIDER_SEP, first + 1);
+  if (second === -1) return undefined;
+  return [stamped.slice(0, first), stamped.slice(first + 1, second), stamped.slice(second + 1)];
 }
 
 interface Resolved {
@@ -110,12 +119,14 @@ export class RoutingProvider implements LlmProvider {
 
   /**
    * Drop Responses-API chain handles when they were minted by a *different*
-   * provider than the one this call routes to. The router re-classifies every
-   * request, so two turns of one conversation can land on different backends;
-   * `previous_response_id` / `chain_origin` are opaque, provider-private
-   * server-state handles that are invalid when replayed against a backend that
-   * never issued them. When the provider matches, strip our stamp and forward
-   * the original id so chaining keeps working.
+   * provider OR a *different* model than the one this call routes to. The
+   * router re-classifies every request, so two turns of one conversation can
+   * land on different backends — or on the same backend but a different tier's
+   * model; `previous_response_id` / `chain_origin` are opaque, provider-private
+   * server-state handles bound to the exact `(provider, model)` that issued
+   * them, and are rejected when replayed against any other. When BOTH the
+   * provider and the model match, strip our stamp and forward the original id
+   * so chaining keeps working.
    *
    * Returns a NEW request object (never mutates the caller's) with the chain
    * fields reconciled and the model rewritten.
@@ -124,8 +135,8 @@ export class RoutingProvider implements LlmProvider {
     const out: ChatRequest = { ...req, model };
     const stamped = req.previous_response_id ?? undefined;
     const parsed = stamped !== undefined ? unstampResponseId(stamped) : undefined;
-    if (parsed !== undefined && parsed[0] === resolved) {
-      out.previous_response_id = parsed[1];
+    if (parsed !== undefined && parsed[0] === resolved && parsed[1] === model) {
+      out.previous_response_id = parsed[2];
     } else {
       out.previous_response_id = null;
       out.chain_origin = null;
@@ -137,9 +148,9 @@ export class RoutingProvider implements LlmProvider {
     const { provider, name, model } = await this.#decide(req);
     const routed = this.#rewrite(req, name, model);
     const resp = await provider.complete(routed);
-    // Stamp the id we hand back so the next turn can detect a switch.
+    // Stamp the id we hand back so the next turn can detect a provider/model switch.
     if (resp.response_id != null) {
-      return { ...resp, response_id: stampResponseId(name, resp.response_id) };
+      return { ...resp, response_id: stampResponseId(name, model, resp.response_id) };
     }
     return resp;
   }
@@ -149,22 +160,23 @@ export class RoutingProvider implements LlmProvider {
     const routed = this.#rewrite(req, name, model);
     const inner = await provider.completeStream(routed);
     // Mirror the blocking path: re-stamp the terminal Finish's response_id with
-    // the routed provider so chaining stays correct.
-    return restampStream(inner, name);
+    // the routed provider AND model so chaining stays correct.
+    return restampStream(inner, name, model);
   }
 }
 
 /**
  * Re-stamp the terminal `finish` chunk's `response_id` with the routed
- * provider name, forwarding every other chunk untouched.
+ * provider name and model, forwarding every other chunk untouched.
  */
 async function* restampStream(
   inner: AsyncIterable<LlmChunk>,
   name: string,
+  model: string,
 ): AsyncGenerator<LlmChunk> {
   for await (const chunk of inner) {
     if (chunk.type === "finish" && chunk.response_id != null) {
-      yield { ...chunk, response_id: stampResponseId(name, chunk.response_id) };
+      yield { ...chunk, response_id: stampResponseId(name, model, chunk.response_id) };
     } else {
       yield chunk;
     }
