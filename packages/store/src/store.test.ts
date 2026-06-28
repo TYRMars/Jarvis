@@ -99,6 +99,29 @@ export function contractTests(name: string, make: (dir: string) => Promise<Conve
     });
   });
 
+  test(`${name}: Responses-API chaining anchor round-trips (#240)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const c = convo("hi");
+      c.last_response_id = "resp_abc123";
+      c.last_response_chain_origin = c.messages.length;
+      await store.save("c1", c);
+      const loaded = await store.load("c1");
+      assert.equal(loaded?.last_response_id, "resp_abc123");
+      assert.equal(loaded?.last_response_chain_origin, c.messages.length);
+    });
+  });
+
+  test(`${name}: a conversation without a chaining anchor loads with it unset`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      await store.save("c1", convo("plain"));
+      const loaded = await store.load("c1");
+      assert.equal(loaded?.last_response_id ?? null, null);
+      assert.equal(loaded?.last_response_chain_origin ?? null, null);
+    });
+  });
+
   test(`${name}: internal __memory__ ids with ':' round-trip`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

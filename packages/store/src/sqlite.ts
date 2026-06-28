@@ -239,6 +239,42 @@ interface ConvRow {
   updated_at: string;
 }
 
+/**
+ * Conversation blob envelope. Historically the blob was a bare `Message[]`;
+ * it now carries the Responses-API chaining anchor alongside the messages so
+ * chaining survives a reload/restart. Chaining fields are omitted when unset.
+ */
+interface ConvBlob {
+  messages: Conversation["messages"];
+  last_response_id?: string;
+  last_response_chain_origin?: number;
+}
+
+function encodeConvBlob(conversation: Conversation): ConvBlob {
+  const blob: ConvBlob = { messages: conversation.messages };
+  if (conversation.last_response_id != null) blob.last_response_id = conversation.last_response_id;
+  if (conversation.last_response_chain_origin != null) {
+    blob.last_response_chain_origin = conversation.last_response_chain_origin;
+  }
+  return blob;
+}
+
+/**
+ * Parse a stored blob into a `Conversation`. Tolerates the legacy bare-array
+ * form (rows written before the chaining anchor was persisted) by treating it
+ * as messages-only.
+ */
+function decodeConvBlob(blob: string): Conversation {
+  const parsed = JSON.parse(blob) as ConvBlob | Conversation["messages"];
+  if (Array.isArray(parsed)) return { messages: parsed };
+  const conv: Conversation = { messages: parsed.messages };
+  if (parsed.last_response_id != null) conv.last_response_id = parsed.last_response_id;
+  if (parsed.last_response_chain_origin != null) {
+    conv.last_response_chain_origin = parsed.last_response_chain_origin;
+  }
+  return conv;
+}
+
 export class SqliteConversationStore extends ConversationStoreBase {
   readonly #db: Db;
 
@@ -271,7 +307,7 @@ export class SqliteConversationStore extends ConversationStoreBase {
       )
       .run(
         id,
-        JSON.stringify(conversation.messages),
+        JSON.stringify(encodeConvBlob(conversation)),
         metadata.project_id ?? null,
         metadata.lifecycle,
         conversation.messages.length,
@@ -288,7 +324,7 @@ export class SqliteConversationStore extends ConversationStoreBase {
       )
       .get(id);
     if (!row) return Promise.resolve(undefined);
-    const conv: Conversation = { messages: JSON.parse(row.blob) as Conversation["messages"] };
+    const conv = decodeConvBlob(row.blob);
     const meta: ConversationMetadata = {
       project_id: row.project_id ?? null,
       lifecycle: (row.lifecycle as ConversationMetadata["lifecycle"]) ?? "active",
