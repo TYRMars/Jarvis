@@ -180,6 +180,20 @@ export class SummarizingMemory implements Memory {
   }
 
   async compact(messages: Message[]): Promise<Message[]> {
+    // Whole-body soft-fail: the documented contract is that compaction must
+    // never bring down the user's turn. Only the LLM sub-step was guarded
+    // before; a throwing estimator/selector (e.g. an injected tiktoken
+    // `TokenEstimator` on a malformed message) would otherwise escape and abort
+    // the turn. Degrade to the input messages unchanged on any failure.
+    try {
+      return await this.#compact(messages);
+    } catch (err) {
+      console.warn(`compact failed; returning messages unchanged: ${String(err)}`);
+      return messages;
+    }
+  }
+
+  async #compact(messages: Message[]): Promise<Message[]> {
     const est = this.#estimator;
     const { systemIdxs, turns } = splitIntoTurns(messages);
 

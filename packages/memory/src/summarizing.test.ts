@@ -12,7 +12,7 @@ import {
   enforceTokenBudget,
   type SummaryStore,
 } from "./summarizing.ts";
-import { charRatioEstimator } from "./tokens.ts";
+import { charRatioEstimator, type TokenEstimator } from "./tokens.ts";
 
 // ---------- fakes ----------
 
@@ -194,6 +194,26 @@ test("LLM failure falls back to a placeholder note, not a hard error", async () 
   const out = await mem.compact(msgs);
   assert.ok(hasSystemContaining(out, "summary unavailable"), `missing placeholder: ${JSON.stringify(out)}`);
   assert.ok(hasUserExactly(out, "recent"), "recent turn must survive the fallback");
+});
+
+test("a throwing estimator soft-fails: compact returns messages unchanged, not a hard error", async () => {
+  // The soft-fail contract covers the whole of compact, not just the LLM call.
+  // A provider-injected estimator that throws on some message shape must not
+  // abort the user's turn — compact degrades to the input messages.
+  const throwingEstimator: TokenEstimator = {
+    estimateMessage() {
+      throw new Error("boom: estimator blew up on an unexpected message shape");
+    },
+    estimateText() {
+      throw new Error("boom");
+    },
+  };
+  const mem = new SummarizingMemory(new FakeLlm("SUMMARY"), "test-model", 64).withEstimator(
+    throwingEstimator,
+  );
+  const msgs = [sys("sys"), user("old"), asst("old reply"), user("recent"), asst("recent reply")];
+  const out = await mem.compact(msgs);
+  assert.deepEqual(out, msgs, "compact must return the input messages unchanged on estimator throw");
 });
 
 // ---------- transport-error retry ----------
