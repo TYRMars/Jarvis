@@ -1,7 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
+import { WebSocket } from "ws";
+import {
+  Agent,
+  defaultAgentConfig,
+  type ChatRequest,
+  type ChatResponse,
+  type LlmChunk,
+  type LlmProvider,
+} from "@jarvis/core";
+import { MemoryConversationStore } from "@jarvis/store";
 import { ChatRunRegistry } from "./chat-runs.ts";
 import { registerChatRoutes } from "./chat-routes.ts";
 import type { AppState } from "./state.ts";
@@ -105,4 +116,80 @@ test("GET /v1/chat/runs is a bare array; events + interrupt round-trip", async (
   // now terminal → 404
   assert.equal((await app.inject({ method: "POST", url: "/v1/chat/runs/c1/interrupt" })).statusCode, 404);
   await app.close();
+});
+
+// ---------- WS turn → run-status reconciliation (regression for #264) --------
+
+/** A provider that always fails — runStream YIELDS `{type:"error"}`, never throws. */
+class ThrowingProvider implements LlmProvider {
+  complete(_req: ChatRequest): Promise<ChatResponse> {
+    return Promise.reject(new Error("boom: provider exploded"));
+  }
+  async *completeStream(_req: ChatRequest): AsyncGenerator<LlmChunk> {
+    await Promise.resolve();
+    throw new Error("boom: provider exploded");
+  }
+}
+
+async function listen(state: AppState): Promise<{ app: Awaited<ReturnType<typeof buildApp>>; port: number }> {
+  const app = await buildApp(state);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const addr = app.server.address() as { port: number };
+  return { app, port: addr.port };
+}
+
+test("a mid-stream provider error finishes the WS run as 'failed', not 'completed' (#264)", async () => {
+  const store = new MemoryConversationStore();
+  const reg = new ChatRunRegistry();
+  const state: AppState = {
+    store,
+    chatRuns: reg,
+    createAgent: (approver) =>
+      new Agent(new ThrowingProvider(), { ...defaultAgentConfig("test-model"), maxIterations: 5, approver }),
+  };
+  const { app, port } = await listen(state);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/chat/ws`);
+  await once(ws, "open");
+  const frames: { type: string; message?: string }[] = [];
+  const waiters: { pred: (f: { type: string }) => boolean; resolve: (f: { type: string }) => void }[] = [];
+  ws.on("message", (data: Buffer) => {
+    const f = JSON.parse(data.toString()) as { type: string };
+    frames.push(f);
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      if (waiters[i]!.pred(f)) {
+        waiters[i]!.resolve(f);
+        waiters.splice(i, 1);
+      }
+    }
+  });
+  const waitFor = (pred: (f: { type: string }) => boolean): Promise<{ type: string }> =>
+    new Promise((resolve) => {
+      const hit = frames.find(pred);
+      if (hit) resolve(hit);
+      else waiters.push({ pred, resolve });
+    });
+  try {
+    // Persisted session so the turn is tracked (runId = persistedId).
+    ws.send(JSON.stringify({ type: "new", id: "conv-fail" }));
+    await waitFor((f) => f.type === "session");
+
+    ws.send(JSON.stringify({ type: "user", content: "go" }));
+    const err = (await waitFor((f) => f.type === "error")) as { message?: string };
+    assert.match(err.message ?? "", /boom: provider exploded/);
+
+    // The run finishes right after the error frame; poll the registry for the
+    // terminal status (no `done`/`cancelled` frame is sent on the error path).
+    let rec: { status: string; last_error?: string | null } | undefined;
+    for (let i = 0; i < 50; i++) {
+      rec = reg.list(false).find((r) => r.conversation_id === "conv-fail");
+      if (rec && rec.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.ok(rec, "run should be tracked");
+    assert.equal(rec!.status, "failed", "a yielded error must mark the run failed, not completed");
+    assert.match(rec!.last_error ?? "", /boom: provider exploded/);
+  } finally {
+    ws.close();
+    await app.close();
+  }
 });
