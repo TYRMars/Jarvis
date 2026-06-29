@@ -150,6 +150,12 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
       : undefined;
     const agent = state.createAgent(approver);
     let cancelled = false;
+    // runStream yields `{type:"error"}` for ordinary failures (LLM/provider/
+    // tool/memory errors, max-iteration overflow) and returns normally — it does
+    // NOT throw, so the catch below never fires for these. Track the error here
+    // so the run is finished as "failed" with last_error set, matching the
+    // events buffer the client also sees.
+    let failed: string | undefined;
     try {
       const it = (agent.runStream(conv) as AsyncIterable<AgentEvent>)[Symbol.asyncIterator]();
       for (;;) {
@@ -162,6 +168,7 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         const ev = raced.value;
         if (runId && state.chatRuns) state.chatRuns.event(runId, ev);
         send(ev);
+        if (ev.type === "error") failed = ev.message;
         if (ev.type === "done") {
           conv = ev.conversation;
           if (persistedId && state.store) {
@@ -177,7 +184,8 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         // `interrupt()` already marked the run cancelled; tell the client.
         send({ type: "cancelled" });
       } else if (runId && state.chatRuns) {
-        state.chatRuns.finish(runId, "completed");
+        if (failed !== undefined) state.chatRuns.finish(runId, "failed", failed);
+        else state.chatRuns.finish(runId, "completed");
       }
     } catch (e) {
       const message = errorText(e);

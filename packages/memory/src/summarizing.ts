@@ -180,6 +180,22 @@ export class SummarizingMemory implements Memory {
   }
 
   async compact(messages: Message[]): Promise<Message[]> {
+    // Soft-fail contract: a bug anywhere in the compaction machinery (a
+    // throwing TokenEstimator/selector, an unexpected message shape) must
+    // never bring down the user's turn. The #summarise call has its own
+    // try/catch that degrades to a placeholder note; this outer guard covers
+    // the surrounding cost/selection/budget logic, falling back to the input
+    // messages unchanged on any error. (Logged via console.warn — @jarvis/memory
+    // has no tracing dep.)
+    try {
+      return await this.#compactInner(messages);
+    } catch (err) {
+      console.warn(`compact failed; returning messages unchanged: ${String(err)}`);
+      return messages;
+    }
+  }
+
+  async #compactInner(messages: Message[]): Promise<Message[]> {
     const est = this.#estimator;
     const { systemIdxs, turns } = splitIntoTurns(messages);
 
