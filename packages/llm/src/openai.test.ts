@@ -222,6 +222,46 @@ test("complete: parses choices, restores tool name, maps usage", async () => {
   assert.equal(resp.usage?.cached_prompt_tokens, 4);
 });
 
+test("complete: explicit finish_reason 'stop' alongside tool_calls is overridden to tool_calls (Ollama/Kimi/LM Studio compat — issue #246)", async () => {
+  const responseBody = {
+    choices: [
+      {
+        message: {
+          content: null,
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "fs_read", arguments: '{"path":"a.txt"}' } }],
+        },
+        finish_reason: "stop", // OpenAI-compatible backends emit this alongside populated tool_calls
+      },
+    ],
+  };
+  const provider = new OpenAiProvider({
+    apiKey: "sk-test",
+    fetchImpl: async () => new Response(JSON.stringify(responseBody), { status: 200 }),
+  });
+  const resp = await provider.complete(
+    req({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "read a.txt" }],
+      tools: [{ name: "fs.read", description: "d", parameters: { type: "object" } }],
+    }),
+  );
+  assert.equal(resp.finish_reason, "tool_calls"); // not "stop" — the loop must dispatch the tool call
+  const m = resp.message as Extract<Message, { role: "assistant" }>;
+  assert.equal(m.tool_calls?.[0]?.name, "fs.read");
+});
+
+test("complete: explicit 'stop' with no tool_calls stays stop", async () => {
+  const provider = new OpenAiProvider({
+    apiKey: "sk-test",
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "hi" }, finish_reason: "stop" }] }), {
+        status: 200,
+      }),
+  });
+  const resp = await provider.complete(req({ model: "m", messages: [{ role: "user", content: "hi" }] }));
+  assert.equal(resp.finish_reason, "stop");
+});
+
 test("complete: non-2xx surfaces status + body as ProviderError", async () => {
   const provider = new OpenAiProvider({
     apiKey: "sk-test",
