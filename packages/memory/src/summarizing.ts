@@ -179,7 +179,26 @@ export class SummarizingMemory implements Memory {
     return this;
   }
 
+  /**
+   * Compact the conversation, soft-failing as a whole. The documented contract
+   * is that a flaky summariser (or any compaction-layer fault) must never bring
+   * down the user's turn. The inner `#summarise` call already degrades to a
+   * placeholder note, but the surrounding cost/selection machinery
+   * (estimator, turn splitting/selection, budget enforcement) runs outside that
+   * guard — a throwing injected `TokenEstimator` would otherwise reject here and
+   * abort the turn. Wrap the entire body so any fault degrades to returning the
+   * input messages unchanged.
+   */
   async compact(messages: Message[]): Promise<Message[]> {
+    try {
+      return await this.#compactInner(messages);
+    } catch (err) {
+      console.warn(`compact failed; returning messages unchanged: ${String(err)}`);
+      return messages;
+    }
+  }
+
+  async #compactInner(messages: Message[]): Promise<Message[]> {
     const est = this.#estimator;
     const { systemIdxs, turns } = splitIntoTurns(messages);
 
