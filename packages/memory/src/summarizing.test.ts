@@ -196,6 +196,26 @@ test("LLM failure falls back to a placeholder note, not a hard error", async () 
   assert.ok(hasUserExactly(out, "recent"), "recent turn must survive the fallback");
 });
 
+test("a throwing estimator soft-fails to the input messages, not a hard error", async () => {
+  // The estimator is injectable (withEstimator) — a tiktoken-backed impl may
+  // throw on an unexpected message shape. The whole compact body must degrade,
+  // not just the LLM sub-step, returning the input unchanged per the contract.
+  const throwingEstimator = {
+    estimateMessage(): number {
+      throw new Error("boom: malformed message");
+    },
+    estimateText(): number {
+      throw new Error("boom: malformed text");
+    },
+  };
+  const mem = new SummarizingMemory(new FakeLlm("unused"), "test-model", 64).withEstimator(
+    throwingEstimator,
+  );
+  const msgs = [sys("sys"), user("old"), asst("old reply"), user("recent"), asst("recent reply")];
+  const out = await mem.compact(msgs);
+  assert.deepEqual(out, msgs, "compact must return the input messages unchanged on estimator throw");
+});
+
 // ---------- transport-error retry ----------
 
 const DROP5 = [sys("sys"), user("old"), asst("old reply"), user("recent"), asst("recent reply")];
