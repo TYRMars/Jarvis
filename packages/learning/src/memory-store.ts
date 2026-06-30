@@ -87,7 +87,9 @@ function byPinnedThenUpdatedDesc(a: MemoryItem, b: MemoryItem): number {
 /** Filter → sort → cap. Shared by both backends. */
 function listFrom(rows: readonly MemoryItem[], filter: MemoryFilter): MemoryItem[] {
   const out = rows.filter((m) => memoryItemMatches(m, filter)).sort(byPinnedThenUpdatedDesc);
-  return filter.limit !== undefined ? out.slice(0, filter.limit) : out;
+  // Lower-clamp: a negative limit would otherwise reach slice(0, -N) and
+  // silently drop the last N rows instead of returning an empty/short list.
+  return filter.limit !== undefined ? out.slice(0, Math.max(0, filter.limit)) : out;
 }
 
 /**

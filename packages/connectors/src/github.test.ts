@@ -190,10 +190,10 @@ test("fetchIssue returns the normalized issue", async () => {
   assert.match(calls[0]!.url, /\/repos\/tyrmars\/jarvis\/issues\/7$/);
 });
 
-test("pushRequirement posts a comment then patches state, returning the new baseline", async () => {
+test("pushRequirement patches state first (idempotent) then posts the comment, returning the new baseline", async () => {
   const { fetch, calls } = stubFetch([
-    { status: 201, json: {} }, // comment
-    { status: 200, json: { updated_at: "2026-06-10T12:00:00Z" } }, // state patch
+    { status: 200, json: { updated_at: "2026-06-10T12:00:00Z" } }, // state patch (first)
+    { status: 201, json: {} }, // comment (last)
   ]);
   const gh = new GitHubConnector({ fetch });
   const result = await gh.pushRequirement(AUTH, binding("tyrmars/jarvis"), "7", {
@@ -203,11 +203,39 @@ test("pushRequirement posts a comment then patches state, returning the new base
 
   assert.equal(result.remoteUpdatedAt, "2026-06-10T12:00:00Z");
   assert.equal(calls.length, 2);
-  assert.equal(calls[0]!.method, "POST");
-  assert.match(calls[0]!.url, /\/issues\/7\/comments$/);
-  assert.equal(JSON.parse(calls[0]!.body!).body, "done via Jarvis");
-  assert.equal(calls[1]!.method, "PATCH");
-  assert.equal(JSON.parse(calls[1]!.body!).state, "closed");
+  // The idempotent PATCH runs first so a later failure can't leave a duplicate comment.
+  assert.equal(calls[0]!.method, "PATCH");
+  assert.equal(JSON.parse(calls[0]!.body!).state, "closed");
+  assert.equal(calls[1]!.method, "POST");
+  assert.match(calls[1]!.url, /\/issues\/7\/comments$/);
+  assert.equal(JSON.parse(calls[1]!.body!).body, "done via Jarvis");
+});
+
+test("pushRequirement: a failed state PATCH posts no comment, so the retry does not duplicate it", async () => {
+  // First attempt: the PATCH (now first) fails → the whole push rejects and,
+  // crucially, NO comment was posted. The natural retry then re-runs the
+  // idempotent PATCH and posts the comment exactly once.
+  const { fetch, calls } = stubFetch([
+    { status: 500, json: { message: "server error" } }, // attempt 1: PATCH fails
+    { status: 200, json: { updated_at: "2026-06-10T12:00:00Z" } }, // retry: PATCH ok
+    { status: 201, json: {} }, // retry: comment ok
+  ]);
+  const gh = new GitHubConnector({ fetch });
+  const push = { action: "close", comment: "done via Jarvis" } as const;
+
+  await assert.rejects(
+    () => gh.pushRequirement(AUTH, binding("tyrmars/jarvis"), "7", push),
+    ConnectorError,
+  );
+  // Only the PATCH was attempted on the failed push — no comment POST.
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.method, "PATCH");
+
+  const result = await gh.pushRequirement(AUTH, binding("tyrmars/jarvis"), "7", push);
+  assert.equal(result.remoteUpdatedAt, "2026-06-10T12:00:00Z");
+  // Across both attempts exactly ONE comment POST fires — no duplicate.
+  const commentPosts = calls.filter((c) => c.method === "POST" && /\/comments$/.test(c.url));
+  assert.equal(commentPosts.length, 1, "comment posted exactly once despite the earlier failure");
 });
 
 test("pushRequirement: reopen maps to state=open; blank comment is skipped", async () => {
