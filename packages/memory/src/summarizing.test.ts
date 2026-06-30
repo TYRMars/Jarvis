@@ -375,6 +375,46 @@ test("PTL is a no-op under budget", async () => {
   assert.ok(!hasSystemContaining(out, "truncated to fit token budget"));
 });
 
+test("enforceTokenBudget preserves a mid-body compaction summary (#271)", () => {
+  // Cache-breakpoint layout: the summary sits AFTER the cached prefix turn, so
+  // it is outside the leading-system prefix Region 1 keeps. Round-one pruning
+  // slices past it — `preserve` must force it back in.
+  const summary = sys(`Earlier conversation summary (2 turn(s) compressed):\n${"X".repeat(400)}`);
+  const out = [
+    sys("sys"),
+    user("turn 1 cached prefix with enough length"), asst("reply 1 cached"),
+    summary,
+    user("turn 4 most recent"), asst("reply 4"),
+  ];
+  const { out: kept, outcome } = enforceTokenBudget(out, 40, charRatioEstimator, summary);
+  assert.notEqual(outcome, "none", "pruning should have fired");
+  assert.ok(kept.includes(summary), "the compaction summary must survive PTL pruning");
+  assert.ok(hasUserExactly(kept, "turn 4 most recent"), "latest turn must remain");
+  // Regression guard: without `preserve` the mid-body summary is dropped — this
+  // is exactly the silent context loss #271 describes.
+  const { out: buggy } = enforceTokenBudget(out, 40, charRatioEstimator);
+  assert.ok(!buggy.includes(summary), "no-preserve path drops the mid-body summary (documents the bug)");
+});
+
+test("PTL keeps the compaction summary on the cache-breakpoint path (#271)", async () => {
+  const llm = new FakeLlm("X".repeat(2000));
+  const mem = new SummarizingMemory(llm, "test-model", 300);
+  const msgs = [
+    sys("sys"),
+    user("turn 1 cached prefix here"), withCache(asst("reply 1 cached"), "persistent"),
+    user("turn 2 middle to drop"), asst("reply 2 with some length"),
+    user("turn 3 middle to drop"), asst("reply 3 with some length"),
+    user("turn 4 most recent"), asst("reply 4"),
+  ];
+  const out = await mem.compact(msgs);
+  assert.ok(
+    hasSystemContaining(out, "Earlier conversation summary"),
+    "compressed-history summary must survive PTL on the breakpoint path",
+  );
+  assert.ok(hasSystemContaining(out, "truncated to fit token budget"), "expected PTL marker");
+  assert.ok(hasUserExactly(out, "turn 4 most recent"), "latest turn must survive PTL");
+});
+
 test("enforceTokenBudget keeps the trailing working-context block", () => {
   const msgs = [
     sys("sys"),

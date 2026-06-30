@@ -262,8 +262,11 @@ export class SummarizingMemory implements Memory {
     if (!summaryEmitted && summaryMsg !== undefined) out.push(summaryMsg);
 
     // PTL safety net: if the summary itself ran long, drop oldest turns until
-    // the estimate fits. Never throws.
-    return enforceTokenBudget(out, this.#maxTokens, est).out;
+    // the estimate fits. Never throws. Pass the summary by reference so PTL
+    // pruning can never drop it — on the cache-breakpoint path it sits mid-body
+    // (after the cached prefix turns), outside the leading-system prefix the
+    // budget enforcer otherwise preserves. See #271.
+    return enforceTokenBudget(out, this.#maxTokens, est, summaryMsg).out;
   }
 
   // --- circuit breaker ---
@@ -526,11 +529,18 @@ function takeChars(s: string, n: number): string {
  * marker. Never throws; returns the input untouched when no pruning is needed.
  * Mirrors the Rust `enforce_token_budget` (the trailing working-context region
  * recognition is kept for parity even though that block isn't emitted yet).
+ *
+ * `preserve`, when given, is a message (the compaction summary) that must
+ * survive pruning regardless of where it sits. On the cache-breakpoint path the
+ * summary lands mid-body — after the cached prefix turns — so it is outside the
+ * leading-system prefix that Region 1 keeps; without this it would be sliced
+ * away by Round 1/2, silently losing the compressed history. See #271.
  */
 export function enforceTokenBudget(
   out: Message[],
   maxTokens: number,
   est: TokenEstimator,
+  preserve?: Message,
 ): { out: Message[]; outcome: PtlOutcome } {
   if (maxTokens === 0 || estimateMessages(est, out) <= maxTokens) {
     return { out, outcome: "none" };
@@ -575,7 +585,7 @@ export function enforceTokenBudget(
     ...out.slice(bodyEnd), // trailing working context
   ];
   if (estimateMessages(est, pruned) <= maxTokens) {
-    return { out: pruned, outcome: "round-one" };
+    return { out: forcePreserved(pruned, prefixEnd, preserve), outcome: "round-one" };
   }
 
   // Round 2: hard-prune to the latest turn only. Over-budget is preferable to
@@ -588,7 +598,23 @@ export function enforceTokenBudget(
     ...out.slice(lastTurnStart, bodyEnd),
     ...out.slice(bodyEnd),
   ];
-  return { out: hard, outcome: "round-two" };
+  return { out: forcePreserved(hard, prefixEnd, preserve), outcome: "round-two" };
+}
+
+/**
+ * Ensure `preserve` survives pruning: if it isn't already present in `pruned`
+ * (it was sliced away as a mid-body message), re-insert it immediately after
+ * the leading-system prefix so PTL only ever drops body *turns*, never the
+ * compaction summary. Reference equality — `preserve` is the same object the
+ * caller inserted into `out`. See #271.
+ */
+function forcePreserved(
+  pruned: Message[],
+  prefixEnd: number,
+  preserve: Message | undefined,
+): Message[] {
+  if (preserve === undefined || pruned.includes(preserve)) return pruned;
+  return [...pruned.slice(0, prefixEnd), preserve, ...pruned.slice(prefixEnd)];
 }
 
 function ptlMarker(dropped: number): Message {
