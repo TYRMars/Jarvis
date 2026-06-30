@@ -113,6 +113,20 @@ test("list rejects unknown status", async () => {
   await assert.rejects(() => tool.invoke({ project_id: "p", status: "zomg" }), /unknown status/);
 });
 
+test("list negative limit clamps to the schema minimum", async () => {
+  // Regression for #249: a negative `limit` must be lower-clamped to the schema
+  // minimum (1), not passed through to `slice(0, -N)`. Before the fix,
+  // `limit: -1` reached `slice(0, -1)` and returned 2 of 3 rows — a silently
+  // truncated, plausible-looking near-full list. After the fix it clamps to 1.
+  const { rs } = fixtures();
+  await seed(rs, "p", "alpha");
+  await seed(rs, "p", "beta");
+  await seed(rs, "p", "gamma");
+  const tool = new RequirementListTool(rs);
+  const out = parse(await tool.invoke({ project_id: "p", limit: -1 }));
+  assert.equal(out["count"], 1);
+});
+
 // ---------- requirement.start ----------
 
 test("start flips backlog to in_progress and records activity", async () => {
