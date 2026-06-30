@@ -167,12 +167,19 @@ export class JsonFileMemoryStore implements MemoryStore {
     return readJsonFile<MemoryItem>(this.#pathFor(id));
   }
 
-  async upsert(item: MemoryItem): Promise<MemoryItem> {
-    const prior = item.id !== "" ? await this.get(item.id) : undefined;
-    const saved = prepareUpsert(item, prior);
-    await atomicWrite(this.#pathFor(saved.id), JSON.stringify(saved, null, 2));
-    this.#fanout.emit(memoryUpsertedEvent(saved));
-    return saved;
+  upsert(item: MemoryItem): Promise<MemoryItem> {
+    // Run the read-modify-write under the write lock, exactly like `patch`/
+    // `delete`. Without it, a concurrent `delete` landing between the `get` and
+    // the `atomicWrite` would be undone (zombie resurrection), and two
+    // concurrent `upsert`s on the same id would clobber each other's fields /
+    // `created_at` (lost update). See issue #272.
+    return this.#withLock(async () => {
+      const prior = item.id !== "" ? await this.get(item.id) : undefined;
+      const saved = prepareUpsert(item, prior);
+      await atomicWrite(this.#pathFor(saved.id), JSON.stringify(saved, null, 2));
+      this.#fanout.emit(memoryUpsertedEvent(saved));
+      return saved;
+    });
   }
 
   patch(id: string, patch: MemoryPatch): Promise<MemoryItem | undefined> {

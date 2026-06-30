@@ -373,3 +373,30 @@ test("json-file: a concurrent delete wins the patch race (no zombie resurrection
     assert.equal((await store.list({})).length, 0, "store is empty after the race");
   });
 });
+
+test("json-file: upsert is serialized against delete (no zombie, no torn state)", async () => {
+  // Regression for #272: upsert's `await get` → `await atomicWrite` window ran
+  // outside the write lock, so a concurrent delete could be undone (the write
+  // re-creates the just-removed file) or two upserts could clobber each other.
+  // Racing upsert + delete must leave a consistent state: the row is either the
+  // fully-formed upserted item or absent — never a partial/torn write, and
+  // `get`/`list` must always agree.
+  await withTempDir(async (dir) => {
+    const store = await JsonFileMemoryStore.open(dir);
+    const saved = await store.upsert(newMemoryItem(memoryScopeUser(), "preference", "race", "v0"));
+    const updated = { ...saved, body: "v1" };
+    await Promise.all([
+      store.upsert(updated).catch(() => undefined),
+      store.delete(saved.id),
+    ]);
+    const got = await store.get(saved.id);
+    const rows = await store.list({});
+    if (got === undefined) {
+      assert.equal(rows.length, 0, "get/list agree: row absent");
+    } else {
+      assert.equal(rows.length, 1, "get/list agree: exactly one row");
+      assert.equal(got.id, saved.id);
+      assert.equal(got.body, "v1", "surviving row is the upserted item, not a torn write");
+    }
+  });
+});
