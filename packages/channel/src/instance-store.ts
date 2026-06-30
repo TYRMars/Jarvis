@@ -35,10 +35,28 @@ function byUpdatedDesc(a: ChannelInstance, b: ChannelInstance): number {
 export class JsonFileChannelInstanceStore implements ChannelInstanceStore {
   readonly #path: string;
   #state: ChannelInstance[];
+  // Serialises every read-modify-write so each mutation reads `this.#state`
+  // only after the prior one has committed — without it the `read #state` →
+  // `await #flush` → `assign #state` window lets concurrent mutations
+  // lost-update each other on disk and in memory. Mirrors
+  // `JsonFileMemoryStore.#writeChain`.
+  #writeChain: Promise<unknown> = Promise.resolve();
 
   private constructor(filePath: string, initial: ChannelInstance[]) {
     this.#path = filePath;
     this.#state = initial;
+  }
+
+  /** Run `fn` after all previously-enqueued guarded ops settle (serial). */
+  #withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#writeChain.then(fn, fn);
+    // Keep the chain alive on rejection, but don't let the stored promise carry
+    // a rejection (which would surface as an unhandled rejection downstream).
+    this.#writeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Open or create the store under `baseDir` (created recursively). */
@@ -66,16 +84,18 @@ export class JsonFileChannelInstanceStore implements ChannelInstanceStore {
     await atomicWrite(this.#path, JSON.stringify(snapshot, null, 2));
   }
 
-  async upsert(instance: ChannelInstance): Promise<void> {
-    const next = this.#state.map((i) => ({ ...i }));
-    const slot = next.findIndex((i) => i.id === instance.id);
-    if (slot !== -1) {
-      next[slot] = { ...instance };
-    } else {
-      next.push({ ...instance });
-    }
-    await this.#flush(next);
-    this.#state = next;
+  upsert(instance: ChannelInstance): Promise<void> {
+    return this.#withLock(async () => {
+      const next = this.#state.map((i) => ({ ...i }));
+      const slot = next.findIndex((i) => i.id === instance.id);
+      if (slot !== -1) {
+        next[slot] = { ...instance };
+      } else {
+        next.push({ ...instance });
+      }
+      await this.#flush(next);
+      this.#state = next;
+    });
   }
 
   get(id: string): Promise<ChannelInstance | undefined> {
@@ -88,12 +108,14 @@ export class JsonFileChannelInstanceStore implements ChannelInstanceStore {
     return Promise.resolve(rows);
   }
 
-  async delete(id: string): Promise<boolean> {
-    const next = this.#state.filter((i) => i.id !== id);
-    if (next.length === this.#state.length) return false;
-    await this.#flush(next);
-    this.#state = next;
-    return true;
+  delete(id: string): Promise<boolean> {
+    return this.#withLock(async () => {
+      const next = this.#state.filter((i) => i.id !== id);
+      if (next.length === this.#state.length) return false;
+      await this.#flush(next);
+      this.#state = next;
+      return true;
+    });
   }
 }
 
