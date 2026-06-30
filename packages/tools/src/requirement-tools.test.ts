@@ -101,6 +101,18 @@ test("list filters by status", async () => {
   assert.equal((backlog["items"] as Array<{ title: string }>)[0].title, "still-open");
 });
 
+test("list lower-clamps a negative limit instead of slicing off the tail", async () => {
+  const { rs } = fixtures();
+  await seed(rs, "p", "alpha");
+  await seed(rs, "p", "beta");
+  await seed(rs, "p", "gamma");
+  const tool = new RequirementListTool(rs);
+  // limit:-1 would reach slice(0,-1) and silently drop the last row; the
+  // runtime clamp must floor it at 1 so the caller gets a bounded, correct list.
+  const out = parse(await tool.invoke({ project_id: "p", limit: -1 }));
+  assert.equal(out["count"], 1);
+});
+
 test("list rejects blank project_id", async () => {
   const { rs } = fixtures();
   const tool = new RequirementListTool(rs);

@@ -42,8 +42,14 @@ test("finish sets terminal status + finished_at; terminal is sticky", () => {
   const r2 = newRequirementRun("req", "conv");
   finishRequirementRun(r2, "failed");
   const saved = r2.status;
+  const savedFinishedAt = r2.finished_at;
   finishRequirementRun(r2, "completed");
   assert.equal(r2.status, saved, "late finish must not overwrite a terminal status");
+  assert.equal(
+    r2.finished_at,
+    savedFinishedAt,
+    "late finish must not re-stamp finished_at (would inflate run duration)",
+  );
 });
 
 test("pushRequirementRunLog lazily creates the logs array", () => {
