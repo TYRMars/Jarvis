@@ -111,6 +111,24 @@ test("json-file: instances persist in channel_instances.json and survive reopen"
   });
 });
 
+test("json-file: concurrent mutations do not lost-update each other (#273)", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileChannelInstanceStore.open(dir);
+    // Distinct-id upserts fired without awaiting between them interleave across
+    // each flush `await`. Pre-fix the stale-snapshot commit dropped all but the
+    // last; the #writeChain serialises them so every row survives.
+    const n = 25;
+    await Promise.all(
+      Array.from({ length: n }, (_, i) =>
+        store.upsert(inst(`i${i}`, `name-${i}`, "2026-06-16T10:00:00.000Z")),
+      ),
+    );
+    assert.equal((await store.list()).length, n, "no in-memory lost update");
+    const reopened = await JsonFileChannelInstanceStore.open(dir);
+    assert.equal((await reopened.list()).length, n, "no on-disk lost update");
+  });
+});
+
 test("json-file: a corrupt file starts the store empty but writable", async () => {
   await withTempDir(async (dir) => {
     await writeFile(path.join(dir, "channel_instances.json"), "not json at all", "utf8");

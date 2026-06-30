@@ -44,10 +44,28 @@ function byUpdatedDesc(a: ChannelBinding, b: ChannelBinding): number {
 export class JsonFileChannelBindingStore implements ChannelBindingStore {
   readonly #path: string;
   #state: ChannelBinding[];
+  // Serialises every read-modify-write so each mutation reads `this.#state`
+  // only after the prior one has committed. Without it the `read #state` →
+  // `await #flush` → `assign #state` window lets two interleaving mutations
+  // (reachable from concurrent inbound platform callbacks) lost-update each
+  // other on disk and in memory. Mirrors `JsonFileMemoryStore.#writeChain`.
+  #writeChain: Promise<unknown> = Promise.resolve();
 
   private constructor(filePath: string, initial: ChannelBinding[]) {
     this.#path = filePath;
     this.#state = initial;
+  }
+
+  /** Run `fn` after all previously-enqueued guarded ops settle (serial). */
+  #withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#writeChain.then(fn, fn);
+    // Keep the chain alive on rejection, but don't let the stored promise carry
+    // a rejection (which would surface as an unhandled rejection downstream).
+    this.#writeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Open or create the store under `baseDir` (created recursively). */
@@ -75,18 +93,21 @@ export class JsonFileChannelBindingStore implements ChannelBindingStore {
     await atomicWrite(this.#path, JSON.stringify(snapshot, null, 2));
   }
 
-  async upsert(binding: ChannelBinding): Promise<void> {
+  upsert(binding: ChannelBinding): Promise<void> {
     // Build the next state, flush, and only commit the in-memory mutation once
     // the flush succeeds — a failed flush leaves memory and disk consistent.
-    const next = this.#state.map((b) => ({ ...b }));
-    const slot = next.findIndex((b) => sameKey(b, binding.channel, binding.channel_chat_id));
-    if (slot !== -1) {
-      next[slot] = { ...binding };
-    } else {
-      next.push({ ...binding });
-    }
-    await this.#flush(next);
-    this.#state = next;
+    // Guarded so the read-modify-write does not interleave with another op.
+    return this.#withLock(async () => {
+      const next = this.#state.map((b) => ({ ...b }));
+      const slot = next.findIndex((b) => sameKey(b, binding.channel, binding.channel_chat_id));
+      if (slot !== -1) {
+        next[slot] = { ...binding };
+      } else {
+        next.push({ ...binding });
+      }
+      await this.#flush(next);
+      this.#state = next;
+    });
   }
 
   lookup(channel: string, channelChatId: string): Promise<ChannelBinding | undefined> {
@@ -102,21 +123,25 @@ export class JsonFileChannelBindingStore implements ChannelBindingStore {
     return Promise.resolve(rows);
   }
 
-  async delete(channel: string, channelChatId: string): Promise<boolean> {
-    const next = this.#state.filter((b) => !sameKey(b, channel, channelChatId));
-    if (next.length === this.#state.length) return false;
-    await this.#flush(next);
-    this.#state = next;
-    return true;
+  delete(channel: string, channelChatId: string): Promise<boolean> {
+    return this.#withLock(async () => {
+      const next = this.#state.filter((b) => !sameKey(b, channel, channelChatId));
+      if (next.length === this.#state.length) return false;
+      await this.#flush(next);
+      this.#state = next;
+      return true;
+    });
   }
 
-  async deleteForConversation(conversationId: string): Promise<number> {
-    const next = this.#state.filter((b) => b.conversation_id !== conversationId);
-    const removed = this.#state.length - next.length;
-    if (removed === 0) return 0;
-    await this.#flush(next);
-    this.#state = next;
-    return removed;
+  deleteForConversation(conversationId: string): Promise<number> {
+    return this.#withLock(async () => {
+      const next = this.#state.filter((b) => b.conversation_id !== conversationId);
+      const removed = this.#state.length - next.length;
+      if (removed === 0) return 0;
+      await this.#flush(next);
+      this.#state = next;
+      return removed;
+    });
   }
 }
 

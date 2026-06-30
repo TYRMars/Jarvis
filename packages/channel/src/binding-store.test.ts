@@ -132,6 +132,30 @@ test("json-file: bindings persist in channel_bindings.json and survive reopen", 
   });
 });
 
+test("json-file: concurrent mutations do not lost-update each other (#273)", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileChannelBindingStore.open(dir);
+    // Fire many upserts of DISTINCT keys without awaiting between them, so each
+    // read-modify-write interleaves across its flush `await`. Pre-fix, the
+    // stale-snapshot commit dropped every mutation but the last; the #writeChain
+    // serialises them so all survive — in memory and on disk.
+    const n = 25;
+    await Promise.all(
+      Array.from({ length: n }, (_, i) =>
+        store.upsert(bind("wecom", `g${i}`, `c${i}`, "2026-06-16T10:00:00.000Z")),
+      ),
+    );
+    assert.equal((await store.listForChannel("wecom")).length, n, "no in-memory lost update");
+    const reopened = await JsonFileChannelBindingStore.open(dir);
+    assert.equal((await reopened.listForChannel("wecom")).length, n, "no on-disk lost update");
+
+    // A delete racing the upserts is serialised too: remove half concurrently.
+    await Promise.all(Array.from({ length: n }, (_, i) => (i % 2 === 0 ? store.delete("wecom", `g${i}`) : Promise.resolve(false))));
+    const remaining = await store.listForChannel("wecom");
+    assert.equal(remaining.length, Math.floor(n / 2));
+  });
+});
+
 test("json-file: a corrupt file starts the store empty", async () => {
   await withTempDir(async (dir) => {
     await writeFile(path.join(dir, "channel_bindings.json"), "{ not json", "utf8");
