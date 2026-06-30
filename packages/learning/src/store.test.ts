@@ -221,6 +221,9 @@ function memoryContract(name: string, make: (dir: string) => Promise<MemoryStore
 
       assert.equal((await store.list({ pinned: true })).length, 1, "pinned filter");
       assert.equal((await store.list({ limit: 1 })).length, 1, "limit");
+      // A negative limit must not reach `slice(0, -N)` and silently drop the
+      // last N rows — it lower-clamps to an empty result (issue #276).
+      assert.equal((await store.list({ limit: -2 })).length, 0, "negative limit clamps to empty");
     });
   });
 
