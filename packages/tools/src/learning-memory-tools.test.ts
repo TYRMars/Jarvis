@@ -70,6 +70,19 @@ test("add_then_list_then_delete_roundtrip", async () => {
   assert.equal(del2["deleted"], false);
 });
 
+test("list lower-clamps a negative limit instead of dropping the tail", async () => {
+  const s = store();
+  const add = new LearningMemoryAddTool(s);
+  const list = new LearningMemoryListTool(s);
+  await add.invoke({ title: "one", body: "b", kind: "fact" });
+  await add.invoke({ title: "two", body: "b", kind: "fact" });
+  await add.invoke({ title: "three", body: "b", kind: "fact" });
+  // limit:-2 would reach slice(0,-2) and silently drop the last two rows; the
+  // runtime clamp floors it at 1 so the caller gets a bounded, correct list.
+  const listed = items(await list.invoke({ limit: -2 }));
+  assert.equal(listed.length, 1);
+});
+
 test("update_patches_title_and_pin", async () => {
   const s = store();
   const add = new LearningMemoryAddTool(s);

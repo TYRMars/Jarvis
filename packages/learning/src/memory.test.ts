@@ -14,6 +14,7 @@ import {
   withMemoryTag,
   type MemoryItem,
 } from "./memory.ts";
+import { MemoryMemoryStore } from "./memory-store.ts";
 import { MEMORY_TOTAL_SAFETY_CAP, validateMemorySafe } from "./validate.ts";
 
 // ---------- MemoryItem construction ----------
@@ -253,4 +254,21 @@ test("validator rejects hide-from-user variants", () => {
   for (const v of variants) {
     assert.equal(validateMemorySafe(make("note", v))?.reason, "hide_from_user", `should reject: ${v}`);
   }
+});
+
+// ---------- store listFrom limit clamp (defense-in-depth) ----------
+
+test("store list lower-clamps a negative limit instead of slicing off the tail", async () => {
+  const store = new MemoryMemoryStore();
+  const scope = memoryScopeUser();
+  for (const t of ["one", "two", "three"]) {
+    await store.upsert(newMemoryItem(scope, "fact", t, "body"));
+  }
+  // A negative limit must not reach `slice(0, -N)` (which silently drops the
+  // last N rows); clamp floors it at 0 so the result is empty, never wrong.
+  const clamped = await store.list({ scope, limit: -2 });
+  assert.equal(clamped.length, 0);
+  // Sanity: a positive limit still caps normally.
+  const capped = await store.list({ scope, limit: 2 });
+  assert.equal(capped.length, 2);
 });
