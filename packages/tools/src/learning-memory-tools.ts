@@ -134,7 +134,10 @@ export class LearningMemoryListTool implements Tool {
       filter.pinned = pinned;
     }
     const limitRaw = asNumber(obj["limit"]);
-    const limit = Math.min(limitRaw !== undefined ? Math.trunc(limitRaw) : 50, 200);
+    // Clamp to the schema's [1, 200] range at runtime — the JSON-schema
+    // `minimum: 1` is advisory and a negative limit would otherwise reach
+    // slice(0, -N) and silently drop the last N rows. See #276.
+    const limit = Math.min(Math.max(limitRaw !== undefined ? Math.trunc(limitRaw) : 50, 1), 200);
     filter.limit = limit;
     const rows = await this.#store.list(filter);
     return JSON.stringify({ items: rows }, null, 2);

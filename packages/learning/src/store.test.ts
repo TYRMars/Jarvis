@@ -224,6 +224,18 @@ function memoryContract(name: string, make: (dir: string) => Promise<MemoryStore
     });
   });
 
+  test(`${name} memory: negative limit is lower-clamped, never drops the last N rows (#276)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      await store.upsert(newMemoryItem(memoryScopeUser(), "preference", "a", "body a"));
+      await store.upsert(newMemoryItem(memoryScopeUser(), "preference", "b", "body b"));
+      await store.upsert(newMemoryItem(memoryScopeUser(), "preference", "c", "body c"));
+      // A negative limit must NOT reach slice(0, -N) and silently drop rows.
+      assert.equal((await store.list({ limit: -2 })).length, 0, "negative limit clamps to empty, not last-N-dropped");
+      assert.equal((await store.list({ limit: 0 })).length, 0, "zero limit is empty");
+    });
+  });
+
   test(`${name} memory: list filters by tags (every listed tag must match)`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
