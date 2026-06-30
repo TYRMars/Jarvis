@@ -279,13 +279,15 @@ export class GitHubConnector implements ProjectConnector {
     const number = validateIssueNumber(remoteTaskId);
     const result: PushResult = { remoteUpdatedAt: null };
 
-    const comment = change.comment;
-    if (comment !== undefined && comment.trim().length > 0) {
-      await this.#send("POST", `/repos/${owner}/${repo}/issues/${number}/comments`, auth, {
-        body: comment,
-      });
-    }
-
+    // Order matters for retry-safety. The state PATCH is naturally idempotent
+    // (re-`closed`-ing a closed issue, or re-`open`-ing an open one, is a
+    // server-side no-op), whereas the comment POST is not (each call appends a
+    // new comment). Apply the idempotent PATCH FIRST and post the comment
+    // LAST: that way a failure in any step before the comment leaves no comment
+    // behind, so the natural retry of the same RequirementPush re-runs the
+    // idempotent PATCH and posts the comment exactly once — no duplicates. (The
+    // previous comment-first order duplicated the comment whenever the PATCH
+    // failed after the comment had already landed.)
     if (change.action !== undefined) {
       const state = change.action === "close" ? "closed" : "open";
       const body = await this.#send("PATCH", `/repos/${owner}/${repo}/issues/${number}`, auth, {
@@ -294,6 +296,13 @@ export class GitHubConnector implements ProjectConnector {
       const obj = asObject(body);
       const updatedAt = obj ? asString(obj["updated_at"]) : undefined;
       result.remoteUpdatedAt = updatedAt ?? null;
+    }
+
+    const comment = change.comment;
+    if (comment !== undefined && comment.trim().length > 0) {
+      await this.#send("POST", `/repos/${owner}/${repo}/issues/${number}/comments`, auth, {
+        body: comment,
+      });
     }
 
     return result;
