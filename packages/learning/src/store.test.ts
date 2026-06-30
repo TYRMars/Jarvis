@@ -221,6 +221,11 @@ function memoryContract(name: string, make: (dir: string) => Promise<MemoryStore
 
       assert.equal((await store.list({ pinned: true })).length, 1, "pinned filter");
       assert.equal((await store.list({ limit: 1 })).length, 1, "limit");
+      // A negative limit must lower-clamp to 0 (empty), NOT reach slice(0, -N)
+      // and silently drop the last N sorted rows. Regression for #276.
+      const all = await store.list({});
+      assert.ok(all.length >= 2, "have multiple rows to expose the slice(0,-N) bug");
+      assert.equal((await store.list({ limit: -3 })).length, 0, "negative limit clamps to empty");
     });
   });
 
