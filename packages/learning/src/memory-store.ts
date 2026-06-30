@@ -87,7 +87,9 @@ function byPinnedThenUpdatedDesc(a: MemoryItem, b: MemoryItem): number {
 /** Filter → sort → cap. Shared by both backends. */
 function listFrom(rows: readonly MemoryItem[], filter: MemoryFilter): MemoryItem[] {
   const out = rows.filter((m) => memoryItemMatches(m, filter)).sort(byPinnedThenUpdatedDesc);
-  return filter.limit !== undefined ? out.slice(0, filter.limit) : out;
+  // Lower-clamp the cap so a stray negative `limit` never reaches `slice(0, -N)`
+  // (which would silently return all-but-the-last-N rows). See issue #276.
+  return filter.limit !== undefined ? out.slice(0, Math.max(0, filter.limit)) : out;
 }
 
 /**
@@ -165,12 +167,19 @@ export class JsonFileMemoryStore implements MemoryStore {
     return readJsonFile<MemoryItem>(this.#pathFor(id));
   }
 
-  async upsert(item: MemoryItem): Promise<MemoryItem> {
-    const prior = item.id !== "" ? await this.get(item.id) : undefined;
-    const saved = prepareUpsert(item, prior);
-    await atomicWrite(this.#pathFor(saved.id), JSON.stringify(saved, null, 2));
-    this.#fanout.emit(memoryUpsertedEvent(saved));
-    return saved;
+  upsert(item: MemoryItem): Promise<MemoryItem> {
+    // Run the read-modify-write under the write lock, exactly like `patch`/
+    // `delete`. Without it, a concurrent `delete` landing between the `get` and
+    // the `atomicWrite` would be undone (zombie resurrection), and two
+    // concurrent `upsert`s on the same id would clobber each other's fields /
+    // `created_at` (lost update). See issue #272.
+    return this.#withLock(async () => {
+      const prior = item.id !== "" ? await this.get(item.id) : undefined;
+      const saved = prepareUpsert(item, prior);
+      await atomicWrite(this.#pathFor(saved.id), JSON.stringify(saved, null, 2));
+      this.#fanout.emit(memoryUpsertedEvent(saved));
+      return saved;
+    });
   }
 
   patch(id: string, patch: MemoryPatch): Promise<MemoryItem | undefined> {

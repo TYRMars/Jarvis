@@ -175,3 +175,18 @@ test("list_caps_limit_at_200", async () => {
   const listed = items(await list.invoke({ limit: 100000 }));
   assert.equal(listed.length, 1);
 });
+
+test("list_negative_limit_clamps_to_minimum", async () => {
+  // Regression for #276: a negative `limit` must be lower-clamped to the schema
+  // minimum (1), not passed through to `slice(0, -N)`. Before the fix,
+  // `limit: -2` reached `slice(0, -2)` and silently returned all-but-the-last-2
+  // rows (here, 1 of 3). After the fix it clamps to 1.
+  const s = store();
+  const add = new LearningMemoryAddTool(s);
+  const list = new LearningMemoryListTool(s);
+  await add.invoke({ title: "a", body: "first" });
+  await add.invoke({ title: "b", body: "second" });
+  await add.invoke({ title: "c", body: "third" });
+  const listed = items(await list.invoke({ limit: -2 }));
+  assert.equal(listed.length, 1);
+});

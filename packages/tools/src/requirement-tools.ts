@@ -184,7 +184,10 @@ export class RequirementListTool implements Tool {
     const limitRaw = obj["limit"];
     let limit = DEFAULT_LIST_LIMIT;
     if (typeof limitRaw === "number" && Number.isFinite(limitRaw)) {
-      limit = Math.min(Math.trunc(limitRaw), MAX_LIST_LIMIT);
+      // Clamp to the schema bounds (minimum:1) at runtime — a negative `limit`
+      // would otherwise reach `slice(0, -N)` and silently drop the last N rows
+      // instead of erroring. See issue #249.
+      limit = Math.max(1, Math.min(Math.trunc(limitRaw), MAX_LIST_LIMIT));
     }
     let items = await this.#store.list(projectId);
     if (statusFilter !== undefined) {
