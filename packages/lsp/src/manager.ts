@@ -25,6 +25,14 @@ export interface LspManagerOptions {
   timeoutMs?: number;
   /** Quiet window after the last push before resolving. Default 400ms. */
   settleMs?: number;
+  /** Hard cap waiting for a spawned server's `initialize`. Default 5000ms. */
+  initializeTimeoutMs?: number;
+  /**
+   * After a server fails to become ready (early exit / `initialize` timeout),
+   * wait this long before spawning it again — throttles respawn storms when a
+   * server is persistently broken. Default 30000ms.
+   */
+  respawnBackoffMs?: number;
 }
 
 export class LspManager {
@@ -32,14 +40,20 @@ export class LspManager {
   readonly #registry: LanguageRegistry;
   readonly #timeoutMs: number;
   readonly #settleMs: number;
+  readonly #initializeTimeoutMs: number;
+  readonly #respawnBackoffMs: number;
   /** serverKey → client (a promise so concurrent files share one spawn). */
   readonly #clients = new Map<string, Promise<LspClient | null>>();
+  /** serverKey → earliest epoch-ms we may respawn after a failed client. */
+  readonly #respawnAfter = new Map<string, number>();
 
   constructor(opts: LspManagerOptions) {
     this.#root = opts.root;
     this.#registry = opts.registry ?? new DefaultLanguageRegistry(opts.search ?? {});
     this.#timeoutMs = opts.timeoutMs ?? 5000;
     this.#settleMs = opts.settleMs ?? 400;
+    this.#initializeTimeoutMs = opts.initializeTimeoutMs ?? 5000;
+    this.#respawnBackoffMs = opts.respawnBackoffMs ?? 30_000;
   }
 
   /**
@@ -75,7 +89,26 @@ export class LspManager {
 
   #getClient(serverKey: string, command: string, args: string[]): Promise<LspClient | null> {
     const existing = this.#clients.get(serverKey);
-    if (existing) return existing;
+    if (existing) {
+      // A cached client whose handshake failed (or which has since died) is
+      // useless — evict it (and set a respawn backoff) so a later edit re-spawns
+      // instead of `await`ing a rejected `#ready` forever (#285).
+      return existing.then((client) => {
+        if (client && client.isDead) {
+          if (this.#clients.get(serverKey) === existing) {
+            this.#clients.delete(serverKey);
+            this.#respawnAfter.set(serverKey, Date.now() + this.#respawnBackoffMs);
+            void client.dispose().catch(() => {});
+          }
+          return null;
+        }
+        return client;
+      });
+    }
+    // Within the backoff window after a failure, don't respawn yet.
+    const after = this.#respawnAfter.get(serverKey);
+    if (after !== undefined && Date.now() < after) return Promise.resolve(null);
+    this.#respawnAfter.delete(serverKey);
     const created = Promise.resolve().then<LspClient | null>(() => {
       try {
         return new LspClient({
@@ -83,6 +116,7 @@ export class LspManager {
           args,
           rootUri: pathToFileURL(this.#root).toString(),
           cwd: this.#root,
+          initializeTimeoutMs: this.#initializeTimeoutMs,
         });
       } catch {
         return null;

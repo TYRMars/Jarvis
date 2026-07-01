@@ -11,6 +11,17 @@
 // Run as: `node --experimental-strip-types mock-lsp-server.ts` (the path is
 // passed by the test through a custom LanguageRegistry).
 import { Buffer } from "node:buffer";
+import { existsSync, writeFileSync } from "node:fs";
+
+// Test hook (#285): `--crash-once=<sentinelPath>` makes the very first spawn
+// exit(1) immediately (creating the sentinel), so `initialize` never completes
+// and the client is born dead; every later spawn finds the sentinel and behaves
+// normally. Exercises LspManager's evict-and-respawn of a never-ready client.
+const crashOnce = process.argv.find((a) => a.startsWith("--crash-once="))?.slice("--crash-once=".length);
+if (crashOnce !== undefined && !existsSync(crashOnce)) {
+  writeFileSync(crashOnce, "");
+  process.exit(1);
+}
 
 interface RpcMessage {
   jsonrpc?: string;
