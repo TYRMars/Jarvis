@@ -149,6 +149,52 @@ test("health returns tool count; replace validates; reload restores stopped on f
   assert.equal(m3.get("srv")!.status, "stopped");
 });
 
+test("replace is atomic w.r.t. a concurrent same-prefix add (#288)", async () => {
+  // A distinguishable stdio config so we can tell which write won the slot.
+  const tagged = (tag: string): McpClientConfig => ({
+    prefix: "web",
+    transport: { type: "stdio", command: tag, args: [] },
+  });
+  const cmd = (m: McpManager) =>
+    (m.get("web")!.config.transport as { command: string }).command;
+
+  const m = new McpManager(new ToolRegistry(), fakeConnect());
+  await m.add(tagged("orig")); // seed web = orig
+
+  // Fire replace(web→A) and a racing add(web→B) in the SAME tick. The racing
+  // add must be fully serialized AFTER replace's remove+add critical section,
+  // so it hits 409 rather than sneaking B into the gap. Before the fix the gap
+  // between replace's remove and add let B register and win the slot.
+  const pReplace = m.replace("web", tagged("A"));
+  const pAdd = m.add(tagged("B"));
+  const [rReplace, rAdd] = await Promise.allSettled([pReplace, pAdd]);
+
+  assert.equal(rReplace.status, "fulfilled", "replace must succeed atomically");
+  assert.equal(rAdd.status, "rejected", "the racing add must 409, not slip into the gap");
+  assert.ok(
+    rAdd.status === "rejected" &&
+      rAdd.reason instanceof McpManagerError &&
+      rAdd.reason.status === 409,
+  );
+  assert.equal(cmd(m), "A", "slot holds replace's config A, never the racing add's B");
+});
+
+test("reload is atomic w.r.t. a concurrent same-prefix add (#288)", async () => {
+  const m = new McpManager(new ToolRegistry(), fakeConnect());
+  await m.add(stdio("web")); // running
+
+  // reload("web") and a racing add(web) in the same tick: the add must be
+  // serialized after reload's remove+add, so it 409s instead of registering
+  // into the gap and colliding with reload's own re-add.
+  const pReload = m.reload("web");
+  const pAdd = m.add(stdio("web"));
+  const [rReload, rAdd] = await Promise.allSettled([pReload, pAdd]);
+
+  assert.equal(rReload.status, "fulfilled", "reload must succeed atomically");
+  assert.equal(rAdd.status, "rejected", "the racing add must 409");
+  assert.equal(m.get("web")!.status, "running", "slot left healthy after reload");
+});
+
 // ---------- routes ---------------------------------------------------------
 
 async function buildApp(state: AppState) {
