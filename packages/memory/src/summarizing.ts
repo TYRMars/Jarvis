@@ -94,8 +94,10 @@ const DEFAULT_SUMMARY_MAX_TOKENS = 400;
 
 /**
  * Consecutive summary-call failures that flip the circuit breaker open. While
- * open, `compact` skips the LLM entirely and falls through to the placeholder
- * note, so a wedged summariser stops burning quota.
+ * open, `compact` skips only the LLM (tier 3) — the cache tiers (in-memory +
+ * persistent store) are still consulted, so an already-computed summary is
+ * served; on a cache miss it falls through to the placeholder note. This stops
+ * a wedged summariser from burning quota without discarding valid cache hits.
  */
 const CIRCUIT_FAILURE_THRESHOLD = 3;
 
@@ -212,21 +214,28 @@ export class SummarizingMemory implements Memory {
       }
     }
 
-    // Summarise the dropped slice (soft-failing). The circuit breaker skips
-    // the LLM entirely while open.
+    // Summarise the dropped slice (soft-failing). The two non-LLM tiers
+    // (1: in-memory slot, 2: persistent store) are always consulted; only
+    // the LLM (tier 3) is gated by the circuit breaker. So while the breaker
+    // is open we still serve a valid, already-computed summary from cache
+    // instead of downgrading to the placeholder note (#287).
     let summary: string | undefined;
-    if (droppedMsgs.length > 0 && !this.#circuitOpen()) {
-      try {
-        summary = await this.#summarise(droppedMsgs);
-        this.#recordSuccess();
-      } catch (err) {
-        this.#recordFailure();
-        // Soft-fail: a flaky summariser must not bring down the user's turn.
-        // Fall through to the placeholder note. (Logged via console.warn so
-        // the failure is not invisible; @jarvis/memory has no tracing dep.)
-        console.warn(
-          `summary failed; falling back to placeholder note (dropped=${droppedCount}): ${String(err)}`,
-        );
+    if (droppedMsgs.length > 0) {
+      const fp = fingerprint(droppedMsgs);
+      summary = await this.#lookupCachedSummary(fp);
+      if (summary === undefined && !this.#circuitOpen()) {
+        try {
+          summary = await this.#summariseViaLlm(droppedMsgs, fp);
+          this.#recordSuccess();
+        } catch (err) {
+          this.#recordFailure();
+          // Soft-fail: a flaky summariser must not bring down the user's turn.
+          // Fall through to the placeholder note. (Logged via console.warn so
+          // the failure is not invisible; @jarvis/memory has no tracing dep.)
+          console.warn(
+            `summary failed; falling back to placeholder note (dropped=${droppedCount}): ${String(err)}`,
+          );
+        }
       }
     }
 
@@ -300,15 +309,15 @@ export class SummarizingMemory implements Memory {
   // --- three-tier lookup ---
 
   /**
-   * Resolve a summary for `dropped` via, in order: (1) the in-memory slot,
-   * (2) the persistent SummaryStore, (3) the LLM. On an LLM summary, write
-   * back to the in-memory slot and (if present) the store. Store failures
-   * degrade gracefully (warn-and-continue, fall through). Throws only when
-   * the LLM call fails (the caller soft-fails to a placeholder).
+   * Consult the two non-LLM tiers for a summary of the slice identified by
+   * `fp`: (1) the in-memory single slot, then (2) the persistent SummaryStore.
+   * Returns the cached text on a hit, `undefined` on a miss. Store failures
+   * degrade gracefully (warn-and-continue → treated as a miss). Both tiers are
+   * cheap and side-effect-free, so they are consulted unconditionally — even
+   * while the circuit breaker is open — so a valid cached summary survives a
+   * transient summariser outage instead of degrading to the placeholder (#287).
    */
-  async #summarise(dropped: Message[]): Promise<string> {
-    const fp = fingerprint(dropped);
-
+  async #lookupCachedSummary(fp: string): Promise<string | undefined> {
     // Tier 1: in-memory single-slot cache.
     if (this.#cache !== undefined && this.#cache.fingerprint === fp) {
       return this.#cache.text;
@@ -325,13 +334,24 @@ export class SummarizingMemory implements Memory {
           return text;
         }
       } catch (err) {
-        // Don't fail compaction on a flaky backend — fall through to the LLM.
+        // Don't fail compaction on a flaky backend — fall through to a miss.
         console.warn(`summary store load failed (fingerprint=${fp}): ${String(err)}`);
       }
     }
 
-    // Tier 3: ask the LLM. Pinned temperature, NO tools. The model is the
-    // route policy's summarization override when present, else the default.
+    return undefined;
+  }
+
+  /**
+   * Tier 3: ask the LLM to summarise `dropped`, then populate both cache tiers
+   * (in-memory slot + persistent store) under `fp`. Store write failures
+   * degrade gracefully. Throws only when the LLM call fails (the caller
+   * soft-fails to a placeholder and trips the circuit breaker). Callers must
+   * first miss {@link #lookupCachedSummary} and confirm the breaker is closed.
+   */
+  async #summariseViaLlm(dropped: Message[], fp: string): Promise<string> {
+    // Ask the LLM. Pinned temperature, NO tools. The model is the route
+    // policy's summarization override when present, else the default.
     const req: ChatRequest = {
       model: this.#resolveModel?.() ?? this.#model,
       messages: [
