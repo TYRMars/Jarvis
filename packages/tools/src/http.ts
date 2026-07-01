@@ -236,23 +236,43 @@ export class HttpFetchTool implements Tool {
     });
 
     const buf = new Uint8Array(await resp.arrayBuffer());
-    const truncated = buf.length > this.#maxBytes;
-    const slice = truncated ? buf.subarray(0, this.#maxBytes) : buf;
-    // Lossy UTF-8 decode (replacement chars for invalid sequences), matching
-    // Rust's `String::from_utf8_lossy`.
+    // Cap the raw response on the byte boundary before decoding (matches Rust's
+    // `String::from_utf8_lossy` over the slice).
+    const sourceTruncated = buf.length > this.#maxBytes;
+    const slice = sourceTruncated ? buf.subarray(0, this.#maxBytes) : buf;
+    // Lossy UTF-8 decode (replacement chars for invalid sequences).
     const decoded = new TextDecoder("utf-8", { fatal: false }).decode(slice);
 
-    // Markdown extraction runs on the (possibly truncated) HTML slice; the
-    // Markdown is always smaller than its HTML source, so it stays within the
-    // byte cap without a second truncation pass. Non-HTML bodies pass through.
-    const body =
-      format === "markdown" && looksLikeHtml(contentType, decoded)
-        ? await htmlToMarkdown(decoded)
-        : decoded;
+    // Markdown extraction runs on the (possibly truncated) HTML slice. Non-HTML
+    // bodies pass through unchanged.
+    const converted = format === "markdown" && looksLikeHtml(contentType, decoded);
+    let body = converted ? await htmlToMarkdown(decoded) : decoded;
+
+    // `node-html-markdown` can *expand* its HTML source — tables gain `| … |`
+    // separator rows, links duplicate their href as `[text](url)`, entities are
+    // unescaped — so the converted Markdown may exceed `maxBytes` even when the
+    // HTML slice fit. Re-measure the emitted bytes and cap them so the body the
+    // LLM sees never blows past the budget the caller relies on. (#286)
+    let bodyTruncated = false;
+    if (converted) {
+      const bodyBytes = new TextEncoder().encode(body);
+      if (bodyBytes.length > this.#maxBytes) {
+        body = new TextDecoder("utf-8", { fatal: false }).decode(
+          bodyBytes.subarray(0, this.#maxBytes),
+        );
+        bodyTruncated = true;
+      }
+    }
 
     let out = `HTTP ${statusLine(resp.status, resp.statusText)}\n${headers}\n${body}`;
-    if (truncated) {
+    // Report what was actually cut. When the emitted body was capped (raw over
+    // budget, or over-long Markdown) the classic marker is accurate. When only
+    // the upstream HTML was cut *before* a within-budget conversion, say so —
+    // otherwise the marker misreports the boundary of a body it didn't trim.
+    if (bodyTruncated || (sourceTruncated && !converted)) {
       out += `\n\n[... truncated at ${this.#maxBytes} bytes ...]`;
+    } else if (sourceTruncated) {
+      out += `\n\n[... source HTML truncated at ${this.#maxBytes} bytes before markdown conversion ...]`;
     }
     return out;
   }

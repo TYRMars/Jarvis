@@ -311,3 +311,67 @@ test("http.fetch default format is raw (HTML preserved)", async () => {
   const out = await tool.invoke({ url: "http://example.test/" });
   assert.ok(out.endsWith(html), "raw HTML preserved by default");
 });
+
+// --------------------------------- format=markdown byte cap + marker (#286)
+
+test("looksLikeHtml: xhtml is HTML; other xml flavours sniff the body", () => {
+  // #286.3: `application/xhtml+xml` is a real HTML type — must not be excluded
+  // by the "xml" substring.
+  assert.equal(looksLikeHtml("application/xhtml+xml; charset=utf-8", ""), true);
+  // Bare `application/xml` is ambiguous: sniff the body instead of hard-failing.
+  assert.equal(looksLikeHtml("application/xml", "<html><body>hi</body></html>"), true);
+  // Real feeds/SVG carry no HTML markers → left as raw.
+  assert.equal(looksLikeHtml("application/rss+xml", "<rss><channel/></rss>"), false);
+  assert.equal(looksLikeHtml("image/svg+xml", "<svg></svg>"), false);
+  // Structured payloads still excluded regardless of body.
+  assert.equal(looksLikeHtml("application/json", "<html>not really</html>"), false);
+});
+
+test("http.fetch markdown output is re-truncated to maxBytes (#286.1)", async () => {
+  // `<hr>` expands under conversion (`<hr>` → `---` + blank lines): 30 rules are
+  // 120 B of HTML but ~148 B of Markdown. With a 130 B cap the HTML *source*
+  // fits (so the raw slice isn't truncated) yet the converted Markdown exceeds
+  // the budget — the exact case the pre-fix code let through unbounded.
+  const html = "<hr>".repeat(30);
+  const maxBytes = 130;
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "content-type": "text/html" }, body: html }),
+  );
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/", format: "markdown" });
+
+  const marker = `\n\n[... truncated at ${maxBytes} bytes ...]`;
+  assert.ok(out.endsWith(marker), `expected body-cut marker, got: ${out}`);
+  // The body between the header block and the marker must not exceed maxBytes.
+  const body = out.slice(out.indexOf("\n\n") + 2, out.length - marker.length);
+  assert.ok(
+    new TextEncoder().encode(body).length <= maxBytes,
+    `markdown body ${new TextEncoder().encode(body).length} B must be <= ${maxBytes}`,
+  );
+});
+
+test("http.fetch markdown marker distinguishes source-vs-output truncation (#286.2)", async () => {
+  // HTML source is byte-truncated, but the converted Markdown fits well within
+  // the cap. The marker must say the *source* was cut, not misreport the body.
+  const html = "<h1>Title</h1>" + "<p>filler</p>".repeat(200);
+  const maxBytes = 64;
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "content-type": "text/html" }, body: html }),
+  );
+  const tool = new HttpFetchTool({ maxBytes, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/", format: "markdown" });
+
+  assert.match(out, /source HTML truncated at 64 bytes before markdown conversion/);
+  assert.doesNotMatch(out, /\[\.\.\. truncated at 64 bytes \.\.\.\]/, "not the body-cut marker");
+});
+
+test("http.fetch raw truncation marker is unchanged on the raw path", async () => {
+  // Regression guard: the non-markdown path keeps the classic marker verbatim.
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "content-type": "text/html" }, body: "<p>0123456789</p>" }),
+  );
+  const tool = new HttpFetchTool({ maxBytes: 8, fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+  assert.ok(out.endsWith("[... truncated at 8 bytes ...]"));
+  assert.doesNotMatch(out, /source HTML truncated/);
+});

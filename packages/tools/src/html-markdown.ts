@@ -25,7 +25,7 @@ export async function htmlToMarkdown(html: string): Promise<string> {
 
 /**
  * Heuristic: is this response worth markdownifying? `content-type` decides when
- * present (HTML → yes; JSON / XML / plain-text → no, leave the structured body
+ * present (HTML → yes; JSON / plain-text / CSV → no, leave the structured body
  * intact); otherwise sniff the first KB of the body for HTML markers. Keeps
  * `format: "markdown"` safe to pass unconditionally — API/JSON responses pass
  * through untouched.
@@ -33,10 +33,18 @@ export async function htmlToMarkdown(html: string): Promise<string> {
 export function looksLikeHtml(contentType: string | undefined, body: string): boolean {
   if (contentType) {
     const ct = contentType.toLowerCase();
+    // `application/xhtml+xml` is HTML — match it before the XML/JSON exclusions
+    // (its type string contains both "html" and "xml", so order matters).
     if (ct.includes("html")) return true;
-    if (ct.includes("json") || ct.includes("xml") || ct.includes("text/plain") || ct.includes("csv")) {
+    // Structured non-HTML payloads: never markdownify, regardless of body.
+    if (ct.includes("json") || ct.includes("text/plain") || ct.includes("csv")) {
       return false;
     }
+    // Other XML flavours (`application/xml`, `image/svg+xml`, RSS/Atom feeds …)
+    // are ambiguous: rather than hard-excluding on the "xml" substring — which
+    // wrongly rejected an HTML document mislabelled `application/xml` — fall
+    // through to the body sniff. Real feeds/SVG lack HTML markers and pass
+    // through as raw; a genuine HTML body is still recognised.
   }
   const head = body.slice(0, 1024).toLowerCase();
   return head.includes("<!doctype html") || head.includes("<html") || head.includes("<body");
