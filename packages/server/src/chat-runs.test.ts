@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
@@ -64,6 +64,51 @@ test("events filters by ?after seq", () => {
   assert.deepEqual(reg.events("c1", 0).map((e) => e.seq), [1, 2]);
   assert.deepEqual(reg.events("c1", 1).map((e) => e.seq), [2]);
   assert.deepEqual(reg.events("missing", 0), []);
+});
+
+test("evicts non-terminal runs left idle past the staleness window (#289)", () => {
+  mock.timers.enable({ apis: ["Date"] });
+  try {
+    const reg = new ChatRunRegistry();
+    reg.start("abandoned"); // stays non-terminal (running) — client disconnected mid-turn
+    assert.deepEqual(reg.list(false).map((r) => r.conversation_id), ["abandoned"]);
+
+    // Idle just under the window, then a new turn sweeps: abandoned still retained.
+    mock.timers.tick(29 * 60_000);
+    reg.start("fresh1");
+    assert.ok(
+      reg.list(false).some((r) => r.conversation_id === "abandoned"),
+      "not yet stale — must survive",
+    );
+
+    // Cross the staleness window; the next sweep reclaims the abandoned run.
+    mock.timers.tick(2 * 60_000);
+    reg.start("fresh2");
+    const ids = reg.list(false).map((r) => r.conversation_id).sort();
+    assert.deepEqual(ids, ["fresh1", "fresh2"], "abandoned run reclaimed; active runs kept");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("an actively-updating run is never mistaken for stale", () => {
+  mock.timers.enable({ apis: ["Date"] });
+  try {
+    const reg = new ChatRunRegistry();
+    reg.start("busy");
+    // Emit an event every 10 min for over an hour — updated_at keeps refreshing.
+    for (let i = 0; i < 7; i++) {
+      mock.timers.tick(10 * 60_000);
+      reg.event("busy", { type: "delta", content: "chunk" });
+      reg.start("nudge"); // trigger an eviction sweep alongside the activity
+    }
+    assert.ok(
+      reg.list(false).some((r) => r.conversation_id === "busy"),
+      "long-but-active run must not be evicted",
+    );
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 // ---------- routes ---------------------------------------------------------

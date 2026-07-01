@@ -50,6 +50,12 @@ interface RunState {
 const MAX_EVENTS = 1000;
 const MAX_RETAINED_TERMINAL = 256;
 const TERMINAL_RETENTION_MS = 5 * 60_000;
+// A non-terminal run left idle this long is treated as abandoned (client
+// disconnected mid-turn or during a HITL/approval pause with no close handler
+// to drive it terminal — see #202/#211) and reclaimed. Kept generous so a
+// genuinely long-but-active turn — which refreshes `updated_at` on every
+// buffered event — is never mistaken for a stalled one.
+const STALE_NONTERMINAL_MS = 30 * 60_000;
 
 export function chatRunStatusIsTerminal(s: ChatRunStatus): boolean {
   return s === "completed" || s === "failed" || s === "cancelled";
@@ -78,7 +84,7 @@ export class ChatRunRegistry {
       events: [],
       abort,
     });
-    this.#evictTerminal();
+    this.#evict();
     return abort.signal;
   }
 
@@ -147,12 +153,21 @@ export class ChatRunRegistry {
     return st.events.filter((e) => e.seq > after);
   }
 
-  /** Evict terminal runs older than the retention window or beyond the cap. */
-  #evictTerminal(): void {
+  /**
+   * Reclaim runs that no longer need retaining: terminal runs past the
+   * retention window (or beyond the cap), and non-terminal runs left idle
+   * beyond `STALE_NONTERMINAL_MS` — abandoned mid-turn or during a HITL pause
+   * that no close handler ever drove to terminal, which would otherwise pin
+   * their RunState + up to MAX_EVENTS buffered frames forever (#289).
+   */
+  #evict(): void {
     const now = Date.now();
     const terminal: Array<[string, RunState]> = [];
     for (const [id, st] of this.#runs) {
-      if (!chatRunStatusIsTerminal(st.record.status)) continue;
+      if (!chatRunStatusIsTerminal(st.record.status)) {
+        if (now - st.record.updated_at > STALE_NONTERMINAL_MS) this.#runs.delete(id);
+        continue;
+      }
       if (now - st.record.updated_at > TERMINAL_RETENTION_MS) {
         this.#runs.delete(id);
       } else {
