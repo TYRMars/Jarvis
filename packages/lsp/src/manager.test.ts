@@ -16,14 +16,14 @@ import { DefaultLanguageRegistry, whichSync, type LanguageRegistry, type ServerS
 const MOCK_SERVER = fileURLToPath(new URL("./mock-lsp-server.ts", import.meta.url));
 
 /** Registry that routes a chosen extension to the mock server over `node`. */
-function mockRegistry(ext: string): LanguageRegistry {
+function mockRegistry(ext: string, extraArgs: string[] = []): LanguageRegistry {
   return {
     resolve(absPath: string): ServerSpec | null {
       if (!absPath.endsWith(ext)) return null;
       return {
         serverKey: "mock",
         command: process.execPath,
-        args: ["--experimental-strip-types", MOCK_SERVER],
+        args: ["--experimental-strip-types", MOCK_SERVER, ...extraArgs],
         languageId: "plaintext",
       };
     },
@@ -109,6 +109,39 @@ test("LspManager.report: a missing server binary degrades to empty (no throw)", 
     const manager = new LspManager({ root: dir, registry, timeoutMs: 1200, settleMs: 100 });
     try {
       assert.equal(await manager.report([file]), "");
+    } finally {
+      await manager.dispose();
+    }
+  });
+});
+
+test("LspManager.report: a never-ready server is evicted, then re-spawned (#285)", async () => {
+  await withWorkspace(async (dir) => {
+    const file = join(dir, "x.mock");
+    await writeFile(file, "@@ERROR@@ boom");
+    // The mock reads this file at startup: "hang" → never answers initialize.
+    const modeFile = join(dir, "mode");
+    await writeFile(modeFile, "hang");
+
+    const manager = new LspManager({
+      root: dir,
+      registry: mockRegistry(".mock", [`--mode-file=${modeFile}`]),
+      // Short init cap so the hung handshake fails fast; no backoff so the very
+      // next report() is allowed to re-spawn.
+      timeoutMs: 400,
+      settleMs: 100,
+      respawnBackoffMs: 0,
+    });
+    try {
+      // First run: the server spawns but never initializes → degrades to "".
+      assert.equal(await manager.report([file]), "", "never-ready server yields no diagnostics");
+
+      // Flip the server healthy; the dead client must have been evicted so this
+      // run re-spawns a fresh, working one and surfaces the diagnostic.
+      await writeFile(modeFile, "ok");
+      const block = await manager.report([file]);
+      assert.match(block, /^<diagnostics file="x\.mock">/, `expected a re-spawned diagnosis, got: ${JSON.stringify(block)}`);
+      assert.match(block, /mock error: boom/);
     } finally {
       await manager.dispose();
     }
