@@ -115,6 +115,47 @@ test("LspManager.report: a missing server binary degrades to empty (no throw)", 
   });
 });
 
+test("LspManager.report: evicts a never-ready client and respawns it (#285)", async () => {
+  await withWorkspace(async (dir) => {
+    const sentinel = join(dir, ".crash-once");
+    const file = join(dir, "x.mock");
+    await writeFile(file, "@@ERROR@@ boom");
+    // A registry whose first spawn crashes before `initialize` completes, then
+    // recovers. With no eviction the crashed client would be cached forever and
+    // every report would return "".
+    const registry: LanguageRegistry = {
+      resolve: (absPath) =>
+        absPath.endsWith(".mock")
+          ? {
+              serverKey: "flaky",
+              command: process.execPath,
+              args: ["--experimental-strip-types", MOCK_SERVER, `--crash-once=${sentinel}`],
+              languageId: "plaintext",
+            }
+          : null,
+    };
+    const manager = new LspManager({
+      root: dir,
+      registry,
+      timeoutMs: 4000,
+      settleMs: 150,
+      initializeTimeoutMs: 1000,
+      respawnBackoffMs: 0, // respawn immediately so the test doesn't wait
+    });
+    try {
+      // First spawn crashes → born dead → no diagnostics.
+      assert.equal(await manager.report([file]), "");
+      // Retry until the evicted slot respawns a healthy server. Without the fix
+      // this loops to exhaustion returning "" (client cached forever).
+      let block = "";
+      for (let i = 0; i < 5 && !block; i++) block = await manager.report([file]);
+      assert.match(block, /mock error: boom/);
+    } finally {
+      await manager.dispose();
+    }
+  });
+});
+
 // --- pure formatter ---
 
 test("report/pretty: errors only, 1-based line/col, capped", () => {

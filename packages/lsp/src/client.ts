@@ -51,6 +51,8 @@ export class LspClient {
   readonly #opened = new Map<string, number>();
   readonly #ready: Promise<void>;
   #closed = false;
+  /** True once the `initialize` handshake rejected (timeout / early exit). */
+  #readyFailed = false;
 
   constructor(opts: LspClientOptions) {
     this.#child = spawn(opts.command, opts.args, {
@@ -62,9 +64,26 @@ export class LspClient {
     this.#child.stderr.on("data", () => {});
     this.#child.on("error", (err) => this.#handleClose(err));
     this.#child.on("exit", () => this.#handleClose(new Error("language server exited")));
+    // A write onto a broken pipe (server crashed/exited) emits an async 'error'
+    // (EPIPE) on the stdin stream. Without a listener Node re-throws it as an
+    // uncaught exception and takes the whole host process down — so treat it as
+    // a close. Best-effort diagnostics must never crash the host.
+    this.#child.stdin.on("error", (err) => this.#handleClose(err));
     this.#ready = this.#initialize(opts.rootUri, opts.initializeTimeoutMs ?? 5000);
-    // Surface nothing if no one awaits readiness before disposing.
-    this.#ready.catch(() => {});
+    // Surface nothing if no one awaits readiness before disposing, but remember
+    // the failure so the manager can evict and respawn a never-ready client.
+    this.#ready.catch(() => {
+      this.#readyFailed = true;
+    });
+  }
+
+  /**
+   * True once this client can no longer produce diagnostics: the child has
+   * closed/exited or its `initialize` handshake failed. A dead client is cached
+   * but useless — the manager evicts it so a later edit re-spawns.
+   */
+  get isDead(): boolean {
+    return this.#closed || this.#readyFailed;
   }
 
   async #initialize(rootUri: string, timeoutMs: number): Promise<void> {
@@ -263,8 +282,15 @@ export class LspClient {
   #send(msg: RpcMessage): void {
     if (this.#closed || !this.#child.stdin.writable) return;
     const payload = Buffer.from(JSON.stringify(msg), "utf8");
-    this.#child.stdin.write(`Content-Length: ${payload.length}\r\n\r\n`);
-    this.#child.stdin.write(payload);
+    // The `writable` check above is TOCTOU: the child can die between it and the
+    // OS accepting the write, so a synchronous `write` can still throw (EPIPE).
+    // Swallow it and mark the client closed — a dead pipe must not break an edit.
+    try {
+      this.#child.stdin.write(`Content-Length: ${payload.length}\r\n\r\n`);
+      this.#child.stdin.write(payload);
+    } catch (err) {
+      this.#handleClose(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   #handleClose(err: Error): void {
