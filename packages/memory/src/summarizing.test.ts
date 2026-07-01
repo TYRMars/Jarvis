@@ -350,6 +350,71 @@ test("a successful summary resets the failure streak", async () => {
   assert.equal(llm.calls, 5, "breaker never tripped because of the reset");
 });
 
+test("open circuit still serves an in-memory cache hit (#287)", async () => {
+  // One successful summary populates the in-memory slot, then the LLM starts
+  // failing and trips the breaker. Re-compacting the *same* dropped prefix
+  // must serve the cached summary, not the "summary unavailable" placeholder.
+  class OkThenFail implements LlmProvider {
+    calls = 0;
+    complete(_req: ChatRequest): Promise<ChatResponse> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        return Promise.resolve({ message: assistantText("CACHED SUMMARY"), finish_reason: "stop" });
+      }
+      return Promise.reject(new Error("status 500: nope"));
+    }
+    completeStream(): AsyncIterable<LlmChunk> {
+      throw new Error("unused");
+    }
+  }
+  const llm = new OkThenFail();
+  const mem = new SummarizingMemory(llm, "test-model", 64);
+  const msgs = [sys("sys"), user("old"), asst("old reply"), user("recent"), asst("recent reply")];
+
+  // Seed the in-memory cache with a real summary.
+  const seeded = await mem.compact(msgs);
+  assert.ok(hasSystemContaining(seeded, "CACHED SUMMARY"));
+
+  // Trip the breaker with three distinct prefixes (each forces a fresh LLM
+  // call that fails). calls: 1 (seed, ok) + 3 (fail) = 4.
+  for (let i = 0; i < 3; i++) {
+    await mem.compact([sys("sys"), user(`x-${i}`), asst("r"), user("recent"), asst("recent reply")]);
+  }
+  assert.equal(llm.calls, 4, "breaker should be open after 3 failures");
+
+  // Circuit is open — re-compacting the seeded prefix must still hit the cache.
+  const afterOpen = await mem.compact(msgs);
+  assert.ok(
+    hasSystemContaining(afterOpen, "CACHED SUMMARY"),
+    "open circuit must still serve the cached summary, not the placeholder",
+  );
+  assert.ok(
+    !hasSystemContaining(afterOpen, "summary unavailable"),
+    "cached slice must not degrade to the placeholder while the circuit is open",
+  );
+  assert.equal(llm.calls, 4, "cache hit must not invoke the LLM while the circuit is open");
+});
+
+test("open circuit still serves a persistent-store hit (#287)", async () => {
+  // A summary sits in the durable store; the LLM is always failing and the
+  // breaker is open. The store lookup (tier 2) must still be consulted.
+  const store = new FakeStore();
+  const dropped = [user("old"), asst("old reply")];
+  store.rows.set(fingerprint(dropped), "STORED SUMMARY");
+  const llm = new FailingLlm();
+  const mem = new SummarizingMemory(llm, "test-model", 64).withPersistence(store);
+
+  // Trip the breaker with distinct, un-stored prefixes.
+  for (let i = 0; i < 3; i++) {
+    await mem.compact([sys("sys"), user(`y-${i}`), asst("r"), user("recent"), asst("recent reply")]);
+  }
+  assert.equal(llm.calls, 3, "breaker should be open after 3 failures");
+
+  const out = await mem.compact([sys("sys"), user("old"), asst("old reply"), user("recent"), asst("recent reply")]);
+  assert.ok(hasSystemContaining(out, "STORED SUMMARY"), "open circuit must still consult the persistent store");
+  assert.equal(llm.calls, 3, "store hit must not invoke the LLM while the circuit is open");
+});
+
 // ---------- PTL safety net ----------
 
 test("PTL drops oldest turns when the summary pushes over budget", async () => {
