@@ -193,24 +193,35 @@ export class McpManager {
     if (cfg.prefix !== prefix) {
       throw new McpManagerError(`body prefix '${cfg.prefix}' does not match path '${prefix}'`, 400);
     }
-    if (!this.#slots.has(prefix)) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
-    await this.remove(prefix);
-    return this.add(cfg);
+    // remove + add MUST run inside a SINGLE critical section: they call the
+    // *Inner primitives directly (not the individually-locked remove/add) so no
+    // other mutation can slip into the gap and re-register the prefix (#288).
+    // The slot-existence check also lives inside the lock so a concurrent remove
+    // can't race it.
+    return this.#withLock(async () => {
+      if (!this.#slots.has(prefix)) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
+      await this.#removeInner(prefix);
+      return this.#addInner(cfg);
+    });
   }
 
   /** Restart using the slot's stored config; restore a Stopped slot on failure. */
   async reload(prefix: string): Promise<string[]> {
-    const slot = this.#slots.get(prefix);
-    if (!slot) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
-    const cfg = slot.config;
-    await this.remove(prefix);
-    try {
-      return await this.add(cfg);
-    } catch (e) {
-      // Preserve the slot as Stopped so the operator can retry.
-      this.#slots.set(prefix, { config: cfg, tools: [], status: "stopped" });
-      throw e;
-    }
+    // Same atomicity requirement as replace(): read the config, remove, and
+    // re-add within one lock so the slot can't be mutated in the gap (#288).
+    return this.#withLock(async () => {
+      const slot = this.#slots.get(prefix);
+      if (!slot) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
+      const cfg = slot.config;
+      await this.#removeInner(prefix);
+      try {
+        return await this.#addInner(cfg);
+      } catch (e) {
+        // Preserve the slot as Stopped so the operator can retry.
+        this.#slots.set(prefix, { config: cfg, tools: [], status: "stopped" });
+        throw e;
+      }
+    });
   }
 }
 

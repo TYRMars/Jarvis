@@ -175,3 +175,16 @@ test("list_caps_limit_at_200", async () => {
   const listed = items(await list.invoke({ limit: 100000 }));
   assert.equal(listed.length, 1);
 });
+
+test("list_clamps_negative_limit_to_one", async () => {
+  // A negative `limit` (schema minimum:1 not enforced pre-dispatch) must not
+  // reach the store's slice(0,-N) and silently drop the last N rows.
+  const s = store();
+  const add = new LearningMemoryAddTool(s);
+  const list = new LearningMemoryListTool(s);
+  await add.invoke({ title: "a", body: "b" });
+  await add.invoke({ title: "c", body: "d" });
+  await add.invoke({ title: "e", body: "f" });
+  const listed = items(await list.invoke({ limit: -2 }));
+  assert.equal(listed.length, 1, "negative limit clamps to 1, not 3-2=1-row-drop");
+});
