@@ -212,21 +212,28 @@ export class SummarizingMemory implements Memory {
       }
     }
 
-    // Summarise the dropped slice (soft-failing). The circuit breaker skips
-    // the LLM entirely while open.
+    // Summarise the dropped slice (soft-failing). Tiers 1 & 2 (in-memory slot +
+    // persistent store) never touch the LLM, so we consult them *unconditionally*
+    // — even while the circuit breaker is open — so an already-computed summary
+    // for this exact slice still serves. Only tier 3 (the LLM call) is gated
+    // behind the breaker (issue #287).
     let summary: string | undefined;
-    if (droppedMsgs.length > 0 && !this.#circuitOpen()) {
-      try {
-        summary = await this.#summarise(droppedMsgs);
-        this.#recordSuccess();
-      } catch (err) {
-        this.#recordFailure();
-        // Soft-fail: a flaky summariser must not bring down the user's turn.
-        // Fall through to the placeholder note. (Logged via console.warn so
-        // the failure is not invisible; @jarvis/memory has no tracing dep.)
-        console.warn(
-          `summary failed; falling back to placeholder note (dropped=${droppedCount}): ${String(err)}`,
-        );
+    if (droppedMsgs.length > 0) {
+      const fp = fingerprint(droppedMsgs);
+      summary = await this.#lookupCached(fp);
+      if (summary === undefined && !this.#circuitOpen()) {
+        try {
+          summary = await this.#summariseViaLlm(droppedMsgs, fp);
+          this.#recordSuccess();
+        } catch (err) {
+          this.#recordFailure();
+          // Soft-fail: a flaky summariser must not bring down the user's turn.
+          // Fall through to the placeholder note. (Logged via console.warn so
+          // the failure is not invisible; @jarvis/memory has no tracing dep.)
+          console.warn(
+            `summary failed; falling back to placeholder note (dropped=${droppedCount}): ${String(err)}`,
+          );
+        }
       }
     }
 
@@ -300,15 +307,13 @@ export class SummarizingMemory implements Memory {
   // --- three-tier lookup ---
 
   /**
-   * Resolve a summary for `dropped` via, in order: (1) the in-memory slot,
-   * (2) the persistent SummaryStore, (3) the LLM. On an LLM summary, write
-   * back to the in-memory slot and (if present) the store. Store failures
-   * degrade gracefully (warn-and-continue, fall through). Throws only when
-   * the LLM call fails (the caller soft-fails to a placeholder).
+   * Tiers 1 & 2 of the three-tier lookup: the in-memory slot then the durable
+   * SummaryStore. Neither touches the LLM, so this is always safe to call —
+   * including while the circuit breaker is open. Returns the cached summary for
+   * `fp`, or `undefined` on a miss. Store failures degrade gracefully
+   * (warn-and-continue → miss); never throws.
    */
-  async #summarise(dropped: Message[]): Promise<string> {
-    const fp = fingerprint(dropped);
-
+  async #lookupCached(fp: string): Promise<string | undefined> {
     // Tier 1: in-memory single-slot cache.
     if (this.#cache !== undefined && this.#cache.fingerprint === fp) {
       return this.#cache.text;
@@ -325,12 +330,22 @@ export class SummarizingMemory implements Memory {
           return text;
         }
       } catch (err) {
-        // Don't fail compaction on a flaky backend — fall through to the LLM.
+        // Don't fail compaction on a flaky backend — treat as a miss.
         console.warn(`summary store load failed (fingerprint=${fp}): ${String(err)}`);
       }
     }
 
-    // Tier 3: ask the LLM. Pinned temperature, NO tools. The model is the
+    return undefined;
+  }
+
+  /**
+   * Tier 3: ask the LLM for a fresh summary of `dropped`, then write it back to
+   * the in-memory slot and (if present) the store. `fp` is the caller's already
+   * -computed fingerprint of `dropped`. Store save failures degrade gracefully;
+   * throws only when the LLM call fails (the caller soft-fails to a placeholder).
+   */
+  async #summariseViaLlm(dropped: Message[], fp: string): Promise<string> {
+    // Ask the LLM. Pinned temperature, NO tools. The model is the
     // route policy's summarization override when present, else the default.
     const req: ChatRequest = {
       model: this.#resolveModel?.() ?? this.#model,
