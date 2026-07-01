@@ -149,6 +149,30 @@ test("health returns tool count; replace validates; reload restores stopped on f
   assert.equal(m3.get("srv")!.status, "stopped");
 });
 
+test("replace is atomic w.r.t. a concurrent add on the same prefix (#288)", async () => {
+  const reg = new ToolRegistry();
+  const m = new McpManager(reg, fakeConnect({ web: ["x"] }));
+  await m.add(stdio("web"));
+
+  // A replace and a same-prefix add fired in the same tick. `replace` acquires
+  // the mutation lock first; its remove+add must run as ONE critical section so
+  // the queued add can't slip into the gap and re-register the prefix.
+  const replaceCfg: McpClientConfig = { ...stdio("web"), alias: { who: "replace" } };
+  const raceCfg: McpClientConfig = { ...stdio("web"), alias: { who: "race" } };
+  const results = await Promise.allSettled([m.replace("web", replaceCfg), m.add(raceCfg)]);
+
+  // replace wins; the concurrent add is rejected 409 (prefix still occupied).
+  assert.equal(results[0]!.status, "fulfilled");
+  assert.equal(results[1]!.status, "rejected");
+  const err = (results[1] as PromiseRejectedResult).reason;
+  assert.ok(err instanceof McpManagerError && err.status === 409);
+
+  // The slot reflects the replace, not the racing add.
+  const info = m.get("web")!;
+  assert.equal(info.status, "running");
+  assert.deepEqual(info.config.alias, { who: "replace" });
+});
+
 // ---------- routes ---------------------------------------------------------
 
 async function buildApp(state: AppState) {

@@ -193,19 +193,31 @@ export class McpManager {
     if (cfg.prefix !== prefix) {
       throw new McpManagerError(`body prefix '${cfg.prefix}' does not match path '${prefix}'`, 400);
     }
+    // remove + add must run under a SINGLE lock so no other mutation can slip
+    // into the gap (e.g. an add re-registering the prefix before our add runs).
+    return this.#withLock(() => this.#replaceInner(prefix, cfg));
+  }
+
+  async #replaceInner(prefix: string, cfg: McpClientConfig): Promise<string[]> {
     if (!this.#slots.has(prefix)) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
-    await this.remove(prefix);
-    return this.add(cfg);
+    await this.#removeInner(prefix);
+    return this.#addInner(cfg);
   }
 
   /** Restart using the slot's stored config; restore a Stopped slot on failure. */
   async reload(prefix: string): Promise<string[]> {
+    // Whole remove + add is one critical section — otherwise a concurrent
+    // mutation queued in the gap can re-take the prefix under a different config.
+    return this.#withLock(() => this.#reloadInner(prefix));
+  }
+
+  async #reloadInner(prefix: string): Promise<string[]> {
     const slot = this.#slots.get(prefix);
     if (!slot) throw new McpManagerError(`unknown mcp server '${prefix}'`, 400);
     const cfg = slot.config;
-    await this.remove(prefix);
+    await this.#removeInner(prefix);
     try {
-      return await this.add(cfg);
+      return await this.#addInner(cfg);
     } catch (e) {
       // Preserve the slot as Stopped so the operator can retry.
       this.#slots.set(prefix, { config: cfg, tools: [], status: "stopped" });

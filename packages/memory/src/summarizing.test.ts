@@ -350,6 +350,33 @@ test("a successful summary resets the failure streak", async () => {
   assert.equal(llm.calls, 5, "breaker never tripped because of the reset");
 });
 
+test("an open circuit breaker still serves a cached summary (#287)", async () => {
+  const store = new FakeStore();
+  // Pre-seed a valid summary for the exact slice the target compact will drop.
+  const dropped = [user("keepme old"), asst("keepme reply")];
+  store.rows.set(fingerprint(dropped), "CACHED SUMMARY");
+
+  const llm = new FailingLlm();
+  const mem = new SummarizingMemory(llm, "test-model", 64).withPersistence(store);
+
+  // Trip the breaker with three DISTINCT dropped slices, so tiers 1 & 2 miss
+  // and the LLM is actually attempted (and fails) each time.
+  for (let i = 0; i < 3; i++) {
+    await mem.compact([sys("sys"), user(`other-${i}`), asst("other reply"), user("recent"), asst("recent reply")]);
+  }
+  assert.equal(llm.calls, 3, "three failed attempts trip the breaker");
+
+  // Circuit is now open. Compacting the slice whose summary is in the store
+  // must still serve it (tier 2) WITHOUT touching the LLM — before the fix the
+  // open breaker skipped the cache tiers and emitted the placeholder instead.
+  const out = await mem.compact([
+    sys("sys"), user("keepme old"), asst("keepme reply"), user("recent"), asst("recent reply"),
+  ]);
+  assert.equal(llm.calls, 3, "cache tiers must not attempt the LLM while the circuit is open");
+  assert.ok(hasSystemContaining(out, "CACHED SUMMARY"), "cached summary must serve despite the open circuit");
+  assert.ok(!hasSystemContaining(out, "summary unavailable"), "must not degrade to the placeholder on a cache hit");
+});
+
 // ---------- PTL safety net ----------
 
 test("PTL drops oldest turns when the summary pushes over budget", async () => {
