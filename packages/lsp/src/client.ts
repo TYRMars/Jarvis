@@ -88,6 +88,26 @@ export class LspClient {
   }
 
   /**
+   * Resolve `true` once `initialize` has completed and the child is still up,
+   * `false` if initialization failed/timed out or the process has exited. Never
+   * rejects — the manager uses it as a health gate to evict a dead client from
+   * its cache instead of reusing a permanently-broken server.
+   */
+  async ready(): Promise<boolean> {
+    try {
+      await this.#ready;
+    } catch {
+      return false;
+    }
+    return !this.#closed;
+  }
+
+  /** True once the child has errored, exited, or been disposed. */
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  /**
    * Open (or re-sync) `absPath` and resolve with the diagnostics the server
    * pushes for it, `settleMs` after the last push or at `timeoutMs`. Best-effort:
    * a server that never pushes resolves `[]` at the hard timeout.

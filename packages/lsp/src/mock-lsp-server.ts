@@ -10,7 +10,30 @@
 //
 // Run as: `node --experimental-strip-types mock-lsp-server.ts` (the path is
 // passed by the test through a custom LanguageRegistry).
+//
+// Fault injection (for the manager's dead-client eviction tests): pass
+// `--mode-file=<path>` and the server reads that file at startup —
+//   "hang" → accept the connection but never answer `initialize` (readiness
+//            times out); "exit" → exit(1) immediately; anything else → normal.
+// The file is re-read on every (re)spawn, so a test can flip a server from
+// broken to healthy between `report()` calls.
 import { Buffer } from "node:buffer";
+import { readFileSync } from "node:fs";
+
+/** Startup fault mode, read once from `--mode-file` (default: healthy). */
+function startupMode(): "hang" | "exit" | "ok" {
+  const arg = process.argv.slice(2).find((a) => a.startsWith("--mode-file="));
+  if (!arg) return "ok";
+  try {
+    const mode = readFileSync(arg.slice("--mode-file=".length), "utf8").trim();
+    return mode === "hang" || mode === "exit" ? mode : "ok";
+  } catch {
+    return "ok";
+  }
+}
+
+const MODE = startupMode();
+if (MODE === "exit") process.exit(1);
 
 interface RpcMessage {
   jsonrpc?: string;
@@ -62,6 +85,8 @@ function docFromParams(params: unknown): { uri: string; text: string } | null {
 function handle(msg: RpcMessage): void {
   switch (msg.method) {
     case "initialize":
+      // "hang" mode: swallow the handshake so the client's readiness times out.
+      if (MODE === "hang") return;
       send({ id: msg.id, result: { capabilities: {} } });
       return;
     case "shutdown":

@@ -25,6 +25,13 @@ export interface LspManagerOptions {
   timeoutMs?: number;
   /** Quiet window after the last push before resolving. Default 400ms. */
   settleMs?: number;
+  /**
+   * After a server fails to come up (never `initialize`d, or the child died on
+   * startup) its cache slot is evicted; this is how long to wait before the next
+   * `report()` is allowed to re-spawn it, so a persistently-broken server can't
+   * trigger a respawn storm. Default 2000ms.
+   */
+  respawnBackoffMs?: number;
 }
 
 export class LspManager {
@@ -32,14 +39,18 @@ export class LspManager {
   readonly #registry: LanguageRegistry;
   readonly #timeoutMs: number;
   readonly #settleMs: number;
+  readonly #respawnBackoffMs: number;
   /** serverKey → client (a promise so concurrent files share one spawn). */
   readonly #clients = new Map<string, Promise<LspClient | null>>();
+  /** serverKey → epoch ms of the last failed bring-up (respawn backoff gate). */
+  readonly #failedAt = new Map<string, number>();
 
   constructor(opts: LspManagerOptions) {
     this.#root = opts.root;
     this.#registry = opts.registry ?? new DefaultLanguageRegistry(opts.search ?? {});
     this.#timeoutMs = opts.timeoutMs ?? 5000;
     this.#settleMs = opts.settleMs ?? 400;
+    this.#respawnBackoffMs = opts.respawnBackoffMs ?? 2000;
   }
 
   /**
@@ -73,23 +84,51 @@ export class LspManager {
     return report(label, diagnostics);
   }
 
-  #getClient(serverKey: string, command: string, args: string[]): Promise<LspClient | null> {
-    const existing = this.#clients.get(serverKey);
-    if (existing) return existing;
-    const created = Promise.resolve().then<LspClient | null>(() => {
-      try {
-        return new LspClient({
-          command,
-          args,
-          rootUri: pathToFileURL(this.#root).toString(),
-          cwd: this.#root,
-        });
-      } catch {
+  async #getClient(serverKey: string, command: string, args: string[]): Promise<LspClient | null> {
+    let entry = this.#clients.get(serverKey);
+    if (!entry) {
+      // Respawn backoff: skip a server that just failed to come up so a broken
+      // binary can't be re-spawned on every edit.
+      const failedAt = this.#failedAt.get(serverKey);
+      if (failedAt !== undefined && this.#now() - failedAt < this.#respawnBackoffMs) {
         return null;
       }
-    });
-    this.#clients.set(serverKey, created);
-    return created;
+      entry = Promise.resolve().then<LspClient | null>(() => {
+        try {
+          return new LspClient({
+            command,
+            args,
+            rootUri: pathToFileURL(this.#root).toString(),
+            cwd: this.#root,
+            initializeTimeoutMs: this.#timeoutMs,
+          });
+        } catch {
+          return null;
+        }
+      });
+      this.#clients.set(serverKey, entry);
+    }
+
+    const client = await entry;
+    // A dead client — synchronous spawn throw (null), a child that exited, or an
+    // `initialize` that never completed — must be evicted so a later report()
+    // re-spawns instead of `await`ing a rejected `#ready` forever (#285). The
+    // slot is only removed if it's still the one we resolved, so a concurrent
+    // respawn isn't clobbered.
+    if (!client || client.closed || !(await client.ready())) {
+      if (this.#clients.get(serverKey) === entry) this.#clients.delete(serverKey);
+      this.#failedAt.set(serverKey, this.#now());
+      if (client) void client.dispose().catch(() => {});
+      return null;
+    }
+    // Healthy: clear any prior failure stamp.
+    this.#failedAt.delete(serverKey);
+    return client;
+  }
+
+  /** Wall clock, isolated so it reads clearly and is trivial to reason about. */
+  #now(): number {
+    return Date.now();
   }
 
   /** Shut every spawned server down. Call on process shutdown. */
