@@ -238,7 +238,10 @@ function anchorPatterns(raw: string, relPrefix: string): string[] {
     }
     // A pattern that is rooted (leading `/`) or contains an interior slash is
     // relative to the directory the ignore file lives in; anchor it under the
-    // prefix. A bare-name pattern applies at any depth, so leave it global.
+    // prefix. A bare-name pattern applies at any depth too — but only *within*
+    // the declaring directory, never across sibling subtrees — so anchor it
+    // under the prefix as well (`build` from `a/.gitignore` → `a/**/build`,
+    // not a global `build` that would also swallow `b/build`).
     const rooted = body.startsWith("/");
     const hasInteriorSlash = body.replace(/\/$/, "").includes("/");
     let anchored: string;
@@ -247,7 +250,7 @@ function anchorPatterns(raw: string, relPrefix: string): string[] {
     } else if (hasInteriorSlash) {
       anchored = `${relPrefix}/${body}`;
     } else {
-      anchored = body;
+      anchored = `${relPrefix}/**/${body}`;
     }
     out.push(negate ? `!${anchored}` : anchored);
   }

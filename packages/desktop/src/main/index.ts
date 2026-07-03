@@ -66,6 +66,13 @@ async function createWindow(): Promise<void> {
     },
   });
   mainWindow = win;
+  // Hand external URLs (OAuth start, doc/PR links opened via window.open or
+  // target=_blank) to the OS browser and never spawn an uncontrolled in-app
+  // BrowserWindow that would escape the parent's hardened webPreferences.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
