@@ -215,11 +215,12 @@ export class FsFindTool implements Tool {
 
 /**
  * Anchor gitignore patterns from a file located at `relPrefix` so they match
- * paths relative to the scope root. Patterns without a leading `/` or interior
- * slash apply to any depth (gitignore semantics) so they're left as-is; the
- * `ignore` package will still match them against the deeper relative paths.
- * We keep this conservative: when there's a prefix, prepend it so a rooted or
- * pathful pattern stays scoped to the subtree it was declared in.
+ * paths relative to the scope root. Every pattern from a nested ignore file is
+ * scoped to the subtree it was declared in: rooted / pathful patterns get the
+ * prefix prepended, and a bare-name pattern (which gitignore applies at any
+ * depth below the declaring directory) is scoped under the prefix with a
+ * globstar so it still matches at any nested depth within that subtree without
+ * leaking onto sibling subtrees.
  */
 function anchorPatterns(raw: string, relPrefix: string): string[] {
   const out: string[] = [];
@@ -238,7 +239,11 @@ function anchorPatterns(raw: string, relPrefix: string): string[] {
     }
     // A pattern that is rooted (leading `/`) or contains an interior slash is
     // relative to the directory the ignore file lives in; anchor it under the
-    // prefix. A bare-name pattern applies at any depth, so leave it global.
+    // prefix. A bare-name pattern (no slash) applies at any depth *within the
+    // declaring directory* — not globally across sibling subtrees — so scope it
+    // under the prefix with a `**/` so it still matches at any nested depth
+    // (`build` from `a/.gitignore` → `a/**/build`, matching `a/build` and
+    // `a/x/build` but never `b/build`).
     const rooted = body.startsWith("/");
     const hasInteriorSlash = body.replace(/\/$/, "").includes("/");
     let anchored: string;
@@ -247,7 +252,7 @@ function anchorPatterns(raw: string, relPrefix: string): string[] {
     } else if (hasInteriorSlash) {
       anchored = `${relPrefix}/${body}`;
     } else {
-      anchored = body;
+      anchored = `${relPrefix}/**/${body}`;
     }
     out.push(negate ? `!${anchored}` : anchored);
   }
