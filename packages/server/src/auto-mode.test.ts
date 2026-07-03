@@ -769,3 +769,22 @@ test("POST max_retries sets/clears the override; GET surfaces it", async () => {
 
   await app.close();
 });
+
+test("POST max_retries rejects a negative value with 400 and leaves the override untouched", async () => {
+  const runtime = new AutoModeRuntime("auto", 2);
+  const config = cfg({ maxRetries: 1 });
+  const state = emptyState({ autoModeRuntime: runtime, autoModeConfig: config });
+  const app = await buildApp(state);
+
+  // Seed a valid override so we can prove the rejected request doesn't clobber it.
+  await app.inject({ method: "POST", url: "/v1/auto-mode", payload: { max_retries: 5 } });
+
+  const res = await app.inject({ method: "POST", url: "/v1/auto-mode", payload: { max_retries: -1 } });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "max_retries must be >= 0");
+  // A negative ceiling would make `consecutiveFailed >= maxRetries` true for every
+  // requirement (0 >= -1), silently disabling the scheduler — the override must not change.
+  assert.equal(runtime.maxRetriesOverride(), 5, "prior override preserved after a rejected request");
+
+  await app.close();
+});
