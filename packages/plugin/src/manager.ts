@@ -374,12 +374,24 @@ export class PluginManager {
     }
     const manifest: PluginManifest = parsePluginManifest(text);
 
-    // Skills: re-load each one and insert.
+    // Skills: re-load each one and insert. Reattach runs at startup *after*
+    // built-ins are wired, so unlike `installFromPath` (which conflict-checks
+    // against the then-current set) a name that was free at install time can
+    // now collide with a newly-added built-in/bundled skill. `SkillCatalog.insert`
+    // is last-write-wins, so an unchecked insert would silently shadow that
+    // built-in. Skip (and warn) on collision rather than overwrite.
     for (const rel of manifest.skills) {
       const abs = path.join(entry.install_dir, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       const raw = await readFile(skillMd, "utf8");
       const parsed = parseSkill(raw);
+      if (this.#skills.get(parsed.manifest.name) !== undefined) {
+        console.warn(
+          `[plugin] reattach: skill \`${parsed.manifest.name}\` from plugin \`${entry.name}\` ` +
+            `is already registered (built-in or another plugin); skipping to avoid shadowing it`,
+        );
+        continue;
+      }
       this.#skills.insert({
         manifest: parsed.manifest,
         body: parsed.body,
@@ -388,8 +400,17 @@ export class PluginManager {
       });
     }
 
-    // MCP: re-add each server. Failures are swallowed so the rest come up.
+    // MCP: re-add each server. Same collision reasoning as skills — skip (and
+    // warn) a prefix already owned by the live registry instead of shadowing it.
+    // Failures are swallowed so the rest come up.
     for (const [prefix, cfg] of Object.entries(manifest.mcp_servers)) {
+      if ((await this.#mcp.get(prefix)) !== undefined) {
+        console.warn(
+          `[plugin] reattach: mcp prefix \`${prefix}\` from plugin \`${entry.name}\` ` +
+            `is already registered (built-in or another plugin); skipping to avoid shadowing it`,
+        );
+        continue;
+      }
       const cloned: McpClientConfig = { ...cfg, prefix };
       await this.#mcp.add(cloned).catch(() => {});
     }
