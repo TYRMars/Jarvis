@@ -236,7 +236,20 @@ export async function automationTick(
     const release = claims.tryClaim(current.id);
     if (!release) continue;
     spawned += 1;
-    runs.push(runAutomation(deps, current, "schedule", release, config));
+    // Mirror the manual trigger path's guard: `runAutomation`'s pre-execute
+    // bookkeeping (`structuredClone` / `markRunning`) runs before its inner
+    // try/catch, so a throw there rejects this promise. In production these
+    // runs are fire-and-forget (`awaitRuns` is false), so without a `.catch`
+    // that rejection surfaces as a process-level unhandledRejection and can
+    // take the whole server down (#299).
+    runs.push(
+      runAutomation(deps, current, "schedule", release, config).catch((e) => {
+        logger.warn("scheduled automation run rejected", {
+          error: errorText(e),
+          automation_id: current.id,
+        });
+      }),
+    );
   }
 
   if (awaitRuns) await Promise.all(runs);

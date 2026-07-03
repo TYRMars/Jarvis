@@ -762,6 +762,19 @@ function resolvePublicHost(state: AppState): string | undefined {
 // ============================================================================
 
 export function registerChannelsInboundRoutes(app: FastifyInstance, state: AppState): void {
+  // Register the inbound callback routes + their raw-body content-type parsers
+  // inside an ENCAPSULATED Fastify plugin. Content-type parsers are scoped to
+  // the context they're added in, so the permissive `*` catch-all the callbacks
+  // need (to preserve the verbatim signed payload) applies ONLY to this
+  // subtree. On the shared root instance it would replace Fastify's default
+  // 415-on-unknown-content-type for every route process-wide, making unrelated
+  // routes silently accept odd content-types as raw bytes (#297).
+  void app.register(async (scoped) => {
+    registerInboundCallbackRoutes(scoped, state);
+  });
+}
+
+function registerInboundCallbackRoutes(app: FastifyInstance, state: AppState): void {
   // Inbound callbacks need the raw body bytes (the signature covers the
   // verbatim <Encrypt> payload). Register a content-type parser that keeps the
   // body as a Buffer for the callback paths' content types.

@@ -1048,6 +1048,13 @@ export function registerAutoModeRoutes(
     if (typeof rawBody.max_retries === "number" && Number.isFinite(rawBody.max_retries)) {
       // 0 is the "clear override" sentinel; anything else sets the new ceiling.
       const value = Math.trunc(rawBody.max_retries);
+      // Reject negatives: a negative ceiling makes the tick's retry guard
+      // (`consecutiveFailed >= maxRetries`) true for every requirement — even
+      // one with zero failures satisfies `0 >= -1` — which would silently
+      // disable the entire scheduler with a cheerful 200 (#298).
+      if (value < 0) {
+        return reply.code(400).send({ error: "max_retries must be >= 0" });
+      }
       runtime.setMaxRetriesOverride(value === 0 ? undefined : value);
     }
     const response: Record<string, unknown> = {
