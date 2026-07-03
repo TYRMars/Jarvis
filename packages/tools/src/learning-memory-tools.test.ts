@@ -175,3 +175,19 @@ test("list_caps_limit_at_200", async () => {
   const listed = items(await list.invoke({ limit: 100000 }));
   assert.equal(listed.length, 1);
 });
+
+test("list_lower_clamps_negative_limit", async () => {
+  // A negative `limit` must not reach `slice(0, -N)` and silently drop the
+  // last N rows; it is lower-clamped to 1. (Regression: #276.)
+  const s = store();
+  const add = new LearningMemoryAddTool(s);
+  const list = new LearningMemoryListTool(s);
+  await add.invoke({ title: "a", body: "b" });
+  await add.invoke({ title: "c", body: "d" });
+  await add.invoke({ title: "e", body: "f" });
+  // With the bug, `limit: -1` → slice(0, -1) drops the last row → 2 rows.
+  // Clamped to 1, exactly one row is returned rather than a silently-truncated
+  // "all but the last" result.
+  const listed = items(await list.invoke({ limit: -1 }));
+  assert.equal(listed.length, 1);
+});

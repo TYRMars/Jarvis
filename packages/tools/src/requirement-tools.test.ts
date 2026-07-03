@@ -101,6 +101,18 @@ test("list filters by status", async () => {
   assert.equal((backlog["items"] as Array<{ title: string }>)[0].title, "still-open");
 });
 
+test("list lower-clamps a negative limit instead of dropping the last row", async () => {
+  // A negative `limit` must not reach `items.slice(0, -N)` and silently drop
+  // the newest-sorted last row(s); it is lower-clamped to 1. (Regression: #249.)
+  const { rs } = fixtures();
+  await seed(rs, "p", "one");
+  await seed(rs, "p", "two");
+  await seed(rs, "p", "three");
+  // With the bug, `limit: -1` → slice(0, -1) returns 2 rows; clamped it returns 1.
+  const out = parse(await new RequirementListTool(rs).invoke({ project_id: "p", limit: -1 }));
+  assert.equal(out["count"], 1);
+});
+
 test("list rejects blank project_id", async () => {
   const { rs } = fixtures();
   const tool = new RequirementListTool(rs);
