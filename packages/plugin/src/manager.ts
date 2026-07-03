@@ -38,6 +38,19 @@ export interface McpManagerLike {
   get(prefix: string): Promise<unknown | undefined>;
 }
 
+/**
+ * Where the manager emits non-fatal warnings (e.g. a reattached skill/MCP
+ * prefix that would shadow an already-registered name). Injectable so tests can
+ * capture messages; defaults to `console.warn`.
+ */
+export interface PluginManagerLogger {
+  warn(message: string): void;
+}
+
+const DEFAULT_LOGGER: PluginManagerLogger = {
+  warn: (message) => console.warn(`[plugin] ${message}`),
+};
+
 /** Error kinds out of the plugin manager. Mirrors Rust's `PluginManagerError`. */
 export type PluginManagerErrorKind =
   | "already_installed"
@@ -126,6 +139,7 @@ export class PluginManager {
   readonly #root: string;
   readonly #skills: SkillCatalog;
   readonly #mcp: McpManagerLike;
+  readonly #logger: PluginManagerLogger;
   /** In-memory install ledger keyed by plugin name. */
   readonly #ledger: Map<string, InstalledPlugin>;
   /** Serialises mutating operations (install / uninstall) — Rust's tokio::Mutex. */
@@ -136,25 +150,30 @@ export class PluginManager {
     skills: SkillCatalog,
     mcp: McpManagerLike,
     ledger: Map<string, InstalledPlugin>,
+    logger: PluginManagerLogger,
   ) {
     this.#root = root;
     this.#skills = skills;
     this.#mcp = mcp;
     this.#ledger = ledger;
+    this.#logger = logger;
   }
 
   /**
    * Build a manager pointed at `root`. Creates the directory, then loads the
-   * ledger if present (absent / empty file = empty ledger).
+   * ledger if present (absent / empty file = empty ledger). An optional
+   * {@link PluginManagerLogger} receives non-fatal warnings (defaults to
+   * `console.warn`).
    */
   static async open(
     root: string,
     skills: SkillCatalog,
     mcp: McpManagerLike,
+    logger: PluginManagerLogger = DEFAULT_LOGGER,
   ): Promise<PluginManager> {
     await ensureDir(root).catch(() => {});
     const ledger = await readLedger(root);
-    return new PluginManager(root, skills, mcp, ledger);
+    return new PluginManager(root, skills, mcp, ledger, logger);
   }
 
   /** The plugins-root directory this manager owns. */
@@ -374,12 +393,25 @@ export class PluginManager {
     }
     const manifest: PluginManifest = parsePluginManifest(text);
 
-    // Skills: re-load each one and insert.
+    // Skills: re-load each one and insert. Unlike install, reattach runs at
+    // startup *after* built-ins are wired, so a name that was free at install
+    // time can now collide with a newly-added built-in/bundled skill. Skip
+    // (and warn) on conflict rather than silently shadowing it — mirrors the
+    // conflict gate `installFromPath` applies. (SkillCatalog.insert is
+    // last-write-wins, so an unchecked insert would erase the built-in.)
     for (const rel of manifest.skills) {
       const abs = path.join(entry.install_dir, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       const raw = await readFile(skillMd, "utf8");
       const parsed = parseSkill(raw);
+      const skillName = parsed.manifest.name;
+      if (this.#skills.get(skillName) !== undefined) {
+        this.#logger.warn(
+          `plugin \`${entry.name}\`: skill \`${skillName}\` already registered ` +
+            `(built-in or another plugin); skipping reattach to avoid shadowing it`,
+        );
+        continue;
+      }
       this.#skills.insert({
         manifest: parsed.manifest,
         body: parsed.body,
@@ -388,8 +420,17 @@ export class PluginManager {
       });
     }
 
-    // MCP: re-add each server. Failures are swallowed so the rest come up.
+    // MCP: re-add each server. Same conflict gate — skip (and warn) a prefix
+    // that already exists rather than overwriting it. Failures are swallowed so
+    // the rest come up.
     for (const [prefix, cfg] of Object.entries(manifest.mcp_servers)) {
+      if ((await this.#mcp.get(prefix)) !== undefined) {
+        this.#logger.warn(
+          `plugin \`${entry.name}\`: mcp prefix \`${prefix}\` already registered ` +
+            `(built-in or another plugin); skipping reattach to avoid shadowing it`,
+        );
+        continue;
+      }
       const cloned: McpClientConfig = { ...cfg, prefix };
       await this.#mcp.add(cloned).catch(() => {});
     }
