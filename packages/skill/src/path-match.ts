@@ -17,6 +17,15 @@
 // Implementation is a straightforward recursive match over UTF-8 byte arrays
 // (mirrors the Rust byte-slice walk), so multi-byte characters behave
 // identically across the two ports.
+//
+// The `**`/`*` arms backtrack, so the recursion is memoized over the set of
+// `(pattern-pos, text-pos)` states already proven to fail. Without it a
+// pattern carrying several `**` tokens against a non-matching tail explores an
+// exponential number of states and blocks the single-threaded event loop —
+// skill `paths` come from semi-trusted `SKILL.md` frontmatter and are matched
+// against every recent workspace path on each turn, so one pathological
+// pattern would freeze the whole server (a DoS). Memoization bounds the work at
+// `O(pattern-len × text-len)` visited states.
 
 /**
  * True when `path` matches the glob `pattern`. Paths are normalised by
@@ -29,7 +38,12 @@ export function globMatches(pattern: string, path: string): boolean {
   const enc = new TextEncoder();
   const pat = enc.encode(pattern);
   const txt = enc.encode(normalised);
-  return matchesAt(pat, 0, txt, 0);
+  // Shared across the whole recursion: `(pi, ti)` states already proven to
+  // fail, encoded as `pi * (txt.length + 1) + ti`. Only failures are recorded —
+  // successes short-circuit up the stack — which is all that's needed to make
+  // the backtracking search linear in visited states.
+  const failed = new Set<number>();
+  return matchesAt(pat, 0, txt, 0, failed);
 }
 
 /**
@@ -44,20 +58,38 @@ const STAR = 0x2a; // *
 const SLASH = 0x2f; // /
 const QUESTION = 0x3f; // ?
 
-function matchesAt(pat: Uint8Array, piStart: number, txt: Uint8Array, tiStart: number): boolean {
+function matchesAt(
+  pat: Uint8Array,
+  piStart: number,
+  txt: Uint8Array,
+  tiStart: number,
+  failed: Set<number>,
+): boolean {
   let pi = piStart;
   let ti = tiStart;
+  const stride = txt.length + 1;
   while (pi < pat.length) {
+    // Memo check: if this exact `(pi, ti)` state has already been proven to
+    // fail, don't re-explore it. This is what collapses the otherwise
+    // exponential backtracking into a linear walk.
+    const key = pi * stride + ti;
+    if (failed.has(key)) return false;
     const c = pat[pi];
     if (c === STAR && pat[pi + 1] === STAR) {
       // `**` — match across path segments. Optionally consume a trailing `/`
-      // so `**/foo` matches both `foo` and `a/b/foo`.
+      // so `**/foo` matches both `foo` and `a/b/foo`. Collapse any run of
+      // consecutive `**` (`****` ≡ `**`) so redundant tokens can't multiply
+      // the search space.
       let next = pi + 2;
+      while (pat[next] === STAR && pat[next + 1] === STAR) next += 2;
       if (pat[next] === SLASH) next += 1;
       // Try matching the remainder at every position from current onward.
       for (;;) {
-        if (matchesAt(pat, next, txt, ti)) return true;
-        if (ti >= txt.length) return false;
+        if (matchesAt(pat, next, txt, ti, failed)) return true;
+        if (ti >= txt.length) {
+          failed.add(key);
+          return false;
+        }
         ti += 1;
       }
     }
@@ -65,8 +97,11 @@ function matchesAt(pat: Uint8Array, piStart: number, txt: Uint8Array, tiStart: n
       // `*` — match any run of non-`/` within one segment.
       const next = pi + 1;
       for (;;) {
-        if (matchesAt(pat, next, txt, ti)) return true;
-        if (ti >= txt.length || txt[ti] === SLASH) return false;
+        if (matchesAt(pat, next, txt, ti, failed)) return true;
+        if (ti >= txt.length || txt[ti] === SLASH) {
+          failed.add(key);
+          return false;
+        }
         ti += 1;
       }
     }

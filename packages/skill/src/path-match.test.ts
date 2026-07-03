@@ -58,3 +58,22 @@ test("anyGlobMatches short-circuits", () => {
 test("anyGlobMatches over an empty pattern list is false", () => {
   assert.ok(!anyGlobMatches([], "anything"));
 });
+
+test("many `**` tokens against a non-matching tail resolve quickly (no catastrophic backtracking)", () => {
+  // A pattern with a long run of `**` against a path that never satisfies the
+  // trailing literal used to explode exponentially and freeze the event loop.
+  // With memoization this must return promptly.
+  const pattern = "a" + "**".repeat(20) + "b";
+  const path = "a" + "x".repeat(60);
+  const start = process.hrtime.bigint();
+  assert.ok(!globMatches(pattern, path));
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(elapsedMs < 200, `matcher took ${elapsedMs.toFixed(1)}ms, expected < 200ms`);
+});
+
+test("collapsed `**` runs still match correctly", () => {
+  assert.ok(globMatches("src/****/*.ts", "src/a/b/c.ts"));
+  assert.ok(globMatches("a**b", "axyzb"));
+  assert.ok(globMatches("a****b", "a/x/y/b"));
+  assert.ok(!globMatches("a**b", "axyzc"));
+});
