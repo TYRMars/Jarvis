@@ -58,6 +58,27 @@ test("respects .gitignore", async () => {
   assert.ok(!out.includes("skip.rs"), `got: ${out}`);
 });
 
+test("nested bare-name .gitignore pattern does not leak onto sibling subtrees", async () => {
+  // Regression for #300: a bare-name pattern in a nested .gitignore must apply
+  // only within its declaring directory's subtree, not globally. Here `build`
+  // in a/.gitignore must hide a/build/** but leave the unrelated b/build/**.
+  const dir = tmpdir();
+  write(path.join(dir, "a/.gitignore"), "build\n");
+  write(path.join(dir, "a/build/gen.rs"), "x\n"); // ignored by a/.gitignore
+  write(path.join(dir, "a/nested/build/deep.rs"), "x\n"); // ignored at any depth under a/
+  write(path.join(dir, "a/src.rs"), "x\n"); // kept
+  write(path.join(dir, "b/build/real.rs"), "x\n"); // MUST be kept (no rule here)
+  write(path.join(dir, "c/build/also.rs"), "x\n"); // MUST be kept
+  const tool = new FsFindTool({ root: dir });
+
+  const out = await tool.invoke({ glob: "**/*.rs" });
+  assert.ok(out.includes("src.rs"), `got: ${out}`);
+  assert.ok(out.includes(path.join("b", "build", "real.rs")), `sibling wrongly filtered: ${out}`);
+  assert.ok(out.includes(path.join("c", "build", "also.rs")), `cousin wrongly filtered: ${out}`);
+  assert.ok(!out.includes("gen.rs"), `a/build not ignored: ${out}`);
+  assert.ok(!out.includes("deep.rs"), `a/**/build not ignored: ${out}`);
+});
+
 test("skips hidden files and .git", async () => {
   const dir = tmpdir();
   write(path.join(dir, "visible.rs"), "x\n");
