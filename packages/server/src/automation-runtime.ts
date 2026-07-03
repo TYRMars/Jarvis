@@ -236,7 +236,18 @@ export async function automationTick(
     const release = claims.tryClaim(current.id);
     if (!release) continue;
     spawned += 1;
-    runs.push(runAutomation(deps, current, "schedule", release, config));
+    // Guard the fire-and-forget run the same way the manual path does: in
+    // production these promises are never awaited, so a throw from pre-execute
+    // bookkeeping (structuredClone / markRunning) would surface as an
+    // unhandledRejection and take the process down.
+    runs.push(
+      runAutomation(deps, current, "schedule", release, config).catch((e) => {
+        logger.warn("automation scheduled run rejected", {
+          error: errorText(e),
+          automation_id: current.id,
+        });
+      }),
+    );
   }
 
   if (awaitRuns) await Promise.all(runs);

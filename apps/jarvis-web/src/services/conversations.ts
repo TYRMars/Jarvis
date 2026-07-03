@@ -129,6 +129,10 @@ export async function resumeConversation(id: string): Promise<void> {
       const r = await fetch(apiUrl(`/v1/conversations/${encodeURIComponent(id)}`));
       if (!r.ok) throw new Error(`get: ${r.status}`);
       const body = await r.json();
+      // Stale-request guard: a newer resume may have switched targets while
+      // this fetch was in flight (it overwrote loadingConvoId). Drop this
+      // result rather than clobbering the now-active conversation.
+      if (appStore.getState().loadingConvoId !== id) return;
       store.loadHistory(body.messages || []);
       hydrateBinding(body.project_id ?? null, body.workspace_path ?? null);
       store.saveConversationSurface(id);
@@ -154,6 +158,8 @@ export async function resumeConversation(id: string): Promise<void> {
     // oldest retained seq — the lifecycle handler force-reloads
     // history in that case.
     const { clientLastSeq } = await import("./chatRuns");
+    // Re-check after the dynamic import await: bail if a newer resume took over.
+    if (appStore.getState().loadingConvoId !== id) return;
     const cursor = clientLastSeq(id);
     if (cursor > 0) frame.after_seq = cursor;
     // Flip activeId BEFORE sending the frame so any reply

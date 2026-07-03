@@ -70,7 +70,14 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerPluginsRoutes(app, state);
   registerAgentProfilesRoutes(app, state);
   registerTodosRoutes(app, state);
-  registerChannelsInboundRoutes(app, state);
+  // Encapsulate the inbound-callback routes: they register a permissive `*`
+  // raw-body content-type parser, which on the root instance would apply to
+  // EVERY route (making the whole server accept unknown content-types as raw
+  // bytes instead of returning 415). Scoping it to this child confines the
+  // parser to the WeCom/Feishu/DingTalk callback subtree.
+  void app.register(async (scoped) => {
+    registerChannelsInboundRoutes(scoped, state);
+  });
   registerWorkspaceRoutes(app, state);
   registerWorkspaceTerminalRoutes(app, state);
   registerWorkspacesRoutes(app, state);

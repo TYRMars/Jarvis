@@ -374,12 +374,21 @@ export class PluginManager {
     }
     const manifest: PluginManifest = parsePluginManifest(text);
 
-    // Skills: re-load each one and insert.
+    // Skills: re-load each one and insert. Mirror installFromPath's conflict
+    // gate: SkillCatalog.insert is last-write-wins, and reattach runs at
+    // startup *after* built-ins are wired, so without this check a plugin whose
+    // name later collides with a newly-added built-in would silently shadow it.
     for (const rel of manifest.skills) {
       const abs = path.join(entry.install_dir, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       const raw = await readFile(skillMd, "utf8");
       const parsed = parseSkill(raw);
+      if (this.#skills.get(parsed.manifest.name) !== undefined) {
+        console.warn(
+          `plugin reattach: skill "${parsed.manifest.name}" from "${entry.name}" already registered; keeping the existing entry`,
+        );
+        continue;
+      }
       this.#skills.insert({
         manifest: parsed.manifest,
         body: parsed.body,
@@ -389,7 +398,14 @@ export class PluginManager {
     }
 
     // MCP: re-add each server. Failures are swallowed so the rest come up.
+    // Same conflict gate — don't overwrite an already-registered prefix.
     for (const [prefix, cfg] of Object.entries(manifest.mcp_servers)) {
+      if ((await this.#mcp.get(prefix)) !== undefined) {
+        console.warn(
+          `plugin reattach: mcp prefix "${prefix}" from "${entry.name}" already registered; keeping the existing server`,
+        );
+        continue;
+      }
       const cloned: McpClientConfig = { ...cfg, prefix };
       await this.#mcp.add(cloned).catch(() => {});
     }
