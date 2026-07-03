@@ -762,11 +762,33 @@ function resolvePublicHost(state: AppState): string | undefined {
 // ============================================================================
 
 export function registerChannelsInboundRoutes(app: FastifyInstance, state: AppState): void {
-  // Inbound callbacks need the raw body bytes (the signature covers the
-  // verbatim <Encrypt> payload). Register a content-type parser that keeps the
-  // body as a Buffer for the callback paths' content types.
-  registerRawBodyParsers(app);
+  // Register the inbound callback + OAuth routes inside an ENCAPSULATED plugin
+  // so the permissive raw-body content-type parsers — in particular the `*`
+  // catch-all — apply ONLY to this subtree, not the shared root instance.
+  // Fastify content-type parsers registered on the root app apply to every
+  // route: registering the `*` catch-all there would replace Fastify's default
+  // "415 Unsupported Media Type on an unrecognized content-type" for the whole
+  // server, letting any route silently accept odd content-types as raw bytes
+  // (#297). Content-type parsers are encapsulated, so registering them on the
+  // scoped instance binds them to these routes only. `register` is deferred
+  // until `app.ready()` (awaited in buildServer), which is why this is fine to
+  // call synchronously from the composition root.
+  void app.register(async (scoped) => {
+    // Inbound callbacks need the raw body bytes (the signature covers the
+    // verbatim <Encrypt> payload). Register a content-type parser that keeps the
+    // body as a Buffer for the callback paths' content types.
+    registerRawBodyParsers(scoped);
+    registerInboundCallbackRoutes(scoped, state);
+  });
+}
 
+/**
+ * The inbound-callback + WeCom OAuth routes. Split out from
+ * {@link registerChannelsInboundRoutes} so they can be registered on an
+ * encapsulated Fastify instance (see the caller) — that scoping is what keeps
+ * the raw-body `*` catch-all parser off the shared root app (#297).
+ */
+function registerInboundCallbackRoutes(app: FastifyInstance, state: AppState): void {
   // --------------------------- GET callback (verification handshake) --------
   app.get("/v1/channels/:id/callback", async (req, reply) => {
     const id = (req.params as { id: string }).id;

@@ -697,3 +697,44 @@ test("oauth/callback: valid state passes CSRF then 503s on the deferred code exc
   assert.equal(json.ctx, "session=abc"); // proves the verified ctx round-tripped
   await app.close();
 });
+
+// ---------------------------------------------------------------------------
+// raw-body parser encapsulation (#297)
+// ---------------------------------------------------------------------------
+
+test("raw-body `*` catch-all is scoped to inbound routes — sibling root routes still 415 on unknown content-type", async () => {
+  const app = Fastify();
+  // A sibling non-inbound route on the ROOT app that reads request.body, like
+  // the real /v1/conversations/:id/messages handler. If the inbound `*` parser
+  // leaked onto the root instance, this would receive a raw-buffer holder for
+  // an odd content-type instead of Fastify returning its default 415.
+  app.post("/v1/other", async (req) => ({ body: req.body ?? null }));
+  registerChannelsInboundRoutes(app, makeState());
+  await app.ready();
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/other",
+    headers: { "content-type": "application/octet-stream" },
+    payload: Buffer.from([0, 1, 2, 3]),
+  });
+  // Fastify's default behaviour survives: no parser for octet-stream → 415.
+  assert.equal(res.statusCode, 415);
+  await app.close();
+});
+
+test("raw-body `*` catch-all still applies WITHIN the inbound subtree", async () => {
+  const app = await buildApp(makeState());
+  // An unknown content-type to a callback route must be accepted as raw bytes
+  // (parser runs, body preserved) and routed — a ghost id then 404s from the
+  // handler. A 415 here would mean the scoped catch-all failed to register.
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/channels/ghost/callback",
+    headers: { "content-type": "application/octet-stream" },
+    payload: Buffer.from([9, 8, 7]),
+  });
+  assert.notEqual(res.statusCode, 415);
+  assert.equal(res.statusCode, 404);
+  await app.close();
+});
