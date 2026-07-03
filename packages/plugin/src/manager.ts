@@ -374,12 +374,24 @@ export class PluginManager {
     }
     const manifest: PluginManifest = parsePluginManifest(text);
 
-    // Skills: re-load each one and insert.
+    // Skills: re-load each one and insert. Mirror `installFromPath`'s
+    // conflict check — reattach runs at startup AFTER built-ins/bundled skills
+    // are wired, and `SkillCatalog.insert` is last-write-wins, so an
+    // unguarded insert would silently shadow a built-in that a later release
+    // added under the same name (which didn't collide at original install
+    // time). Skip + warn instead of overwriting.
     for (const rel of manifest.skills) {
       const abs = path.join(entry.install_dir, rel);
       const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
       const raw = await readFile(skillMd, "utf8");
       const parsed = parseSkill(raw);
+      const name = parsed.manifest.name;
+      if (this.#skills.get(name) !== undefined) {
+        console.warn(
+          `plugin "${entry.name}" reattach: skill "${name}" already registered — skipping to avoid shadowing the existing entry`,
+        );
+        continue;
+      }
       this.#skills.insert({
         manifest: parsed.manifest,
         body: parsed.body,
@@ -388,8 +400,16 @@ export class PluginManager {
       });
     }
 
-    // MCP: re-add each server. Failures are swallowed so the rest come up.
+    // MCP: re-add each server. Same conflict guard as skills — skip + warn a
+    // prefix that's already taken rather than overwriting it. Failures on the
+    // actual add are swallowed so the rest still come up.
     for (const [prefix, cfg] of Object.entries(manifest.mcp_servers)) {
+      if ((await this.#mcp.get(prefix)) !== undefined) {
+        console.warn(
+          `plugin "${entry.name}" reattach: mcp prefix "${prefix}" already registered — skipping to avoid shadowing the existing server`,
+        );
+        continue;
+      }
       const cloned: McpClientConfig = { ...cfg, prefix };
       await this.#mcp.add(cloned).catch(() => {});
     }

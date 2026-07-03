@@ -325,6 +325,41 @@ test("reattachInstalled re-registers skills and mcp from the ledger", async (t) 
   assert.ok(mcp.slots.has("gh"));
 });
 
+test("reattachInstalled skips a skill/mcp prefix already registered (no shadowing)", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{
+      "name": "demo", "version": "0.1.0", "description": "x",
+      "skills": ["skills/hello"],
+      "mcp_servers": { "gh": { "transport": { "type": "stdio", "command": "uvx" } } }
+    }`,
+  );
+  await writeSkill(path.join(pluginSrc, "skills"), "hello", "name: hello\ndescription: y\n", "Body.");
+
+  const installRoot = path.join(staging, "plugins");
+  await (await PluginManager.open(installRoot, SkillCatalog.empty(), new FakeMcp())).installFromPath(pluginSrc);
+
+  // Fresh process where a built-in of the SAME name/prefix was wired first
+  // (e.g. a later release added it). Reattach must NOT overwrite them.
+  const cat = SkillCatalog.empty();
+  cat.insert(preexistingSkill("hello")); // source "user" — the built-in
+  const mcp = new FakeMcp();
+  const builtinCfg: McpClientConfig = { prefix: "gh", transport: { type: "stdio", command: "builtin" } };
+  await mcp.add(builtinCfg);
+
+  const mgr = await PluginManager.open(installRoot, cat, mcp);
+  await mgr.reattachInstalled();
+
+  // Pre-existing entries survive untouched; the plugin's versions were skipped.
+  assert.equal(cat.get("hello")?.source, "user");
+  const gh = mcp.slots.get("gh")?.transport;
+  assert.equal(gh?.type === "stdio" ? gh.command : undefined, "builtin");
+});
+
 test("install rejects a directory without plugin.json", async (t) => {
   const staging = await makeTmp();
   t.after(() => rm(staging, { recursive: true, force: true }));
