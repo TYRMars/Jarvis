@@ -20,6 +20,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC, type DesktopStatus, type OpenResult } from "../shared/ipc.ts";
 import { LogBuffer } from "./logs.ts";
 import { ServerManager } from "./server-manager.ts";
+import { decideWindowOpen } from "./window-open.ts";
 
 const WINDOW_WIDTH = 1280;
 const WINDOW_HEIGHT = 860;
@@ -69,6 +70,18 @@ async function createWindow(): Promise<void> {
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
+  });
+
+  // Never let the renderer spawn an uncontrolled in-app BrowserWindow. The SPA
+  // opens external URLs (channel OAuth2, doc/PR links) via window.open /
+  // target="_blank"; hand http(s) targets to the OS browser and deny the rest.
+  // (Child-window vector — distinct from will-navigate lockdown, #171.)
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    const decision = decideWindowOpen(url);
+    if (decision.openExternal !== undefined) {
+      void shell.openExternal(decision.openExternal);
+    }
+    return { action: decision.action };
   });
 
   // 7.6: load the bundled SPA from disk first (instant first paint / fallback).
