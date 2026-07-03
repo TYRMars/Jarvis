@@ -489,7 +489,17 @@ export class StreamAccumulator {
           const id = cb.id ?? "";
           const name = cb.name ?? "";
           const partialInput = isEmptyInput(cb.input) ? "" : JSON.stringify(cb.input);
-          out.push({ type: "tool_call_delta", index, id, name });
+          // When the whole `input` arrives inline here (rather than as later
+          // input_json_delta fragments), forward it as an arguments_fragment so
+          // live delta consumers reconstruct the same arguments finalise() will
+          // — otherwise a seeded-input tool call streams as empty args.
+          out.push({
+            type: "tool_call_delta",
+            index,
+            id,
+            name,
+            ...(partialInput ? { arguments_fragment: partialInput } : {}),
+          });
           this.#blocks[index] = { kind: "tool_use", id, name, partialInput };
         } else {
           this.#blocks[index] = { kind: "pending" };

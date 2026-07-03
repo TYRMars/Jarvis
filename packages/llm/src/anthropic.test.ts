@@ -316,6 +316,52 @@ test("stream: tool_use input arrives as input_json_delta fragments, parsed at co
   assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
 });
 
+test("stream: tool_use with a whole input seeded at content_block_start forwards it as an arguments_fragment", () => {
+  const acc = new StreamAccumulator();
+  const out = ingestAll(acc, [
+    // Complete `input` arrives inline at block-start (no input_json_delta follows).
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "tu_2", name: "echo", input: { text: "hi" } },
+    },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} },
+    { type: "message_stop" },
+  ]);
+
+  // The single tool_call_delta must carry id+name AND the serialized input, so a
+  // live consumer reconstructing args from fragments matches finalise().
+  const tcDeltas = out.filter((c) => c.type === "tool_call_delta");
+  assert.equal(tcDeltas.length, 1);
+  assert.equal((tcDeltas[0] as { id?: string }).id, "tu_2");
+  assert.equal((tcDeltas[0] as { name?: string }).name, "echo");
+  assert.equal((tcDeltas[0] as { arguments_fragment?: string }).arguments_fragment, '{"text":"hi"}');
+
+  const finish = out.at(-1)!;
+  assert.ok(finish.type === "finish");
+  const m = finish.message as Extract<Message, { role: "assistant" }>;
+  assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
+});
+
+test("stream: tool_use with an empty seed input emits no arguments_fragment", () => {
+  const acc = new StreamAccumulator();
+  const out = ingestAll(acc, [
+    { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu_3", name: "noop", input: {} } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} },
+    { type: "message_stop" },
+  ]);
+  const tcDeltas = out.filter((c) => c.type === "tool_call_delta");
+  assert.equal(tcDeltas.length, 1);
+  // No fragment for an empty seed — the key must be absent, not "" or "{}".
+  assert.equal("arguments_fragment" in (tcDeltas[0] as object), false);
+  const finish = out.at(-1)!;
+  assert.ok(finish.type === "finish");
+  const m = finish.message as Extract<Message, { role: "assistant" }>;
+  assert.deepEqual(m.tool_calls?.[0]?.arguments, {});
+});
+
 test("stream: usage surfaces before finish on message_stop", () => {
   const acc = new StreamAccumulator();
   const out = ingestAll(acc, [
