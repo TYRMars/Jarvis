@@ -443,6 +443,34 @@ test("automationTick skips a paused task and one with no due next_run_at", async
   assert.equal(provider.runs, 0);
 });
 
+test("automationTick swallows a rejected scheduled run instead of propagating it (#299)", async () => {
+  const store = new MemoryAutomationStore();
+  const provider = new StubProvider();
+  const due = await triggerSeed(store, scheduleInterval(3600), "2000-01-01T00:00:00.000Z");
+
+  // A store whose list() hands back a task carrying a non-cloneable field, so
+  // runAutomation throws in its pre-execute `structuredClone(task)` — BEFORE
+  // its inner try/catch. Without the tick's `.catch`, that rejection would
+  // escape `Promise.all` here and, in production (fire-and-forget), surface as
+  // a process-killing unhandledRejection.
+  const badAutomations: AutomationStore = {
+    list: async () => [{ ...due, evil: () => {} } as unknown as AutomationTask],
+    get: (id) => store.get(id),
+    upsert: (t) => store.upsert(t),
+    delete: (id) => store.delete(id),
+  };
+  const deps: AutomationDeps = {
+    automations: badAutomations,
+    buildAgent: () => makeAgent(provider),
+    claims: new AutomationClaims(),
+    logger: { info: () => {}, warn: () => {} },
+  };
+
+  // Must RESOLVE (not reject) even though the single spawned run rejected.
+  const spawned = await automationTick(deps, {}, { awaitRuns: true, now: "2100-01-01T00:00:00.000Z" });
+  assert.equal(spawned, 1);
+});
+
 test("triggerAutomationNow returns conflict when an isolated claim is held", async () => {
   const store = new MemoryAutomationStore();
   const provider = new StubProvider();

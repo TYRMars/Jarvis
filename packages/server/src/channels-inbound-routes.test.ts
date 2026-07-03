@@ -507,6 +507,28 @@ test("POST callback: valid signature decrypts the <Encrypt> body + acks 200 empt
   await app.close();
 });
 
+test("raw-body `*` parser is scoped to inbound routes, not the root app (#297)", async () => {
+  // The permissive catch-all content-type parser the callbacks need must NOT
+  // leak onto the shared root instance, where it would replace Fastify's
+  // default 415-on-unknown-content-type for every route process-wide.
+  const app = Fastify();
+  registerChannelsInboundRoutes(app, makeState({ store: new MemoryChannelInstanceStore() }));
+  // A sibling route on the ROOT app that reads its body like a normal handler.
+  app.post("/probe", async (req) => ({ bodyType: typeof req.body }));
+  await app.ready();
+
+  // An unknown content-type on the root route must be rejected with 415, not
+  // silently parsed into a raw-buffer holder object.
+  const res = await app.inject({
+    method: "POST",
+    url: "/probe",
+    headers: { "content-type": "application/octet-stream" },
+    payload: Buffer.from("abc"),
+  });
+  assert.equal(res.statusCode, 415, `root route should 415 on unknown content-type; got ${res.statusCode}`);
+  await app.close();
+});
+
 test("POST callback: TAMPERED signature → 401, body never decrypted/dispatched", async () => {
   const key = Buffer.alloc(32, 3);
   const store = new MemoryChannelInstanceStore();
