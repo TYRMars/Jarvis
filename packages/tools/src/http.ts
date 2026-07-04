@@ -238,9 +238,11 @@ export class HttpFetchTool implements Tool {
     const buf = new Uint8Array(await resp.arrayBuffer());
     const truncated = buf.length > this.#maxBytes;
     const slice = truncated ? buf.subarray(0, this.#maxBytes) : buf;
-    // Lossy UTF-8 decode (replacement chars for invalid sequences), matching
-    // Rust's `String::from_utf8_lossy`.
-    const decoded = new TextDecoder("utf-8", { fatal: false }).decode(slice);
+    // Lossy decode honoring the response charset (replacement chars for invalid
+    // sequences, matching Rust's `String::from_utf8_lossy` fallback). Decoding
+    // everything as UTF-8 would mangle a `charset=gb2312`/`gbk`/`iso-8859-1`
+    // page to U+FFFD *before* the HTML→Markdown conversion runs (#315).
+    const decoded = decodeBody(slice, contentType);
 
     // Markdown extraction runs on the (possibly truncated) HTML slice; the
     // Markdown is always smaller than its HTML source, so it stays within the
@@ -260,4 +262,59 @@ export class HttpFetchTool implements Tool {
 
 function isObject(v: JsonValue): v is { [key: string]: JsonValue } {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Decode the (byte-capped) response body honoring the response charset.
+ *
+ * The charset is resolved from the `Content-Type` header first, then — when the
+ * header is silent — from an HTML `<meta charset>` / `<meta http-equiv>` sniff
+ * of the leading bytes (per the HTML spec's 1024-byte prescan). The resolved
+ * label is handed to `TextDecoder`, which normalises the legacy aliases we care
+ * about (`gb2312`→`gbk`, `iso-8859-1`→`windows-1252`, `shift_jis`, `big5`, …).
+ * An absent or unsupported charset falls back to lossy UTF-8 — the previous
+ * behaviour, and the right default for the modern web.
+ *
+ * Fixes #315: the markdown path decoded every body as UTF-8, so a non-UTF-8
+ * page had all its non-ASCII bytes replaced with U+FFFD before conversion —
+ * silent content corruption that still "looked" successful.
+ */
+function decodeBody(slice: Uint8Array, contentType: string | undefined): string {
+  const label = charsetFromContentType(contentType) ?? sniffHtmlCharset(slice);
+  if (label !== undefined) {
+    try {
+      return new TextDecoder(label, { fatal: false }).decode(slice);
+    } catch {
+      // Unknown/unsupported label (typo, or an ICU-less Node build) — fall
+      // through to UTF-8 rather than surfacing a decode error to the model.
+    }
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(slice);
+}
+
+/** Extract the `charset` parameter from a `Content-Type` header value. */
+function charsetFromContentType(contentType: string | undefined): string | undefined {
+  if (contentType === undefined) return undefined;
+  const m = /;\s*charset\s*=\s*"?([^";]+)"?/i.exec(contentType);
+  return m ? m[1]!.trim().toLowerCase() : undefined;
+}
+
+/**
+ * Sniff a `<meta>` charset declaration from the first 1024 bytes of the body.
+ * Handles both `<meta charset="…">` and the legacy
+ * `<meta http-equiv="Content-Type" content="…; charset=…">` form. ASCII-safe:
+ * the prescan window is decoded as UTF-8 (meta tags are ASCII), so a wrong
+ * whole-body charset can't hide the declaration.
+ */
+function sniffHtmlCharset(slice: Uint8Array): string | undefined {
+  const prescan = new TextDecoder("utf-8", { fatal: false }).decode(
+    slice.subarray(0, Math.min(slice.length, 1024)),
+  );
+  const metaTag = /<meta\b[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = metaTag.exec(prescan)) !== null) {
+    const cs = /charset\s*=\s*["']?\s*([a-z0-9_\-:.]+)/i.exec(m[0]);
+    if (cs) return cs[1]!.toLowerCase();
+  }
+  return undefined;
 }

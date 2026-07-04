@@ -311,3 +311,62 @@ test("http.fetch default format is raw (HTML preserved)", async () => {
   const out = await tool.invoke({ url: "http://example.test/" });
   assert.ok(out.endsWith(html), "raw HTML preserved by default");
 });
+
+// ------------------------------------------------ charset-aware decode (#315)
+
+/** Encode `text` in `label` via Node's iconv-lite-free ICU: use a Buffer with a
+ * legacy encoding where available, else hand-map the few code points we test. */
+function gbkBytes(): { bytes: Uint8Array; text: string } {
+  // "汉字" (Han characters) in GBK: BABA BAD7... use the real GBK encoding of
+  // "中文" = D6 D0 CE C4. Verified round-trip below via TextDecoder("gbk").
+  const bytes = new Uint8Array([0xd6, 0xd0, 0xce, 0xc4]);
+  return { bytes, text: "中文" };
+}
+
+test("http.fetch format=markdown honors a non-UTF-8 Content-Type charset (#315)", async () => {
+  const { bytes, text } = gbkBytes();
+  // Sanity: a plain UTF-8 decode of these bytes is garbage (all U+FFFD-ish).
+  assert.notEqual(new TextDecoder("utf-8", { fatal: false }).decode(bytes), text);
+
+  const html = new Uint8Array([
+    ...new TextEncoder().encode("<h1>"),
+    ...bytes,
+    ...new TextEncoder().encode("</h1>"),
+  ]);
+  const { fetchImpl } = stubFetch(
+    fakeResponse({ headers: { "content-type": "text/html; charset=gb2312" }, body: html }),
+  );
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/", format: "markdown" });
+  assert.match(out, new RegExp(`# ${text}`), `expected decoded CJK, got: ${out}`);
+  assert.doesNotMatch(out, /�/, "no replacement chars — charset was honored");
+});
+
+test("http.fetch honors a <meta charset> when the header is silent (#315)", async () => {
+  const { bytes, text } = gbkBytes();
+  const html = new Uint8Array([
+    ...new TextEncoder().encode('<html><head><meta charset="gbk"></head><body><p>'),
+    ...bytes,
+    ...new TextEncoder().encode("</p></body></html>"),
+  ]);
+  const { fetchImpl } = stubFetch(
+    // No charset in the header at all — must fall back to the meta sniff.
+    fakeResponse({ headers: { "content-type": "text/html" }, body: html }),
+  );
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/", format: "markdown" });
+  assert.ok(out.includes(text), `expected decoded CJK from meta sniff, got: ${out}`);
+  assert.doesNotMatch(out, /�/, "no replacement chars");
+});
+
+test("http.fetch falls back to UTF-8 for an unknown charset label (#315)", async () => {
+  const { fetchImpl } = stubFetch(
+    fakeResponse({
+      headers: { "content-type": "text/plain; charset=x-totally-bogus" },
+      body: "héllo",
+    }),
+  );
+  const tool = new HttpFetchTool({ fetchImpl });
+  const out = await tool.invoke({ url: "http://example.test/" });
+  assert.ok(out.endsWith("héllo"), `unknown charset must not corrupt UTF-8, got: ${out}`);
+});
