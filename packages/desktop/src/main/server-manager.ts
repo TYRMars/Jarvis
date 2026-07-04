@@ -72,6 +72,15 @@ export class ServerManager {
   private lastError: string | null = null;
   private prefs: DesktopPrefs = {};
 
+  /**
+   * Serializes lifecycle transitions. `ensureServer` / `restart` / `stop` chain
+   * onto this promise so they can never run concurrently — otherwise two
+   * overlapping starts clobber `this.app` / `this.mcpClients` (orphaning a live
+   * Fastify socket + its MCP children), and a `stop()` racing an in-flight start
+   * closes nothing while the start assigns a fresh server after quit. See #317.
+   */
+  private lifecycle: Promise<unknown> = Promise.resolve();
+
   constructor(deps: ServerManagerDeps) {
     this.logs = deps.logs;
     this.prefsDir = deps.prefsDir;
@@ -91,6 +100,20 @@ export class ServerManager {
   }
 
   /**
+   * Run `op` after every previously-enqueued lifecycle op settles, so lifecycle
+   * transitions never interleave. The chain survives a rejecting op — the next
+   * op still runs (the tail swallows the prior result/error).
+   */
+  private runExclusive<T>(op: () => Promise<T>): Promise<T> {
+    const result = this.lifecycle.then(op, op);
+    this.lifecycle = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  /**
    * Reuse a running external server when one is already healthy at the default
    * loopback origin; otherwise start our own embedded instance.
    *
@@ -99,7 +122,11 @@ export class ServerManager {
    * so an unrelated `jarvis serve` on :7001 can't silently shadow the new path
    * (mirrors the Tauri shell, whose restart calls `start_sidecar` directly).
    */
-  async ensureServer(opts: { forceEmbedded?: boolean } = {}): Promise<void> {
+  ensureServer(opts: { forceEmbedded?: boolean } = {}): Promise<void> {
+    return this.runExclusive(() => this.ensureServerInner(opts));
+  }
+
+  private async ensureServerInner(opts: { forceEmbedded?: boolean }): Promise<void> {
     if (!opts.forceEmbedded && (await probeHealth(DEFAULT_EXTERNAL_ORIGIN))) {
       this.apiOrigin = DEFAULT_EXTERNAL_ORIGIN;
       this.kind = "external";
@@ -111,18 +138,28 @@ export class ServerManager {
   }
 
   /** Stop, optionally re-pin the workspace, then ensure a server again. */
-  async restart(workspace?: string | null): Promise<DesktopStatus> {
+  restart(workspace?: string | null): Promise<DesktopStatus> {
+    return this.runExclusive(() => this.restartInner(workspace));
+  }
+
+  private async restartInner(workspace?: string | null): Promise<DesktopStatus> {
     const explicit = workspace !== undefined && workspace !== null && workspace.length > 0;
     if (explicit) this.workspace = workspace;
-    await this.stop();
+    // Call the *Inner variants directly: we already hold the lifecycle lock, so
+    // re-entering the locked wrappers would deadlock against ourselves.
+    await this.stopInner();
     this.lastError = null;
     // An explicit workspace must win even if an external server owns :7001.
-    await this.ensureServer({ forceEmbedded: explicit });
+    await this.ensureServerInner({ forceEmbedded: explicit });
     return await this.status();
   }
 
   /** Close the embedded server + its MCP children (no-op for an external one). */
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    return this.runExclusive(() => this.stopInner());
+  }
+
+  private async stopInner(): Promise<void> {
     if (this.app !== null) {
       this.logs.push("Stopping embedded Jarvis server");
       try {
@@ -172,6 +209,11 @@ export class ServerManager {
   // -------------------------------------------------------------------------
 
   private async startEmbedded(workspace: string | null): Promise<void> {
+    // Tear down any server we are about to replace before overwriting
+    // `this.mcpClients` / `this.app` below — otherwise the previous Fastify
+    // socket and its MCP children would be left referenced by nothing and leak
+    // until process exit. Callers hold the lifecycle lock, so this is safe. (#317)
+    await this.stopInner();
     try {
       const ws = workspace ?? this.defaultWorkspace();
       await this.recordWorkspace(ws);

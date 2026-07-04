@@ -209,6 +209,19 @@ test("json-file: withMaxRuns prunes oldest beyond the cap + slack", async () => 
   });
 });
 
+test("json-file: withMaxRuns(0) keeps the just-written run (no total wipe)", async () => {
+  await withTempDir(async (dir) => {
+    // A `0` cap is a misconfig (distinct from `null`); it must never delete
+    // everything. Regression guard for #322.
+    const store = (await JsonFileObservabilityStore.open(dir)).withMaxRuns(0);
+    await store.appendRun(run("a"));
+    await store.appendRun(run("b"));
+    const rows = await store.listRuns({});
+    assert.equal(rows.length, 1, "clamped to a floor of 1, not wiped to empty");
+    assert.equal(rows[0].id, "b", "newest run retained");
+  });
+});
+
 // ---------- memory-specific ----------
 
 test("memory: listRuns returns clones (mutating a copy doesn't leak back)", async () => {
@@ -227,4 +240,14 @@ test("memory: withMaxRuns evicts oldest-appended runs", async () => {
   await store.appendRun(run("c", { startedAt: "2026-01-03T00:00:00.000Z" }));
   const ids = (await store.listRuns({})).map((r) => r.id).sort();
   assert.deepEqual(ids, ["b", "c"], "oldest-appended 'a' evicted");
+});
+
+test("memory: withMaxRuns(0) keeps the just-written run (no total wipe)", async () => {
+  // Regression guard for #322 — `0` must not evict every run.
+  const store = new MemoryObservabilityStore().withMaxRuns(0);
+  await store.appendRun(run("a"));
+  await store.appendRun(run("b"));
+  const rows = await store.listRuns({});
+  assert.equal(rows.length, 1, "clamped to a floor of 1, not wiped to empty");
+  assert.equal(rows[0].id, "b", "newest run retained");
 });

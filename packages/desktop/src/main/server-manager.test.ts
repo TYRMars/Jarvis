@@ -61,6 +61,64 @@ test("embeds @jarvis/server in-process and serves over loopback", async () => {
   }
 });
 
+test("concurrent starts serialize — no orphaned server survives stop() (#317)", async () => {
+  const prefsDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-prefs-"));
+  const dbDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-db-"));
+  const logs = new LogBuffer();
+  const manager = new ServerManager({
+    logs,
+    prefsDir,
+    webDist: "",
+    env: {
+      OPENAI_API_KEY: "test-dummy-key",
+      JARVIS_PROVIDER: "openai",
+      JARVIS_DB_URL: `json://${dbDir}`,
+    },
+  });
+
+  try {
+    await manager.init();
+    // Two starts fired concurrently. Pre-fix, both `startEmbedded`s bind a
+    // Fastify socket and clobber `this.app`/`this.mcpClients`; the losing one is
+    // referenced by nothing and a later single `stop()` closes only the survivor.
+    // With the lifecycle lock they run sequentially and each start tears down the
+    // one it replaces.
+    await Promise.all([
+      manager.ensureServer({ forceEmbedded: true }),
+      manager.ensureServer({ forceEmbedded: true }),
+    ]);
+
+    // Every origin a start reported ready — there may be more than one, since the
+    // second serialized start replaces the first.
+    const origins = logs
+      .tail(500)
+      .map((line) => line.match(/ready at (http:\/\/127\.0\.0\.1:\d+)/)?.[1])
+      .filter((o): o is string => o !== undefined);
+    assert.ok(origins.length >= 1, "expected at least one embedded server to start");
+
+    const status = await manager.status();
+    assert.equal(status.server_kind, "embedded", status.last_error ?? "expected embedded");
+    assert.equal(status.server_running, true);
+
+    // A single stop() must tear down EVERY server a start bound. If a racing
+    // start had been orphaned, its origin would still answer here.
+    await manager.stop();
+    for (const origin of origins) {
+      await assert.rejects(
+        fetch(`${origin}/health`),
+        `orphaned server still answering at ${origin}`,
+      );
+    }
+    const stopped = await manager.status();
+    assert.equal(stopped.server_running, false);
+    assert.equal(stopped.server_kind, "stopped");
+  } finally {
+    await manager.stop();
+    await rm(prefsDir, { recursive: true, force: true });
+    await rm(dbDir, { recursive: true, force: true });
+  }
+});
+
 test("startup failure (missing credential) is captured, not thrown", async () => {
   const prefsDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-prefs-"));
   const dbDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-db-"));
