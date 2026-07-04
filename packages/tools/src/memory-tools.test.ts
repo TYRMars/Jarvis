@@ -146,6 +146,51 @@ test("delete last entry clears index file", async () => {
   assert.ok(!(await pathExists(path.join(root, MEMORY_DIR, "MEMORY.md"))));
 });
 
+test("concurrent writes to the same scope don't lose index lines", async () => {
+  // Regression: without serialising the index read-modify-write, N overlapping
+  // writes each read the same (empty) index, merge only their own line, and the
+  // last writer clobbers the rest — leaving < N entries. The per-scope tree
+  // lock must make all N land. Distinct tool instances (as the registry builds
+  // them) must serialise against each other, so use a fresh instance per call.
+  const root = await mkTmp();
+  const n = 12;
+  await Promise.all(
+    Array.from({ length: n }, (_, i) =>
+      new MemoryWriteTool(wsRoots(root)).invoke({
+        slug: `slug-${i}`,
+        summary: `summary ${i}`,
+        content: `body ${i}`,
+      }),
+    ),
+  );
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  for (let i = 0; i < n; i++) {
+    assert.ok(index.includes(`slug-${i}.md`), `missing slug-${i} in index: ${JSON.stringify(index)}`);
+  }
+  const lines = index.split("\n").filter((l) => l.includes(".md"));
+  assert.equal(lines.length, n, `expected ${n} entries, got ${lines.length}`);
+});
+
+test("concurrent include_add to the same scope don't lose directives", async () => {
+  // Same lost-update race, exercised through the include-directive path (which
+  // does its own readOrEmpty → addIncludeLine → atomicWrite on MEMORY.md).
+  const root = await mkTmp();
+  // Include targets must resolve, so create N sibling memory dirs to point at.
+  const targets: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const t = await mkTmp();
+    await new MemoryWriteTool(wsRoots(t)).invoke({ slug: "x", summary: "x", content: "." });
+    targets.push(path.join(t, MEMORY_DIR));
+  }
+  await Promise.all(
+    targets.map((t) => new MemoryIncludeAddTool(wsRoots(root)).invoke({ target: t })),
+  );
+  const listed = await new MemoryIncludeListTool(wsRoots(root)).invoke({});
+  const parsed = JSON.parse(listed) as { items: unknown[] };
+  assert.equal(parsed.items.length, targets.length, `include_list = ${listed}`);
+});
+
 test("write rejects oversized content", async () => {
   const root = await mkTmp();
   const huge = "x".repeat(MAX_ENTRY_BYTES + 1);
