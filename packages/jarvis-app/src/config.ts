@@ -141,6 +141,13 @@ export interface JarvisConfig {
   workMode: WorkMode;
   workTickSeconds: number;
   workMaxConcurrent: number;
+
+  /** Global cap on concurrent manually-dispatched workflow runs (429 over-cap). */
+  workflowMaxConcurrent: number;
+  /** Stale-workflow-run reaper cadence, in seconds. */
+  workflowReapSeconds: number;
+  /** Per-run wall-clock budget used by the reaper to decide staleness (ms). */
+  workflowRunTimeoutMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +338,18 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     workMode: parseWorkMode(env.JARVIS_WORK_MODE),
     workTickSeconds: parseIntOr(env.JARVIS_WORK_TICK_SECONDS, 30),
     workMaxConcurrent: parseIntOr(env.JARVIS_WORK_MAX_CONCURRENT, 2),
+
+    // Workflow governance. Concurrency defaults to the auto-loop cap; the reaper
+    // cadence/budget mirror the Rust defaults (60s sweep, 600s run budget).
+    workflowMaxConcurrent: parseIntOr(
+      env.JARVIS_WORKFLOW_MAX_CONCURRENT,
+      parseIntOr(env.JARVIS_WORK_MAX_CONCURRENT, 2),
+    ),
+    workflowReapSeconds: parseIntOr(env.JARVIS_WORKFLOW_REAP_SECONDS, 60),
+    workflowRunTimeoutMs: parseIntOr(
+      env.JARVIS_WORKFLOW_RUN_TIMEOUT_MS,
+      parseIntOr(env.JARVIS_WORK_RUN_TIMEOUT_MS, 600_000),
+    ),
   };
 }
 
