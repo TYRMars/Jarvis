@@ -10,6 +10,8 @@ import {
   fingerprint,
   renderForSummary,
   enforceTokenBudget,
+  summaryEmitCap,
+  SUMMARY_WRAPPER_OVERHEAD_TOKENS,
   type SummaryStore,
 } from "./summarizing.ts";
 import { charRatioEstimator } from "./tokens.ts";
@@ -366,6 +368,41 @@ test("PTL drops oldest turns when the summary pushes over budget", async () => {
   assert.ok(hasUserExactly(out, "turn 4 most recent"), "latest turn must survive PTL");
   assert.ok(hasSystemContaining(out, "truncated to fit token budget"), "expected PTL marker");
   assert.ok(!hasUserExactly(out, "turn 1"), "oldest turn should have been dropped");
+});
+
+test("summary emission is bounded to fit the reserve (issue #323)", async () => {
+  // Regression for issue #323: the reserve the turn-selector carves out for the
+  // synthetic summary and the `max_tokens` the summariser is allowed to emit
+  // must stay coupled. If the emitted summary can exceed the reserve, inserting
+  // it pushes the compacted output back over `#maxTokens`, the PTL safety net
+  // re-fires, and it evicts recent turns the selector had just chosen to keep.
+  //
+  // `summaryEmitCap` caps the request so `emitted + wrapper <= reserve`, and it
+  // holds regardless of how high the per-instance cap is raised — future-proof
+  // against a later bump of DEFAULT_SUMMARY_MAX_TOKENS.
+  const RESERVE = 256; // SUMMARY_RESERVE_TOKENS (internal)
+
+  // The cap the request may emit must never eat into the reserve's wrapper
+  // headroom, no matter how large the configured cap.
+  for (const configured of [400, 800, 4000]) {
+    assert.ok(
+      summaryEmitCap(configured) + SUMMARY_WRAPPER_OVERHEAD_TOKENS <= RESERVE,
+      `emit cap for ${configured} must fit the reserve`,
+    );
+  }
+  // A configured cap that already fits passes through untouched.
+  assert.equal(summaryEmitCap(100), 100, "a small cap is not throttled");
+
+  // End-to-end: a raised cap still produces a request bounded by the reserve.
+  const llm = new FakeLlm("ok");
+  const mem = new SummarizingMemory(llm, "test-model", 256).withSummaryMaxTokens(4000);
+  await mem.compact([sys("sys"), user("a"), asst("b"), user("c"), asst("d")]);
+  const req = llm.captured[0]!;
+  assert.ok(req.max_tokens !== undefined, "summary request must set max_tokens");
+  assert.ok(
+    req.max_tokens! + SUMMARY_WRAPPER_OVERHEAD_TOKENS <= RESERVE,
+    `request max_tokens ${req.max_tokens} + wrapper must fit the ${RESERVE}-token reserve`,
+  );
 });
 
 test("PTL is a no-op under budget", async () => {

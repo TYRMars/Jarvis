@@ -86,11 +86,40 @@ fact, decision, or state.`;
  * Reserved budget (estimated tokens) carved out for the synthetic summary
  * itself when deciding what to keep recent — keeps us from packing the budget
  * so tight that inserting the summary pushes us back over.
+ *
+ * This reserve is the load-bearing guarantee that the PTL safety net
+ * (`enforceTokenBudget`) does not re-fire and evict recent turns the selector
+ * just chose to keep. For that guarantee to hold, the summary the LLM emits
+ * must actually *fit* the reserve — so the summary request's `max_tokens` is
+ * bounded to `SUMMARY_RESERVE_TOKENS - SUMMARY_WRAPPER_OVERHEAD_TOKENS`
+ * (see {@link summaryEmitCap}). Bounding the emission rather than growing the
+ * reserve keeps the two coupled without shrinking the working budget, and stays
+ * correct even if `DEFAULT_SUMMARY_MAX_TOKENS` is later raised (issue #323).
  */
 const SUMMARY_RESERVE_TOKENS = 256;
 
+/**
+ * Estimated overhead (tokens) for the wrapper the synthetic summary carries on
+ * top of the model's raw output — the `"Earlier conversation summary (N turn(s)
+ * compressed):\n"` prefix plus the per-message role/separator overhead. Kept
+ * generous so `summaryEmitCap` leaves the reserve a true upper bound on the
+ * composed summary message size.
+ */
+export const SUMMARY_WRAPPER_OVERHEAD_TOKENS = 32;
+
 /** Cap on tokens the summarisation call may emit. */
 const DEFAULT_SUMMARY_MAX_TOKENS = 400;
+
+/**
+ * Upper bound on the tokens a summary request may ask the LLM to emit, given a
+ * configured per-instance cap. Capped so the emitted summary *plus* its wrapper
+ * fits inside {@link SUMMARY_RESERVE_TOKENS} — otherwise the reserve is a lie
+ * and `enforceTokenBudget` evicts recent turns on every compaction. Exported
+ * for the regression test in `summarizing.test.ts`.
+ */
+export function summaryEmitCap(configuredMax: number): number {
+  return Math.min(configuredMax, SUMMARY_RESERVE_TOKENS - SUMMARY_WRAPPER_OVERHEAD_TOKENS);
+}
 
 /**
  * Consecutive summary-call failures that flip the circuit breaker open. While
@@ -184,7 +213,10 @@ export class SummarizingMemory implements Memory {
     const { systemIdxs, turns } = splitIntoTurns(messages);
 
     const systemTokens = systemIdxs.reduce((acc, i) => acc + est.estimateMessage(messages[i]!), 0);
-    // Leave headroom for the synthetic summary message we may insert.
+    // Leave headroom for the synthetic summary message we may insert. The
+    // summary's own `max_tokens` is bounded to fit this reserve (see
+    // `summaryEmitCap`), so the composed output stays under `#maxTokens` and the
+    // PTL safety net does not re-fire to evict recent turns.
     const budget = Math.max(0, this.#maxTokens - systemTokens - SUMMARY_RESERVE_TOKENS);
 
     const turnCost = (turn: TurnIndices): number =>
@@ -340,7 +372,10 @@ export class SummarizingMemory implements Memory {
       ],
       tools: [],
       temperature: 0,
-      max_tokens: this.#summaryMaxTokens,
+      // Bound the emission so the summary + its wrapper fit the reserve the
+      // selector carved out — otherwise the PTL safety net re-fires and evicts
+      // recent turns each compaction (issue #323).
+      max_tokens: summaryEmitCap(this.#summaryMaxTokens),
     };
 
     // One retry on transient transport errors — the summariser shares a
