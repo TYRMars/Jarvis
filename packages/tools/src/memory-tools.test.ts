@@ -25,6 +25,7 @@ import {
   MemoryIncludeRemoveTool,
   MemoryListTool,
   MemoryReadTool,
+  MemoryWriteLock,
   MemoryWriteTool,
   addIncludeLine,
   directiveAsWire,
@@ -122,6 +123,44 @@ test("write same slug replaces index line, not appends", async () => {
   const matches = index.split("\n").filter((l) => l.includes("x.md"));
   assert.equal(matches.length, 1, `index = ${JSON.stringify(index)}`);
   assert.ok(matches[0]!.includes("second"));
+});
+
+test("concurrent mutations sharing a lock don't lose index updates", async () => {
+  const root = await mkTmp();
+  // All four mutating tools share ONE lock, exactly like registerMemoryTools
+  // wires them. Without serialization the read-modify-write of MEMORY.md races:
+  // each op reads the same (stale) index and the last atomicWrite wins, so only
+  // one entry survives. The shared lock must keep all of them.
+  const lock = new MemoryWriteLock();
+  const write = new MemoryWriteTool(wsRoots(root), lock);
+  await Promise.all(
+    ["a", "b", "c", "d", "e", "f"].map((slug) =>
+      write.invoke({ slug, summary: `sum-${slug}`, content: `body-${slug}` }),
+    ),
+  );
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  for (const slug of ["a", "b", "c", "d", "e", "f"]) {
+    assert.ok(index.includes(`${slug}.md`), `missing ${slug} in index: ${JSON.stringify(index)}`);
+  }
+});
+
+test("concurrent write + delete sharing a lock leave a consistent index", async () => {
+  const root = await mkTmp();
+  const lock = new MemoryWriteLock();
+  const write = new MemoryWriteTool(wsRoots(root), lock);
+  const del = new MemoryDeleteTool(wsRoots(root), lock);
+  // Seed one entry, then race a delete of it against a write of a new slug.
+  await write.invoke({ slug: "old", summary: "old", content: "." });
+  await Promise.all([
+    del.invoke({ slug: "old" }),
+    write.invoke({ slug: "new", summary: "new", content: "." }),
+  ]);
+  const index = (await readIndex(root)) ?? "";
+  // Whatever the order, the surviving "new" line must be present and "old" gone —
+  // never a torn index that dropped "new" because delete rewrote a stale copy.
+  assert.ok(index.includes("new.md"), `index = ${JSON.stringify(index)}`);
+  assert.ok(!index.includes("old.md"), `index = ${JSON.stringify(index)}`);
 });
 
 test("delete removes body and index line", async () => {
