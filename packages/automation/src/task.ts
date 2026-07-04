@@ -267,7 +267,12 @@ export function scheduleNextAfter(
   }
 
   // interval
-  const seconds = Math.max(1, schedule.interval.every_seconds);
+  const every = schedule.interval.every_seconds;
+  // A non-finite `every_seconds` (a hand-edited/tool-created task whose value
+  // deserialised to NaN/Infinity) would otherwise propagate NaN through to
+  // `toRfc3339` and throw. Fall back to the 1-second floor instead of crashing
+  // the scheduler tick.
+  const seconds = Number.isFinite(every) ? Math.max(1, every) : 1;
   const intervalMs = seconds * 1000;
   const prevMs = parseTimestamp(previousRun);
   const startMs = parseTimestamp(schedule.interval.start_at);
@@ -290,6 +295,15 @@ export function scheduleNextAfter(
 // ---------- timestamp helpers ---------------------------------------------
 
 /**
+ * Largest (and, negated, smallest) epoch-millis value a JS `Date` can
+ * represent — `±8.64e15` ms (~±271,821 years around 1970). `new Date(ms)` for
+ * any `ms` outside this range is an *Invalid Date* whose `.toISOString()`
+ * throws `RangeError: Invalid time value`. Exported so schedule validation can
+ * reject intervals large enough to push a fire time past this bound.
+ */
+export const MAX_EPOCH_MS = 8_640_000_000_000_000;
+
+/**
  * Parse an RFC-3339 / ISO-8601 string to epoch-millis. Returns `undefined`
  * for `undefined` input or an unparseable string (mirrors Rust's
  * `parse_rfc3339` returning `Option`). The `Date` ctor already accepts the
@@ -308,6 +322,15 @@ export function parseTimestamp(value: string | undefined): number | undefined {
  * yields `YYYY-MM-DDTHH:mm:ss.sssZ`.
  */
 export function toRfc3339(epochMs: number): string {
+  // Guard the two inputs that make `Date(...).toISOString()` throw an opaque
+  // `RangeError: Invalid time value`: a non-finite value (NaN/Infinity, e.g.
+  // from an interval computed off a non-numeric `every_seconds`) or one outside
+  // the representable `±8.64e15` ms range (an interval large enough to overflow
+  // the fire time). Surface a descriptive error instead so callers can map it
+  // to a clean 4xx rather than leaking a bare stack trace.
+  if (!Number.isFinite(epochMs) || epochMs < -MAX_EPOCH_MS || epochMs > MAX_EPOCH_MS) {
+    throw new Error(`timestamp out of range: ${epochMs}`);
+  }
   return new Date(epochMs).toISOString();
 }
 

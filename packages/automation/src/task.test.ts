@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   type AutomationTask,
   type ScheduleSpec,
+  MAX_EPOCH_MS,
   isDueAt,
   isStaleRunning,
   markFinished,
@@ -16,6 +17,7 @@ import {
   scheduleInterval,
   scheduleNextAfter,
   scheduleOnce,
+  toRfc3339,
 } from "./task.ts";
 
 // ---------- scheduleNextAfter (ScheduleSpec::next_after) -------------------
@@ -56,6 +58,30 @@ test("once before run yields run_at", () => {
 
 test("unparseable timestamps yield undefined", () => {
   assert.equal(scheduleNextAfter(scheduleOnce("not-a-date"), undefined, "2026-01-01T00:00:00Z"), undefined);
+});
+
+test("interval with a non-finite every_seconds falls back to the 1s floor instead of throwing", () => {
+  // A hand-edited/tool-created task whose `every_seconds` deserialised to NaN
+  // must not crash the scheduler tick with `RangeError: Invalid time value`.
+  const schedule = { interval: { every_seconds: NaN } } as unknown as ScheduleSpec;
+  assert.equal(scheduleNextAfter(schedule, undefined, "2026-01-01T00:00:00Z"), "2026-01-01T00:00:01.000Z");
+});
+
+// ---------- toRfc3339 range guard -----------------------------------------
+
+test("toRfc3339 throws a descriptive error for a non-finite input", () => {
+  assert.throws(() => toRfc3339(NaN), /timestamp out of range/);
+  assert.throws(() => toRfc3339(Infinity), /timestamp out of range/);
+});
+
+test("toRfc3339 throws a descriptive error for an out-of-range input", () => {
+  assert.throws(() => toRfc3339(MAX_EPOCH_MS + 1), /timestamp out of range/);
+  assert.throws(() => toRfc3339(-MAX_EPOCH_MS - 1), /timestamp out of range/);
+});
+
+test("toRfc3339 accepts the range boundaries", () => {
+  assert.equal(toRfc3339(MAX_EPOCH_MS), new Date(MAX_EPOCH_MS).toISOString());
+  assert.equal(toRfc3339(0), "1970-01-01T00:00:00.000Z");
 });
 
 // ---------- newAutomationTask wire shape ----------------------------------

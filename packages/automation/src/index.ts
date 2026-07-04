@@ -21,6 +21,7 @@ export {
   scheduleNextAfter,
   parseTimestamp,
   toRfc3339,
+  MAX_EPOCH_MS,
 } from "./task.ts";
 export { type AutomationStore } from "./store.ts";
 export { JsonFileAutomationStore, MemoryAutomationStore } from "./automation-store.ts";
