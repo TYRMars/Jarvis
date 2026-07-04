@@ -170,6 +170,20 @@ test("POST rejects a zero-second interval → 400", async () => {
   await app.close();
 });
 
+test("POST rejects an over-large interval → clean 400 (not a 500 from an overflowed fire time)", async () => {
+  const app = await buildApp(makeState({ automations: new MemoryAutomationStore() }));
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/automations",
+    // `now + 9e18 s` overflows the representable Date range; without the bound
+    // this reached `toRfc3339` → RangeError → HTTP 500 with a leaked stack.
+    payload: { title: "Bad", prompt: "Run", schedule: { interval: { every_seconds: 9e18 } } },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().error, /every_seconds is too large/);
+  await app.close();
+});
+
 test("POST rejects blank title or prompt → 400", async () => {
   const app = await buildApp(makeState({ automations: new MemoryAutomationStore() }));
   assert.equal(

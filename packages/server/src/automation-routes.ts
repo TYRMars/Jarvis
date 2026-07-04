@@ -28,6 +28,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { errorText, type Agent } from "@jarvis/core";
 import {
+  MAX_EPOCH_MS,
   newAutomationTask,
   parseTimestamp,
   recomputeNextRun,
@@ -104,6 +105,17 @@ function validateSchedule(schedule: unknown): string | undefined {
     const every = interval?.every_seconds;
     if (typeof every !== "number" || !Number.isFinite(every) || every <= 0) {
       return "schedule.interval.every_seconds must be greater than zero";
+    }
+    // Reject intervals so large that the first fire time (`now + every_seconds`)
+    // overflows the representable `Date` range — otherwise `toRfc3339` throws
+    // `RangeError` deep in `newAutomationTask`, surfacing as an HTTP 500 with a
+    // leaked stack. Bounding the interval's own span to half the epoch range is
+    // a now-independent guarantee: the fire time is `now + intervalMs`, and any
+    // real `now` is a tiny fraction of `MAX_EPOCH_MS`, so `now + intervalMs`
+    // stays comfortably in range. (~137,000 years is still an absurdly generous
+    // ceiling for a scheduling interval.)
+    if (every * 1000 > MAX_EPOCH_MS / 2) {
+      return "schedule.interval.every_seconds is too large";
     }
     const startAt = interval?.start_at;
     if (startAt !== undefined && startAt !== null) {
@@ -201,7 +213,17 @@ export function registerAutomationRoutes(app: FastifyInstance, state: AppState):
         ? { conversation_id: cleanOpt(body.conversation_id)! }
         : {}),
     };
-    const task = newAutomationTask(input);
+    // `newAutomationTask` seeds `next_run_at` via `toRfc3339`, which throws on a
+    // timestamp outside the representable range. `validateSchedule` already
+    // rejects over-large intervals, but keep the construction inside the
+    // try/catch so any residual range error returns a clean 400 rather than a
+    // 500 with a leaked stack.
+    let task: AutomationTask;
+    try {
+      task = newAutomationTask(input);
+    } catch (e) {
+      return reply.code(400).send({ error: errorText(e) });
+    }
     try {
       await store.upsert(task);
     } catch (e) {
