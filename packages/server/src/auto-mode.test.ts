@@ -769,3 +769,18 @@ test("POST max_retries sets/clears the override; GET surfaces it", async () => {
 
   await app.close();
 });
+
+test("POST max_retries rejects a negative ceiling with 400 (would disable the scheduler)", async () => {
+  const runtime = new AutoModeRuntime("auto", 2);
+  const config = cfg({ maxRetries: 1 });
+  const state = emptyState({ autoModeRuntime: runtime, autoModeConfig: config });
+  const app = await buildApp(state);
+
+  const res = await app.inject({ method: "POST", url: "/v1/auto-mode", payload: { max_retries: -1 } });
+  assert.equal(res.statusCode, 400);
+  // The inert override must NOT have been stored — a negative ceiling would make
+  // the tick guard `consecutiveFailed >= maxRetries` skip every requirement.
+  assert.equal(runtime.maxRetriesOverride(), undefined, "negative override must not be stored");
+
+  await app.close();
+});

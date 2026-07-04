@@ -82,6 +82,13 @@ function requireStore(state: AppState, reply: FastifyReply): AutomationStore | u
 // ---------- helpers ---------------------------------------------------------
 
 /**
+ * Upper bound for `interval.every_seconds` — 100 years. Longer than any real
+ * schedule, and small enough that `now + every_seconds*1000` stays well within
+ * the valid epoch-ms range (max ≈ 8.64e15) so {@link toRfc3339} never throws.
+ */
+const MAX_INTERVAL_SECONDS = 100 * 365 * 24 * 60 * 60;
+
+/**
  * Validate a {@link ScheduleSpec}. Returns an error string when invalid,
  * `undefined` when valid. Mirrors Rust's `validate_schedule`.
  */
@@ -104,6 +111,15 @@ function validateSchedule(schedule: unknown): string | undefined {
     const every = interval?.every_seconds;
     if (typeof every !== "number" || !Number.isFinite(every) || every <= 0) {
       return "schedule.interval.every_seconds must be greater than zero";
+    }
+    // Upper bound: `scheduleNextAfter` computes `now + every_seconds*1000`, and a
+    // large-but-finite value (e.g. 9e18) overflows the valid epoch-ms range so
+    // `toRfc3339(new Date(nextMs))` throws `RangeError`. Cap well below overflow
+    // (100 years is longer than any real interval) so the create/update handler
+    // returns a clean 400 instead of a 500, and the scheduler tick can never
+    // throw on a persisted task.
+    if (every > MAX_INTERVAL_SECONDS) {
+      return `schedule.interval.every_seconds must be <= ${MAX_INTERVAL_SECONDS}`;
     }
     const startAt = interval?.start_at;
     if (startAt !== undefined && startAt !== null) {
