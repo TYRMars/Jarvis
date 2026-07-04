@@ -82,6 +82,13 @@ function requireStore(state: AppState, reply: FastifyReply): AutomationStore | u
 // ---------- helpers ---------------------------------------------------------
 
 /**
+ * Upper bound for `schedule.interval.every_seconds` (~100 years). Keeps
+ * `now + every_seconds * 1000` well within the representable `Date` range
+ * (±8.64e15 ms) so `scheduleNextAfter`/`toRfc3339` can never overflow.
+ */
+const MAX_EVERY_SECONDS = 100 * 365 * 24 * 60 * 60;
+
+/**
  * Validate a {@link ScheduleSpec}. Returns an error string when invalid,
  * `undefined` when valid. Mirrors Rust's `validate_schedule`.
  */
@@ -104,6 +111,14 @@ function validateSchedule(schedule: unknown): string | undefined {
     const every = interval?.every_seconds;
     if (typeof every !== "number" || !Number.isFinite(every) || every <= 0) {
       return "schedule.interval.every_seconds must be greater than zero";
+    }
+    // Upper bound: `scheduleNextAfter` computes `now + every_seconds * 1000`;
+    // an astronomically large interval overflows the representable `Date`
+    // range (±8.64e15 ms), so `toRfc3339` (`new Date(x).toISOString()`) throws
+    // an uncaught `RangeError` and the create/update handler 500s instead of
+    // rejecting cleanly. A century is far beyond any real recurring cadence.
+    if (every > MAX_EVERY_SECONDS) {
+      return "schedule.interval.every_seconds is too large";
     }
     const startAt = interval?.start_at;
     if (startAt !== undefined && startAt !== null) {

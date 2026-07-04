@@ -170,6 +170,20 @@ test("POST rejects a zero-second interval → 400", async () => {
   await app.close();
 });
 
+test("POST rejects an astronomically large interval → 400 (not a 500 RangeError)", async () => {
+  const app = await buildApp(makeState({ automations: new MemoryAutomationStore() }));
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/automations",
+    // now + 1e16 * 1000 ms overflows the Date range; without the upper-bound
+    // guard scheduleNextAfter → toRfc3339 throws an uncaught RangeError → 500.
+    payload: { title: "Bad", prompt: "Run", schedule: { interval: { every_seconds: 1e16 } } },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().error, /every_seconds is too large/);
+  await app.close();
+});
+
 test("POST rejects blank title or prompt → 400", async () => {
   const app = await buildApp(makeState({ automations: new MemoryAutomationStore() }));
   assert.equal(
