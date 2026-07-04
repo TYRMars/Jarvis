@@ -5,6 +5,7 @@ export {
   ProviderError,
   MemoryError,
   ApprovalError,
+  AbortError,
   MaxIterationsError,
   errorText,
 } from "./error.ts";

@@ -35,7 +35,7 @@ import type { Approver, ApprovalDecision, ApprovalRequest } from "./approval.ts"
 import type { Memory } from "./memory.ts";
 import { withPlan, type PlanItem } from "./plan.ts";
 import { withProgress, type ToolProgress } from "./progress.ts";
-import { errorText, MaxIterationsError, MemoryError } from "./error.ts";
+import { AbortError, errorText, MaxIterationsError, MemoryError } from "./error.ts";
 import type { JsonValue } from "./json.ts";
 
 export interface AgentConfig {
@@ -87,18 +87,23 @@ export class Agent {
     this.config = config;
   }
 
-  /** Blocking run. Throws MaxIterationsError if the loop never terminates. */
-  async run(conversation: Conversation): Promise<RunOutcome> {
-    const [outcome] = await this.runWithUsage(conversation);
+  /**
+   * Blocking run. Throws MaxIterationsError if the loop never terminates, or
+   * AbortError if `signal` fires (checked between iterations and before each
+   * tool dispatch, so an aborted run stops side-effecting work promptly).
+   */
+  async run(conversation: Conversation, signal?: AbortSignal): Promise<RunOutcome> {
+    const [outcome] = await this.runWithUsage(conversation, signal);
     return outcome;
   }
 
   /** Like `run` but also returns aggregated provider-reported usage. */
-  async runWithUsage(conversation: Conversation): Promise<[RunOutcome, Usage]> {
+  async runWithUsage(conversation: Conversation, signal?: AbortSignal): Promise<[RunOutcome, Usage]> {
     ensureSystemPrompt(conversation, this.config.systemPrompt, this.config.refreshSystemPromptOnResume);
     const totalUsage = emptyUsage();
 
     for (let iter = 1; iter <= this.config.maxIterations; iter++) {
+      throwIfAborted(signal);
       const req = await this.buildRequest(conversation);
       const resp = await this.llm.complete(req);
       conversation.messages.push(resp.message);
@@ -111,6 +116,7 @@ export class Agent {
       const message = resp.message;
       if (isToolCallTurn(message, resp.finish_reason)) {
         for (const call of message.tool_calls) {
+          throwIfAborted(signal);
           const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
           const output = await runOne(this.config.tools, call, approval?.[1]);
           conversation.messages.push(toolResult(call.id, output));
@@ -129,10 +135,14 @@ export class Agent {
   }
 
   /** Streaming run. Yields exactly one terminal `done` or `error`. */
-  async *runStream(conversation: Conversation): AsyncGenerator<AgentEvent> {
+  async *runStream(conversation: Conversation, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
     ensureSystemPrompt(conversation, this.config.systemPrompt, this.config.refreshSystemPromptOnResume);
 
     for (let iter = 1; iter <= this.config.maxIterations; iter++) {
+      if (signal?.aborted) {
+        yield { type: "error", message: abortMessage(signal) };
+        return;
+      }
       let req: ChatRequest;
       try {
         req = await this.buildRequest(conversation);
@@ -186,6 +196,10 @@ export class Agent {
       const message = finish.message;
       if (isToolCallTurn(message, finish.finish_reason)) {
         for (const call of message.tool_calls) {
+          if (signal?.aborted) {
+            yield { type: "error", message: abortMessage(signal) };
+            return;
+          }
           // Resolve the approval decision, emitting the request BEFORE awaiting
           // the approver so an interactive transport can respond in time.
           let decision: ApprovalDecision | undefined;
@@ -263,6 +277,19 @@ export class Agent {
     if (conv.last_response_chain_origin != null) req.chain_origin = conv.last_response_chain_origin;
     return req;
   }
+}
+
+/** The message carried by an abort, preferring the signal's own `reason`. */
+function abortMessage(signal: AbortSignal): string {
+  const reason = signal.reason;
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "string" && reason.length > 0) return reason;
+  return "agent run aborted";
+}
+
+/** Throw AbortError if the signal has fired — used at the blocking loop's checkpoints. */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new AbortError(abortMessage(signal));
 }
 
 type ToolCallMessage = Extract<Message, { role: "assistant" }> & { tool_calls: ToolCall[] };
