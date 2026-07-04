@@ -83,11 +83,13 @@ no "Here is a summary...", no "This excerpt..." — start directly with the subs
 fact, decision, or state.`;
 
 /**
- * Reserved budget (estimated tokens) carved out for the synthetic summary
- * itself when deciding what to keep recent — keeps us from packing the budget
- * so tight that inserting the summary pushes us back over.
+ * Fixed headroom (estimated tokens) added on top of the summary's own
+ * max-token cap when reserving budget for the synthetic summary message.
+ * Covers the wrapper — the `Earlier conversation summary (N turn(s)
+ * compressed):` header plus the per-message role overhead — so the reserve
+ * stays a little larger than the worst-case summary.
  */
-const SUMMARY_RESERVE_TOKENS = 256;
+const SUMMARY_WRAPPER_TOKENS = 32;
 
 /** Cap on tokens the summarisation call may emit. */
 const DEFAULT_SUMMARY_MAX_TOKENS = 400;
@@ -184,8 +186,14 @@ export class SummarizingMemory implements Memory {
     const { systemIdxs, turns } = splitIntoTurns(messages);
 
     const systemTokens = systemIdxs.reduce((acc, i) => acc + est.estimateMessage(messages[i]!), 0);
-    // Leave headroom for the synthetic summary message we may insert.
-    const budget = Math.max(0, this.#maxTokens - systemTokens - SUMMARY_RESERVE_TOKENS);
+    // Leave headroom for the synthetic summary message we may insert. The
+    // summary can emit up to `#summaryMaxTokens`, so the reserve must track
+    // that cap (plus the wrapper) rather than a fixed constant — otherwise
+    // inserting a large summary pushes the compacted output back over
+    // `#maxTokens` and the PTL safety net (enforceTokenBudget) re-fires,
+    // evicting recent turns the selector just chose to keep.
+    const summaryReserve = this.#summaryMaxTokens + SUMMARY_WRAPPER_TOKENS;
+    const budget = Math.max(0, this.#maxTokens - systemTokens - summaryReserve);
 
     const turnCost = (turn: TurnIndices): number =>
       turn.reduce((acc, i) => acc + est.estimateMessage(messages[i]!), 0);

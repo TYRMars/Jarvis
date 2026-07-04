@@ -121,7 +121,10 @@ test("over budget inserts the summary and keeps the latest turn", async () => {
 
 test("breakpoint summary sits between cached prefix and recent tail", async () => {
   const llm = new FakeLlm("MIDDLE_SUMMARY");
-  const mem = new SummarizingMemory(llm, "test-model", 400);
+  // Budget must comfortably hold the cached prefix + recent tail + the summary
+  // reserve, but not the large middle turns — so they get summarised. (The
+  // reserve is coupled to the summary max-token cap, ~432 by default.)
+  const mem = new SummarizingMemory(llm, "test-model", 900);
   const big = "lorem ipsum dolor sit amet ".repeat(80); // ~2160 chars
   const msgs: Message[] = [
     sys("sys"),
@@ -352,20 +355,49 @@ test("a successful summary resets the failure streak", async () => {
 
 // ---------- PTL safety net ----------
 
-test("PTL drops oldest turns when the summary pushes over budget", async () => {
-  const llm = new FakeLlm("X".repeat(2000));
-  const mem = new SummarizingMemory(llm, "test-model", 300);
+test("PTL drops oldest turns when an oversized summary pushes over budget", async () => {
+  // A misbehaving summariser that ignores its max_tokens cap and returns far
+  // more than `summaryMaxTokens`. Even with the reserve coupled to the cap,
+  // an over-cap summary must trip the PTL safety net. A small cap keeps the
+  // reserve small so several real turns are kept for PTL to then drop.
+  const llm = new FakeLlm("X".repeat(4000));
+  const pad = "x".repeat(240);
+  const mem = new SummarizingMemory(llm, "test-model", 300).withSummaryMaxTokens(24);
   const msgs = [
     sys("sys"),
-    user("turn 1"), asst("reply 1 with some longer text"),
-    user("turn 2"), asst("reply 2 with some longer text"),
-    user("turn 3"), asst("reply 3 with some longer text"),
+    user(`turn 1${pad}`), asst(`reply 1${pad}`),
+    user(`turn 2${pad}`), asst(`reply 2${pad}`),
+    user(`turn 3${pad}`), asst(`reply 3${pad}`),
     user("turn 4 most recent"), asst("reply 4"),
   ];
   const out = await mem.compact(msgs);
   assert.ok(hasUserExactly(out, "turn 4 most recent"), "latest turn must survive PTL");
   assert.ok(hasSystemContaining(out, "truncated to fit token budget"), "expected PTL marker");
-  assert.ok(!hasUserExactly(out, "turn 1"), "oldest turn should have been dropped");
+  assert.ok(!hasUserExactly(out, `turn 1${pad}`), "oldest turn should have been dropped");
+});
+
+test("a summary at its token cap does NOT trip PTL (reserve tracks the cap)", async () => {
+  // Regression for the reserve/cap coupling: a well-behaved summary sized near
+  // `summaryMaxTokens` must fit inside the reserved headroom, so the PTL safety
+  // net stays dormant and the recent turns the selector kept are NOT evicted.
+  const cap = 60;
+  // ~cap tokens of summary (chars/4 heuristic) — a summariser honouring its cap.
+  const llm = new FakeLlm("word ".repeat(cap));
+  const mem = new SummarizingMemory(llm, "test-model", 1000).withSummaryMaxTokens(cap);
+  const big = "lorem ipsum dolor sit amet ".repeat(60); // ~1620 chars/turn
+  const msgs = [
+    sys("sys"),
+    user(`old q1 ${big}`), asst(`old a1 ${big}`),
+    user(`old q2 ${big}`), asst(`old a2 ${big}`),
+    user("recent q3"), asst("recent a3"),
+  ];
+  const out = await mem.compact(msgs);
+  assert.equal(llm.calls, 1, "older turns should have been summarised");
+  assert.ok(hasUserExactly(out, "recent q3"), "recent turn kept");
+  assert.ok(
+    !hasSystemContaining(out, "truncated to fit token budget"),
+    "PTL must NOT fire — the reserve should absorb a cap-sized summary",
+  );
 });
 
 test("PTL is a no-op under budget", async () => {
