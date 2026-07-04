@@ -40,7 +40,7 @@ import { LogBuffer } from "./logs.ts";
 import os from "node:os";
 import path from "node:path";
 
-import { pickPort, probeHealth } from "./net.ts";
+import { bindWithRetry, pickPort, probeHealth } from "./net.ts";
 import { type DesktopPrefs, loadPrefs, savePrefs } from "./prefs.ts";
 
 /** The loopback origin an externally-launched `jarvis serve` listens on. */
@@ -197,8 +197,25 @@ export class ServerManager {
       this.mcpClients = mcpClients;
       const { host, port: listenPort } = parseAddr(config.addr);
 
-      this.app = await serve({ host, port: listenPort }, state);
-      this.apiOrigin = `http://${addr}`;
+      // The port pickPort() reserved above was freed before this bind (it closes
+      // the listener), and the buildProvider/openStores/buildAppState phase —
+      // which spawns MCP children — can run for seconds, so another local
+      // listener may have claimed it. Retry on a fresh port instead of leaving
+      // the server permanently stopped on EADDRINUSE (issue #318).
+      const { handle, port: boundPort } = await bindWithRetry(
+        listenPort,
+        (port) => serve({ host, port }, state),
+        {
+          host,
+          onRetry: (taken, next, attempt) =>
+            this.logs.push(
+              `Port ${taken} was taken before bind (EADDRINUSE, attempt ${attempt}); ` +
+                `retrying on ${next}`,
+            ),
+        },
+      );
+      this.app = handle;
+      this.apiOrigin = `http://${host}:${boundPort}`;
       this.kind = "embedded";
       this.lastError = null;
       this.logs.push(`Embedded Jarvis server ready at ${this.apiOrigin}`);

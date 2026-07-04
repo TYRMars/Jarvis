@@ -26,6 +26,56 @@ export function pickPort(host = "127.0.0.1"): Promise<number> {
   });
 }
 
+/** True when `e` is a Node listen EADDRINUSE error (port already bound). */
+export function isAddrInUse(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null | undefined)?.code;
+  if (code === "EADDRINUSE") return true;
+  return e instanceof Error && e.message.includes("EADDRINUSE");
+}
+
+/**
+ * Bind via `bind(port)`, retrying on a freshly-picked ephemeral port when the
+ * chosen port was claimed between selection and bind (`EADDRINUSE`).
+ *
+ * `pickPort` binds `:0`, reads the assigned port, then *closes* the listener and
+ * returns the now-free port — so across the (slow) work between picking and
+ * binding, the port is unowned and can be taken by any other local listener.
+ * Without a retry a lost race leaves the server permanently stopped with no
+ * recovery. This closes that TOCTOU window (issue #318).
+ *
+ * Only `EADDRINUSE` is retried; any other bind error (and the final attempt)
+ * rejects so real failures still surface. Returns the live handle and the port
+ * actually bound. `pick`/`maxAttempts` are injectable for tests.
+ */
+export async function bindWithRetry<T>(
+  firstPort: number,
+  bind: (port: number) => Promise<T>,
+  opts: {
+    host?: string;
+    maxAttempts?: number;
+    pick?: (host: string) => Promise<number>;
+    onRetry?: (takenPort: number, nextPort: number, attempt: number) => void;
+  } = {},
+): Promise<{ handle: T; port: number }> {
+  const host = opts.host ?? "127.0.0.1";
+  const maxAttempts = opts.maxAttempts ?? 5;
+  const pick = opts.pick ?? pickPort;
+  let port = firstPort;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const handle = await bind(port);
+      return { handle, port };
+    } catch (e) {
+      if (!isAddrInUse(e) || attempt === maxAttempts) throw e;
+      const next = await pick(host);
+      opts.onRetry?.(port, next, attempt);
+      port = next;
+    }
+  }
+  // Unreachable: the loop returns on success or throws on the final attempt.
+  throw new Error("bindWithRetry: exhausted attempts");
+}
+
 /**
  * GET `<origin>/health` with a hard timeout. Returns true only on a 2xx — used
  * to detect an already-running Jarvis server we can reuse instead of starting a
