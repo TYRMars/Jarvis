@@ -169,15 +169,17 @@ export function newRequirementRun(requirementId: string, conversationId: string)
 }
 
 /**
- * Mark the run finished (status + finished_at). Terminal is sticky — a late
- * `finish` won't overwrite an existing terminal status, but finished_at is
- * still bumped.
+ * Mark the run finished (status + finished_at). Terminal is sticky — a late or
+ * duplicate `finish` (cancel, reaper sweep, double transition) leaves both the
+ * status AND `finished_at` untouched, so the recorded completion time stays at
+ * the real first finish rather than being re-stamped later (which would inflate
+ * any reported `finished_at − started_at` duration).
  */
 export function finishRequirementRun(run: RequirementRun, status: RequirementRunStatus): void {
   if (!requirementRunStatusIsTerminal(run.status)) {
     run.status = status;
+    run.finished_at = new Date().toISOString();
   }
-  run.finished_at = new Date().toISOString();
 }
 
 /** Append one durable operator-facing log line. */

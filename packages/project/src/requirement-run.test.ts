@@ -46,6 +46,18 @@ test("finish sets terminal status + finished_at; terminal is sticky", () => {
   assert.equal(r2.status, saved, "late finish must not overwrite a terminal status");
 });
 
+test("late/duplicate finish does not re-stamp finished_at", () => {
+  const r = newRequirementRun("req", "conv");
+  finishRequirementRun(r, "completed");
+  const firstFinish = r.finished_at;
+  assert.notEqual(firstFinish, undefined);
+  // A second finish (cancel, reaper sweep, double transition) must leave the
+  // recorded completion time at the real first finish — re-stamping it would
+  // inflate any finished_at − started_at duration.
+  finishRequirementRun(r, "failed");
+  assert.equal(r.finished_at, firstFinish, "duplicate finish must not bump finished_at");
+});
+
 test("pushRequirementRunLog lazily creates the logs array", () => {
   const r = newRequirementRun("req", "conv");
   const startsEmpty = r.logs === undefined;
