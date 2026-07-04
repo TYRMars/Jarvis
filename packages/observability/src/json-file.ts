@@ -137,7 +137,11 @@ async function pruneOldestFiles(dir: string, max: number): Promise<void> {
 
 export class JsonFileObservabilityStore implements ObservabilityStore {
   readonly #dir: string;
-  /** Number caps `runs/` (oldest pruned on append); `null` disables pruning. */
+  /**
+   * Number caps `runs/` (oldest pruned on append); `null` disables pruning.
+   * A numeric cap is clamped to at least 1 on append so `0`/negative never
+   * evicts the just-written run (see {@link appendRun}).
+   */
   #maxRuns: number | null;
 
   private constructor(dir: string, maxRuns: number | null) {
@@ -184,7 +188,10 @@ export class JsonFileObservabilityStore implements ObservabilityStore {
   async appendRun(run: ObservedRun): Promise<void> {
     await atomicWrite(this.#runPath(run.id), JSON.stringify(run, null, 2));
     if (this.#maxRuns !== null) {
-      await pruneOldestFiles(path.join(this.#dir, "runs"), this.#maxRuns);
+      // Clamp to at least 1 so a `0` (or negative) cap never evicts the run we
+      // just wrote — `null` is the documented "disable pruning" sentinel, so a
+      // numeric cap must not cause total loss of run history.
+      await pruneOldestFiles(path.join(this.#dir, "runs"), Math.max(1, this.#maxRuns));
     }
   }
 
