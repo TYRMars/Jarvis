@@ -91,10 +91,25 @@ export class Fanout<E> implements EventSource<E> {
     };
   }
 
-  /** Fan `event` out to every currently-registered listener, synchronously. */
+  /**
+   * Fan `event` out to every currently-registered listener, synchronously.
+   *
+   * Each listener runs inside its own try/catch (log-and-continue): backends
+   * call `emit` *after* the durable write has committed, so a throwing
+   * subscriber must not (1) reject the already-succeeded `upsert`/`delete` back
+   * to the caller, nor (2) abort fan-out to listeners registered after it.
+   * This mirrors the isolation Rust's `tokio::broadcast` gives — one bad
+   * receiver can't break delivery to the rest.
+   */
   emit(event: E): void {
     for (const listener of [...this.#listeners]) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (err) {
+        // @jarvis/agent-profile has no tracing dep; surface via console.warn so
+        // a broken subscriber is visible without taking down the fan-out.
+        console.warn(`agent-profile fanout listener threw; continuing: ${String(err)}`);
+      }
     }
   }
 }

@@ -125,6 +125,37 @@ function contract(name: string, make: (dir: string) => Promise<AgentProfileStore
     });
   });
 
+  test(`${name}: a throwing listener neither rejects the mutation nor blocks other listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: AgentProfileEvent[] = [];
+      // First-registered listener throws; a later one must still be delivered,
+      // and the committed upsert/delete must not reject back to the caller.
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+
+      const warnings: unknown[] = [];
+      const origWarn = console.warn;
+      console.warn = (...args: unknown[]) => warnings.push(args);
+      try {
+        const p = profile("Alice");
+        await store.upsert(p); // must resolve despite the throwing listener
+        assert.equal(await store.delete(p.id), true);
+      } finally {
+        console.warn = origWarn;
+      }
+
+      assert.deepEqual(
+        seen.map((e) => e.type),
+        ["upserted", "deleted"],
+        "the non-throwing listener must still receive both events",
+      );
+      assert.ok(warnings.length >= 2, "each throwing invocation is logged and swallowed");
+    });
+  });
+
   test(`${name}: get returns an independent copy (no aliasing into the store)`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
