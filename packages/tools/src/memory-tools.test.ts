@@ -146,6 +146,49 @@ test("delete last entry clears index file", async () => {
   assert.ok(!(await pathExists(path.join(root, MEMORY_DIR, "MEMORY.md"))));
 });
 
+test("concurrent writes to the same tree don't lost-update the index", async () => {
+  // Each write does readIndex → mergeIndexLine → atomicWrite on the shared
+  // MEMORY.md. Without the per-tree lock, overlapping writes read the same
+  // (stale) index and each overwrites it, so only the last writer's line
+  // survives. The lock serializes them so every slug lands. Separate tool
+  // instances mirror the real registry (one instance per tool) + concurrent
+  // route/agent invocations.
+  const root = await mkTmp();
+  const slugs = Array.from({ length: 12 }, (_, i) => `topic-${i}`);
+  await Promise.all(
+    slugs.map((slug) =>
+      new MemoryWriteTool(wsRoots(root)).invoke({ slug, summary: slug, content: `body ${slug}` }),
+    ),
+  );
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  for (const slug of slugs) {
+    assert.ok(index.includes(`(${slug}.md)`), `index lost the line for ${slug}`);
+  }
+});
+
+test("a write racing an include_add on the same tree keeps both", async () => {
+  // A MEMORY.md read-modify-write (write) interleaving with an include_add's
+  // read-modify-write on the same index would drop one of the two edits without
+  // serialization. Local-path include target so no network/git is involved.
+  const root = await mkTmp();
+  const includeSrc = await mkTmp();
+  // Give the include target a MEMORY.md so resolveInclude accepts it.
+  await new MemoryWriteTool(wsRoots(includeSrc)).invoke({
+    slug: "shared",
+    summary: "shared",
+    content: ".",
+  });
+  await Promise.all([
+    new MemoryWriteTool(wsRoots(root)).invoke({ slug: "local", summary: "L", content: "." }),
+    new MemoryIncludeAddTool(wsRoots(root)).invoke({ target: includeSrc }),
+  ]);
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  assert.ok(index.includes("(local.md)"), "write line lost");
+  assert.ok(index.includes("jarvis-include:"), "include directive lost");
+});
+
 test("write rejects oversized content", async () => {
   const root = await mkTmp();
   const huge = "x".repeat(MAX_ENTRY_BYTES + 1);
