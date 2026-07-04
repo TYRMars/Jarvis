@@ -83,11 +83,15 @@ no "Here is a summary...", no "This excerpt..." — start directly with the subs
 fact, decision, or state.`;
 
 /**
- * Reserved budget (estimated tokens) carved out for the synthetic summary
- * itself when deciding what to keep recent — keeps us from packing the budget
- * so tight that inserting the summary pushes us back over.
+ * Estimated tokens for the synthetic summary message's framing (the
+ * "Earlier conversation summary (N turn(s) compressed):" wrapper plus the
+ * per-message overhead) carved out *on top of* the summariser's output cap.
+ * The reserve the selector honours is derived from `#summaryMaxTokens` plus
+ * this overhead (see {@link compact}), so raising the summary cap keeps the
+ * two coupled and inserting the summary never pushes the compacted result back
+ * over `#maxTokens`.
  */
-const SUMMARY_RESERVE_TOKENS = 256;
+const SUMMARY_WRAPPER_TOKENS = 64;
 
 /** Cap on tokens the summarisation call may emit. */
 const DEFAULT_SUMMARY_MAX_TOKENS = 400;
@@ -184,8 +188,16 @@ export class SummarizingMemory implements Memory {
     const { systemIdxs, turns } = splitIntoTurns(messages);
 
     const systemTokens = systemIdxs.reduce((acc, i) => acc + est.estimateMessage(messages[i]!), 0);
-    // Leave headroom for the synthetic summary message we may insert.
-    const budget = Math.max(0, this.#maxTokens - systemTokens - SUMMARY_RESERVE_TOKENS);
+    // Leave headroom for the synthetic summary message we may insert. Reserve
+    // the summariser's full output cap plus its framing overhead — coupled to
+    // `#summaryMaxTokens`, not a fixed constant — so a summary emitted at the
+    // cap still fits and the enforceTokenBudget safety net does not re-fire and
+    // evict the recent turns the selector just chose to keep. When `#maxTokens`
+    // is itself comparable to the summary cap the budget clamps to 0 (the
+    // summary genuinely cannot co-exist with recent turns) and PTL is the
+    // correct safety net.
+    const summaryReserve = this.#summaryMaxTokens + SUMMARY_WRAPPER_TOKENS;
+    const budget = Math.max(0, this.#maxTokens - systemTokens - summaryReserve);
 
     const turnCost = (turn: TurnIndices): number =>
       turn.reduce((acc, i) => acc + est.estimateMessage(messages[i]!), 0);

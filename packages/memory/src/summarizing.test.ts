@@ -121,7 +121,10 @@ test("over budget inserts the summary and keeps the latest turn", async () => {
 
 test("breakpoint summary sits between cached prefix and recent tail", async () => {
   const llm = new FakeLlm("MIDDLE_SUMMARY");
-  const mem = new SummarizingMemory(llm, "test-model", 400);
+  // maxTokens sized so the selection budget (maxTokens − systemTokens − the
+  // summary reserve, now coupled to the 400-token summary cap) leaves room for
+  // the cache-anchored prefix + recent tail but not the huge middle turns.
+  const mem = new SummarizingMemory(llm, "test-model", 608);
   const big = "lorem ipsum dolor sit amet ".repeat(80); // ~2160 chars
   const msgs: Message[] = [
     sys("sys"),
@@ -354,7 +357,10 @@ test("a successful summary resets the failure streak", async () => {
 
 test("PTL drops oldest turns when the summary pushes over budget", async () => {
   const llm = new FakeLlm("X".repeat(2000));
-  const mem = new SummarizingMemory(llm, "test-model", 300);
+  // maxTokens sized so the selection budget leaves only the latest turn or two
+  // (with the summary reserve now coupled to the 400-token summary cap), then
+  // the ~500-token summary pushes the composed result back over budget → PTL.
+  const mem = new SummarizingMemory(llm, "test-model", 508);
   const msgs = [
     sys("sys"),
     user("turn 1"), asst("reply 1 with some longer text"),
@@ -366,6 +372,32 @@ test("PTL drops oldest turns when the summary pushes over budget", async () => {
   assert.ok(hasUserExactly(out, "turn 4 most recent"), "latest turn must survive PTL");
   assert.ok(hasSystemContaining(out, "truncated to fit token budget"), "expected PTL marker");
   assert.ok(!hasUserExactly(out, "turn 1"), "oldest turn should have been dropped");
+});
+
+test("reserve scales with the summary cap so a large summary doesn't trip PTL", async () => {
+  // Regression for #323: the selection reserve is coupled to
+  // `withSummaryMaxTokens`, not a fixed 256. A summary emitted near a raised
+  // cap must still fit, so enforceTokenBudget does NOT re-fire and evict the
+  // recent turns the selector just chose to keep.
+  const bigSummary = "S".repeat(2400); // ~600 est tokens, well over the old 256 reserve
+  const llm = new FakeLlm(bigSummary);
+  const mem = new SummarizingMemory(llm, "test-model", 1500).withSummaryMaxTokens(700);
+
+  const msgs: Message[] = [sys("sys")];
+  const pad = "detail padding words here ".repeat(6); // large turns so several drop
+  for (let i = 1; i <= 24; i += 1) {
+    msgs.push(user(`turn ${i} ${pad}`));
+    msgs.push(asst(`reply ${i} ${pad}`));
+  }
+
+  const out = await mem.compact(msgs);
+  assert.equal(llm.calls, 1, "some turns dropped → the summariser ran");
+  assert.ok(hasSystemContaining(out, bigSummary), "the full summary is inserted");
+  assert.ok(hasUserExactly(out, `turn 24 ${pad}`), "the latest turn survives");
+  assert.ok(
+    !hasSystemContaining(out, "truncated to fit token budget"),
+    "coupled reserve keeps the result under budget so PTL never fires",
+  );
 });
 
 test("PTL is a no-op under budget", async () => {
