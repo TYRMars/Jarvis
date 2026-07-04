@@ -125,6 +125,26 @@ function contract(name: string, make: (dir: string) => Promise<AgentProfileStore
     });
   });
 
+  test(`${name}: a throwing listener neither rejects the mutation nor blocks other listeners (#321)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: AgentProfileEvent[] = [];
+      // First subscriber throws; a later one must still receive the event.
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      const p = profile("Alice");
+      // The write is already committed before emit; a bad listener must not
+      // surface it as a rejected upsert.
+      await assert.doesNotReject(store.upsert(p));
+      assert.equal(seen.length, 1, "later listener still saw the event");
+      assert.equal(seen[0]?.type, "upserted");
+      // Store state is intact despite the throwing subscriber.
+      assert.equal((await store.get(p.id))?.name, "Alice");
+    });
+  });
+
   test(`${name}: get returns an independent copy (no aliasing into the store)`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

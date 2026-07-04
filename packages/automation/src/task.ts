@@ -308,6 +308,13 @@ export function parseTimestamp(value: string | undefined): number | undefined {
  * yields `YYYY-MM-DDTHH:mm:ss.sssZ`.
  */
 export function toRfc3339(epochMs: number): string {
+  // `new Date(x).toISOString()` throws an opaque `RangeError: Invalid time
+  // value` for non-finite / out-of-range input. Reject it up front with a
+  // message that names the offending value so a bad `every_seconds` overflow
+  // is diagnosable instead of a bare stack trace (#316).
+  if (!Number.isFinite(epochMs) || Math.abs(epochMs) > 8.64e15) {
+    throw new RangeError(`toRfc3339: epochMs out of range: ${epochMs}`);
+  }
   return new Date(epochMs).toISOString();
 }
 

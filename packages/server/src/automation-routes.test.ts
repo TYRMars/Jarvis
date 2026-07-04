@@ -170,6 +170,21 @@ test("POST rejects a zero-second interval → 400", async () => {
   await app.close();
 });
 
+test("POST rejects an overflowing every_seconds → 400 (not 500) (#316)", async () => {
+  const app = await buildApp(makeState({ automations: new MemoryAutomationStore() }));
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/automations",
+    // A large-but-finite value whose `now + every*1000` overflows the Date
+    // range: must be rejected cleanly, not throw a RangeError out of the
+    // handler as a 500.
+    payload: { title: "Bad", prompt: "Run", schedule: { interval: { every_seconds: 9e18 } } },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().error, /every_seconds must be <=/);
+  await app.close();
+});
+
 test("POST rejects blank title or prompt → 400", async () => {
   const app = await buildApp(makeState({ automations: new MemoryAutomationStore() }));
   assert.equal(

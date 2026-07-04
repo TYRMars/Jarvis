@@ -83,11 +83,16 @@ no "Here is a summary...", no "This excerpt..." — start directly with the subs
 fact, decision, or state.`;
 
 /**
- * Reserved budget (estimated tokens) carved out for the synthetic summary
- * itself when deciding what to keep recent — keeps us from packing the budget
- * so tight that inserting the summary pushes us back over.
+ * Extra tokens (beyond the summary body itself) carved out for the synthetic
+ * summary message's wrapper — the `Earlier conversation summary (N turn(s)
+ * compressed):` prefix plus per-message overhead. Added on top of the
+ * instance's `#summaryMaxTokens` to form the full reserve (see
+ * {@link SummarizingMemory.summaryReserveTokens}); keeping the two coupled
+ * ensures the reserve always covers the largest summary the LLM may emit, so
+ * inserting it never pushes the compacted result back over `#maxTokens` and
+ * re-fires the `enforceTokenBudget` safety net.
  */
-const SUMMARY_RESERVE_TOKENS = 256;
+const SUMMARY_WRAPPER_TOKENS = 64;
 
 /** Cap on tokens the summarisation call may emit. */
 const DEFAULT_SUMMARY_MAX_TOKENS = 400;
@@ -164,6 +169,16 @@ export class SummarizingMemory implements Memory {
   }
 
   /**
+   * Tokens reserved for the synthetic summary message during turn selection.
+   * Derived from `#summaryMaxTokens` (the summary body's own ceiling) plus a
+   * fixed wrapper overhead, so a larger summary cap automatically widens the
+   * reserve and the two never drift apart (#323).
+   */
+  summaryReserveTokens(): number {
+    return this.#summaryMaxTokens + SUMMARY_WRAPPER_TOKENS;
+  }
+
+  /**
    * Persist (and rehydrate) summaries through `store`, content-addressed by a
    * stable fingerprint of the summarised slice — so they survive process
    * restarts and are shared across workers.
@@ -184,8 +199,10 @@ export class SummarizingMemory implements Memory {
     const { systemIdxs, turns } = splitIntoTurns(messages);
 
     const systemTokens = systemIdxs.reduce((acc, i) => acc + est.estimateMessage(messages[i]!), 0);
-    // Leave headroom for the synthetic summary message we may insert.
-    const budget = Math.max(0, this.#maxTokens - systemTokens - SUMMARY_RESERVE_TOKENS);
+    // Leave headroom for the synthetic summary message we may insert. The
+    // reserve is derived from `#summaryMaxTokens` (not a fixed constant) so it
+    // always covers the largest summary the LLM may emit — see #323.
+    const budget = Math.max(0, this.#maxTokens - systemTokens - this.summaryReserveTokens());
 
     const turnCost = (turn: TurnIndices): number =>
       turn.reduce((acc, i) => acc + est.estimateMessage(messages[i]!), 0);

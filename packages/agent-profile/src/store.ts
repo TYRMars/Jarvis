@@ -91,10 +91,20 @@ export class Fanout<E> implements EventSource<E> {
     };
   }
 
-  /** Fan `event` out to every currently-registered listener, synchronously. */
+  /**
+   * Fan `event` out to every currently-registered listener, synchronously.
+   * Each listener is invoked in isolation: a throwing subscriber is logged and
+   * skipped so it can neither abort fan-out to later listeners nor reject the
+   * already-committed mutation that triggered the emit (#321). Mirrors the
+   * shared-fate immunity the Rust original got from `tokio::broadcast`.
+   */
   emit(event: E): void {
     for (const listener of [...this.#listeners]) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (err) {
+        console.warn(`agent-profile listener threw during emit: ${String(err)}`);
+      }
     }
   }
 }
