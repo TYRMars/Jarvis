@@ -82,6 +82,14 @@ function requireStore(state: AppState, reply: FastifyReply): AutomationStore | u
 // ---------- helpers ---------------------------------------------------------
 
 /**
+ * Largest accepted interval, in seconds. `every * 1000` (plus a couple of
+ * catch-up `+= intervalMs` steps and a `now` offset) must stay within the
+ * valid Date range (±8.64e15 ms); 1e12 s ≈ 31,700 years leaves ample margin
+ * while rejecting the overflow-triggering values from #316.
+ */
+const MAX_EVERY_SECONDS = 1e12;
+
+/**
  * Validate a {@link ScheduleSpec}. Returns an error string when invalid,
  * `undefined` when valid. Mirrors Rust's `validate_schedule`.
  */
@@ -104,6 +112,14 @@ function validateSchedule(schedule: unknown): string | undefined {
     const every = interval?.every_seconds;
     if (typeof every !== "number" || !Number.isFinite(every) || every <= 0) {
       return "schedule.interval.every_seconds must be greater than zero";
+    }
+    // Upper-bound the interval so `now + every*1000` can never overflow the
+    // valid Date range (±8.64e15 ms). Without this, a large-but-finite value
+    // (e.g. 9e18) passes validation and later throws RangeError inside
+    // `toRfc3339` — escaping the create handler as a 500 and, worse, throwing
+    // in the scheduler tick for a persisted task (#316).
+    if (every > MAX_EVERY_SECONDS) {
+      return `schedule.interval.every_seconds must be <= ${MAX_EVERY_SECONDS}`;
     }
     const startAt = interval?.start_at;
     if (startAt !== undefined && startAt !== null) {
@@ -201,8 +217,13 @@ export function registerAutomationRoutes(app: FastifyInstance, state: AppState):
         ? { conversation_id: cleanOpt(body.conversation_id)! }
         : {}),
     };
-    const task = newAutomationTask(input);
+    // `newAutomationTask` computes `next_run` via `toRfc3339`, which can throw
+    // on a pathological (but validator-passing) schedule; keep it inside the
+    // try/catch so a throw becomes a clean 500 rather than an unhandled escape
+    // that leaks a stack trace (#316).
+    let task: AutomationTask;
     try {
+      task = newAutomationTask(input);
       await store.upsert(task);
     } catch (e) {
       return reply.code(500).send({ error: errorText(e) });

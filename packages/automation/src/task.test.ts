@@ -16,6 +16,7 @@ import {
   scheduleInterval,
   scheduleNextAfter,
   scheduleOnce,
+  toRfc3339,
 } from "./task.ts";
 
 // ---------- scheduleNextAfter (ScheduleSpec::next_after) -------------------
@@ -266,4 +267,14 @@ test("timestamp writes are normalised to canonical millis+Z (Rust to_rfc3339)", 
   // markStaleReclaimed normalises updated_at.
   markStaleReclaimed(task, "2026-01-01T00:10:00Z");
   assert.equal(task.updated_at, "2026-01-01T00:10:00.000Z");
+});
+
+test("toRfc3339 rejects non-finite / out-of-range epochMs with a clear error (#316)", () => {
+  assert.throws(() => toRfc3339(Number.NaN), /out of range/);
+  assert.throws(() => toRfc3339(Number.POSITIVE_INFINITY), /out of range/);
+  // Past the max valid Date (8.64e15 ms) — the overflow an unbounded
+  // every_seconds would produce.
+  assert.throws(() => toRfc3339(9e18), /out of range/);
+  // A valid epoch still round-trips.
+  assert.equal(toRfc3339(0), "1970-01-01T00:00:00.000Z");
 });

@@ -52,7 +52,9 @@ export class MemoryObservabilityStore implements ObservabilityStore {
     // write (delete-then-set moves the key to the end of the Map's order).
     this.#runs.delete(run.id);
     this.#runs.set(run.id, structuredClone(run));
-    if (this.#maxRuns !== null && this.#runs.size > this.#maxRuns) {
+    // `null` disables pruning; a non-positive cap (`0`) would evict every run
+    // — including the one just inserted — so treat it as "disabled" too (#322).
+    if (this.#maxRuns !== null && this.#maxRuns > 0 && this.#runs.size > this.#maxRuns) {
       const overflow = this.#runs.size - this.#maxRuns;
       const keys = this.#runs.keys();
       for (let i = 0; i < overflow; i += 1) {

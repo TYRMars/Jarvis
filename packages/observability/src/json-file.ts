@@ -183,7 +183,11 @@ export class JsonFileObservabilityStore implements ObservabilityStore {
 
   async appendRun(run: ObservedRun): Promise<void> {
     await atomicWrite(this.#runPath(run.id), JSON.stringify(run, null, 2));
-    if (this.#maxRuns !== null) {
+    // Only prune for a strictly-positive cap. `null` disables pruning by
+    // contract; `0` (or any non-positive) would otherwise delete every run
+    // file — including the one just written — so we treat it as "disabled"
+    // rather than "keep none" (#322).
+    if (this.#maxRuns !== null && this.#maxRuns > 0) {
       await pruneOldestFiles(path.join(this.#dir, "runs"), this.#maxRuns);
     }
   }

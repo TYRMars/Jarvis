@@ -209,7 +209,26 @@ test("json-file: withMaxRuns prunes oldest beyond the cap + slack", async () => 
   });
 });
 
+test("json-file: withMaxRuns(0) disables pruning instead of deleting every run (#322)", async () => {
+  await withTempDir(async (dir) => {
+    const store = (await JsonFileObservabilityStore.open(dir)).withMaxRuns(0);
+    await store.appendRun(run("keep-0"));
+    await store.appendRun(run("keep-1"));
+    await store.appendRun(run("keep-2"));
+    const files = (await readdir(path.join(dir, "runs"))).filter((f) => f.endsWith(".json"));
+    assert.equal(files.length, 3, "a 0 cap must not wipe run history");
+    assert.deepEqual((await store.listRuns({})).map((r) => r.id).sort(), ["keep-0", "keep-1", "keep-2"]);
+  });
+});
+
 // ---------- memory-specific ----------
+
+test("memory: withMaxRuns(0) disables pruning instead of evicting every run (#322)", async () => {
+  const store = new MemoryObservabilityStore().withMaxRuns(0);
+  await store.appendRun(run("a"));
+  await store.appendRun(run("b"));
+  assert.deepEqual((await store.listRuns({})).map((r) => r.id).sort(), ["a", "b"]);
+});
 
 test("memory: listRuns returns clones (mutating a copy doesn't leak back)", async () => {
   const store = new MemoryObservabilityStore();
