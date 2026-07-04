@@ -294,6 +294,45 @@ function withExtensionTmp(p: string): string {
   return path.join(dir, `${stem}.tmp`);
 }
 
+// ---------- per-scope write serialization -----------------------------------
+
+/**
+ * Serialises the read-modify-write of the shared per-scope `MEMORY.md` index.
+ *
+ * Every mutating memory tool (`write` / `delete` / `include_add` /
+ * `include_remove`) does `readIndex()` → recompute → `atomicWrite()` on the
+ * same index file. With no lock, two concurrent mutations to one scope both
+ * read the same index, both recompute from that stale snapshot, and the last
+ * `atomicWrite` wins — silently dropping the other's change (a lost update).
+ *
+ * A single lock instance is shared across the whole tool family (see
+ * `registerMemoryTools`), so the serialization spans e.g. an `include_add`
+ * racing a `write`, not just one tool against itself. Chains are keyed by the
+ * scope's absolute root path so the two scopes (workspace / user) never block
+ * each other. Modelled as a promise chain per the `#writeChain` mutex the
+ * conversation / channel / learning stores use.
+ */
+export class MemoryWriteLock {
+  readonly #chains = new Map<string, Promise<unknown>>();
+
+  /** Run `fn` after all previously-enqueued ops for `root` settle (serial). */
+  withLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.#chains.get(root) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    // Keep the chain alive on rejection, but don't let the stored promise carry
+    // a rejection (which would surface as an unhandled rejection when the next
+    // op chains off it).
+    this.#chains.set(
+      root,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }
+}
+
 // ---------- arg helpers -----------------------------------------------------
 
 function asObject(args: JsonValue): { [k: string]: JsonValue } {
@@ -488,9 +527,11 @@ export class MemoryWriteTool implements Tool {
   };
 
   readonly #roots: MemoryRoots;
+  readonly #lock: MemoryWriteLock;
 
-  constructor(roots: MemoryRoots) {
+  constructor(roots: MemoryRoots, lock?: MemoryWriteLock) {
     this.#roots = roots;
+    this.#lock = lock ?? new MemoryWriteLock();
   }
 
   async invoke(args: JsonValue): Promise<string> {
@@ -525,28 +566,32 @@ export class MemoryWriteTool implements Tool {
     const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "workspace";
 
     const root = rootFor(this.#roots, scope);
-    const entry = entryPath(root, slug);
-    await atomicWrite(entry, content);
+    // Serialise the entry+index read-modify-write against every other mutation
+    // of this scope so a concurrent write/delete/include can't lose the update.
+    return this.#lock.withLock(root, async () => {
+      const entry = entryPath(root, slug);
+      await atomicWrite(entry, content);
 
-    const existingIndex = await readIndex(root);
-    const newIndex = mergeIndexLine(existingIndex, slug, summary);
-    const lineCount = splitLines(newIndex).length;
-    if (lineCount > MAX_INDEX_LINES) {
-      throw new Error(
-        `memory index would exceed ${MAX_INDEX_LINES} lines — delete some entries first`,
-      );
-    }
-    if (Buffer.byteLength(newIndex, "utf8") > MAX_INDEX_BYTES) {
-      throw new Error(
-        `memory index would exceed ${MAX_INDEX_BYTES} bytes — delete some entries first`,
-      );
-    }
-    await atomicWrite(indexPath(root), newIndex);
+      const existingIndex = await readIndex(root);
+      const newIndex = mergeIndexLine(existingIndex, slug, summary);
+      const lineCount = splitLines(newIndex).length;
+      if (lineCount > MAX_INDEX_LINES) {
+        throw new Error(
+          `memory index would exceed ${MAX_INDEX_LINES} lines — delete some entries first`,
+        );
+      }
+      if (Buffer.byteLength(newIndex, "utf8") > MAX_INDEX_BYTES) {
+        throw new Error(
+          `memory index would exceed ${MAX_INDEX_BYTES} bytes — delete some entries first`,
+        );
+      }
+      await atomicWrite(indexPath(root), newIndex);
 
-    return (
-      `wrote ${scope} memory \`${slug}\` (${contentBytes} bytes); ` +
-      `index now has ${lineCount} entries`
-    );
+      return (
+        `wrote ${scope} memory \`${slug}\` (${contentBytes} bytes); ` +
+        `index now has ${lineCount} entries`
+      );
+    });
   }
 }
 
@@ -576,9 +621,11 @@ export class MemoryDeleteTool implements Tool {
   };
 
   readonly #roots: MemoryRoots;
+  readonly #lock: MemoryWriteLock;
 
-  constructor(roots: MemoryRoots) {
+  constructor(roots: MemoryRoots, lock?: MemoryWriteLock) {
     this.#roots = roots;
+    this.#lock = lock ?? new MemoryWriteLock();
   }
 
   async invoke(args: JsonValue): Promise<string> {
@@ -591,28 +638,32 @@ export class MemoryDeleteTool implements Tool {
     const scopeRaw = asString(obj["scope"]);
     const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "workspace";
     const root = rootFor(this.#roots, scope);
-    const entry = entryPath(root, slug);
-    try {
-      await fs.rm(entry);
-    } catch (e) {
-      if (isNotFound(e)) {
-        throw new Error(`no memory entry for slug \`${slug}\` in ${scope} scope`);
+    // Serialise the entry-delete + index rewrite against every other mutation
+    // of this scope (mirrors the write path).
+    return this.#lock.withLock(root, async () => {
+      const entry = entryPath(root, slug);
+      try {
+        await fs.rm(entry);
+      } catch (e) {
+        if (isNotFound(e)) {
+          throw new Error(`no memory entry for slug \`${slug}\` in ${scope} scope`);
+        }
+        throw new Error(`delete ${entry}: ${String(e)}`);
       }
-      throw new Error(`delete ${entry}: ${String(e)}`);
-    }
 
-    const existingIndex = (await readIndex(root)) ?? "";
-    const { body: newIndex } = removeIndexLine(existingIndex, slug);
-    const index = indexPath(root);
-    if (newIndex.trim() === "") {
-      // Drop the index file entirely so an empty memory looks empty rather than
-      // `MEMORY.md` of zero bytes.
-      await fs.rm(index).catch(() => undefined);
-    } else {
-      await atomicWrite(index, newIndex);
-    }
-    const remaining = countNonEmptyLines(newIndex);
-    return `deleted ${scope} memory \`${slug}\`; ${remaining} entries remain in scope`;
+      const existingIndex = (await readIndex(root)) ?? "";
+      const { body: newIndex } = removeIndexLine(existingIndex, slug);
+      const index = indexPath(root);
+      if (newIndex.trim() === "") {
+        // Drop the index file entirely so an empty memory looks empty rather
+        // than `MEMORY.md` of zero bytes.
+        await fs.rm(index).catch(() => undefined);
+      } else {
+        await atomicWrite(index, newIndex);
+      }
+      const remaining = countNonEmptyLines(newIndex);
+      return `deleted ${scope} memory \`${slug}\`; ${remaining} entries remain in scope`;
+    });
   }
 }
 
@@ -1055,9 +1106,11 @@ export class MemoryIncludeAddTool implements Tool {
   };
 
   readonly #roots: MemoryRoots;
+  readonly #lock: MemoryWriteLock;
 
-  constructor(roots: MemoryRoots) {
+  constructor(roots: MemoryRoots, lock?: MemoryWriteLock) {
     this.#roots = roots;
+    this.#lock = lock ?? new MemoryWriteLock();
   }
 
   async invoke(args: JsonValue): Promise<string> {
@@ -1074,19 +1127,24 @@ export class MemoryIncludeAddTool implements Tool {
     const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "workspace";
     const root = rootFor(this.#roots, scope);
     const index = indexPath(root);
-    const existing = await readOrEmpty(index);
     // Eager validate the directive: for git URLs this triggers the clone; for
     // local paths it confirms the dir + memory layout. We fail BEFORE writing
-    // the directive so a broken target doesn't get baked into MEMORY.md.
+    // the directive so a broken target doesn't get baked into MEMORY.md. Kept
+    // OUTSIDE the write lock so a slow clone doesn't stall other mutations.
     const cache = includeCacheRoot(this.#roots);
     await resolveInclude(directive, cache);
-    const next = addIncludeLine(existing, directive);
-    await atomicWrite(index, next);
-    return JSON.stringify({
-      ok: true,
-      added: directiveAsWire(directive),
-      scope,
-      memory_md: index,
+    // Read-modify-write the index under the per-scope lock; the read happens
+    // inside so a concurrent write/delete can't be clobbered by a stale copy.
+    return this.#lock.withLock(root, async () => {
+      const existing = await readOrEmpty(index);
+      const next = addIncludeLine(existing, directive);
+      await atomicWrite(index, next);
+      return JSON.stringify({
+        ok: true,
+        added: directiveAsWire(directive),
+        scope,
+        memory_md: index,
+      });
     });
   }
 }
@@ -1167,9 +1225,11 @@ export class MemoryIncludeRemoveTool implements Tool {
   };
 
   readonly #roots: MemoryRoots;
+  readonly #lock: MemoryWriteLock;
 
-  constructor(roots: MemoryRoots) {
+  constructor(roots: MemoryRoots, lock?: MemoryWriteLock) {
     this.#roots = roots;
+    this.#lock = lock ?? new MemoryWriteLock();
   }
 
   async invoke(args: JsonValue): Promise<string> {
@@ -1182,10 +1242,13 @@ export class MemoryIncludeRemoveTool implements Tool {
     const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "workspace";
     const root = rootFor(this.#roots, scope);
     const index = indexPath(root);
-    const existing = await readOrEmpty(index);
-    const next = removeIncludeLine(existing, target);
-    await atomicWrite(index, next);
-    return JSON.stringify({ ok: true, removed: target, scope });
+    // Serialise the index read-modify-write against every other scope mutation.
+    return this.#lock.withLock(root, async () => {
+      const existing = await readOrEmpty(index);
+      const next = removeIncludeLine(existing, target);
+      await atomicWrite(index, next);
+      return JSON.stringify({ ok: true, removed: target, scope });
+    });
   }
 }
 
@@ -1249,12 +1312,16 @@ export function registerMemoryTools(registry: ToolRegistry, config: MemoryToolsC
   const roots: MemoryRoots = config.userRoot !== undefined
     ? { workspaceRoot: config.workspaceRoot, userRoot: config.userRoot }
     : { workspaceRoot: config.workspaceRoot };
+  // One lock instance shared across the whole family so mutations to the same
+  // scope's MEMORY.md serialise across tools (e.g. include_add vs. write), not
+  // just within one tool.
+  const lock = new MemoryWriteLock();
   registry.register(new MemoryListTool(roots));
   registry.register(new MemoryReadTool(roots));
-  registry.register(new MemoryWriteTool(roots));
-  registry.register(new MemoryDeleteTool(roots));
-  registry.register(new MemoryIncludeAddTool(roots));
+  registry.register(new MemoryWriteTool(roots, lock));
+  registry.register(new MemoryDeleteTool(roots, lock));
+  registry.register(new MemoryIncludeAddTool(roots, lock));
   registry.register(new MemoryIncludeListTool(roots));
-  registry.register(new MemoryIncludeRemoveTool(roots));
+  registry.register(new MemoryIncludeRemoveTool(roots, lock));
   registry.register(new MemoryIncludeRefreshTool(roots));
 }
