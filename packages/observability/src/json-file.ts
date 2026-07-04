@@ -100,6 +100,12 @@ function byDescString(a: string, b: string): number {
  * state doesn't re-stat the whole directory on every append.
  */
 async function pruneOldestFiles(dir: string, max: number): Promise<void> {
+  // Clamp the effective cap to a floor of 1. A cap below 1 (e.g. a `maxRuns: 0`
+  // misconfig, distinct from `null`-disables-pruning) would otherwise delete
+  // every file — including the run that was just appended — since `slack`
+  // becomes 0 and `toRemove` reaches `stamped.length`. Pruning to empty is
+  // never the intent, so always retain at least the newest run. See #322.
+  const cap = Math.max(1, Math.floor(max));
   let names: string[];
   try {
     names = await readdir(dir);
@@ -107,8 +113,8 @@ async function pruneOldestFiles(dir: string, max: number): Promise<void> {
     return;
   }
   const candidates = names.filter((n) => n.endsWith(".json") && !n.endsWith(".json.tmp"));
-  const slack = Math.floor(max / 10);
-  if (candidates.length <= max + slack) return;
+  const slack = Math.floor(cap / 10);
+  if (candidates.length <= cap + slack) return;
 
   const stamped: Array<{ mtime: number; file: string }> = [];
   for (const name of candidates) {
@@ -123,7 +129,7 @@ async function pruneOldestFiles(dir: string, max: number): Promise<void> {
   }
   stamped.sort((a, b) => a.mtime - b.mtime);
 
-  const toRemove = stamped.length - max;
+  const toRemove = stamped.length - cap;
   for (let i = 0; i < toRemove; i += 1) {
     try {
       await rm(stamped[i].file);
