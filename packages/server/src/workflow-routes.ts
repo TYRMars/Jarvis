@@ -15,19 +15,24 @@
 //   - GET  /v1/workflow-runs/:run_id           — one run by id.
 //   - POST /v1/workflow-runs/:run_id/cancel    — cancel an in-flight run.
 //
-// DEFERRAL (P-later): the Rust route reserves a process-wide concurrency slot
-// (429 on exhaustion) and spawns `execute_workflow_run` in the background. The
-// actual execution engine (workflow_runtime) + the concurrency gate / reaper
-// land in a later phase. Until a runtime driver exists, `POST /:id/run` just
-// persists a *Pending* run and returns 202 — nothing executes it yet, and
-// there is no concurrency cap to enforce. `cancel` likewise has no live task to
-// abort; it only finalises the persisted row.
+// GOVERNANCE: when the composition root wires a `WorkflowRunGate` onto
+// AppState (`state.workflowRunGate`), `POST /:id/run` reserves a process-wide
+// concurrency permit (429 on exhaustion), mints a *Running* run, and drives it
+// to completion in the background via `driveWorkflow` — with a cancel signal so
+// `POST /workflow-runs/:id/cancel` can actually abort the live task. The
+// stale-run reaper (spawned by the composition root) reclaims rows orphaned by
+// a crash. When no gate is wired (a minimal embedder or a bare unit-test
+// AppState), the route falls back to the historical deferral: persist a
+// *Pending* run and 202 without executing, so gate-less setups still get a
+// clean "queued" signal instead of a 500.
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { errorText } from "@jarvis/core";
+import type { Requirement } from "@jarvis/project";
 import {
   agentStepCount,
   finishWorkflowRun,
   newWorkflowDefinition,
+  newWorkflowRun,
   newWorkflowStep,
   touchDefinition,
   WorkflowError,
@@ -40,6 +45,7 @@ import {
 } from "@jarvis/workflow";
 import { randomUUID } from "node:crypto";
 import type { AppState } from "./state.ts";
+import { driveWorkflow, failRunIfRunning, type DriveWorkflowOptions } from "./workflow-runtime.ts";
 
 // ---------- request bodies ----------
 
@@ -242,9 +248,9 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
     }
   });
 
-  // dispatch a run. DEFERRAL: the execution engine (workflow_runtime) + the
-  // concurrency gate land later. For now we persist a *Pending* run and 202;
-  // nothing executes it yet.
+  // dispatch a run. See the GOVERNANCE note at the top of this module: with a
+  // run gate wired we reserve a permit, mint a Running run, and execute it in
+  // the background; without one we fall back to persisting a Pending run.
   app.post("/v1/workflows/:id/run", async (req, reply) => {
     const store = requireStore(state, reply);
     if (!store) return reply;
@@ -260,12 +266,11 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
     // Resolve an optional requirement binding for this run.
     const body = (req.body ?? {}) as RunWorkflowRequest;
     const reqId = cleanOpt(body.requirement_id);
-    let requirementId: string | undefined;
+    let requirement: Requirement | undefined;
     if (reqId !== undefined) {
       if (!state.requirements) {
         return reply.code(503).send({ error: "requirement store not configured" });
       }
-      let requirement;
       try {
         requirement = await state.requirements.get(reqId);
       } catch (e) {
@@ -274,11 +279,40 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
       if (!requirement) {
         return reply.code(400).send({ error: `requirement \`${reqId}\` not found` });
       }
-      requirementId = requirement.id;
     }
 
-    // Mint a Pending run. (Rust mints `running` + spawns the executor; without
-    // a runtime driver we leave it Pending so a later phase can pick it up.)
+    const gate = state.workflowRunGate;
+    if (gate) {
+      // Governed path: reserve a concurrency permit BEFORE minting anything, so
+      // a flood of POSTs at capacity 429s instead of fanning out unbounded.
+      const permit = gate.tryAcquire();
+      if (!permit) {
+        return reply.code(429).send({ error: "workflow run concurrency limit reached" });
+      }
+      // Mint a Running run and persist it so an immediate GET reflects it.
+      const run = newWorkflowRun(def.id, requirement?.id);
+      try {
+        await store.upsertRun(run);
+      } catch (e) {
+        permit.release();
+        return reply.code(500).send({ error: errorText(e) });
+      }
+      // Register an abort controller so /cancel can stop the live task.
+      const controller = new AbortController();
+      gate.registerController(run.id, controller);
+      const driveOpts: DriveWorkflowOptions = { run, signal: controller.signal };
+      if (requirement) driveOpts.requirement = requirement;
+      // Fire-and-forget: the run executes after we return 202. Guard the promise
+      // so an unexpected throw reconciles the persisted row (never an
+      // unhandledRejection), and always release the permit when it settles.
+      void driveWorkflow(state, def, driveOpts)
+        .catch((e) => failRunIfRunning(state, run.id, `workflow run crashed: ${errorText(e)}`))
+        .finally(() => permit.release());
+      return reply.code(202).send(run);
+    }
+
+    // Deferral path (no run gate wired): persist a Pending run and 202 without
+    // executing — nothing picks it up until a gate/runtime is wired.
     const run: WorkflowRun = {
       id: randomUUID(),
       workflow_id: def.id,
@@ -286,7 +320,7 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
       step_results: [],
       started_at: new Date().toISOString(),
     };
-    if (requirementId !== undefined) run.requirement_id = requirementId;
+    if (requirement?.id !== undefined) run.requirement_id = requirement.id;
     try {
       await store.upsertRun(run);
     } catch (e) {
@@ -322,8 +356,9 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
     }
   });
 
-  // cancel an in-flight run. DEFERRAL: no live task to abort yet — we only
-  // finalise the persisted row. Idempotent on already-terminal runs.
+  // cancel an in-flight run. Aborts the live in-process task via the run gate
+  // (a no-op when the run is orphaned or no gate is wired), then finalises the
+  // persisted row. Idempotent on already-terminal runs.
   app.post("/v1/workflow-runs/:run_id/cancel", async (req, reply) => {
     const store = requireStore(state, reply);
     if (!store) return reply;
@@ -335,6 +370,10 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
       return reply.code(500).send({ error: errorText(e) });
     }
     if (!run) return reply.code(404).send({ error: "workflow run not found" });
+    // Abort the live task (if any). The aborted run finalises itself as
+    // `cancelled`; we still write the terminal row below so the response and
+    // persisted state are consistent even when nothing live was aborted.
+    state.workflowRunGate?.cancel(runId);
     if (workflowRunStatusIsTerminal(run.status)) {
       // Already finished — nothing to abort. Idempotent success.
       return reply.send(run);

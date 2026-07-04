@@ -5,14 +5,46 @@ import Fastify from "fastify";
 import { makeMemoryStores } from "@jarvis/store";
 import { newRequirement, type RequirementStore } from "@jarvis/project";
 import {
+  Agent,
+  defaultAgentConfig,
+  type ChatResponse,
+  type LlmChunk,
+  type LlmProvider,
+} from "@jarvis/core";
+import {
   newWorkflowRun,
   finishWorkflowRun,
   newWorkflowStep,
+  type WorkflowRunStatus,
   type WorkflowStep,
   type WorkflowStore,
 } from "@jarvis/workflow";
 import { registerWorkflowRoutes } from "./workflow-routes.ts";
+import { WorkflowRunGate } from "./workflow-concurrency.ts";
 import type { AppState } from "./state.ts";
+
+/** A provider that replies with a fixed assistant message — enough to drive a
+ *  workflow's agent step to completion in the route-level wiring tests. */
+class CannedProvider implements LlmProvider {
+  async complete(): Promise<ChatResponse> {
+    return { message: { role: "assistant", content: "done" }, finish_reason: "stop", response_id: null };
+  }
+  async *completeStream(): AsyncGenerator<LlmChunk> {
+    yield { type: "finish", message: { role: "assistant", content: "done" }, finish_reason: "stop", response_id: null };
+  }
+}
+
+const TERMINAL: readonly WorkflowRunStatus[] = ["succeeded", "failed", "cancelled"];
+
+/** Poll a run until it reaches a terminal status (or the attempts run out). */
+async function waitForTerminal(store: WorkflowStore, runId: string): Promise<WorkflowRunStatus> {
+  let status: WorkflowRunStatus = "running";
+  for (let i = 0; i < 100 && !TERMINAL.includes(status); i++) {
+    await new Promise((r) => setTimeout(r, 10));
+    status = (await store.getRun(runId))?.status ?? status;
+  }
+  return status;
+}
 
 // ---------- fixtures ----------
 
@@ -234,7 +266,7 @@ test("delete returns 204 then 404 on the second attempt", async () => {
 
 // ---------- run dispatch (deferred runtime → Pending) ----------
 
-test("POST /:id/run persists a Pending run and 202s; it shows in /runs", async () => {
+test("POST /:id/run (no run gate) persists a Pending run and 202s; it shows in /runs", async () => {
   const state = makeState();
   const app = await build(state);
   try {
@@ -322,6 +354,52 @@ test("POST /:id/run binds an existing requirement onto the run", async () => {
   }
 });
 
+// ---------- run dispatch (governed: run gate wired) ----------
+
+test("gated POST /:id/run mints a Running run and drives it to a terminal state", async () => {
+  const stores = makeMemoryStores();
+  const state: AppState = {
+    createAgent: () => new Agent(new CannedProvider(), { ...defaultAgentConfig("test-model"), maxIterations: 3 }),
+    workflows: stores.workflows,
+    workflowRunGate: new WorkflowRunGate(2),
+  };
+  const app = await build(state);
+  try {
+    const def = (await createWorkflow(app, { name: "ship", steps: [agentStep("a", "go")] })).json();
+    const res = await app.inject({ method: "POST", url: `/v1/workflows/${def.id}/run`, payload: {} });
+    assert.equal(res.statusCode, 202);
+    assert.equal(res.json().status, "running"); // gate wired → executes, not Pending
+
+    // Execution runs in the background; poll the persisted row until it finishes.
+    const status = await waitForTerminal(stores.workflows, res.json().id);
+    assert.equal(status, "succeeded");
+  } finally {
+    await app.close();
+  }
+});
+
+test("gated POST /:id/run 429s when the run gate is at capacity", async () => {
+  const stores = makeMemoryStores();
+  const gate = new WorkflowRunGate(1);
+  gate.tryAcquire(); // exhaust the single slot so the route can't reserve one
+  const state: AppState = {
+    createAgent: noAgent, // never reached: 429 returns before executing
+    workflows: stores.workflows,
+    workflowRunGate: gate,
+  };
+  const app = await build(state);
+  try {
+    const def = (await createWorkflow(app, { name: "ship", steps: [agentStep("a", "go")] })).json();
+    const res = await app.inject({ method: "POST", url: `/v1/workflows/${def.id}/run`, payload: {} });
+    assert.equal(res.statusCode, 429);
+    // No run was minted while at capacity.
+    const runs = await app.inject({ method: "GET", url: `/v1/workflows/${def.id}/runs` });
+    assert.equal(runs.json().items.length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
 // ---------- run fetch + cancel ----------
 
 test("GET /v1/workflow-runs/:id 404s an unknown run", async () => {
@@ -348,6 +426,25 @@ test("cancel flips a non-terminal run to cancelled with finished_at + error", as
 
     const persisted = await stores.workflows.getRun(run.id);
     assert.equal(persisted?.status, "cancelled");
+  } finally {
+    await app.close();
+  }
+});
+
+test("cancel aborts the live in-process run via the run gate", async () => {
+  const stores = makeMemoryStores();
+  const gate = new WorkflowRunGate(2);
+  const run = newWorkflowRun("wf-1", undefined); // status "running"
+  await stores.workflows.upsertRun(run);
+  const controller = new AbortController();
+  gate.registerController(run.id, controller);
+  const state: AppState = { createAgent: noAgent, workflows: stores.workflows, workflowRunGate: gate };
+  const app = await build(state);
+  try {
+    const res = await app.inject({ method: "POST", url: `/v1/workflow-runs/${run.id}/cancel` });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().status, "cancelled");
+    assert.ok(controller.signal.aborted, "gate.cancel() aborted the live task's controller");
   } finally {
     await app.close();
   }

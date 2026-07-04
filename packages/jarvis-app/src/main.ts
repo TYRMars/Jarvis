@@ -23,7 +23,7 @@ import os from "node:os";
 
 import { connect, connectAll, makeMemoryStores, type StoreBundle } from "@jarvis/store";
 import { serveRegistryStdio } from "@jarvis/mcp";
-import { serve } from "@jarvis/server";
+import { serve, spawnWorkflowReaper } from "@jarvis/server";
 import { ToolRegistry } from "@jarvis/core";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 
@@ -148,6 +148,11 @@ export async function runServe(config: JarvisConfig): Promise<void> {
   const stores = await openStores(config);
   const { state, systemPrompt } = await buildAppState(config, { provider, stores });
   const { host, port } = parseAddr(config.addr);
+
+  // Spawn the stale-workflow-run reaper (no-op without a workflow store). It
+  // sweeps immediately to reclaim runs orphaned by a prior crash, then on an
+  // interval; the timer is unref'd so it never keeps the process alive alone.
+  spawnWorkflowReaper(state, config.workflowReapSeconds, config.workflowRunTimeoutMs);
 
   process.stderr.write(
     `[jarvis] serve: provider=${config.provider} model=${config.model} ` +

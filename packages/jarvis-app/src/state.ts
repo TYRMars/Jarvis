@@ -21,7 +21,7 @@ import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider,
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
+import { ChatRunRegistry, RoutePolicyStore, WorkflowRunGate, isRouteSlot, parseModelTarget } from "@jarvis/server";
 import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
@@ -349,6 +349,13 @@ export async function buildAppState(
     docs: stores.docs,
     projectMemory: stores.projectMemory,
     workflows: stores.workflows,
+    // Process-wide governor for manually-dispatched workflow runs — its
+    // presence switches `POST /v1/workflows/:id/run` from the Pending-deferral
+    // to governed background execution (concurrency cap + real cancel). Only
+    // meaningful with a workflow store, so gate on it.
+    ...(stores.workflows !== undefined
+      ? { workflowRunGate: new WorkflowRunGate(config.workflowMaxConcurrent) }
+      : {}),
     workspaces: stores.workspaces,
     subagents: toolBundle.subagents,
     workspaceRoot: config.fsRoot,
