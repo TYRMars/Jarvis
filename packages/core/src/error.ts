@@ -35,6 +35,21 @@ export class ApprovalError extends HarnessError {
   }
 }
 
+/**
+ * Thrown out of the agent loop when the caller's `AbortSignal` fires. The loop
+ * checks the signal between iterations and before each tool dispatch, so an
+ * aborted run stops issuing `llm.complete` calls and — critically — stops
+ * invoking side-effecting tools (`fs.write` / `shell.exec` / …). Callers that
+ * race the run against their own timeout/cancel promise (e.g. the workflow
+ * runtime) can treat this as the loop having halted, not a genuine failure.
+ */
+export class AbortError extends HarnessError {
+  constructor(message = "agent run aborted") {
+    super(message);
+    this.name = "AbortError";
+  }
+}
+
 export class MaxIterationsError extends HarnessError {
   readonly iterations: number;
   constructor(iterations: number) {

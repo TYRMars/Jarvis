@@ -484,11 +484,13 @@ type RunResult =
 
 /**
  * Run the agent, racing against a per-step timer and the run-cancel signal.
- * `agent.run` mutates `conv` in place; on timeout / cancel we abandon the
- * still-running promise (it has no side effects beyond the conversation it
- * already owns) and report the terminal reason. Mirrors Rust's
- * `tokio::time::timeout` wrap, plus cancellation the Rust achieves via task
- * abort.
+ * `agent.run` mutates `conv` in place. On timeout / cancel we abort an internal
+ * `AbortController` that is threaded into `agent.run`, so the loop actually
+ * halts — it stops issuing further `llm.complete` calls and, critically, stops
+ * invoking side-effecting tools (`fs.write` / `shell.exec` / …) — rather than
+ * merely being abandoned to keep mutating the workspace in the background.
+ * Mirrors Rust's `tokio::time::timeout` wrap plus the cancellation Rust
+ * achieves via task abort.
  */
 async function runWithTimeout(
   agent: Agent,
@@ -496,25 +498,36 @@ async function runWithTimeout(
   timeoutMs: number,
   signal: AbortSignal | undefined,
 ): Promise<RunResult> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
 
   const timeout = new Promise<RunResult>((resolve) => {
-    timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ kind: "timeout" });
+    }, timeoutMs);
   });
   const cancel = new Promise<RunResult>((resolve) => {
     if (!signal) return;
     if (signal.aborted) {
+      controller.abort();
       resolve({ kind: "cancelled" });
       return;
     }
-    onAbort = () => resolve({ kind: "cancelled" });
+    onAbort = () => {
+      controller.abort();
+      resolve({ kind: "cancelled" });
+    };
     signal.addEventListener("abort", onAbort, { once: true });
   });
   const run = agent
-    .run(conv)
+    .run(conv, controller.signal)
     .then((): RunResult => ({ kind: "ok" }))
-    .catch((e): RunResult => ({ kind: "error", error: errorText(e) }));
+    // Once we've aborted, the loop's AbortError is the expected consequence of
+    // the timeout/cancel that already won the race — don't surface it as a
+    // distinct error (the winning promise reports the real terminal reason).
+    .catch((e): RunResult => (controller.signal.aborted ? { kind: "ok" } : { kind: "error", error: errorText(e) }));
 
   try {
     return await Promise.race([run, timeout, cancel]);

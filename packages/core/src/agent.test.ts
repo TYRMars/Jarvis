@@ -9,7 +9,7 @@ import { lastAssistantText, type Conversation } from "./conversation.ts";
 import type { ChatRequest, ChatResponse, LlmChunk, LlmProvider } from "./llm.ts";
 import { emitPlan } from "./plan.ts";
 import { emitProgress } from "./progress.ts";
-import { MaxIterationsError } from "./error.ts";
+import { AbortError, MaxIterationsError } from "./error.ts";
 import type { JsonValue } from "./json.ts";
 
 // --- fakes -----------------------------------------------------------------
@@ -220,6 +220,73 @@ test("run: throws MaxIterationsError when the loop never terminates", async () =
   const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools, maxIterations: 2 });
 
   await assert.rejects(() => agent.run({ messages: [userMessage("go")] }), MaxIterationsError);
+});
+
+// --- cancellation (abort signal) -------------------------------------------
+
+test("run: a pre-aborted signal throws AbortError before any LLM call", async () => {
+  const provider = new ScriptedProvider([stopResponse("never")]);
+  const agent = new Agent(provider, { ...defaultAgentConfig("m") });
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => agent.run({ messages: [userMessage("go")] }, controller.signal),
+    (e) => e instanceof AbortError,
+  );
+  assert.equal(provider.lastRequest, undefined, "the loop must not reach llm.complete");
+});
+
+test("run: aborting after the tool-call response stops the tool from being invoked", async () => {
+  const controller = new AbortController();
+  const echo = new EchoTool();
+  // The provider aborts the signal as it returns the tool call, so the loop's
+  // pre-dispatch checkpoint trips before echo.invoke can run.
+  const provider: LlmProvider & { calls: number } = {
+    calls: 0,
+    async complete() {
+      this.calls++;
+      controller.abort();
+      return toolCallResponse("c1", "echo", { text: "hi" });
+    },
+    async *completeStream() {
+      throw new Error("unused");
+    },
+  };
+  const tools = new ToolRegistry().register(echo);
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools });
+
+  await assert.rejects(
+    () => agent.run({ messages: [userMessage("go")] }, controller.signal),
+    (e) => e instanceof AbortError,
+  );
+  assert.equal(provider.calls, 1);
+  assert.equal(echo.calls, 0, "the side-effecting tool must not be invoked after abort");
+});
+
+test("run: the AbortError carries the signal's reason", async () => {
+  const provider = new ScriptedProvider([stopResponse("never")]);
+  const agent = new Agent(provider, { ...defaultAgentConfig("m") });
+  const controller = new AbortController();
+  controller.abort(new Error("run cancelled by operator"));
+
+  await assert.rejects(
+    () => agent.run({ messages: [userMessage("go")] }, controller.signal),
+    (e) => e instanceof AbortError && /run cancelled by operator/.test((e as Error).message),
+  );
+});
+
+test("runStream: a pre-aborted signal yields exactly one terminal error", async () => {
+  const provider = new ScriptedProvider([stopResponse("never")]);
+  const agent = new Agent(provider, { ...defaultAgentConfig("m") });
+  const controller = new AbortController();
+  controller.abort();
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }, controller.signal));
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.type, "error");
+  assert.equal(provider.lastRequest, undefined, "the stream must not reach llm.completeStream");
 });
 
 // --- streaming run ---------------------------------------------------------
