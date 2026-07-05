@@ -103,7 +103,11 @@ export class Agent {
       const resp = await this.llm.complete(req);
       conversation.messages.push(resp.message);
       if (resp.usage) addUsage(totalUsage, resp.usage);
-      if (resp.response_id) {
+      // Only record chaining state when the provider is *actually* maintaining
+      // a server-side chain. A bare `response_id` (chaining unset) is
+      // informational — anchoring on it would wrongly disable memory
+      // compaction while the provider still expects the full history.
+      if (resp.response_id && resp.chaining) {
         conversation.last_response_id = resp.response_id;
         conversation.last_response_chain_origin = conversation.messages.length;
       }
@@ -149,7 +153,9 @@ export class Agent {
         return;
       }
 
-      let finish: { message: Message; finish_reason: FinishReason; response_id?: string | null } | undefined;
+      let finish:
+        | { message: Message; finish_reason: FinishReason; response_id?: string | null; chaining?: boolean }
+        | undefined;
       try {
         for await (const chunk of stream) {
           if (chunk.type === "content_delta") {
@@ -161,6 +167,7 @@ export class Agent {
               message: chunk.message,
               finish_reason: chunk.finish_reason,
               response_id: chunk.response_id,
+              chaining: chunk.chaining,
             };
             break;
           }
@@ -177,7 +184,8 @@ export class Agent {
       }
 
       conversation.messages.push(finish.message);
-      if (finish.response_id) {
+      // See the blocking path: anchor only when the provider is truly chaining.
+      if (finish.response_id && finish.chaining) {
         conversation.last_response_id = finish.response_id;
         conversation.last_response_chain_origin = conversation.messages.length;
       }

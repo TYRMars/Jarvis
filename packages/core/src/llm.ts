@@ -70,6 +70,15 @@ export interface ChatResponse {
   message: Message;
   finish_reason: FinishReason;
   response_id?: string | null;
+  /**
+   * True iff the provider is maintaining a *server-side response chain* for
+   * this conversation — i.e. it will honour `previous_response_id` next turn
+   * and already holds the prior history server-side. Only then should the
+   * agent anchor the chain and skip client-side memory compaction; a bare
+   * `response_id` with `chaining` unset (the default) means the id is
+   * informational and the full history must still be compacted and re-sent.
+   */
+  chaining?: boolean;
   usage?: Usage;
 }
 
@@ -88,7 +97,14 @@ export type LlmChunk =
       arguments_fragment?: string;
     }
   | { type: "usage"; usage: Usage }
-  | { type: "finish"; message: Message; finish_reason: FinishReason; response_id?: string | null };
+  | {
+      type: "finish";
+      message: Message;
+      finish_reason: FinishReason;
+      response_id?: string | null;
+      /** See {@link ChatResponse.chaining}. */
+      chaining?: boolean;
+    };
 
 export interface LlmProvider {
   complete(req: ChatRequest): Promise<ChatResponse>;
@@ -111,6 +127,7 @@ export async function* defaultCompleteStream(
     message: resp.message,
     finish_reason: resp.finish_reason,
     response_id: resp.response_id ?? null,
+    chaining: resp.chaining ?? false,
   };
 }
 

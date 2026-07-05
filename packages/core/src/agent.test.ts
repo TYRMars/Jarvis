@@ -11,6 +11,17 @@ import { emitPlan } from "./plan.ts";
 import { emitProgress } from "./progress.ts";
 import { MaxIterationsError } from "./error.ts";
 import type { JsonValue } from "./json.ts";
+import type { Memory } from "./memory.ts";
+import type { Message } from "./message.ts";
+
+/** Counts compaction calls; returns history unchanged. */
+class RecordingMemory implements Memory {
+  calls = 0;
+  async compact(messages: Message[]): Promise<Message[]> {
+    this.calls++;
+    return messages;
+  }
+}
 
 // --- fakes -----------------------------------------------------------------
 
@@ -45,7 +56,13 @@ class ScriptedProvider implements LlmProvider {
     if (r.message.role === "assistant" && typeof r.message.content === "string") {
       yield { type: "content_delta", content: r.message.content };
     }
-    yield { type: "finish", message: r.message, finish_reason: r.finish_reason, response_id: r.response_id ?? null };
+    yield {
+      type: "finish",
+      message: r.message,
+      finish_reason: r.finish_reason,
+      response_id: r.response_id ?? null,
+      chaining: r.chaining ?? false,
+    };
   }
 }
 
@@ -117,6 +134,64 @@ test("run: tool call then stop — full history + outcome", async () => {
   assert.equal(conv.messages[2]?.role, "tool");
   assert.equal((conv.messages[2] as { content: string }).content, "echo: hi");
   assert.equal(lastAssistantText(conv), "done");
+});
+
+// --- memory compaction vs Responses-API chaining (issue #337) --------------
+
+test("run: response_id WITHOUT chaining still compacts every turn", async () => {
+  // A Responses provider with chaining OFF returns a response_id on every turn,
+  // but the server is NOT holding history — so memory must keep compacting.
+  // Regression: the old gate keyed off response_id presence and silently
+  // disabled compaction from turn 2 onward → unbounded context growth.
+  const provider = new ScriptedProvider([
+    { ...toolCallResponse("c1", "echo", { text: "hi" }), response_id: "resp_1", chaining: false },
+    { ...stopResponse("done"), response_id: "resp_2", chaining: false },
+  ]);
+  const memory = new RecordingMemory();
+  const tools = new ToolRegistry().register(new EchoTool());
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools, memory });
+  const conv: Conversation = { messages: [userMessage("hello")] };
+
+  await agent.run(conv);
+
+  assert.equal(memory.calls, 2); // compacted on BOTH iterations
+  assert.equal(conv.last_response_id ?? null, null); // no chain anchor recorded
+  assert.equal(conv.last_response_chain_origin ?? null, null);
+});
+
+test("run: response_id WITH chaining skips compaction after the anchor", async () => {
+  // Chaining ON: the provider holds prior history server-side, so the agent
+  // anchors the chain on turn 1 and skips compaction from turn 2 onward.
+  const provider = new ScriptedProvider([
+    { ...toolCallResponse("c1", "echo", { text: "hi" }), response_id: "resp_1", chaining: true },
+    { ...stopResponse("done"), response_id: "resp_2", chaining: true },
+  ]);
+  const memory = new RecordingMemory();
+  const tools = new ToolRegistry().register(new EchoTool());
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools, memory });
+  const conv: Conversation = { messages: [userMessage("hello")] };
+
+  await agent.run(conv);
+
+  assert.equal(memory.calls, 1); // only the pre-anchor turn compacts
+  assert.equal(conv.last_response_id, "resp_2");
+  assert.ok((conv.last_response_chain_origin ?? 0) > 0);
+});
+
+test("runStream: response_id WITHOUT chaining still compacts every turn", async () => {
+  const provider = new ScriptedProvider([
+    { ...toolCallResponse("c1", "echo", { text: "hi" }), response_id: "resp_1", chaining: false },
+    { ...stopResponse("done"), response_id: "resp_2", chaining: false },
+  ]);
+  const memory = new RecordingMemory();
+  const tools = new ToolRegistry().register(new EchoTool());
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools, memory });
+  const conv: Conversation = { messages: [userMessage("hello")] };
+
+  await collect(agent.runStream(conv));
+
+  assert.equal(memory.calls, 2);
+  assert.equal(conv.last_response_chain_origin ?? null, null);
 });
 
 test("run: inserts system prompt when missing", async () => {
