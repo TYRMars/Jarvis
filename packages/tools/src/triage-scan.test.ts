@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { JsonValue, Tool } from "@jarvis/core";
@@ -138,4 +138,31 @@ test("description carries source path, line, and code fence", async () => {
   assert.equal(cs[0]!.title, "XXX: needs review");
   assert.equal(cs[0]!.line, 2);
   assert.equal(cs[0]!.description, "Source: `a.rs:2`\n\n```\nneeds review\n```");
+});
+
+test("does not stack-overflow on a directory symlink cycle", async () => {
+  // A symlink loop (`sub/loop -> sub`) used to recurse forever because the
+  // walk followed symlinked directories with no visited-set guard. The scan
+  // must terminate and still surface real candidates outside the cycle.
+  const dir = await tempDir();
+  await write(path.join(dir, "sub/inner.rs"), "// TODO: real one\n");
+  await symlink(path.join(dir, "sub"), path.join(dir, "sub/loop"), "dir");
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  // The cycle is visited once, so the single TODO surfaces exactly once.
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "sub/inner.rs");
+});
+
+test("de-dupes a directory reachable via a symlink alias", async () => {
+  // Two paths to the same real directory (a non-cyclic alias) must not
+  // double-count candidates — the realpath visited-set collapses them.
+  const dir = await tempDir();
+  await write(path.join(dir, "real/inner.rs"), "// TODO: once please\n");
+  await symlink(path.join(dir, "real"), path.join(dir, "alias"), "dir");
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  assert.equal(cs.length, 1);
 });
