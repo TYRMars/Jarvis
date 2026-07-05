@@ -122,6 +122,24 @@ export function contract(name: string, make: (dir: string) => Promise<Backend>):
     });
   });
 
+  test(`${name}: a throwing listener is isolated — mutation still resolves, later listeners still fire`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: RequirementEvent[] = [];
+      // A listener registered *before* the good one throws on every event.
+      store.subscribe(() => {
+        throw new Error("subscriber boom");
+      });
+      store.subscribe((ev) => seen.push(ev));
+      // The mutation must resolve (not reject) despite the throwing subscriber,
+      // and the later-registered listener must still receive the event — the
+      // fault must not propagate out of the already-committed write.
+      await store.upsert(requirement("p1", "isolated"));
+      assert.equal(seen.length, 1, "listener after the throwing one still fires");
+      assert.equal(seen[0]?.type, "upserted");
+    });
+  });
+
   test(`${name}: upserted broadcast carries the WIRE shape (no skip/default fields)`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
