@@ -265,8 +265,12 @@ export class RemoteTool implements Tool {
   readonly name: string;
   readonly description: string;
   readonly parameters: JsonValue;
-  // Remote tools are opaque side effects; gate them conservatively.
+  // Remote tools are opaque side effects; gate them conservatively. The agent
+  // loop keys the approval gate exclusively off `requiresApproval` (category
+  // only drives Plan-Mode read/write filtering), so both must be set for a
+  // remote MCP tool to be prompted under an approver.
   readonly category: ToolCategory = "write";
+  readonly requiresApproval = true;
   readonly #remoteName: string;
   readonly #client: McpClientHandle;
 
