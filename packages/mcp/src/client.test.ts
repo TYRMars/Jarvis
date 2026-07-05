@@ -123,6 +123,9 @@ test("RemoteTool is gated as a write-category tool", () => {
   const { handle } = mockHandle(() => ({ content: [] }));
   const tool = new RemoteTool("srv.t", "d", { type: "object" }, "t", handle);
   assert.equal(tool.category, "write");
+  // The agent loop gates exclusively on `requiresApproval`, not `category`, so
+  // a side-effecting remote tool must set it or it bypasses the approval gate.
+  assert.equal(tool.requiresApproval, true);
   assert.equal(tool.name, "srv.t");
   assert.equal(tool.description, "d");
   assert.deepEqual(tool.parameters, { type: "object" });
