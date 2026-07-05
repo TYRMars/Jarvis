@@ -21,8 +21,15 @@ import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider,
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
-import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
+import {
+  AutoModeRuntime,
+  ChatRunRegistry,
+  RoutePolicyStore,
+  isRouteSlot,
+  parseModelTarget,
+  spawnAutoModeLoop,
+} from "@jarvis/server";
+import type { AppState, AutoModeConfig, AutoModeDeps, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
   DocStore,
@@ -109,6 +116,12 @@ export interface AppStateBundle {
   subagents: SubAgentRegistry;
   /** The resolved system prompt (surfaced for `status` / logging). */
   systemPrompt: string;
+  /**
+   * Stop the background auto-mode scheduler loop (clears its interval). The
+   * `serve` path never calls it (the loop lives for the process lifetime and is
+   * `unref`'d so it doesn't keep the process alive); tests use it to tear down.
+   */
+  stopAutoModeLoop: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +318,43 @@ export async function buildAppState(
     return new Agent(provider, agentConfig);
   };
 
+  // ---- Auto/Work mode scheduler --------------------------------------------
+  // Wire the background auto-mode loop into the composition root. The runtime's
+  // enable flag seeds from `config.workMode` (so `auto` starts picking up
+  // approved requirements immediately), but the loop is spawned unconditionally
+  // so an operator can flip auto on at runtime via `POST /v1/auto-mode` — each
+  // tick self-gates on `runtime.isEnabled()`, touching no store while disabled.
+  // Exposed on AppState so `GET /v1/auto-mode` reflects the live runtime instead
+  // of reporting `configured: false`. (Without this the loop had zero call sites
+  // and `JARVIS_WORK_MODE=auto` was inert.)
+  const autoModeConfig: AutoModeConfig = {
+    mode: config.workMode,
+    tickSeconds: config.workTickSeconds,
+    maxUnitsPerTick: config.workMaxUnitsPerTick,
+    maxConcurrent: config.workMaxConcurrent,
+    maxRetries: config.workMaxRetries,
+    runTimeoutMs: config.workRunTimeoutMs,
+    reviewerAutoAccept: config.reviewerAutoAccept,
+  };
+  const autoModeRuntime = new AutoModeRuntime(config.workMode, config.workMaxConcurrent);
+  const autoModeDeps: AutoModeDeps = {
+    projects: stores.projects,
+    requirements: stores.requirements,
+    requirementRuns: stores.requirementRuns,
+    activities: stores.activities,
+    projectMemory: stores.projectMemory,
+    store: stores.conversations,
+    runtime: autoModeRuntime,
+    workspaceRoot: config.fsRoot,
+    // Adapt the AppState agent factory to the scheduler's usage-returning shape.
+    // Session-workspace re-rooting is deferred (tools stay sandboxed to fsRoot).
+    createAgent: ({ approver }) => {
+      const agent = createAgent(approver);
+      return { runWithUsage: (conversation) => agent.runWithUsage(conversation), model: agent.config.model };
+    },
+  };
+  const stopAutoModeLoop = spawnAutoModeLoop(autoModeDeps, autoModeConfig);
+
   // Static config snapshot for GET /v1/server/info + /v1/version (no secrets).
   const serverInfo: ServerInfo = {
     // The "jarvis" app version users saw under the Rust binary (crate 0.2.0);
@@ -351,6 +401,8 @@ export async function buildAppState(
     workflows: stores.workflows,
     workspaces: stores.workspaces,
     subagents: toolBundle.subagents,
+    autoModeRuntime,
+    autoModeConfig,
     workspaceRoot: config.fsRoot,
     providerCatalog: buildProviderCatalog(config),
     ...(config.webDistDir !== undefined ? { webDistDir: config.webDistDir } : {}),
@@ -362,5 +414,6 @@ export async function buildAppState(
     mcpClients: toolBundle.mcpClients,
     subagents: toolBundle.subagents,
     systemPrompt,
+    stopAutoModeLoop,
   };
 }

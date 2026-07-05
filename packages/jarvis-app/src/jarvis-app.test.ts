@@ -153,3 +153,29 @@ test("buildAppState wires the domain stores into AppState", async () => {
   assert.equal(state.workspaceRoot, config.fsRoot);
   assert.ok(state.subagents !== undefined);
 });
+
+test("buildAppState wires the auto-mode scheduler runtime into AppState", async () => {
+  // `JARVIS_WORK_MODE=off`: the runtime + config are still exposed (so
+  // `POST /v1/auto-mode` can flip it on at runtime) but the loop starts disabled.
+  const off = await buildAppState(loadConfig(FIXTURE_ENV), {
+    provider: new StubProvider("x"),
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  assert.ok(off.state.autoModeRuntime !== undefined, "runtime present when off");
+  assert.equal(off.state.autoModeRuntime?.isEnabled(), false);
+  assert.equal(off.state.autoModeConfig?.mode, "off");
+  assert.equal(typeof off.stopAutoModeLoop, "function");
+  off.stopAutoModeLoop();
+
+  // `JARVIS_WORK_MODE=auto`: the runtime seeds enabled and the config mirrors
+  // the parsed work knobs so `GET /v1/auto-mode` reports `configured: true`.
+  const auto = await buildAppState(loadConfig({ ...FIXTURE_ENV, JARVIS_WORK_MODE: "auto" }), {
+    provider: new StubProvider("x"),
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  assert.equal(auto.state.autoModeRuntime?.isEnabled(), true, "runtime enabled when auto");
+  assert.equal(auto.state.autoModeConfig?.mode, "auto");
+  auto.stopAutoModeLoop();
+});
