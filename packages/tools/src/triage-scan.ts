@@ -15,7 +15,7 @@
 // candidates and committing them are separate steps. The agent decides which
 // (if any) to write into the triage queue, where they land as
 // `triage_state=ProposedByScan`.
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import * as path from "node:path";
 import ignoreDefault from "ignore";
 import type { Ignore } from "ignore";
@@ -171,10 +171,27 @@ async function scanTodoComments(
 ): Promise<Candidate[]> {
   const out: Candidate[] = [];
 
+  // Cycle guard: we follow symlinked directories (unlike `fs.find`), so a
+  // symlink loop (`loop -> .`, `a/b -> a`) would recurse until the call stack
+  // overflows. Track the resolved real path of every directory we descend into
+  // and skip any we've already seen.
+  const visited = new Set<string>();
+
   // Hierarchical .gitignore: each directory inherits its ancestors' rules and
   // may add its own. We build a per-directory `ignore` matcher seeded from the
   // parent's accumulated patterns.
   async function walk(dir: string, ig: Ignore): Promise<boolean> {
+    // Resolve symlinks so a directory reached via two paths (or a cycle) is
+    // only walked once. If it can't be resolved, skip it rather than crash.
+    let real: string;
+    try {
+      real = await realpath(dir);
+    } catch {
+      return false;
+    }
+    if (visited.has(real)) return false;
+    visited.add(real);
+
     // Load this directory's .gitignore (if any) onto a fresh matcher that also
     // carries inherited rules.
     const localIg = ignore().add(ig as unknown as Ignore);
