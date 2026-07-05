@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { ToolRegistry, type JsonValue } from "@jarvis/core";
+import { ToolRegistry, toolRequiresApproval, type JsonValue } from "@jarvis/core";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -126,6 +126,17 @@ test("RemoteTool is gated as a write-category tool", () => {
   assert.equal(tool.name, "srv.t");
   assert.equal(tool.description, "d");
   assert.deepEqual(tool.parameters, { type: "object" });
+});
+
+test("RemoteTool requires approval so the approver gate is honored", () => {
+  const { handle } = mockHandle(() => ({ content: [] }));
+  const tool = new RemoteTool("srv.t", "d", { type: "object" }, "t", handle);
+  // The agent loop gates a tool exclusively through `requiresApproval`
+  // (via `toolRequiresApproval`), not `category`. Without this flag a
+  // side-effecting remote MCP tool would bypass the approver under
+  // JARVIS_PERMISSION_MODE=ask.
+  assert.equal(tool.requiresApproval, true);
+  assert.equal(toolRequiresApproval(tool), true);
 });
 
 // ---------------------------------------------------------------------------
