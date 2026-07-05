@@ -14,6 +14,28 @@ import { newConversation } from "../services/conversations";
 import { requestInterrupt } from "../services/socket";
 import { selectModel } from "../services/socket";
 
+/**
+ * The active route path, valid under both routers the app mounts.
+ *
+ * On desktop the app uses `HashRouter` (see `App.tsx`), which keeps the route
+ * in `window.location.hash` (e.g. `#/projects`) while `pathname` stays `"/"`.
+ * On web it uses `BrowserRouter`, where the route lives in `pathname` and the
+ * hash is empty. Reading `pathname` directly therefore always took the root
+ * branch on desktop; deriving from the hash first fixes the route-aware
+ * shortcuts (Cmd+N new-item, bare `/` search) there without affecting web.
+ */
+export function currentRoutePath(): string {
+  const hash = window.location.hash;
+  // HashRouter routes always begin with `#/`; a bare `#` / `#anchor` is not a
+  // route, so fall through to `pathname` in that case (and on web).
+  if (hash.startsWith("#/")) {
+    // Drop the leading `#`; keep any `?query`/nested path — callers only use
+    // `startsWith`, so `/projects?x=1` still matches `/projects`.
+    return hash.slice(1);
+  }
+  return window.location.pathname;
+}
+
 export function useShortcuts(opts: { showHelp: () => void }): void {
   const { showHelp } = opts;
   useEffect(() => {
@@ -47,7 +69,7 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
       // without each route having to wire its own handler.
       if (meta && e.key.toLowerCase() === "n") {
         e.preventDefault();
-        const path = window.location.pathname;
+        const path = currentRoutePath();
         if (path.startsWith("/projects")) {
           window.dispatchEvent(new Event("jarvis:new-project"));
         } else if (path.startsWith("/docs")) {
@@ -125,7 +147,7 @@ export function useShortcuts(opts: { showHelp: () => void }): void {
       //   /         → open the QuickSwitcher modal (chat has no inline
       //                search input; the modal IS the search surface)
       if (!inEditable && !meta && !e.altKey && e.key === "/") {
-        const path = window.location.pathname;
+        const path = currentRoutePath();
         let input: HTMLInputElement | null = null;
         if (path.startsWith("/projects")) {
           input = document.querySelector(".projects-search input");
