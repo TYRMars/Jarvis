@@ -21,8 +21,22 @@ import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider,
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
-import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
+import {
+  AutoModeRuntime,
+  ChatRunRegistry,
+  RoutePolicyStore,
+  defaultAutoModeConfig,
+  isRouteSlot,
+  parseModelTarget,
+  spawnAutoModeLoop,
+} from "@jarvis/server";
+import type {
+  AppState,
+  AutoModeConfig,
+  AutoModeDeps,
+  ProviderCatalog,
+  ServerInfo,
+} from "@jarvis/server";
 import type {
   ActivityStore,
   DocStore,
@@ -109,6 +123,13 @@ export interface AppStateBundle {
   subagents: SubAgentRegistry;
   /** The resolved system prompt (surfaced for `status` / logging). */
   systemPrompt: string;
+  /**
+   * Stop the auto-mode background tick loop, if one was spawned (i.e.
+   * `JARVIS_WORK_MODE=auto` with the kanban stores present). Clears the
+   * interval; `undefined` when the scheduler is off. Callers may invoke it on
+   * shutdown — the interval is `unref`'d, so it never blocks process exit.
+   */
+  stopAutoMode?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -357,10 +378,57 @@ export async function buildAppState(
     ...(deps.learningMemory !== undefined ? { learningMemory: deps.learningMemory } : {}),
   };
 
+  // Auto/Work-mode scheduler. When `JARVIS_WORK_MODE=auto` and the kanban
+  // stores are present, build the runtime + resolved config, expose them on
+  // AppState (so `GET`/`POST /v1/auto-mode` reflect reality), and spawn the
+  // background tick loop that picks up approved, unblocked requirements.
+  // Without this wiring the scheduler is inert — the flag is parsed and logged
+  // at startup but nothing ever runs (see issue #338).
+  let stopAutoMode: (() => void) | undefined;
+  if (
+    config.workMode === "auto" &&
+    stores.projects !== undefined &&
+    stores.requirements !== undefined &&
+    stores.requirementRuns !== undefined
+  ) {
+    const autoModeConfig: AutoModeConfig = {
+      ...defaultAutoModeConfig(),
+      mode: config.workMode,
+      tickSeconds: config.workTickSeconds,
+      maxConcurrent: config.workMaxConcurrent,
+    };
+    const autoModeRuntime = new AutoModeRuntime(config.workMode, autoModeConfig.maxConcurrent);
+    state.autoModeRuntime = autoModeRuntime;
+    state.autoModeConfig = autoModeConfig;
+
+    const autoModeDeps: AutoModeDeps = {
+      projects: stores.projects,
+      requirements: stores.requirements,
+      requirementRuns: stores.requirementRuns,
+      runtime: autoModeRuntime,
+      workspaceRoot: config.fsRoot,
+      // Reuse the per-request agent factory: the scheduler drives one
+      // requirement per run with a fresh Agent (structuredClone conversation),
+      // pinning the configured model onto the run for cost attribution.
+      createAgent: ({ approver }) => {
+        const agent = createAgent(approver);
+        return {
+          model: config.model,
+          runWithUsage: (conversation) => agent.runWithUsage(conversation),
+        };
+      },
+      ...(stores.activities !== undefined ? { activities: stores.activities } : {}),
+      ...(stores.projectMemory !== undefined ? { projectMemory: stores.projectMemory } : {}),
+      ...(stores.conversations !== undefined ? { store: stores.conversations } : {}),
+    };
+    stopAutoMode = spawnAutoModeLoop(autoModeDeps, autoModeConfig);
+  }
+
   return {
     state,
     mcpClients: toolBundle.mcpClients,
     subagents: toolBundle.subagents,
     systemPrompt,
+    ...(stopAutoMode !== undefined ? { stopAutoMode } : {}),
   };
 }
