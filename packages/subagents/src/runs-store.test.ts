@@ -132,6 +132,35 @@ test("[memory] ring evicts the oldest past the cap", async () => {
   assert.ok(await s.get(`id-${MAX_RUNS + 4}`), "newest should remain");
 });
 
+// Concurrency: rapid frames for one run must not lost-update each other. The
+// JsonFile backend read-modify-writes across awaits, so without per-store
+// serialization interleaved `recordFrame` calls would each read the same state
+// and the later `#write` would clobber earlier increments (count < N) or
+// overwrite a terminal status. Fire a burst concurrently (no per-call await)
+// and assert every tool_start is counted and the terminal status survives.
+test("[jsonfile] concurrent recordFrame frames for one id are not lost", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-runs-race-"));
+  try {
+    const s = await JsonFileSubAgentRunStore.open(dir);
+    const N = 25;
+    const bursts: Promise<void>[] = [];
+    for (let i = 0; i < N; i++) {
+      bursts.push(s.recordFrame(undefined, frame("race", "codex", { kind: "tool_start", name: "fs.read", arguments: {} })));
+    }
+    await Promise.all(bursts);
+    // A terminal frame racing the tail of the burst must still win.
+    await s.recordFrame(undefined, frame("race", "codex", { kind: "done", final_message: "ok" }));
+    const r = await s.get("race");
+    assert.ok(r);
+    assert.equal(r!.tool_call_count, N, "no tool_start increments lost to interleaving");
+    assert.equal(r!.status, "completed");
+    // Exactly one on-disk row for the id (no split records from concurrent creates).
+    assert.equal((await s.list()).filter((x) => x.id === "race").length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // JsonFile durability: a fresh store over the same dir sees prior runs.
 test("[jsonfile] runs survive reopening the same directory", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "jarvis-runs-reopen-"));

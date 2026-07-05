@@ -260,9 +260,34 @@ interface OnDiskRun {
 
 export class JsonFileSubAgentRunStore implements SubAgentRunStore {
   readonly #dir: string;
+  // Serialises the read-modify-write mutators (`recordFrame`, `cancel`) so
+  // rapid frames for a run cannot lost-update each other. `recordFrame` does
+  // `await #read()` → mutate → `await #write()`; without this, two interleaved
+  // calls both read the same on-disk state and the later `#write` clobbers the
+  // earlier (dropped events, undercounted tool calls, a terminal `done`/`error`
+  // status overwritten by a stale non-terminal write). The chain is *global*
+  // rather than per-id on purpose: `#evictPastCap` scans and deletes across the
+  // whole directory, so it must be serialised against writers to *other* ids
+  // too. Mirrors the learning-memory store's `#writeChain`. Reads
+  // (`list`/`get`/`events`/`isCancelled`) stay unguarded — each reads a single
+  // atomically-written file.
+  #writeChain: Promise<unknown> = Promise.resolve();
 
   private constructor(dir: string) {
     this.#dir = dir;
+  }
+
+  /** Run `fn` after all previously-enqueued guarded ops settle (serial). */
+  #withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#writeChain.then(fn, fn);
+    // Keep the chain alive even if `fn` rejects, but don't let the stored
+    // promise carry a rejection (which would surface as an unhandled rejection
+    // when the next op chains off it).
+    this.#writeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Open or create a store at `<baseDir>/subagent_runs/`. */
@@ -285,19 +310,21 @@ export class JsonFileSubAgentRunStore implements SubAgentRunStore {
   }
 
   async recordFrame(conversationId: string | undefined, frame: SubAgentFrame): Promise<void> {
-    const now = Date.now();
-    const id = frame.subagent_id;
-    let stored = await this.#read(id);
-    if (stored === undefined) {
-      stored = { record: freshRecord(id, frame.subagent_name, conversationId, now), events: [] };
-      // FIFO ring eviction across the directory: drop the oldest rows past cap.
-      await this.#evictPastCap();
-    }
-    applyEvent(stored.record, frame.event, now);
-    if (stored.events.length < MAX_EVENTS_PER_RUN) {
-      stored.events.push({ timestamp: now, frame });
-    }
-    await this.#write(stored);
+    return this.#withLock(async () => {
+      const now = Date.now();
+      const id = frame.subagent_id;
+      let stored = await this.#read(id);
+      if (stored === undefined) {
+        stored = { record: freshRecord(id, frame.subagent_name, conversationId, now), events: [] };
+        // FIFO ring eviction across the directory: drop the oldest rows past cap.
+        await this.#evictPastCap();
+      }
+      applyEvent(stored.record, frame.event, now);
+      if (stored.events.length < MAX_EVENTS_PER_RUN) {
+        stored.events.push({ timestamp: now, frame });
+      }
+      await this.#write(stored);
+    });
   }
 
   /** Drop the oldest rows (by started_at) so the directory stays under MAX_RUNS. */
@@ -321,14 +348,16 @@ export class JsonFileSubAgentRunStore implements SubAgentRunStore {
   }
 
   async cancel(id: string): Promise<boolean> {
-    const stored = await this.#read(id);
-    if (stored === undefined || stored.record.status !== "running") return false;
-    const now = Date.now();
-    stored.record.status = "cancelled";
-    stored.record.updated_at = now;
-    stored.record.duration_ms = Math.max(0, now - stored.record.started_at);
-    await this.#write(stored);
-    return true;
+    return this.#withLock(async () => {
+      const stored = await this.#read(id);
+      if (stored === undefined || stored.record.status !== "running") return false;
+      const now = Date.now();
+      stored.record.status = "cancelled";
+      stored.record.updated_at = now;
+      stored.record.duration_ms = Math.max(0, now - stored.record.started_at);
+      await this.#write(stored);
+      return true;
+    });
   }
 
   async isCancelled(id: string): Promise<boolean> {
