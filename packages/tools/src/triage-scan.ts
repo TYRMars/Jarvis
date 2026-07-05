@@ -15,7 +15,7 @@
 // candidates and committing them are separate steps. The agent decides which
 // (if any) to write into the triage queue, where they land as
 // `triage_state=ProposedByScan`.
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import * as path from "node:path";
 import ignoreDefault from "ignore";
 import type { Ignore } from "ignore";
@@ -171,6 +171,18 @@ async function scanTodoComments(
 ): Promise<Candidate[]> {
   const out: Candidate[] = [];
 
+  // Guard against directory symlink cycles (`loop -> .`, `a/b -> a`). We follow
+  // symlinked directories (unlike `fs.find`, which skips symlinks outright), so
+  // without a visited-set of resolved real paths a cycle recurses until the
+  // call stack overflows and crashes this always-on read-only tool.
+  const visited = new Set<string>();
+  try {
+    visited.add(await realpath(scopeRoot));
+  } catch {
+    // scopeRoot unresolvable (e.g. it vanished) — the first readdir below will
+    // fail cleanly and return no candidates.
+  }
+
   // Hierarchical .gitignore: each directory inherits its ancestors' rules and
   // may add its own. We build a per-directory `ignore` matcher seeded from the
   // parent's accumulated patterns.
@@ -222,6 +234,16 @@ async function scanTodoComments(
         // .gitignore directory patterns may or may not carry a trailing slash;
         // test both the path and the path-with-slash form.
         if (localIg.ignores(relToScope) || localIg.ignores(relToScope + "/")) continue;
+        // Skip directories we've already descended into (via their resolved
+        // real path) so a symlink cycle can't loop forever.
+        let real: string;
+        try {
+          real = await realpath(abs);
+        } catch {
+          continue; // unresolvable (e.g. dangling after the stat) — skip
+        }
+        if (visited.has(real)) continue;
+        visited.add(real);
         const done = await walk(abs, localIg);
         if (done) return true;
         continue;

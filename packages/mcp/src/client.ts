@@ -265,8 +265,12 @@ export class RemoteTool implements Tool {
   readonly name: string;
   readonly description: string;
   readonly parameters: JsonValue;
-  // Remote tools are opaque side effects; gate them conservatively.
+  // Remote tools are opaque side effects; gate them conservatively. The agent
+  // loop keys the approval gate off `requiresApproval` (not `category`), so we
+  // must set the flag explicitly — otherwise every side-effecting remote MCP
+  // tool bypasses the approver even under JARVIS_PERMISSION_MODE=ask.
   readonly category: ToolCategory = "write";
+  readonly requiresApproval = true;
   readonly #remoteName: string;
   readonly #client: McpClientHandle;
 

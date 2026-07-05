@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { JsonValue, Tool } from "@jarvis/core";
@@ -126,6 +126,42 @@ test("path narrows scope to a subdirectory", async () => {
   // Paths are reported relative to the workspace root, not the scope root.
   assert.equal(cs[0]!.path, "sub/inner.rs");
   assert.equal(cs[0]!.line, 1);
+});
+
+test("symlink directory cycle does not recurse to stack overflow", async () => {
+  // A directory symlink loop (`sub/loop -> sub`) must not make the walk recurse
+  // forever. Without a realpath visited-set this overflows the call stack and
+  // crashes the always-on tool; with the guard the scan terminates and still
+  // surfaces the real marker exactly once (not once per cycle iteration).
+  const dir = await tempDir();
+  await write(path.join(dir, "sub/inner.rs"), "// TODO: inner marker\n");
+  try {
+    await symlink(path.join(dir, "sub"), path.join(dir, "sub", "loop"), "dir");
+  } catch {
+    return; // platform without dir symlinks (e.g. locked-down Windows) — skip
+  }
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "sub/inner.rs");
+});
+
+test("root-level symlink back to the workspace root is not re-walked", async () => {
+  // A symlink at the root pointing back to the root (`self -> .`) must be caught
+  // by seeding the visited-set with the root's real path.
+  const dir = await tempDir();
+  await write(path.join(dir, "top.rs"), "// TODO: top marker\n");
+  try {
+    await symlink(dir, path.join(dir, "self"), "dir");
+  } catch {
+    return; // no dir-symlink support — skip
+  }
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "top.rs");
 });
 
 test("description carries source path, line, and code fence", async () => {
