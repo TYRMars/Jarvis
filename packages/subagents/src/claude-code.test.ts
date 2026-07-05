@@ -161,6 +161,64 @@ process.exit(0);
   }
 });
 
+test("a hung `claude` is killed and invoke rejects with a timeout", async () => {
+  // The fake CLI emits one line then sleeps far past the budget. Without the
+  // timeout guard `invoke` would await `waitForExit` forever; with it the
+  // child is SIGKILL'd and the call rejects promptly.
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-claude-hang-"));
+  const fakeJs = path.join(dir, "fake-claude.mjs");
+  await writeFile(
+    fakeJs,
+    `process.stdout.write(JSON.stringify({ type: "system", subtype: "init" }) + "\\n");
+// Hang: never emit a result, never exit on our own.
+setTimeout(() => process.exit(0), 60000);
+`,
+    "utf8",
+  );
+  const fake = path.join(dir, "fake-claude.sh");
+  await writeFile(fake, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeJs)}\n`, "utf8");
+  await chmod(fake, 0o755);
+
+  const sub = new ClaudeCodeSubAgent({ claude_bin: fake, timeout_ms: 150 });
+  const frames: SubAgentFrame[] = [];
+  const started = Date.now();
+  await assert.rejects(
+    () =>
+      withSubagent(
+        (f) => frames.push(f),
+        () => sub.invoke({ task: "hang forever", workspace_root: dir }),
+      ),
+    /timed out after 150 ms/,
+  );
+  // Rejected on the budget, not after the fake's 60s self-exit.
+  assert.ok(Date.now() - started < 10000, "should reject near the timeout, not hang");
+  // The timeout is surfaced as an error frame too.
+  assert.ok(frames.some((f) => f.event.kind === "error"));
+});
+
+test("a clean run well under the budget still returns its final message", async () => {
+  // Guards against the timeout guard mis-killing a healthy fast run.
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-claude-ok-"));
+  const fakeJs = path.join(dir, "fake-claude.mjs");
+  await writeFile(
+    fakeJs,
+    `process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "quick done", is_error: false }) + "\\n");
+process.exit(0);
+`,
+    "utf8",
+  );
+  const fake = path.join(dir, "fake-claude.sh");
+  await writeFile(fake, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeJs)}\n`, "utf8");
+  await chmod(fake, 0o755);
+
+  const sub = new ClaudeCodeSubAgent({ claude_bin: fake, timeout_ms: 30000 });
+  const out = await withSubagent(
+    () => {},
+    () => sub.invoke({ task: "quick", workspace_root: dir }),
+  );
+  assert.equal(out.message, "quick done");
+});
+
 test("requiresApproval is true (workspace-mutating)", () => {
   const sub = new ClaudeCodeSubAgent(defaultClaudeCodeConfig());
   assert.ok(sub.requiresApproval());

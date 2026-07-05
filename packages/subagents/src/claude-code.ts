@@ -40,7 +40,21 @@ export interface ClaudeCodeConfig {
    * the wire when empty (serde `default`).
    */
   extra_args?: string[];
+  /**
+   * Wall-clock budget for a single run, in milliseconds. When the spawned
+   * `claude` outruns it the child is SIGKILL'd and `invoke` rejects — a hung
+   * CLI must never block the caller forever. Defaults to
+   * {@link CLAUDE_CODE_DEFAULT_TIMEOUT_MS}.
+   */
+  timeout_ms?: number;
 }
+
+/**
+ * Default run timeout: 10 minutes, matching `JARVIS_WORK_RUN_TIMEOUT_MS`
+ * (the auto-loop's per-run budget) so a delegated `claude` run can't outlast
+ * the work unit that dispatched it.
+ */
+export const CLAUDE_CODE_DEFAULT_TIMEOUT_MS = 600_000;
 
 export function defaultClaudeCodeConfig(): ClaudeCodeConfig {
   return { claude_bin: "claude" };
@@ -138,13 +152,17 @@ export class ClaudeCodeSubAgent implements SubAgent {
       spawnError = e;
     });
 
-    // Drain stderr in the background, capped at 64 KiB.
+    // Drain stderr in the background, capped at 64 KiB. Swallow stream errors
+    // on the diagnostic channel so an stderr EPIPE can't escape as an
+    // unhandled rejection (the run's success is judged by the result message
+    // and exit code, not by stderr).
     let stderrText = "";
     if (child.stderr) {
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => {
         if (stderrText.length < STDERR_CAP) stderrText += chunk;
       });
+      child.stderr.on("error", () => {});
     }
 
     let finalMessage = "";
@@ -152,46 +170,88 @@ export class ClaudeCodeSubAgent implements SubAgent {
     // tool_use_id -> tool name, so tool_result blocks pair back to ToolEnd.
     const toolNames = new Map<string, string>();
 
-    if (child.stdout) {
-      child.stdout.setEncoding("utf8");
-      const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-      for await (const line of lines) {
-        const msg = parseSdkMessage(line);
-        if (msg === undefined) continue; // blank / garbage
-        if (msg.type === "system") {
-          if (msg.subtype !== undefined) push({ kind: "status", message: `system:${msg.subtype}` });
-        } else if (msg.type === "assistant") {
-          for (const block of msg.message.content) {
-            if (block.type === "text") {
-              if (block.text.length > 0) push({ kind: "delta", text: block.text });
-            } else if (block.type === "tool_use") {
-              toolNames.set(block.id, block.name);
-              push({ kind: "tool_start", name: block.name, arguments: block.input });
+    // Enforce a wall-clock budget: a hung/stalled CLI is SIGKILL'd so `invoke`
+    // can never await forever. The kill closes stdout, ending the loop below,
+    // and the flag is surfaced as a timeout error after the child is reaped.
+    const timeoutMs = this.#config.timeout_ms ?? CLAUDE_CODE_DEFAULT_TIMEOUT_MS;
+    let timedOut = false;
+    let streamError: Error | undefined;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    try {
+      if (child.stdout) {
+        child.stdout.setEncoding("utf8");
+        // Capture an stdout stream error (e.g. EPIPE) rather than letting it
+        // reject the `for await` and unwind out of `invoke` with the child
+        // still alive — the `finally` below reaps it regardless.
+        child.stdout.on("error", (e: Error) => {
+          if (streamError === undefined) streamError = e;
+        });
+        const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+        for await (const line of lines) {
+          const msg = parseSdkMessage(line);
+          if (msg === undefined) continue; // blank / garbage
+          if (msg.type === "system") {
+            if (msg.subtype !== undefined) push({ kind: "status", message: `system:${msg.subtype}` });
+          } else if (msg.type === "assistant") {
+            for (const block of msg.message.content) {
+              if (block.type === "text") {
+                if (block.text.length > 0) push({ kind: "delta", text: block.text });
+              } else if (block.type === "tool_use") {
+                toolNames.set(block.id, block.name);
+                push({ kind: "tool_start", name: block.name, arguments: block.input });
+              }
+              // thinking / tool_result on assistant turns: forward-compat ignore.
             }
-            // thinking / tool_result on assistant turns: forward-compat ignore.
-          }
-        } else if (msg.type === "user") {
-          for (const block of msg.message.content) {
-            if (block.type === "tool_result") {
-              const name = toolNames.get(block.tool_use_id) ?? "unknown";
-              toolNames.delete(block.tool_use_id);
-              push({ kind: "tool_end", name, output: stringifyToolResult(block.content) });
+          } else if (msg.type === "user") {
+            for (const block of msg.message.content) {
+              if (block.type === "tool_result") {
+                const name = toolNames.get(block.tool_use_id) ?? "unknown";
+                toolNames.delete(block.tool_use_id);
+                push({ kind: "tool_end", name, output: stringifyToolResult(block.content) });
+              }
+            }
+          } else if (msg.type === "result") {
+            if (msg.is_error || msg.subtype !== "success") {
+              errorMessage = msg.result ?? `claude returned error subtype=${JSON.stringify(msg.subtype)}`;
+            } else if (msg.result !== undefined) {
+              finalMessage = msg.result;
             }
           }
-        } else if (msg.type === "result") {
-          if (msg.is_error || msg.subtype !== "success") {
-            errorMessage = msg.result ?? `claude returned error subtype=${JSON.stringify(msg.subtype)}`;
-          } else if (msg.result !== undefined) {
-            finalMessage = msg.result;
-          }
+          // unknown message kind: skip silently.
         }
-        // unknown message kind: skip silently.
+      }
+    } catch (e) {
+      // A throw from the stream (or the loop body) must not orphan the child.
+      if (streamError === undefined) streamError = e instanceof Error ? e : new Error(String(e));
+    } finally {
+      // Reap the child on any abnormal exit path — Node does not kill children
+      // on GC, so an un-reaped `claude` (running under bypassPermissions) would
+      // keep mutating the workspace and burning quota. On a clean completion we
+      // leave it to exit on its own so the real exit code is observed below.
+      if ((timedOut || streamError !== undefined) && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
       }
     }
 
     const code = await waitForExit(child);
+    clearTimeout(timer);
+
+    if (timedOut) {
+      const msg = `\`claude\` timed out after ${timeoutMs} ms`;
+      push({ kind: "error", message: msg });
+      throw new Error(msg);
+    }
     if (spawnError !== undefined) {
       throw new Error(`spawn \`${this.#config.claude_bin}\`: ${spawnError.message}`);
+    }
+    if (streamError !== undefined) {
+      const msg = `\`claude\` stdout stream error: ${streamError.message}`;
+      push({ kind: "error", message: msg });
+      throw new Error(msg);
     }
 
     if (errorMessage !== undefined) {
