@@ -53,8 +53,16 @@ export class Fanout<E> implements EventSource<E> {
 
   /** Fan `event` out to every currently-registered listener, synchronously. */
   emit(event: E): void {
+    // Snapshot-on-emit (see #listeners note) so a listener that (un)subscribes
+    // during delivery does not perturb the in-flight iteration.
     for (const listener of [...this.#listeners]) {
-      listener(event);
+      try {
+        listener(event);
+      } catch {
+        // Isolate listener faults: `emit` runs after the durable write has
+        // committed, so a throwing subscriber must neither reject the mutation
+        // that triggered it nor starve listeners registered after it.
+      }
     }
   }
 }
