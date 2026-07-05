@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { JsonValue, Tool } from "@jarvis/core";
@@ -113,6 +113,33 @@ test("hidden files and dot-directories are skipped", async () => {
   const cs = v.candidates as Array<Record<string, JsonValue>>;
   assert.equal(cs.length, 1);
   assert.equal(cs[0]!.path, "visible.rs");
+});
+
+test("symlink directory cycles do not crash the walk", async () => {
+  // A workspace symlink loop (`a/b -> a`) must not recurse to a stack
+  // overflow: the real-path visited-set skips already-walked directories.
+  const dir = await tempDir();
+  await write(path.join(dir, "a/real.rs"), "// TODO: real candidate\n");
+  // a/b points back at a, forming a -> a/b -> a -> ... cycle.
+  await symlink(path.join(dir, "a"), path.join(dir, "a/b"), "dir");
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  // The real file surfaces exactly once; the cycle is walked at most once.
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "a/real.rs");
+});
+
+test("self-referential symlink loop does not crash the walk", async () => {
+  // The degenerate `loop -> .` cycle at the scan root.
+  const dir = await tempDir();
+  await write(path.join(dir, "here.rs"), "// TODO: at root\n");
+  await symlink(dir, path.join(dir, "loop"), "dir");
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "here.rs");
 });
 
 test("path narrows scope to a subdirectory", async () => {
