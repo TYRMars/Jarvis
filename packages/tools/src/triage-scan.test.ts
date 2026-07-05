@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { JsonValue, Tool } from "@jarvis/core";
@@ -126,6 +126,25 @@ test("path narrows scope to a subdirectory", async () => {
   // Paths are reported relative to the workspace root, not the scope root.
   assert.equal(cs[0]!.path, "sub/inner.rs");
   assert.equal(cs[0]!.line, 1);
+});
+
+test("directory symlink cycle does not overflow the stack", async () => {
+  // A symlink loop (`loop -> .`) is followed by the walker; without a visited
+  // guard the recursion overflows the call stack and crashes this always-on
+  // read-only tool. The scan must terminate and still surface real markers.
+  const dir = await tempDir();
+  await write(path.join(dir, "a.rs"), "// TODO: real marker\n");
+  try {
+    await symlink(dir, path.join(dir, "loop"), "dir");
+  } catch {
+    return; // platform without symlink support (e.g. unprivileged Windows)
+  }
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  // The marker is found exactly once — the cycled directory is not re-walked.
+  assert.equal(cs.length, 1);
+  assert.equal(cs[0]!.path, "a.rs");
 });
 
 test("description carries source path, line, and code fence", async () => {
