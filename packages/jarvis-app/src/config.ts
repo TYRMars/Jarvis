@@ -141,6 +141,14 @@ export interface JarvisConfig {
   workMode: WorkMode;
   workTickSeconds: number;
   workMaxConcurrent: number;
+  /** Per-tick burst budget: cap on candidates spawned per scheduler tick. */
+  workMaxUnitsPerTick: number;
+  /** Ceiling on consecutive failed runs before the picker stops re-picking. */
+  workMaxRetries: number;
+  /** Wall-clock cap (ms) on one auto-mode agent pickup. */
+  workRunTimeoutMs: number;
+  /** Opt into reviewer-subagent dispatch on Review→Done under Subagent policy. */
+  reviewerAutoAccept: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +339,10 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     workMode: parseWorkMode(env.JARVIS_WORK_MODE),
     workTickSeconds: parseIntOr(env.JARVIS_WORK_TICK_SECONDS, 30),
     workMaxConcurrent: parseIntOr(env.JARVIS_WORK_MAX_CONCURRENT, 2),
+    workMaxUnitsPerTick: parseIntOr(env.JARVIS_WORK_MAX_UNITS_PER_TICK, 1),
+    workMaxRetries: parseIntOr(env.JARVIS_WORK_MAX_RETRIES, 1),
+    workRunTimeoutMs: parseIntOr(env.JARVIS_WORK_RUN_TIMEOUT_MS, 600000),
+    reviewerAutoAccept: truthy(env.JARVIS_REVIEWER_AUTO_ACCEPT),
   };
 }
 
