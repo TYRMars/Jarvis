@@ -242,6 +242,10 @@ export class ResponsesProvider implements LlmProvider {
       message: lastFinish.message,
       finish_reason: lastFinish.finishReason,
       response_id: lastFinish.responseId,
+      // The response is only a *chain anchor* when this provider is configured
+      // to chain; otherwise the id is informational and the caller must keep
+      // compacting + re-sending the full history (see issue #337).
+      chaining: this.#cfg.chainResponses,
       usage: lastUsage,
     };
   }
@@ -272,7 +276,7 @@ export class ResponsesProvider implements LlmProvider {
     }
 
     if (!resp.body) throw new ProviderError("stream response had no body");
-    return sseChunks(resp.body, new StreamAccumulator(nameMap));
+    return sseChunks(resp.body, new StreamAccumulator(nameMap, this.#cfg.chainResponses));
   }
 
   async #post(body: unknown, snapshot: BearerSnapshot, stream: boolean): Promise<Response> {
@@ -580,9 +584,11 @@ export class StreamAccumulator {
   #finished = false;
   #responseId: string | null = null;
   readonly #nameMap: Map<string, string>;
+  readonly #chaining: boolean;
 
-  constructor(nameMap: Map<string, string> = new Map()) {
+  constructor(nameMap: Map<string, string> = new Map(), chaining = false) {
     this.#nameMap = nameMap;
+    this.#chaining = chaining;
   }
 
   ingest(ev: StreamEventRaw): LlmChunk[] {
@@ -668,6 +674,7 @@ export class StreamAccumulator {
       message: assistantMessage(content, toolCalls),
       finish_reason: finishReason,
       response_id: responseId,
+      chaining: this.#chaining,
     };
   }
 }
