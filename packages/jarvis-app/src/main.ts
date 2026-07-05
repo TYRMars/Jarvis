@@ -154,6 +154,17 @@ export async function runServe(config: JarvisConfig): Promise<void> {
       `addr=${config.addr} fsRoot=${config.fsRoot} coding=${codingMode(config)} ` +
       `promptBytes=${systemPrompt.length}\n`,
   );
+  if (state.autoModeRuntime !== undefined) {
+    process.stderr.write(
+      `[jarvis] auto-mode scheduler active: tick=${config.workTickSeconds}s ` +
+        `maxConcurrent=${config.workMaxConcurrent}\n`,
+    );
+  } else if (config.workMode === "auto") {
+    process.stderr.write(
+      "[jarvis] auto-mode requested but not started: kanban stores " +
+        "(projects/requirements/requirementRuns) unavailable\n",
+    );
+  }
   await serve({ host, port }, state);
   process.stderr.write(`[jarvis] listening on http://${host}:${port}\n`);
 }

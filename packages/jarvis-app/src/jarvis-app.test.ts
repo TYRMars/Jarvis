@@ -153,3 +153,34 @@ test("buildAppState wires the domain stores into AppState", async () => {
   assert.equal(state.workspaceRoot, config.fsRoot);
   assert.ok(state.subagents !== undefined);
 });
+
+test("buildAppState spawns the auto-mode scheduler when JARVIS_WORK_MODE=auto", async () => {
+  const config = loadConfig({ ...FIXTURE_ENV, JARVIS_WORK_MODE: "auto" });
+  const stores = makeMemoryStores();
+  const bundle = await buildAppState(config, {
+    provider: new StubProvider("x"),
+    stores,
+    systemPrompt: "test",
+  });
+  // The scheduler is wired: runtime + resolved config are exposed on AppState
+  // (so GET/POST /v1/auto-mode reflect reality) and a stop handle is returned.
+  assert.ok(bundle.state.autoModeRuntime !== undefined);
+  assert.equal(bundle.state.autoModeRuntime.isEnabled(), true);
+  assert.equal(bundle.state.autoModeConfig?.mode, "auto");
+  assert.equal(bundle.state.autoModeConfig?.tickSeconds, config.workTickSeconds);
+  assert.equal(typeof bundle.stopAutoMode, "function");
+  bundle.stopAutoMode?.(); // clear the interval so the test doesn't leak a timer
+});
+
+test("buildAppState leaves the auto-mode scheduler off by default", async () => {
+  const config = loadConfig(FIXTURE_ENV); // JARVIS_WORK_MODE unset → "off"
+  const stores = makeMemoryStores();
+  const bundle = await buildAppState(config, {
+    provider: new StubProvider("x"),
+    stores,
+    systemPrompt: "test",
+  });
+  assert.equal(bundle.state.autoModeRuntime, undefined);
+  assert.equal(bundle.state.autoModeConfig, undefined);
+  assert.equal(bundle.stopAutoMode, undefined);
+});
