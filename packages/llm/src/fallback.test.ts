@@ -169,3 +169,33 @@ test("isTransientError tolerates non-Error throwables (string / plain object)", 
   assert.equal(isTransientError("503 service unavailable"), true);
   assert.equal(isTransientError("401 unauthorized"), false);
 });
+
+// Regression (#366): a genuinely transient 5xx/429 whose response *body*
+// mentions auth (or contains a "401" trace id) must still be treated as
+// transient — the HTTP status wins over substring scanning.
+test("isTransientError keys off HTTP status, not auth substrings in the body", () => {
+  // Structured status field wins even when the body says "authentication".
+  assert.equal(
+    isTransientError(
+      new ProviderError("status 503: authentication service temporarily unavailable", 503),
+    ),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 429: slow down (trace 401abc)", 429)),
+    true,
+  );
+  // Structured 4xx auth status stays terminal.
+  assert.equal(isTransientError(new ProviderError("status 401: bad key", 401)), false);
+  assert.equal(isTransientError(new ProviderError("status 400: malformed", 400)), false);
+  // 408 / 425 are retryable statuses.
+  assert.equal(isTransientError(new ProviderError("status 408: request timeout", 408)), true);
+});
+
+test("isTransientError parses the `status <N>:` prefix when no status field is set", () => {
+  // Mirrors the wire format every provider #post emits, without the structured
+  // field — the prefix parse must still classify on the real status.
+  assert.equal(isTransientError(new ProviderError("status 503: authentication down")), true);
+  assert.equal(isTransientError("status 500: unauthorized upstream"), true);
+  assert.equal(isTransientError(new ProviderError("status 401: invalid api key")), false);
+});

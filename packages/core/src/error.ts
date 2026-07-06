@@ -15,9 +15,17 @@ export class HarnessError extends Error {
 }
 
 export class ProviderError extends HarnessError {
-  constructor(message: string) {
+  /**
+   * The upstream HTTP status code, when this error originated from an HTTP
+   * response. Lets consumers (e.g. fallback classification) key off the actual
+   * status instead of substring-scanning the message — the response body may
+   * itself mention `401`/`authentication` on an otherwise-transient 5xx/429.
+   */
+  readonly status?: number;
+  constructor(message: string, status?: number) {
     super(`llm provider error: ${message}`);
     this.name = "ProviderError";
+    this.status = status;
   }
 }
 
