@@ -174,8 +174,13 @@ function VoiceInputButton() {
         recognition.onresult = (event: any) => {
           const transcript = event.results?.[0]?.[0]?.transcript;
           if (!transcript) return;
-          const spacer = value.trim().length ? " " : "";
-          setValue(value + spacer + transcript);
+          // Recognition resolves asynchronously, so the `value` captured in
+          // this closure is stale — anything typed after the mic started would
+          // be clobbered. Read the freshest composer value from the store at
+          // call time. (`setValue` is a Zustand action taking a string, not a
+          // React setState updater, so a functional updater can't be used.)
+          const prev = useAppStore.getState().composerValue;
+          setValue(prev + (prev.trim().length ? " " : "") + transcript);
           requestAnimationFrame(() => document.getElementById("input")?.focus());
         };
         recognition.onerror = () => showBanner(t("chatCoreVoiceFailed"));
