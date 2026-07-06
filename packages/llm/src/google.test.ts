@@ -208,8 +208,9 @@ test("intoChatResponse via complete: decodes text + functionCall, synthesises ge
   assert.ok(m.tool_calls?.[0]?.id.startsWith("gem_"));
   assert.equal(m.tool_calls?.[0]?.name, "echo");
   assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
-  // STOP is preserved verbatim — the loop dispatches off tool_calls regardless.
-  assert.equal(resp.finish_reason, "stop");
+  // Gemini reports STOP even alongside functionCall parts; tool-call presence
+  // wins so the agent loop actually dispatches the call (see #356).
+  assert.equal(resp.finish_reason, "tool_calls");
 });
 
 test("complete: missing finishReason with tool calls maps to tool_calls", async () => {
@@ -323,7 +324,7 @@ test("accumulator: functionCall arrives whole in one chunk (id+name, no fragment
   assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
 });
 
-test("accumulator: mixed text + functionCall preserves STOP verbatim", () => {
+test("accumulator: mixed text + functionCall over STOP surfaces tool_calls", () => {
   const acc = new StreamAccumulator();
   const out = ingestAll(acc, [
     { candidates: [{ content: { parts: [{ text: "thinking..." }] } }] },
@@ -333,7 +334,9 @@ test("accumulator: mixed text + functionCall preserves STOP verbatim", () => {
   ]);
   const finish = out.at(-1)!;
   assert.ok(finish.type === "finish");
-  assert.equal(finish.finish_reason, "stop");
+  // Gemini reports STOP even with a functionCall part; tool-call presence wins
+  // so the streaming path dispatches the call too (see #356).
+  assert.equal(finish.finish_reason, "tool_calls");
   const m = finish.message as Extract<Message, { role: "assistant" }>;
   assert.equal(m.content, "thinking...");
   assert.equal(m.tool_calls?.length, 1);
