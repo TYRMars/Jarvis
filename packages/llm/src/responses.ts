@@ -266,7 +266,7 @@ export class ResponsesProvider implements LlmProvider {
       }
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
-        throw new ProviderError(`status ${resp.status}: ${text}`);
+        throw new ProviderError(`status ${resp.status}: ${text}`, resp.status);
       }
       break;
     }

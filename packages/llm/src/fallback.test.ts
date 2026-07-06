@@ -169,3 +169,47 @@ test("isTransientError tolerates non-Error throwables (string / plain object)", 
   assert.equal(isTransientError("503 service unavailable"), true);
   assert.equal(isTransientError("401 unauthorized"), false);
 });
+
+// ---------- status wins over auth-mentioning bodies (#366) ----------
+
+test("isTransientError: 5xx whose body mentions auth is still transient", () => {
+  // Providers format failures as `status <N>: <upstream body>`; the body here
+  // mentions an auth subsystem but the request is a genuine transient outage.
+  assert.equal(
+    isTransientError(
+      new ProviderError("status 503: authentication service temporarily unavailable"),
+    ),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 500: unauthorized downstream (trace 401abc)")),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 429: rate limited; ref 403-xyz")),
+    true,
+  );
+});
+
+test("isTransientError: real 4xx auth stays non-transient even via status prefix", () => {
+  assert.equal(isTransientError(new ProviderError("status 401: invalid api key")), false);
+  assert.equal(isTransientError(new ProviderError("status 403: forbidden")), false);
+  assert.equal(isTransientError(new ProviderError("status 400: bad request")), false);
+});
+
+test("isTransientError: structured ProviderError.status is authoritative", () => {
+  // Even if the free text screams "unauthorized", a structured 503 is transient…
+  assert.equal(isTransientError(new ProviderError("unauthorized-ish body", 503)), true);
+  // …and a structured 401 is not, regardless of a transient-looking body.
+  assert.equal(isTransientError(new ProviderError("connection reset by peer", 401)), false);
+});
+
+test("FallbackProvider walks the chain on a 5xx whose body mentions auth", async () => {
+  const primary = StubProvider.err("status 503: authentication service temporarily unavailable");
+  const fb = StubProvider.ok("fb-recovered");
+  const wrapper = new FallbackProvider("primary", primary, [fallbackEntry("fb", fb)]);
+  const resp = await wrapper.complete(req());
+  assert.equal(primary.calls, 1);
+  assert.equal(fb.calls, 1, "an auth-mentioning 5xx body must not defeat failover");
+  assert.equal(assistantContent(resp.message), "fb-recovered");
+});

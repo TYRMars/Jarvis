@@ -78,7 +78,7 @@ export class OpenAiProvider implements LlmProvider {
     } catch (e) {
       throw new ProviderError(`read body: ${errorText(e)}`);
     }
-    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${text}`);
+    if (!resp.ok) throw new ProviderError(`status ${resp.status}: ${text}`, resp.status);
 
     let parsed: OaResponseRaw;
     try {
@@ -99,7 +99,7 @@ export class OpenAiProvider implements LlmProvider {
     const resp = await this.#post(request);
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      throw new ProviderError(`status ${resp.status}: ${text}`);
+      throw new ProviderError(`status ${resp.status}: ${text}`, resp.status);
     }
     if (!resp.body) throw new ProviderError("stream response had no body");
     return sseChunks(resp.body, new StreamAccumulator(nameMap));

@@ -37,20 +37,28 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  * next provider has the same auth surface), but 429 rate-limits, 5xx server
  * failures, and connection-level errors are.
  *
- * Matches against the lowercased error text (substring scan), so it works on
- * any thrown value — `ProviderError`, a raw `Error`, or a string.
+ * Classification prefers the **HTTP status** (structured `ProviderError.status`,
+ * or the `status <N>:` prefix providers format their errors with) over scanning
+ * the free text. This matters because the error text embeds the raw upstream
+ * response *body*, which can itself mention auth ("authentication service
+ * temporarily unavailable") or contain digits like `401` in a trace id. A pure
+ * substring scan would then misclassify a genuine transient 5xx/429 as fatal
+ * and defeat failover. Only when no status is recoverable (transport / parse /
+ * network errors, or non-`ProviderError` throwables) do we fall back to the
+ * substring heuristic — and there transient signals are checked first so an
+ * incidental auth substring can't veto a real transient signal.
  */
 export function isTransientError(err: unknown): boolean {
+  const status = httpStatusOf(err);
+  if (status !== undefined) {
+    // Authoritative: the status wins over any substring in the body.
+    // 429 + 5xx are transient; 4xx (auth / bad request) and anything else are
+    // not — the next provider shares the same auth surface or request shape.
+    return status === 429 || (status >= 500 && status <= 599);
+  }
+
+  // No recoverable status — fall back to substring heuristics on the text.
   const msg = errorText(err).toLowerCase();
-  // Definite-not-transient: auth + bad-request signals.
-  const authOrBadRequest =
-    msg.includes("401") ||
-    msg.includes("403") ||
-    msg.includes("unauthorized") ||
-    msg.includes("invalid api key") ||
-    msg.includes("authentication");
-  if (authOrBadRequest) return false;
-  // Transient: rate limit / server error / network.
   return (
     msg.includes("429") ||
     msg.includes("rate limit") ||
@@ -69,6 +77,20 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("transport:") ||
     msg.includes("error sending request")
   );
+}
+
+/**
+ * Recover the upstream HTTP status from an error, preferring the structured
+ * `ProviderError.status` field and falling back to the `status <N>:` prefix
+ * that every provider's `#post` formats HTTP failures with (e.g.
+ * `llm provider error: status 503: <body>`). Returns `undefined` when no status
+ * is present so the caller can drop to text heuristics. The prefix is anchored
+ * so a status-looking digit sequence *inside* the response body can't match.
+ */
+function httpStatusOf(err: unknown): number | undefined {
+  if (err instanceof ProviderError && err.status !== undefined) return err.status;
+  const m = /(?:^|:\s*)status (\d{3})\b/i.exec(errorText(err));
+  return m ? Number(m[1]) : undefined;
 }
 
 /**
