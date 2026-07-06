@@ -305,7 +305,11 @@ function synthToolCall(fc: { name: string; args?: JsonValue }, index: number): T
 function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]): FinishReason {
   switch (raw) {
     case "STOP":
-      return "stop";
+      // Gemini's FinishReason enum has no tool-use value: a function-call turn
+      // arrives with finishReason "STOP" alongside functionCall parts. Report
+      // "tool_calls" so the core agent loop dispatches the pending calls
+      // instead of halting (see isToolCallTurn in packages/core/src/agent.ts).
+      return toolCalls.length > 0 ? "tool_calls" : "stop";
     case "MAX_TOKENS":
       return "length";
     case null:

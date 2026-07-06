@@ -208,8 +208,10 @@ test("intoChatResponse via complete: decodes text + functionCall, synthesises ge
   assert.ok(m.tool_calls?.[0]?.id.startsWith("gem_"));
   assert.equal(m.tool_calls?.[0]?.name, "echo");
   assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
-  // STOP is preserved verbatim — the loop dispatches off tool_calls regardless.
-  assert.equal(resp.finish_reason, "stop");
+  // Gemini has no tool-use finishReason: a function-call turn arrives as "STOP".
+  // We map it to "tool_calls" so the core agent loop dispatches the call (the
+  // loop only dispatches when finish_reason === "tool_calls").
+  assert.equal(resp.finish_reason, "tool_calls");
 });
 
 test("complete: missing finishReason with tool calls maps to tool_calls", async () => {
@@ -323,7 +325,7 @@ test("accumulator: functionCall arrives whole in one chunk (id+name, no fragment
   assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
 });
 
-test("accumulator: mixed text + functionCall preserves STOP verbatim", () => {
+test("accumulator: mixed text + functionCall on STOP maps to tool_calls", () => {
   const acc = new StreamAccumulator();
   const out = ingestAll(acc, [
     { candidates: [{ content: { parts: [{ text: "thinking..." }] } }] },
@@ -333,7 +335,8 @@ test("accumulator: mixed text + functionCall preserves STOP verbatim", () => {
   ]);
   const finish = out.at(-1)!;
   assert.ok(finish.type === "finish");
-  assert.equal(finish.finish_reason, "stop");
+  // STOP + functionCall parts → tool_calls, so the streaming loop dispatches.
+  assert.equal(finish.finish_reason, "tool_calls");
   const m = finish.message as Extract<Message, { role: "assistant" }>;
   assert.equal(m.content, "thinking...");
   assert.equal(m.tool_calls?.length, 1);
