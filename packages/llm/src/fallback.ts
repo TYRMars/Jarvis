@@ -37,11 +37,32 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  * next provider has the same auth surface), but 429 rate-limits, 5xx server
  * failures, and connection-level errors are.
  *
- * Matches against the lowercased error text (substring scan), so it works on
- * any thrown value — `ProviderError`, a raw `Error`, or a string.
+ * Every provider formats an upstream failure as `status <code>: <body>`, so we
+ * prefer that structured status: when it's present we classify on the code
+ * alone and ignore the body entirely. This is deliberate — the response body
+ * may itself mention an auth subsystem (e.g. a `503` whose body reads
+ * "authentication service temporarily unavailable", or a rate-limit body whose
+ * trace id contains "401"), and a substring scan of the whole text would
+ * misread those transient outages as fatal and defeat failover.
+ *
+ * Only when no HTTP status is present (a raw network/transport error, or an
+ * auth failure thrown before any round-trip) do we fall back to substring
+ * heuristics over the lowercased text, so it still works on any thrown value —
+ * `ProviderError`, a raw `Error`, or a string.
  */
 export function isTransientError(err: unknown): boolean {
   const msg = errorText(err).toLowerCase();
+
+  // Prefer the structured HTTP status when the error was formatted with one.
+  const status = httpStatusFromMessage(msg);
+  if (status !== undefined) {
+    // Transient: rate-limit, request-timeout, and any 5xx server failure. Every
+    // other code (401/403/400/404/…) is a request-level problem the next
+    // provider would hit identically, so it propagates.
+    return status === 429 || status === 408 || (status >= 500 && status <= 599);
+  }
+
+  // No structured status — classify from the text.
   // Definite-not-transient: auth + bad-request signals.
   const authOrBadRequest =
     msg.includes("401") ||
@@ -69,6 +90,18 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("transport:") ||
     msg.includes("error sending request")
   );
+}
+
+/**
+ * Pull the HTTP status out of a provider-formatted error message. Providers
+ * render upstream failures as `status <code>: <body>`, so the FIRST
+ * `status <code>:` in the (lowercased) message is the real response status —
+ * anything the body itself happens to say about "status" comes after it and is
+ * ignored. Returns `undefined` when the message carries no such prefix.
+ */
+function httpStatusFromMessage(msg: string): number | undefined {
+  const m = /status (\d{3}):/.exec(msg);
+  return m ? Number(m[1]) : undefined;
 }
 
 /**
