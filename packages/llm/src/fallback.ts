@@ -42,6 +42,21 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  */
 export function isTransientError(err: unknown): boolean {
   const msg = errorText(err).toLowerCase();
+
+  // Prefer the actual HTTP status when the provider encoded one. Every
+  // provider's `#post` formats a non-ok response as `status <NNN>: <body>`,
+  // so the leading `status <NNN>:` is the *real* upstream code — immune to the
+  // response body merely mentioning an auth subsystem or carrying a stray
+  // "401"/"500" in a request id or trace. Classify off that code directly:
+  // 429 + 5xx are transient; any other explicit status (401/403/400/404/…)
+  // is a definite client/auth failure the next provider won't fare better on.
+  const status = httpStatusFromMessage(msg);
+  if (status !== undefined) {
+    return status === 429 || (status >= 500 && status <= 599);
+  }
+
+  // No structured status (network / transport / timeout errors, or raw
+  // strings): fall back to a substring scan.
   // Definite-not-transient: auth + bad-request signals.
   const authOrBadRequest =
     msg.includes("401") ||
@@ -135,6 +150,18 @@ export class FallbackProvider implements LlmProvider {
     }
     throw asError(lastError);
   }
+}
+
+/**
+ * Extract the upstream HTTP status from a provider error message. Providers
+ * format non-ok responses as `status <NNN>: <body>` (see each provider's
+ * `#post`), so the leftmost `status <NNN>:` match is the real code even when
+ * the body text embeds other digit runs. Returns `undefined` when no such
+ * prefix is present (network / transport / decode errors).
+ */
+function httpStatusFromMessage(msg: string): number | undefined {
+  const m = /status (\d{3}):/.exec(msg);
+  return m ? Number(m[1]) : undefined;
 }
 
 /** Re-throw the last seen error verbatim, or synthesise one if nothing was captured. */
