@@ -165,12 +165,18 @@ export class JsonFileMemoryStore implements MemoryStore {
     return readJsonFile<MemoryItem>(this.#pathFor(id));
   }
 
-  async upsert(item: MemoryItem): Promise<MemoryItem> {
-    const prior = item.id !== "" ? await this.get(item.id) : undefined;
-    const saved = prepareUpsert(item, prior);
-    await atomicWrite(this.#pathFor(saved.id), JSON.stringify(saved, null, 2));
-    this.#fanout.emit(memoryUpsertedEvent(saved));
-    return saved;
+  upsert(item: MemoryItem): Promise<MemoryItem> {
+    // Serialise the get → atomicWrite read-modify-write under the same lock
+    // `patch`/`delete` use — otherwise a concurrent `delete` could be
+    // resurrected (zombie row) or a concurrent `patch` lost-updated by this
+    // write landing on stale state (issue #360).
+    return this.#withLock(async () => {
+      const prior = item.id !== "" ? await this.get(item.id) : undefined;
+      const saved = prepareUpsert(item, prior);
+      await atomicWrite(this.#pathFor(saved.id), JSON.stringify(saved, null, 2));
+      this.#fanout.emit(memoryUpsertedEvent(saved));
+      return saved;
+    });
   }
 
   patch(id: string, patch: MemoryPatch): Promise<MemoryItem | undefined> {

@@ -174,8 +174,13 @@ function VoiceInputButton() {
         recognition.onresult = (event: any) => {
           const transcript = event.results?.[0]?.[0]?.transcript;
           if (!transcript) return;
-          const spacer = value.trim().length ? " " : "";
-          setValue(value + spacer + transcript);
+          // Read the freshest composer value from the store, not the `value`
+          // captured when the mic was clicked — recognition resolves async, so
+          // the closed-over `value` is stale and would clobber anything typed
+          // after starting the mic (issue #365).
+          const current = useAppStore.getState().composerValue;
+          const spacer = current.trim().length ? " " : "";
+          setValue(current + spacer + transcript);
           requestAnimationFrame(() => document.getElementById("input")?.focus());
         };
         recognition.onerror = () => showBanner(t("chatCoreVoiceFailed"));

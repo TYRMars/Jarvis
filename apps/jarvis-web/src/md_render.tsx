@@ -74,3 +74,20 @@ export function renderMarkdownInto(container: HTMLElement, content: string, stre
     />,
   );
 }
+
+/**
+ * Tear down the nested React root created by `renderMarkdownInto` for
+ * `container` and drop it from the cache. Call this when the owning React
+ * component unmounts so the inner root's lifecycle (effect cleanup,
+ * subscriptions, animation timers) actually runs and roots don't leak on
+ * every conversation switch (issue #364).
+ *
+ * The `unmount()` is deferred to a microtask so we don't synchronously unmount
+ * a nested root during the parent's commit phase (React 19 warns about that).
+ */
+export function unmountMarkdownFrom(container: Element) {
+  const root = roots.get(container);
+  if (!root) return;
+  roots.delete(container);
+  queueMicrotask(() => root.unmount());
+}

@@ -6,7 +6,7 @@
 // mount is fine — the cached root just rebinds.
 
 import { useEffect, useRef } from "react";
-import { renderMarkdownInto } from "../../md_render";
+import { renderMarkdownInto, unmountMarkdownFrom } from "../../md_render";
 
 interface Props {
   content: string;
@@ -22,5 +22,14 @@ export function MarkdownView({ content, streaming = false }: Props) {
     if (!ref.current) return;
     renderMarkdownInto(ref.current, content, streaming);
   }, [content, streaming]);
+  // Unmount the nested root when this view unmounts (mount-only effect, so it
+  // does *not* tear down on every content change) — otherwise each message
+  // card leaks an orphaned React root on every conversation switch.
+  useEffect(() => {
+    const el = ref.current;
+    return () => {
+      if (el) unmountMarkdownFrom(el);
+    };
+  }, []);
   return <div ref={ref} className="markdown-body" data-md-raw={content} />;
 }
