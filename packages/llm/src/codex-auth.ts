@@ -184,7 +184,7 @@ export class CodexAuth {
       throw new ProviderError(`refresh read body: ${errorText(e)}`);
     }
     if (!resp.ok) {
-      throw new ProviderError(`refresh failed: status ${resp.status}: ${body}`);
+      throw new ProviderError(`refresh failed: status ${resp.status}: ${body}`, resp.status);
     }
 
     let parsed: { access_token?: unknown; refresh_token?: unknown };
