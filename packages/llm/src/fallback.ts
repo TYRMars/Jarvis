@@ -41,8 +41,26 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  * any thrown value — `ProviderError`, a raw `Error`, or a string.
  */
 export function isTransientError(err: unknown): boolean {
+  // Prefer a structured HTTP status when one is derivable — either an explicit
+  // `status` field on a `ProviderError`, or the `status <N>:` prefix every
+  // provider's `#post` emits. Classifying on the status directly avoids the
+  // substring trap where a genuinely transient 5xx/429 whose response *body*
+  // mentions "authentication" (or contains "401" in a trace id) is misread as
+  // fatal and defeats failover.
+  const status = httpStatusOf(err);
+  if (status !== undefined) {
+    // 408 Request Timeout / 425 Too Early / 429 rate-limit / any 5xx: retry.
+    if (status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599)) {
+      return true;
+    }
+    // Any other 4xx (auth, bad request, not-found, unprocessable): terminal.
+    if (status >= 400 && status <= 499) return false;
+    // Unexpected 1xx–3xx surfacing as an error: fall through to substrings.
+  }
+
   const msg = errorText(err).toLowerCase();
-  // Definite-not-transient: auth + bad-request signals.
+  // No usable status (network/transport error, or a non-HTTP throw): fall back
+  // to substring signals. Auth + bad-request first.
   const authOrBadRequest =
     msg.includes("401") ||
     msg.includes("403") ||
@@ -69,6 +87,22 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("transport:") ||
     msg.includes("error sending request")
   );
+}
+
+/**
+ * Best-effort extraction of an upstream HTTP status from a thrown value.
+ * Prefers an explicit `ProviderError.status`; otherwise reads the leading
+ * `status <N>:` prefix that every provider's `#post` prepends when formatting
+ * an upstream failure (`status ${resp.status}: ${body}`). Returns `undefined`
+ * for network/transport errors and non-HTTP throws, which carry no status.
+ */
+function httpStatusOf(err: unknown): number | undefined {
+  if (err instanceof ProviderError && typeof err.status === "number") return err.status;
+  // Match only the provider-formatted prefix (`status <N>:`), not any `status`
+  // token buried later in the upstream body.
+  const m = /(?:^|\bstatus )(\d{3}):/.exec(errorText(err));
+  if (m) return Number(m[1]);
+  return undefined;
 }
 
 /**
