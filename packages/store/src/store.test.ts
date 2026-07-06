@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { newConversation, userMessage, type Conversation } from "@jarvis/core";
-import { JsonFileConversationStore, encodeId } from "./json-file.ts";
+import { JsonFileConversationStore, atomicWrite, encodeId } from "./json-file.ts";
+import { readFile } from "node:fs/promises";
 import { MemoryConversationStore } from "./memory.ts";
 import { connect } from "./connect.ts";
 import { StoreError, type ConversationStore } from "./types.ts";
@@ -148,4 +149,29 @@ test("connect: still-unsupported SQL schemes throw, unknown schemes throw", asyn
 
 test("connect: empty json path throws", async () => {
   await assert.rejects(() => connect("json:"), StoreError);
+});
+
+// ---------- atomicWrite ----------
+
+test("atomicWrite: concurrent writes to one target don't corrupt each other (#359)", async () => {
+  // A fixed `<path>.tmp` name let two concurrent writers truncate & interleave
+  // the same temp file, then race their renames into ENOENT. Each write now
+  // uses a unique temp name, so the target must always end as one writer's
+  // whole, valid payload — never mixed bytes, never a thrown ENOENT.
+  await withTempDir(async (dir) => {
+    const target = path.join(dir, "target.json");
+    const payloads = Array.from({ length: 20 }, (_, i) =>
+      JSON.stringify({ writer: i, blob: String(i).repeat(1000) }),
+    );
+    await Promise.all(payloads.map((p) => atomicWrite(target, p)));
+    const finalBytes = await readFile(target, "utf8");
+    // The surviving content must be exactly one writer's payload (valid JSON),
+    // proving no interleaving of two writers into one temp file.
+    const parsed = JSON.parse(finalBytes) as { writer: number };
+    assert.ok(payloads.includes(finalBytes), "final file is exactly one writer's whole payload");
+    assert.ok(parsed.writer >= 0 && parsed.writer < 20);
+    // No temp files should be left behind after all writes settle.
+    const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
+    assert.deepEqual(leftovers, [], "no leftover temp files");
+  });
 });

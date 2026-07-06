@@ -373,3 +373,21 @@ test("json-file: a concurrent delete wins the patch race (no zombie resurrection
     assert.equal((await store.list({})).length, 0, "store is empty after the race");
   });
 });
+
+test("json-file: a concurrent delete wins the upsert race (no zombie resurrection)", async () => {
+  // Issue #360: upsert also has an `await get` → `await atomicWrite` window.
+  // It must serialise on the same write lock as patch/delete so a concurrent
+  // delete can't be resurrected by an in-flight upsert. Fire upsert (of an
+  // existing id) + delete together: the row must end up gone.
+  await withTempDir(async (dir) => {
+    const store = await JsonFileMemoryStore.open(dir);
+    const saved = await store.upsert(newMemoryItem(memoryScopeUser(), "preference", "race", "body"));
+    const [, deleted] = await Promise.all([
+      store.upsert({ ...saved, title: "zombie" }).catch(() => undefined),
+      store.delete(saved.id),
+    ]);
+    assert.equal(deleted, true, "delete removed the row");
+    assert.equal(await store.get(saved.id), undefined, "no zombie row left behind");
+    assert.equal((await store.list({})).length, 0, "store is empty after the race");
+  });
+});

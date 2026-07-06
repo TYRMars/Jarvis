@@ -141,11 +141,29 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+// Monotonic per-process counter so two concurrent writes to the SAME target
+// never share (and truncate) one another's temp file. A fixed `<path>.tmp`
+// name let interleaved writers corrupt each other or race their `rename`s into
+// an `ENOENT` — see issue #359.
+let tmpWriteCounter = 0;
+
+/**
+ * Write to a unique temp file then rename onto the target, so a crash mid-write
+ * leaves the old file intact. The temp name is unique per (pid, call) so
+ * concurrent writers to one path don't clobber each other's temp file; callers
+ * that do read-modify-write still need their own per-key lock to avoid
+ * last-writer-wins lost updates.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
+  const tmp = `${filePath}.${process.pid}.${(tmpWriteCounter = (tmpWriteCounter + 1) >>> 0)}.tmp`;
   await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  try {
+    await rename(tmp, filePath);
+  } catch (e) {
+    // Don't leave the unique temp behind if the rename fails.
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 /**
