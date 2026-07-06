@@ -169,3 +169,38 @@ test("isTransientError tolerates non-Error throwables (string / plain object)", 
   assert.equal(isTransientError("503 service unavailable"), true);
   assert.equal(isTransientError("401 unauthorized"), false);
 });
+
+test("isTransientError classifies off the real status, not auth words in the body (#366)", () => {
+  // A genuine transient 5xx/429 whose response body mentions an auth subsystem
+  // must still be transient — the auth substrings live in the body, not the status.
+  assert.equal(
+    isTransientError(new ProviderError("status 503: authentication service temporarily unavailable")),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 500: unauthorized downstream; invalid api key upstream")),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 429: rate limited (trace 401-abc, authentication gateway)")),
+    true,
+  );
+  // Conversely a real 401/403 body that happens to embed a 5xx-looking token
+  // stays non-transient — the leading `status <NNN>:` is authoritative.
+  assert.equal(
+    isTransientError(new ProviderError("status 401: token rejected (upstream ref 500123)")),
+    false,
+  );
+  assert.equal(isTransientError(new ProviderError("status 403: forbidden")), false);
+  assert.equal(isTransientError(new ProviderError("status 400: bad request")), false);
+});
+
+test("FallbackProvider walks the chain on a 5xx whose body mentions auth (#366)", async () => {
+  const primary = StubProvider.err("status 503: authentication service temporarily unavailable");
+  const fb = StubProvider.ok("fb");
+  const wrapper = new FallbackProvider("primary", primary, [fallbackEntry("fb", fb)]);
+  const resp = await wrapper.complete(req());
+  assert.equal(primary.calls, 1);
+  assert.equal(fb.calls, 1, "a transient 5xx must fail over even when the body mentions auth");
+  assert.equal(assistantContent(resp.message), "fb");
+});
