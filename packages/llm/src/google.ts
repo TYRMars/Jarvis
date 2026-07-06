@@ -303,6 +303,14 @@ function synthToolCall(fc: { name: string; args?: JsonValue }, index: number): T
 }
 
 function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]): FinishReason {
+  // A candidate carrying tool calls must surface as `tool_calls` — the agent
+  // loop only dispatches when `finish_reason === "tool_calls"` (see
+  // core/agent.ts `isToolCallTurn`). Gemini reports `finishReason:"STOP"` even
+  // when the candidate emitted `functionCall` parts, so tool-call presence has
+  // to win over the raw reason or the tool calls are silently dropped and the
+  // agent halts mid-task. Gemini ships `functionCall` parts whole, so a present
+  // call is always complete (never a MAX_TOKENS-truncated fragment).
+  if (toolCalls.length > 0) return "tool_calls";
   switch (raw) {
     case "STOP":
       return "stop";
@@ -310,7 +318,7 @@ function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]):
       return "length";
     case null:
     case undefined:
-      return toolCalls.length > 0 ? "tool_calls" : "stop";
+      return "stop";
     default:
       return { other: raw };
   }
