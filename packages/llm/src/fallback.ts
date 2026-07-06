@@ -42,6 +42,24 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  */
 export function isTransientError(err: unknown): boolean {
   const msg = errorText(err).toLowerCase();
+
+  // Prefer the structured HTTP status the providers prefix their errors with
+  // (`status <code>: <body>`) over scanning the whole message: the upstream
+  // *response body* may itself mention "authentication" / "401" / "503", which
+  // would otherwise misclassify a genuine transient 5xx/429 as fatal and defeat
+  // failover (see issue #366). When we can read the real status code, trust it.
+  const statusMatch = /status (\d{3})\b/.exec(msg);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    if (status === 429 || (status >= 500 && status <= 599)) return true;
+    if (status === 401 || status === 403 || status === 400) return false;
+  }
+
+  // No structured status (network / connect errors, non-provider throws): fall
+  // back to substring heuristics. Let transient signals win *before* the
+  // auth-substring check so a 5xx/429 whose body mentions auth still fails over.
+  if (isTransientSubstring(msg)) return true;
+
   // Definite-not-transient: auth + bad-request signals.
   const authOrBadRequest =
     msg.includes("401") ||
@@ -50,7 +68,12 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("invalid api key") ||
     msg.includes("authentication");
   if (authOrBadRequest) return false;
-  // Transient: rate limit / server error / network.
+
+  return false;
+}
+
+/** Substring heuristics for rate-limit / server-error / network failures. */
+function isTransientSubstring(msg: string): boolean {
   return (
     msg.includes("429") ||
     msg.includes("rate limit") ||

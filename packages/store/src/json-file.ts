@@ -7,6 +7,7 @@
 // `__memory__.summary:<hash>` summary-cache namespace (containing `:`) is
 // Windows-safe. Timestamps live in the file body (RFC-3339), not from mtime.
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Conversation, Message } from "@jarvis/core";
 import {
@@ -141,10 +142,18 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write to a unique temp file then rename onto the target, so a crash mid-write
+ * leaves the old file intact. The temp name carries the PID + a random UUID so
+ * two concurrent writers to the *same* target never share (and truncate) one
+ * another's temp file — the previous fixed `<path>.tmp` name let concurrent
+ * same-key writes corrupt each other or throw ENOENT on the racing rename
+ * (issue #359). The final rename is atomic; last-write-wins on the target
+ * remains by design (callers needing read-modify-write serialise separately).
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, contents, { mode: 0o600 });
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tmp, contents, { mode: 0o600, flag: "wx" });
   await rename(tmp, filePath);
 }
 

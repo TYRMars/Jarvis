@@ -305,7 +305,11 @@ function synthToolCall(fc: { name: string; args?: JsonValue }, index: number): T
 function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]): FinishReason {
   switch (raw) {
     case "STOP":
-      return "stop";
+      // Gemini's FinishReason enum has no tool-use value — a normal
+      // function-call turn arrives as "STOP" with `functionCall` parts. The
+      // core loop only dispatches when finish_reason === "tool_calls", so map
+      // to "tool_calls" whenever this turn carries tool calls (issue #356).
+      return toolCalls.length > 0 ? "tool_calls" : "stop";
     case "MAX_TOKENS":
       return "length";
     case null:

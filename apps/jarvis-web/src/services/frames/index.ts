@@ -3,8 +3,13 @@
 // into a `Map<string, handler>` keyed by frame `type`. The router
 // in `services/frames.ts` does a single `Map.get` lookup per frame.
 //
-// Keep frame names unique across domains — two handlers under the
-// same key would collide silently (last-one-wins via `...spread`).
+// When two domains register a handler under the same key (e.g. both
+// plan and memory frames clear their own state on `reset`), we
+// *compose* them into one handler that fans the frame to every
+// registrant in registration order — so no domain's handler is
+// silently dropped. (The previous `...spread` merge kept only the
+// last one, which shadowed planFrames' `reset` behind memoryFrames'
+// — see issue #361.)
 
 import { messageFrameHandlers } from "./messageFrames";
 import { toolFrameHandlers } from "./toolFrames";
@@ -17,17 +22,43 @@ import { domainFrameHandlers } from "./domainFrames";
 import { fallbackFrameHandlers } from "./fallbackFrames";
 import { memoryFrameHandlers } from "./memoryFrames";
 
-export const frameHandlers: Map<string, (ev: any) => void> = new Map(
-  Object.entries({
-    ...messageFrameHandlers,
-    ...toolFrameHandlers,
-    ...approvalFrameHandlers,
-    ...planFrameHandlers,
-    ...subAgentFrameHandlers,
-    ...hitlFrameHandlers,
-    ...lifecycleFrameHandlers,
-    ...fallbackFrameHandlers,
-    ...memoryFrameHandlers,
-    ...domainFrameHandlers,
-  }),
-);
+type FrameHandler = (ev: any) => void;
+
+/**
+ * Merge per-domain handler records into one map. On a key collision, compose
+ * the handlers so both run (in registration order) instead of the later one
+ * silently overwriting the earlier.
+ */
+function mergeFrameHandlers(
+  modules: Record<string, FrameHandler>[],
+): Map<string, FrameHandler> {
+  const merged = new Map<string, FrameHandler>();
+  for (const mod of modules) {
+    for (const [key, handler] of Object.entries(mod)) {
+      const existing = merged.get(key);
+      merged.set(
+        key,
+        existing
+          ? (ev) => {
+              existing(ev);
+              handler(ev);
+            }
+          : handler,
+      );
+    }
+  }
+  return merged;
+}
+
+export const frameHandlers: Map<string, FrameHandler> = mergeFrameHandlers([
+  messageFrameHandlers,
+  toolFrameHandlers,
+  approvalFrameHandlers,
+  planFrameHandlers,
+  subAgentFrameHandlers,
+  hitlFrameHandlers,
+  lifecycleFrameHandlers,
+  fallbackFrameHandlers,
+  memoryFrameHandlers,
+  domainFrameHandlers,
+]);
