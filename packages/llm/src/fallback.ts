@@ -37,10 +37,22 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  * next provider has the same auth surface), but 429 rate-limits, 5xx server
  * failures, and connection-level errors are.
  *
- * Matches against the lowercased error text (substring scan), so it works on
- * any thrown value — `ProviderError`, a raw `Error`, or a string.
+ * When the error carries a structured HTTP `status` (every provider attaches
+ * `resp.status` to the `ProviderError` it throws on a non-OK response), that
+ * status is authoritative: 429 / 5xx are transient, every other status is not.
+ * This avoids a false "not transient" verdict when a genuine 5xx/429 whose
+ * response *body* merely mentions an auth subsystem (e.g. "503: authentication
+ * service temporarily unavailable") would otherwise trip the substring scan.
+ *
+ * Only when no structured status is present (transport/decode errors, raw
+ * `Error`s, strings) does it fall back to a lowercased substring scan.
  */
 export function isTransientError(err: unknown): boolean {
+  // Authoritative path: a structured upstream status beats any body substring.
+  const status = providerStatus(err);
+  if (status !== undefined) {
+    return status === 429 || (status >= 500 && status <= 599);
+  }
   const msg = errorText(err).toLowerCase();
   // Definite-not-transient: auth + bad-request signals.
   const authOrBadRequest =
@@ -69,6 +81,18 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("transport:") ||
     msg.includes("error sending request")
   );
+}
+
+/**
+ * Extract a structured HTTP status from a thrown value, if the provider
+ * attached one. Returns the numeric `status` of a `ProviderError` (only when
+ * it's a finite number), else undefined.
+ */
+function providerStatus(err: unknown): number | undefined {
+  if (err instanceof ProviderError && typeof err.status === "number" && Number.isFinite(err.status)) {
+    return err.status;
+  }
+  return undefined;
 }
 
 /**

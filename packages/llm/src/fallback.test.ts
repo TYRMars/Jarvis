@@ -169,3 +169,35 @@ test("isTransientError tolerates non-Error throwables (string / plain object)", 
   assert.equal(isTransientError("503 service unavailable"), true);
   assert.equal(isTransientError("401 unauthorized"), false);
 });
+
+test("structured status wins over an auth-mentioning response body (#366)", () => {
+  // A genuine transient 5xx/429 whose *body* mentions auth must still fail over.
+  assert.equal(
+    isTransientError(
+      new ProviderError("status 503: authentication service temporarily unavailable", 503),
+    ),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 429: rate limited; trace 401abc", 429)),
+    true,
+  );
+  // And a real auth failure with a structured status is still not transient.
+  assert.equal(isTransientError(new ProviderError("status 401: invalid api key", 401)), false);
+  assert.equal(isTransientError(new ProviderError("status 403: forbidden", 403)), false);
+  // Other 4xx (bad request, model-not-found) remain non-transient.
+  assert.equal(isTransientError(new ProviderError("status 400: bad request", 400)), false);
+  assert.equal(isTransientError(new ProviderError("status 404: model not found", 404)), false);
+});
+
+test("FallbackProvider walks the chain on a 5xx whose body mentions auth (#366)", async () => {
+  const primary = new StubProvider(() => {
+    throw new ProviderError("status 503: authentication service temporarily unavailable", 503);
+  });
+  const fb = StubProvider.ok("fb-after-503");
+  const wrapper = new FallbackProvider("primary", primary, [fallbackEntry("fb", fb)]);
+  const resp = await wrapper.complete(req());
+  assert.equal(primary.calls, 1);
+  assert.equal(fb.calls, 1, "a 503-with-auth-body must trigger fallback");
+  assert.equal(assistantContent(resp.message), "fb-after-503");
+});
