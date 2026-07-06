@@ -141,11 +141,39 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write `contents` to a per-write unique temp file in the same directory, then
+ * atomically rename it onto `filePath`, so a crash mid-write leaves the old
+ * file intact.
+ *
+ * The temp name carries a random suffix (`crypto.randomUUID()`) so two
+ * concurrent writes to the **same** target never share a temp path. With the
+ * old fixed `<path>.tmp` name both writers truncated the one temp file —
+ * interleaving their bytes — and their two `rename`s raced: one succeeded, the
+ * other threw `ENOENT` because the temp had already been moved away. With a
+ * unique name per write each writer renames its own complete file; the renames
+ * are independent and atomic, so the last one wins and every persisted file is
+ * whole, valid content — never a truncated/interleaved mix (#359).
+ *
+ * NOTE: this makes each single-file replace safe on its own. Callers doing a
+ * read-modify-write (read → mutate → `atomicWrite`) still need their own
+ * per-key serialization to avoid last-writer-wins lost updates — see
+ * `JsonFileMemoryStore.#withLock`.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
+  // Same directory as the target so the rename stays on one filesystem (atomic).
+  // Suffix stays `.tmp` (not `.json.tmp`) — still skipped by every `.json`-gated
+  // directory lister — with the UUID before it to keep concurrent writers apart.
+  const tmp = `${filePath}.${crypto.randomUUID()}.tmp`;
   await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  try {
+    await rename(tmp, filePath);
+  } catch (e) {
+    // A fixed temp name was silently overwritten by the next write; a unique
+    // one would leak on a failed rename, so clean it up (best-effort).
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 /**
