@@ -74,3 +74,19 @@ export function renderMarkdownInto(container: HTMLElement, content: string, stre
     />,
   );
 }
+
+/**
+ * Tear down the cached XMarkdown root for `container` (if any). The WeakMap
+ * only lets the `Root` object be GC'd once the DOM node is collected — it does
+ * NOT run React's unmount lifecycle (effect cleanups, subscriptions, animation
+ * timers inside the rendered markdown), and React warns when a root's container
+ * is removed without `unmount()`. `MarkdownView` calls this on unmount so each
+ * message card's inner root is actually torn down instead of leaking on every
+ * conversation switch. See issue #364.
+ */
+export function unmountMarkdownFrom(container: Element) {
+  const root = roots.get(container);
+  if (!root) return;
+  roots.delete(container);
+  root.unmount();
+}

@@ -6,7 +6,7 @@
 // mount is fine — the cached root just rebinds.
 
 import { useEffect, useRef } from "react";
-import { renderMarkdownInto } from "../../md_render";
+import { renderMarkdownInto, unmountMarkdownFrom } from "../../md_render";
 
 interface Props {
   content: string;
@@ -22,5 +22,18 @@ export function MarkdownView({ content, streaming = false }: Props) {
     if (!ref.current) return;
     renderMarkdownInto(ref.current, content, streaming);
   }, [content, streaming]);
+
+  // Tear down the inner XMarkdown root when this view unmounts. Kept in its own
+  // mount-only effect (deps `[]`) so a `content`/`streaming` change reuses the
+  // cached root instead of unmounting and recreating it every render. On a
+  // Strict-Mode remount the cleanup drops the WeakMap entry, so the render
+  // effect above cleanly recreates the root on the same node.
+  useEffect(() => {
+    const el = ref.current;
+    return () => {
+      if (el) unmountMarkdownFrom(el);
+    };
+  }, []);
+
   return <div ref={ref} className="markdown-body" data-md-raw={content} />;
 }
