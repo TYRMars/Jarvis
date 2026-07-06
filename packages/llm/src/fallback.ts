@@ -42,24 +42,31 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  */
 export function isTransientError(err: unknown): boolean {
   const msg = errorText(err).toLowerCase();
-  // Definite-not-transient: auth + bad-request signals.
+  // Prefer the authoritative HTTP status. Every provider formats an upstream
+  // failure as `status <code>: <body>`, so the leading status is ground truth:
+  // the response *body* may itself mention an auth subsystem ("authentication
+  // service temporarily unavailable") or carry a stray `401` in a trace id, and
+  // that must never override a genuine 429/5xx. Substring-scanning the whole
+  // text (the old behaviour) let those bodies defeat failover.
+  const status = httpStatus(msg);
+  if (status !== null) {
+    // 429 rate-limit + any 5xx are transient (retry the next provider). Every
+    // other explicit code (401/403/400/404/…) is fatal for failover — the next
+    // provider shares the same auth surface, or the request itself is wrong.
+    return status === 429 || (status >= 500 && status <= 599);
+  }
+  // No explicit status → a network / transport error (or a bare message).
+  // Auth / bad-request text is fatal; connection-level + rate-limit signals
+  // are transient.
   const authOrBadRequest =
-    msg.includes("401") ||
-    msg.includes("403") ||
     msg.includes("unauthorized") ||
     msg.includes("invalid api key") ||
     msg.includes("authentication");
   if (authOrBadRequest) return false;
-  // Transient: rate limit / server error / network.
   return (
-    msg.includes("429") ||
     msg.includes("rate limit") ||
     msg.includes("rate-limit") ||
     msg.includes("rate_limit") ||
-    msg.includes("500") ||
-    msg.includes("502") ||
-    msg.includes("503") ||
-    msg.includes("504") ||
     msg.includes("timeout") ||
     msg.includes("timed out") ||
     msg.includes("connection") ||
@@ -69,6 +76,21 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("transport:") ||
     msg.includes("error sending request")
   );
+}
+
+/**
+ * Extract the authoritative HTTP status code from an error message, if any.
+ * Recognises the provider `status <code>` / `HTTP <code>` shapes first, then a
+ * bare 3-digit code at the start of the (possibly prefixed) message — so both
+ * `status 503: …` and a raw `"401 unauthorized"` are handled — while ignoring
+ * digits buried later in a response body. Returns `null` when no plausible
+ * status is present. `msg` is expected pre-lowercased.
+ */
+function httpStatus(msg: string): number | null {
+  const m = /(?:status|http)\s+(\d{3})\b/.exec(msg) ?? /(?:^|:\s*)(\d{3})\b/.exec(msg);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n >= 100 && n < 600 ? n : null;
 }
 
 /**
