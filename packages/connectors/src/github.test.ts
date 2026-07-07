@@ -231,6 +231,24 @@ test("pushRequirement with no action and no comment makes zero requests", async 
   assert.equal(calls.length, 0);
 });
 
+test("pushRequirement: comment-only push re-fetches the issue to advance the baseline", async () => {
+  const { fetch, calls } = stubFetch([
+    { status: 201, json: {} }, // comment POST (no updated_at in comment response)
+    { status: 200, json: { number: 7, state: "open", updated_at: "2026-06-11T09:00:00Z" } }, // GET issue
+  ]);
+  const gh = new GitHubConnector({ fetch });
+  const result = await gh.pushRequirement(AUTH, binding("tyrmars/jarvis"), "7", {
+    comment: "just a note",
+  });
+  // Baseline must advance so the next unforced push doesn't spuriously 409.
+  assert.equal(result.remoteUpdatedAt, "2026-06-11T09:00:00Z");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.method, "POST");
+  assert.match(calls[0]!.url, /\/issues\/7\/comments$/);
+  assert.equal(calls[1]!.method, "GET");
+  assert.match(calls[1]!.url, /\/repos\/tyrmars\/jarvis\/issues\/7$/);
+});
+
 // ---------- error mapping ----------
 
 test("HTTP status maps to ConnectorError kinds", async () => {

@@ -482,6 +482,7 @@ interface ResponsesResponseBodyRaw {
   status?: string | null;
   incomplete_details?: { reason?: string | null } | null;
   usage?: RespUsageRaw | null;
+  error?: { message?: string | null; code?: string | null } | null;
 }
 
 /**
@@ -639,8 +640,17 @@ export class StreamAccumulator {
         out.push(this.finalise());
         break;
       }
+      case "response.failed": {
+        // A failed response must surface as an error, not finalise as an empty
+        // `finish_reason:"stop"` (which the agent loop would treat as a normal
+        // empty completion — no retry, blank reply). Mirror the blocking path's
+        // error semantics.
+        const err = ev.response?.error ?? null;
+        const detail = err?.message ?? err?.code ?? "response.failed";
+        throw new ProviderError(`responses stream failed: ${detail}`);
+      }
       // response.created / .in_progress / .content_part.* / .output_text.done /
-      // .function_call_arguments.done / .failed / any unknown event → dropped.
+      // .function_call_arguments.done / any unknown event → dropped.
       default:
         break;
     }
@@ -682,7 +692,10 @@ async function* sseChunks(body: ReadableStream<Uint8Array>, acc: StreamAccumulat
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      // Normalize CRLF → LF so `\n\n` framing works even behind a proxy that
+      // rewrites SSE with `\r\n` terminators (the spec permits them). Re-running
+      // over the whole buffer also joins a `\r\n` split across chunk boundaries.
+      buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
 
       let pos: number;
       while ((pos = buf.indexOf("\n\n")) !== -1) {

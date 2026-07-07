@@ -621,7 +621,10 @@ async function* sseChunks(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      // Normalize CRLF → LF so `\n\n` framing works even behind a proxy that
+      // rewrites SSE with `\r\n` terminators (the spec permits them). Re-running
+      // over the whole buffer also joins a `\r\n` split across chunk boundaries.
+      buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
 
       // Each block is `event: <name>\ndata: <json>\n\n`. We ignore the `event:`
       // header — the JSON body always carries a `type` field that identifies it.

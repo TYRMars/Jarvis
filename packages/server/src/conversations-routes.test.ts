@@ -32,6 +32,42 @@ async function buildApp(state: AppState) {
   return app;
 }
 
+test("POST /messages persists the user turn even when the agent run throws", async () => {
+  const store = new MemoryConversationStore();
+  const failingAgent = {
+    run: async () => {
+      throw new Error("provider 429");
+    },
+  };
+  const state: AppState = {
+    createAgent: () => failingAgent as unknown as ReturnType<AppState["createAgent"]>,
+    store,
+  };
+  const app = await buildApp(state);
+
+  // Seed a conversation via the create route (which does not invoke the agent).
+  const { id } = (await app.inject({ method: "POST", url: "/v1/conversations", payload: {} })).json() as {
+    id: string;
+  };
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/conversations/${id}/messages`,
+    payload: { content: "fix the build" },
+  });
+  assert.equal(res.statusCode, 500);
+
+  // The appended user turn must survive the failed run, not vanish.
+  const detail = (await app.inject({ method: "GET", url: `/v1/conversations/${id}` })).json() as {
+    messages: Array<{ role: string; content?: string }>;
+  };
+  assert.ok(
+    detail.messages.some((m) => m.role === "user" && m.content === "fix the build"),
+    "user message should be persisted despite the run failure",
+  );
+  await app.close();
+});
+
 test("503 when no ConversationStore is configured", async () => {
   const app = await buildApp(makeState({ store: false }));
   assert.equal((await app.inject({ method: "GET", url: "/v1/conversations" })).statusCode, 503);
