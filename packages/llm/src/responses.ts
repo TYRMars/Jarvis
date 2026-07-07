@@ -482,6 +482,7 @@ interface ResponsesResponseBodyRaw {
   status?: string | null;
   incomplete_details?: { reason?: string | null } | null;
   usage?: RespUsageRaw | null;
+  error?: { message?: string | null; code?: string | null } | null;
 }
 
 /**
@@ -628,7 +629,12 @@ export class StreamAccumulator {
         }
         break;
       }
-      case "response.completed": {
+      // `response.incomplete` (e.g. max_output_tokens truncation) is a legitimate
+      // terminal state: finalise it exactly like `response.completed` so it maps
+      // to a real finish reason via mapFinishReason, instead of falling through to
+      // the empty-`"stop"` tail fallback in sseChunks (a masked truncation).
+      case "response.completed":
+      case "response.incomplete": {
         const response = ev.response ?? {};
         if (response.status != null) this.#status = response.status;
         if (response.incomplete_details?.reason != null) {
@@ -639,8 +645,18 @@ export class StreamAccumulator {
         out.push(this.finalise());
         break;
       }
+      // A mid-stream `response.failed` must surface as an error, matching the
+      // blocking path's non-200 semantics. Dropping it lets the body close with
+      // no terminal `finish`, so sseChunks synthesises an empty `finish_reason:
+      // "stop"` and the failure is masked as a successful, empty completion.
+      case "response.failed": {
+        const err = ev.response?.error;
+        const message = err?.message ?? "response failed";
+        const code = err?.code != null && err.code !== "" ? ` (${err.code})` : "";
+        throw new ProviderError(`responses stream failed: ${message}${code}`);
+      }
       // response.created / .in_progress / .content_part.* / .output_text.done /
-      // .function_call_arguments.done / .failed / any unknown event → dropped.
+      // .function_call_arguments.done / any unknown event → dropped.
       default:
         break;
     }

@@ -409,6 +409,39 @@ test("stream: unknown events are ignored", () => {
   assert.deepEqual(acc.ingest({ type: "future_event" }), []);
 });
 
+test("stream: response.failed throws instead of masking as an empty stop", () => {
+  const acc = new StreamAccumulator();
+  assert.throws(
+    () =>
+      acc.ingest({
+        type: "response.failed",
+        response: { status: "failed", error: { message: "content policy violation", code: "content_filter" } },
+      }),
+    /responses stream failed: content policy violation \(content_filter\)/,
+  );
+  // The accumulator must NOT be marked finished — but critically it never
+  // produced a bogus terminal `finish`.
+  assert.equal(acc.finished, false);
+});
+
+test("stream: response.failed with no error detail still throws", () => {
+  const acc = new StreamAccumulator();
+  assert.throws(() => acc.ingest({ type: "response.failed", response: { status: "failed" } }), /responses stream failed/);
+});
+
+test("stream: response.incomplete finalises to a real finish reason, not empty stop", () => {
+  const acc = new StreamAccumulator();
+  acc.ingest({ type: "response.output_text.delta", delta: "partial" });
+  const out = acc.ingest({
+    type: "response.incomplete",
+    response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } },
+  });
+  const finish = out.find((c) => c.type === "finish") as Extract<LlmChunk, { type: "finish" }>;
+  assert.equal(finish.finish_reason, "length");
+  assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "partial");
+  assert.equal(acc.finished, true);
+});
+
 test("stream: captures response id from completed (and is null when omitted)", () => {
   const a = new StreamAccumulator();
   const withId = a.ingest({ type: "response.completed", response: { id: "resp_abc123", status: "completed" } });
