@@ -9,6 +9,7 @@ import { WebSocket } from "ws";
 import { Agent, ToolRegistry, defaultAgentConfig, type LlmProvider } from "@jarvis/core";
 import { serve } from "./server.ts";
 import type { AppState } from "./state.ts";
+import { clampDim } from "./workspace-terminal-routes.ts";
 
 // ---------- fixtures ----------
 
@@ -142,6 +143,47 @@ test("WS terminal accepts a resize frame and keeps running", async () => {
     await close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// ---------- WS PTY: out-of-bounds resize frame is clamped, not fatal ----------
+
+test("WS terminal ignores an out-of-bounds resize frame and keeps running", async () => {
+  const root = await mkdtemp(join(tmpdir(), "jarvis-term-"));
+  const { port, close } = await startServer(makeState(root));
+  const client = await openTerminal(port);
+  try {
+    // Unbounded + fractional dims must not reach pty.resize() unclamped and must
+    // not tear down the session (regression for the unhardened frame path, #385).
+    client.send({ t: "resize", cols: 1_000_000_000, rows: 1_000_000_000 });
+    client.send({ t: "resize", cols: 80.5, rows: 24.5 });
+    client.send({ t: "input", data: "echo still-alive-ok\n" });
+    await waitFor(() => client.output().includes("still-alive-ok"));
+    assert.ok(client.output().includes("still-alive-ok"));
+  } finally {
+    client.close();
+    await close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ---------- clampDim: shares the query-path bounds ----------
+
+test("clampDim mirrors the query-path integer/<=0xffff clamp", () => {
+  // Valid dims pass through, fractions truncate.
+  assert.equal(clampDim(120), 120);
+  assert.equal(clampDim(80.5), 80);
+  assert.equal(clampDim(0xffff), 0xffff);
+  assert.equal(clampDim(1), 1);
+  // Out-of-range / non-numeric are rejected (undefined = don't resize).
+  assert.equal(clampDim(0), undefined);
+  assert.equal(clampDim(-5), undefined);
+  assert.equal(clampDim(0xffff + 1), undefined);
+  assert.equal(clampDim(1e12), undefined);
+  assert.equal(clampDim(Number.NaN), undefined);
+  assert.equal(clampDim(Number.POSITIVE_INFINITY), undefined);
+  assert.equal(clampDim("120"), undefined);
+  assert.equal(clampDim(undefined), undefined);
+  assert.equal(clampDim(null), undefined);
 });
 
 // ---------- WS PTY: closing the socket kills the pty ----------
