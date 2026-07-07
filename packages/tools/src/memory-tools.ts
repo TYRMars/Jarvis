@@ -204,6 +204,13 @@ export async function readIndex(root: string): Promise<string | undefined> {
  * `- [<summary>](<slug>.md)` — a normal markdown list link. Duplicate slugs
  * replace the existing line in place so re-writing the same topic doesn't bloat
  * the index.
+ *
+ * The slug needle is anchored to the *end* of the line (`endsWith`), not matched
+ * anywhere in it (`includes`). Every line this tool writes ends with its own
+ * `](<slug>.md)` because the summary is interpolated strictly before that
+ * suffix, so a crafted summary such as `x](other.md)` (producing
+ * `- [x](other.md)](self.md)`) can no longer forge another slug's needle and
+ * corrupt the wrong index line.
  */
 function mergeIndexLine(existing: string | undefined, slug: string, summary: string): string {
   const newLine = `- [${summary}](${slug}.md)`;
@@ -212,7 +219,7 @@ function mergeIndexLine(existing: string | undefined, slug: string, summary: str
   const out: string[] = [];
   let replaced = false;
   for (const line of lines) {
-    if (line.includes(needle)) {
+    if (line.endsWith(needle)) {
       out.push(newLine);
       replaced = true;
     } else {
@@ -234,12 +241,14 @@ function mergeIndexLine(existing: string | undefined, slug: string, summary: str
 
 /**
  * Remove the matching index line for `slug`. Returns the modified body and
- * whether a line was removed (i.e. the slug had an entry).
+ * whether a line was removed (i.e. the slug had an entry). Anchored with
+ * `endsWith` (see `mergeIndexLine`) so a forged summary cannot make another
+ * slug's line match this needle.
  */
 function removeIndexLine(existing: string, slug: string): { body: string; removed: boolean } {
   const needle = `](${slug}.md)`;
   const all = splitLines(existing);
-  const kept = all.filter((line) => !line.includes(needle));
+  const kept = all.filter((line) => !line.endsWith(needle));
   const removed = kept.length < all.length;
   let joined = kept.join("\n");
   if (joined.length > 0 && !joined.endsWith("\n")) {

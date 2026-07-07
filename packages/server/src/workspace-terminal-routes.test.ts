@@ -8,6 +8,7 @@ import { WebSocket } from "ws";
 
 import { Agent, ToolRegistry, defaultAgentConfig, type LlmProvider } from "@jarvis/core";
 import { serve } from "./server.ts";
+import { clampDim } from "./workspace-terminal-routes.ts";
 import type { AppState } from "./state.ts";
 
 // ---------- fixtures ----------
@@ -123,6 +124,26 @@ test("WS terminal streams shell output for an input command", async () => {
     await close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// ---------- clampDim: shared cols/rows bound ----------
+
+test("clampDim clamps terminal dimensions to a positive integer <= 0xffff", () => {
+  // Valid, in-range values pass through unchanged.
+  assert.equal(clampDim(120), 120);
+  assert.equal(clampDim(0xffff), 0xffff);
+  // Non-integers are truncated (the WS `resize` bypass sent 80.5 straight through).
+  assert.equal(clampDim(80.5), 80);
+  assert.equal(clampDim(24.9), 24);
+  // Out-of-range / non-finite / non-positive are rejected.
+  assert.equal(clampDim(1e12), undefined);
+  assert.equal(clampDim(0x1_0000), undefined);
+  assert.equal(clampDim(0), undefined);
+  assert.equal(clampDim(-1), undefined);
+  assert.equal(clampDim(0.5), undefined); // truncates to 0 -> rejected
+  assert.equal(clampDim(Number.NaN), undefined);
+  assert.equal(clampDim(Number.POSITIVE_INFINITY), undefined);
+  assert.equal(clampDim(undefined), undefined);
 });
 
 // ---------- WS PTY: resize is accepted ----------

@@ -136,6 +136,27 @@ test("delete removes body and index line", async () => {
   assert.ok(!(await pathExists(path.join(root, MEMORY_DIR, "a.md"))));
 });
 
+test("forged `](slug.md)` in a summary cannot corrupt another slug's index line (#382)", async () => {
+  const root = await mkTmp();
+  const write = () => new MemoryWriteTool(wsRoots(root));
+  await write().invoke({ slug: "real", summary: "see", content: "real body" });
+  // A crafted summary that embeds another slug's index needle.
+  await write().invoke({ slug: "note", summary: "x](real.md)", content: "note body" });
+
+  // Deleting `real` must not touch `note`'s entry, even though `note`'s line
+  // contains the substring `](real.md)`.
+  await new MemoryDeleteTool(wsRoots(root)).invoke({ slug: "real" });
+
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  assert.ok(!index.includes("real body"), "real's own line should be gone");
+  // note's index entry survives (matched only when the line *ends* with `](note.md)`)…
+  const noteLines = index.split("\n").filter((l) => l.endsWith("](note.md)"));
+  assert.equal(noteLines.length, 1, `index = ${JSON.stringify(index)}`);
+  // …and its body file is not orphaned.
+  assert.ok(await pathExists(path.join(root, MEMORY_DIR, "note.md")));
+});
+
 test("delete last entry clears index file", async () => {
   const root = await mkTmp();
   await new MemoryWriteTool(wsRoots(root)).invoke({ slug: "a", summary: "A", content: "." });
