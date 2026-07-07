@@ -482,6 +482,7 @@ interface ResponsesResponseBodyRaw {
   status?: string | null;
   incomplete_details?: { reason?: string | null } | null;
   usage?: RespUsageRaw | null;
+  error?: { code?: string | null; message?: string | null } | null;
 }
 
 /**
@@ -639,8 +640,16 @@ export class StreamAccumulator {
         out.push(this.finalise());
         break;
       }
+      case "response.failed": {
+        // A mid-stream failure must surface as an error, never finalise as a
+        // silent empty `stop`. Mirror the blocking path's ProviderError.
+        const err = ev.response?.error;
+        const detail = err?.message ?? err?.code ?? ev.response?.status ?? "unknown error";
+        this.#finished = true; // suppress the body-close finalise() fallback
+        throw new ProviderError(`responses stream failed: ${detail}`);
+      }
       // response.created / .in_progress / .content_part.* / .output_text.done /
-      // .function_call_arguments.done / .failed / any unknown event → dropped.
+      // .function_call_arguments.done / any unknown event → dropped.
       default:
         break;
     }
@@ -683,6 +692,9 @@ async function* sseChunks(body: ReadableStream<Uint8Array>, acc: StreamAccumulat
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
+      // Normalise CRLF so `\r\n\r\n` frames split and `data:` lines match even
+      // through a CRLF-normalising proxy/intermediary (#383).
+      buf = buf.replace(/\r\n/g, "\n");
 
       let pos: number;
       while ((pos = buf.indexOf("\n\n")) !== -1) {

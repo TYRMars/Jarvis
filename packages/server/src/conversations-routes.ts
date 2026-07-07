@@ -334,6 +334,13 @@ export function registerConversationsRoutes(app: FastifyInstance, state: AppStat
     if (!env) return reply.code(404).send({ error: "conversation not found" });
     const [conv, meta] = env;
     conv.messages.push(userMessage(body.content));
+    // Persist the appended user turn before running the agent so a failed run
+    // (provider 429/5xx, network blip) doesn't silently lose the user's message.
+    try {
+      await store.saveEnvelope(id, conv, meta);
+    } catch {
+      /* tolerate save failure */
+    }
     try {
       const outcome = await state.createAgent().run(conv);
       // Save failure is logged-and-tolerated in Rust; here we still return the reply.

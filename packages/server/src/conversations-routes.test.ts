@@ -257,3 +257,34 @@ test("work-context returns the bound requirement + latest run, null when unbound
   assert.equal(free.requirement, null);
   await app.close();
 });
+
+// ---------- POST /v1/conversations/:id/messages: run failure ---------------
+
+test("append persists the user turn even when the agent run throws (#380)", async () => {
+  const store = new MemoryConversationStore();
+  await store.saveEnvelope("c-fail", { messages: [] }, { lifecycle: "active" });
+  // An agent whose run() rejects (provider 429/5xx, network blip mid-session).
+  const throwing = { run: async () => Promise.reject(new Error("provider 429")) };
+  const state = {
+    createAgent: () => throwing as unknown as ReturnType<AppState["createAgent"]>,
+    store,
+  } as AppState;
+  const app = await buildApp(state);
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/conversations/c-fail/messages",
+    payload: { content: "fix the build" },
+  });
+  assert.equal(res.statusCode, 500);
+
+  // The appended user turn survives the failed run instead of being lost.
+  const detail = (await app.inject({ method: "GET", url: "/v1/conversations/c-fail" })).json() as {
+    messages: { role: string; content: string }[];
+  };
+  assert.ok(
+    detail.messages.some((m) => m.role === "user" && m.content === "fix the build"),
+    `user turn should be persisted: ${JSON.stringify(detail.messages)}`,
+  );
+  await app.close();
+});

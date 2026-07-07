@@ -275,6 +275,19 @@ test("overview rejects a malformed `since` with 400", async () => {
   await app.close();
 });
 
+test("far-past explicit `since` is clamped so day-buckets can't balloon (#381)", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(emptyState({ requirementRuns: stores.requirementRuns }));
+  // Without clamping this would seed ~46,000 day-buckets.
+  const res = await app.inject({ method: "GET", url: "/v1/work/overview?since=1900-01-01T00:00:00Z" });
+  assert.equal(res.statusCode, 200);
+  const buckets = res.json().throughput_by_day as unknown[];
+  assert.ok(Array.isArray(buckets));
+  // Clamped to the 365-day ceiling (+1 for the inclusive final day).
+  assert.ok(buckets.length <= 366, `expected <=366 buckets, got ${buckets.length}`);
+  await app.close();
+});
+
 test("window_days clamps to [1, 365] and echoes back", async () => {
   const stores = makeMemoryStores();
   const app = await buildApp(emptyState({ requirementRuns: stores.requirementRuns }));

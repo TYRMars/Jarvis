@@ -136,6 +136,24 @@ test("delete removes body and index line", async () => {
   assert.ok(!(await pathExists(path.join(root, MEMORY_DIR, "a.md"))));
 });
 
+test("crafted summary containing another slug's needle does not corrupt its index line (#382)", async () => {
+  const root = await mkTmp();
+  await new MemoryWriteTool(wsRoots(root)).invoke({ slug: "real", summary: "see", content: "r" });
+  // A summary forging the `](real.md)` needle must not hijack the `real` entry.
+  await new MemoryWriteTool(wsRoots(root)).invoke({ slug: "note", summary: "x](real.md)", content: "n" });
+  await new MemoryDeleteTool(wsRoots(root)).invoke({ slug: "real" });
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  // The unrelated `note` entry survives (its line ends with the anchored needle);
+  // its body is not orphaned.
+  assert.ok(
+    index.split("\n").some((l) => l.endsWith("](note.md)")),
+    `note entry should remain: ${index}`,
+  );
+  assert.ok(await pathExists(path.join(root, MEMORY_DIR, "note.md")));
+  assert.ok(!(await pathExists(path.join(root, MEMORY_DIR, "real.md"))));
+});
+
 test("delete last entry clears index file", async () => {
   const root = await mkTmp();
   await new MemoryWriteTool(wsRoots(root)).invoke({ slug: "a", summary: "A", content: "." });

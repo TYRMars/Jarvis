@@ -366,6 +366,18 @@ test("stream: accumulates text deltas, finalises to stop on completed", () => {
   assert.equal((finish.message as AsstMsg).content, "Hello");
 });
 
+test("stream: response.failed throws instead of finalising as an empty stop (#378)", () => {
+  const acc = new StreamAccumulator();
+  acc.ingest({ type: "response.output_text.delta", delta: "partial" });
+  assert.throws(
+    () => acc.ingest({ type: "response.failed", response: { status: "failed", error: { code: "server_error", message: "boom" } } }),
+    /responses stream failed: boom/,
+  );
+  // The failure marks the accumulator finished so the body-close fallback does
+  // not synthesise a masked `stop`.
+  assert.equal(acc.finished, true);
+});
+
 test("stream: function-call round trip → tool_call deltas + parsed args in finish", () => {
   const acc = new StreamAccumulator();
   const added = acc.ingest({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "fc_1", name: "echo", arguments: "" } });
