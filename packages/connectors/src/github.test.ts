@@ -223,6 +223,28 @@ test("pushRequirement: reopen maps to state=open; blank comment is skipped", asy
   assert.equal(JSON.parse(calls[0]!.body!).state, "open");
 });
 
+test("pushRequirement: comment-only push re-fetches the issue to advance the baseline", async () => {
+  const { fetch, calls } = stubFetch([
+    { status: 201, json: {} }, // comment POST (no issue updated_at)
+    { status: 200, json: { number: 7, state: "open", updated_at: "2026-06-11T09:00:00Z" } }, // re-fetch
+  ]);
+  const gh = new GitHubConnector({ fetch });
+  const result = await gh.pushRequirement(AUTH, binding("tyrmars/jarvis"), "7", {
+    comment: "note",
+  });
+
+  assert.equal(
+    result.remoteUpdatedAt,
+    "2026-06-11T09:00:00Z",
+    "comment-only push must report the bumped updated_at so the baseline advances",
+  );
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.method, "POST");
+  assert.match(calls[0]!.url, /\/issues\/7\/comments$/);
+  assert.equal(calls[1]!.method, "GET");
+  assert.match(calls[1]!.url, /\/repos\/tyrmars\/jarvis\/issues\/7$/);
+});
+
 test("pushRequirement with no action and no comment makes zero requests", async () => {
   const { fetch, calls } = stubFetch([]);
   const gh = new GitHubConnector({ fetch });

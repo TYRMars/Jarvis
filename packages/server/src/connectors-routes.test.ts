@@ -520,6 +520,43 @@ test("push: empty body → 400; conflict gate → 409; force overrides + stamps 
   await app.close();
 });
 
+test("push: undefined remote timestamp fails closed → 409 (no blind overwrite)", async () => {
+  const mock = new MockConnector([issue("1", "thing", "open")]);
+  const built = makeState({ mock });
+  const app = await buildApp(built.state);
+  const accountId = await setupAccount(app);
+
+  const imported = await app.inject({
+    method: "POST",
+    url: "/v1/connectors/mock/import",
+    payload: { account_id: accountId, remote_project_id: "acme/demo" },
+  });
+  const bindingId = (imported.json() as { binding: { id: string } }).binding.id;
+  const rb = (await built.rbStore!.listForProjectBinding(bindingId))[0]!;
+
+  // Simulate an issue payload that omits updated_at (GHES / edge shape): the
+  // remote no longer reports a timestamp, so the gate cannot prove safety.
+  mock.issues[0]!.updated_at = undefined;
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/requirement-bindings/${rb.id}/push`,
+    payload: { action: "close", comment: "done by jarvis" },
+  });
+  assert.equal(res.statusCode, 409, res.body);
+  assert.equal(mock.pushes.length, 0, "no blind push when safety can't be proven");
+
+  // force=true still overrides the fail-closed gate.
+  const forced = await app.inject({
+    method: "POST",
+    url: `/v1/requirement-bindings/${rb.id}/push`,
+    payload: { action: "close", comment: "done by jarvis", force: true },
+  });
+  assert.equal(forced.statusCode, 200, forced.body);
+  assert.equal(mock.pushes.length, 1);
+  await app.close();
+});
+
 test("push: unknown requirement binding → 404", async () => {
   const { state } = makeState({ mock: new MockConnector([]) });
   const app = await buildApp(state);
