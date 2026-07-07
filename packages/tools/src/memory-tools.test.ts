@@ -168,6 +168,37 @@ test("write rejects multi-line summary", async () => {
   );
 });
 
+test("write rejects a summary containing the `](` link sequence", async () => {
+  const root = await mkTmp();
+  await assert.rejects(
+    () =>
+      new MemoryWriteTool(wsRoots(root)).invoke({
+        slug: "note",
+        summary: "x](real.md)",
+        content: ".",
+      }),
+    /\]\(/,
+  );
+});
+
+test("deleting one slug does not corrupt another slug's index line", async () => {
+  const root = await mkTmp();
+  const write = new MemoryWriteTool(wsRoots(root));
+  await write.invoke({ slug: "real", summary: "see", content: "real body" });
+  // A benign summary that happens to end differently must not shadow `real`'s
+  // needle; and re-writing `note` must keep both entries intact.
+  await write.invoke({ slug: "note", summary: "just a note", content: "note body" });
+
+  await new MemoryDeleteTool(wsRoots(root)).invoke({ slug: "real" });
+
+  // `note` must survive the delete of `real` and remain readable via the index.
+  const body = await new MemoryReadTool(wsRoots(root)).invoke({ slug: "note" });
+  assert.equal(body, "note body");
+  const list = await new MemoryListTool(wsRoots(root)).invoke({});
+  assert.ok(list.includes("](note.md)"));
+  assert.ok(!list.includes("](real.md)"));
+});
+
 test("read returns error for unknown slug", async () => {
   const root = await mkTmp();
   await assert.rejects(
