@@ -280,10 +280,12 @@ export class GitHubConnector implements ProjectConnector {
     const result: PushResult = { remoteUpdatedAt: null };
 
     const comment = change.comment;
+    let commented = false;
     if (comment !== undefined && comment.trim().length > 0) {
       await this.#send("POST", `/repos/${owner}/${repo}/issues/${number}/comments`, auth, {
         body: comment,
       });
+      commented = true;
     }
 
     if (change.action !== undefined) {
@@ -291,6 +293,16 @@ export class GitHubConnector implements ProjectConnector {
       const body = await this.#send("PATCH", `/repos/${owner}/${repo}/issues/${number}`, auth, {
         state,
       });
+      const obj = asObject(body);
+      const updatedAt = obj ? asString(obj["updated_at"]) : undefined;
+      result.remoteUpdatedAt = updatedAt ?? null;
+    } else if (commented) {
+      // A comment bumps the issue's `updated_at`, but the comment POST response
+      // doesn't carry the issue's new timestamp. Without a PATCH to report it,
+      // re-fetch the issue so the caller can advance the conflict baseline —
+      // otherwise the next unforced push sees `remoteNow > baseline` and 409s
+      // spuriously, wedging the binding permanently.
+      const body = await this.#send("GET", `/repos/${owner}/${repo}/issues/${number}`, auth);
       const obj = asObject(body);
       const updatedAt = obj ? asString(obj["updated_at"]) : undefined;
       result.remoteUpdatedAt = updatedAt ?? null;
