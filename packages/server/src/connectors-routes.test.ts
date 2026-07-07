@@ -520,6 +520,44 @@ test("push: empty body → 400; conflict gate → 409; force overrides + stamps 
   await app.close();
 });
 
+test("push: undefined conflict baseline fails closed → 409 without force", async () => {
+  const mock = new MockConnector([issue("1", "thing", "open")]);
+  const built = makeState({ mock });
+  const app = await buildApp(built.state);
+  const accountId = await setupAccount(app);
+
+  const imported = await app.inject({
+    method: "POST",
+    url: "/v1/connectors/mock/import",
+    payload: { account_id: accountId, remote_project_id: "acme/demo" },
+  });
+  const bindingId = (imported.json() as { binding: { id: string } }).binding.id;
+  const rb = (await built.rbStore!.listForProjectBinding(bindingId))[0]!;
+
+  // Simulate a binding whose baseline was never captured (e.g. a payload that
+  // omitted updated_at). The gate must refuse the blind overwrite, not fail open.
+  rb.remote_updated_at = undefined;
+  await built.rbStore!.upsert(rb);
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/requirement-bindings/${rb.id}/push`,
+    payload: { action: "close" },
+  });
+  assert.equal(res.statusCode, 409, res.body);
+  assert.equal(mock.pushes.length, 0, "no blind push when baseline is unknown");
+
+  // force=true still overrides the unknown baseline.
+  const forced = await app.inject({
+    method: "POST",
+    url: `/v1/requirement-bindings/${rb.id}/push`,
+    payload: { action: "close", force: true },
+  });
+  assert.equal(forced.statusCode, 200, forced.body);
+  assert.equal(mock.pushes.length, 1);
+  await app.close();
+});
+
 test("push: unknown requirement binding → 404", async () => {
   const { state } = makeState({ mock: new MockConnector([]) });
   const app = await buildApp(state);

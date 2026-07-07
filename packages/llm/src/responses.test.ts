@@ -409,6 +409,20 @@ test("stream: unknown events are ignored", () => {
   assert.deepEqual(acc.ingest({ type: "future_event" }), []);
 });
 
+test("stream: response.failed throws instead of finalising as empty stop", () => {
+  const acc = new StreamAccumulator();
+  assert.throws(
+    () =>
+      acc.ingest({
+        type: "response.failed",
+        response: { status: "failed", error: { message: "content policy violation" } },
+      }),
+    /responses stream failed: content policy violation/,
+  );
+  // The accumulator must not have produced a terminal finish for a failed run.
+  assert.equal(acc.finished, false);
+});
+
 test("stream: captures response id from completed (and is null when omitted)", () => {
   const a = new StreamAccumulator();
   const withId = a.ingest({ type: "response.completed", response: { id: "resp_abc123", status: "completed" } });

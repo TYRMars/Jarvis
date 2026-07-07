@@ -275,6 +275,32 @@ test("overview rejects a malformed `since` with 400", async () => {
   await app.close();
 });
 
+test("far-past `since` is clamped to a 365-day ceiling (bounded day-buckets)", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(emptyState({ requirementRuns: stores.requirementRuns }));
+
+  const res = await app.inject({ method: "GET", url: "/v1/work/overview?since=1900-01-01T00:00:00Z" });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  // Without the clamp this would seed ~46k day-buckets; clamped it stays ≤ 366.
+  assert.ok(Array.isArray(body.throughput_by_day));
+  assert.ok(
+    (body.throughput_by_day as unknown[]).length <= 366,
+    `expected <=366 buckets, got ${(body.throughput_by_day as unknown[]).length}`,
+  );
+  await app.close();
+});
+
+test("a future `since` is rejected with 400", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(emptyState({ requirementRuns: stores.requirementRuns }));
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  const res = await app.inject({ method: "GET", url: `/v1/work/overview?since=${future}` });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().error as string, /future/);
+  await app.close();
+});
+
 test("window_days clamps to [1, 365] and echoes back", async () => {
   const stores = makeMemoryStores();
   const app = await buildApp(emptyState({ requirementRuns: stores.requirementRuns }));

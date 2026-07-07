@@ -89,7 +89,14 @@ function resolveWindow(q: OverviewQuery): ResolvedWindow | { badSince: string } 
     if (parsed === undefined) {
       return { badSince: `invalid \`since\`: ${q.since}` };
     }
-    since = parsed;
+    // Floor the explicit `since` to the same 365-day ceiling the `window_days`
+    // path enforces, so a far-past `since` can't seed tens of thousands of
+    // day-buckets in `seedDayKeys` (request/response amplification). Also reject
+    // a future `since` (would produce an empty/negative window).
+    if (parsed > asOf) {
+      return { badSince: `\`since\` is in the future: ${q.since}` };
+    }
+    since = Math.max(parsed, asOf - 365 * MS_PER_DAY);
   } else {
     since = asOf - windowDays * MS_PER_DAY;
   }

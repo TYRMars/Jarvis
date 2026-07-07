@@ -257,3 +257,26 @@ test("completeStream: end-to-end SSE → content deltas + finish", async () => {
   assert.equal(finish.finish_reason, "stop");
   assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
 });
+
+test("completeStream: CRLF-terminated SSE still frames incrementally", async () => {
+  // A proxy that normalises SSE to `\r\n` yields `\r\n\r\n` block separators,
+  // which contain no `\n\n` substring — the parser must normalise CRLF first.
+  const sse =
+    'data: {"choices":[{"delta":{"content":"Hel"}}]}\r\n\r\n' +
+    'data: {"choices":[{"delta":{"content":"lo"}}]}\r\n\r\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\r\n\r\n' +
+    "data: [DONE]\r\n\r\n";
+  const provider = new OpenAiProvider({
+    apiKey: "sk-test",
+    fetchImpl: async () => new Response(sse, { status: 200 }),
+  });
+  const stream = await provider.completeStream(req({ model: "m", messages: [{ role: "user", content: "hi" }] }));
+  const events: LlmChunk[] = [];
+  for await (const c of stream) events.push(c);
+
+  const deltas = events.filter((e) => e.type === "content_delta").map((e) => (e as { content: string }).content);
+  assert.deepEqual(deltas, ["Hel", "lo"]);
+  const finish = events.find((e) => e.type === "finish") as Extract<LlmChunk, { type: "finish" }>;
+  assert.equal(finish.finish_reason, "stop");
+  assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
+});

@@ -163,6 +163,16 @@ function parseDim(raw: string | undefined): number | undefined {
   return n;
 }
 
+/** Clamp a numeric WS-frame dimension to a positive integer `<= 0xffff`.
+ * Mirrors `parseDim`'s bounds so the `resize` frame and the `?cols=` query
+ * path enforce identical geometry limits. Non-numeric / out-of-range → undefined. */
+function clampDim(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+  const n = Math.trunc(raw);
+  if (n <= 0 || n > 0xffff) return undefined;
+  return n;
+}
+
 // ---------------------------------------------------------------------------
 // GET /v1/workspace/terminal — capability probe
 // ---------------------------------------------------------------------------
@@ -284,9 +294,11 @@ function runTerminal(socket: WebSocket, shell: string, cwd: string, cols: number
         return;
       }
       case "resize": {
-        const c = typeof frame.cols === "number" ? frame.cols : undefined;
-        const r = typeof frame.rows === "number" ? frame.rows : undefined;
-        if (c !== undefined && r !== undefined && c > 0 && r > 0) {
+        // Clamp to the same integer / <= 0xffff bounds as the `?cols=/?rows=`
+        // query-param path (`parseDim`) so the WS frame path can't bypass it.
+        const c = clampDim(frame.cols);
+        const r = clampDim(frame.rows);
+        if (c !== undefined && r !== undefined) {
           try {
             pty.resize(c, r);
           } catch {

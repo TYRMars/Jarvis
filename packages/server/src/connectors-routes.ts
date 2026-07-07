@@ -634,15 +634,14 @@ export function registerConnectorsRoutes(app: FastifyInstance, state: AppState):
         const remote = await cx.connector.fetchIssue(auth, projectBinding, rb.remote_task_id);
         const remoteNow = remote.updated_at;
         const baseline = rb.remote_updated_at;
-        if (
-          remoteNow !== undefined &&
-          baseline !== undefined &&
-          remoteNow > baseline
-        ) {
+        // Fail closed: if either timestamp is missing we cannot prove the remote
+        // hasn't moved, so refuse the blind overwrite and require force/re-sync
+        // rather than pushing over unknown remote state.
+        if (remoteNow === undefined || baseline === undefined || remoteNow > baseline) {
           return reply.code(409).send({
             error: "remote issue changed since last sync; re-sync or pass force=true",
-            remote_updated_at: remoteNow,
-            last_synced_at: baseline,
+            remote_updated_at: remoteNow ?? null,
+            last_synced_at: baseline ?? null,
           });
         }
       } catch (e) {

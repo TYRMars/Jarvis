@@ -515,6 +515,12 @@ export class MemoryWriteTool implements Tool {
     if (summary.includes("\n")) {
       throw new Error("`summary` must be a single line");
     }
+    // The MEMORY.md index locates/replaces/deletes entries by the substring
+    // needle `](<slug>.md)`. A summary containing `](` could forge another
+    // slug's needle and corrupt an unrelated index line, so reject it here.
+    if (summary.includes("](")) {
+      throw new Error("`summary` must not contain the markdown-link sequence `](`");
+    }
     const contentBytes = Buffer.byteLength(content, "utf8");
     if (contentBytes > MAX_ENTRY_BYTES) {
       throw new Error(

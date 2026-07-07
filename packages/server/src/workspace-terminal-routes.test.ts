@@ -144,6 +144,28 @@ test("WS terminal accepts a resize frame and keeps running", async () => {
   }
 });
 
+test("WS terminal survives out-of-bounds / fractional resize frames (clamped, not crashed)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "jarvis-term-"));
+  const { port, close } = await startServer(makeState(root));
+  const client = await openTerminal(port);
+  try {
+    // Absurdly large and fractional geometries — the clamp must reject/truncate
+    // these rather than forwarding them to pty.resize (the query-path guard's
+    // bounds must apply to the WS frame path too).
+    client.send({ t: "resize", cols: 1e12, rows: 1e12 });
+    client.send({ t: "resize", cols: 80.5, rows: 24.5 });
+    client.send({ t: "resize", cols: 0, rows: 0 });
+    // The shell must still be alive and echo new input.
+    client.send({ t: "input", data: "echo still-alive-ok\n" });
+    await waitFor(() => client.output().includes("still-alive-ok"));
+    assert.ok(client.output().includes("still-alive-ok"));
+  } finally {
+    client.close();
+    await close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 // ---------- WS PTY: closing the socket kills the pty ----------
 
 test("WS terminal: exiting the shell closes the socket", async () => {
