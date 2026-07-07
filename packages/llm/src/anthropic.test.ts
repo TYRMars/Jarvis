@@ -433,6 +433,32 @@ test("completeStream: end-to-end typed SSE → content deltas + finish", async (
   assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
 });
 
+test("completeStream: CRLF-normalised SSE still frames incrementally", async () => {
+  // \r\n\r\n has no \n\n substring; without normalisation the event/data blocks
+  // never split and the deltas are lost until body close.
+  const sse =
+    'event: message_start\r\ndata: {"type":"message_start","message":{"usage":{"input_tokens":7}}}\r\n\r\n' +
+    'event: content_block_start\r\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\r\n\r\n' +
+    'event: content_block_delta\r\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}\r\n\r\n' +
+    'event: content_block_delta\r\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}\r\n\r\n' +
+    'event: content_block_stop\r\ndata: {"type":"content_block_stop","index":0}\r\n\r\n' +
+    'event: message_delta\r\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\r\n\r\n' +
+    'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n';
+  const provider = new AnthropicProvider({
+    apiKey: "k",
+    fetchImpl: async () => new Response(sse, { status: 200 }),
+  });
+  const stream = await provider.completeStream(req({ model: "m", messages: [{ role: "user", content: "hi" }] }));
+  const events: LlmChunk[] = [];
+  for await (const c of stream) events.push(c);
+
+  const deltas = events.filter((e) => e.type === "content_delta").map((e) => (e as { content: string }).content);
+  assert.deepEqual(deltas, ["Hel", "lo"]);
+  const finish = events.find((e) => e.type === "finish") as Extract<LlmChunk, { type: "finish" }>;
+  assert.equal(finish.finish_reason, "stop");
+  assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
+});
+
 test("completeStream: non-2xx surfaces status + body as ProviderError", async () => {
   const provider = new AnthropicProvider({
     apiKey: "k",

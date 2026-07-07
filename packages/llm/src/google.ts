@@ -305,7 +305,11 @@ function synthToolCall(fc: { name: string; args?: JsonValue }, index: number): T
 function mapFinishReason(raw: string | null | undefined, toolCalls: ToolCall[]): FinishReason {
   switch (raw) {
     case "STOP":
-      return "stop";
+      // Gemini's FinishReason enum has no tool-use value: a normal
+      // function-call response arrives with finishReason "STOP". Promote to
+      // "tool_calls" when the candidate carried functionCall parts so the core
+      // loop dispatches them instead of halting.
+      return toolCalls.length > 0 ? "tool_calls" : "stop";
     case "MAX_TOKENS":
       return "length";
     case null:
@@ -408,6 +412,10 @@ async function* sseChunks(
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
+      // SSE permits CRLF terminators; \r\n\r\n has no \n\n substring. Normalise
+      // so a CRLF-emitting intermediary still frames events incrementally. A
+      // lone trailing \r is left until its \n arrives in the next chunk.
+      buf = buf.replace(/\r\n/g, "\n");
 
       let pos: number;
       while ((pos = buf.indexOf("\n\n")) !== -1) {

@@ -257,3 +257,40 @@ test("completeStream: end-to-end SSE → content deltas + finish", async () => {
   assert.equal(finish.finish_reason, "stop");
   assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
 });
+
+test("completeStream: CRLF-normalised SSE (split across chunk boundaries) still frames incrementally", async () => {
+  // A CRLF-normalising intermediary; \r\n\r\n has no \n\n substring. Deliver the
+  // body as byte chunks split at awkward \r|\n boundaries to prove framing
+  // survives cross-chunk CRLF and events are parsed before the body closes.
+  const sse =
+    'data: {"choices":[{"delta":{"content":"Hel"}}]}\r\n\r\n' +
+    'data: {"choices":[{"delta":{"content":"lo"}}]}\r\n\r\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\r\n\r\n' +
+    "data: [DONE]\r\n\r\n";
+  const bytes = new TextEncoder().encode(sse);
+  // Split points chosen to land mid-CRLF (between \r and \n) at least once.
+  const cuts = [20, 21, 55, 90, bytes.length];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let prev = 0;
+      for (const c of cuts) {
+        controller.enqueue(bytes.slice(prev, c));
+        prev = c;
+      }
+      controller.close();
+    },
+  });
+  const provider = new OpenAiProvider({
+    apiKey: "sk-test",
+    fetchImpl: async () => new Response(body, { status: 200 }),
+  });
+  const stream = await provider.completeStream(req({ model: "m", messages: [{ role: "user", content: "hi" }] }));
+  const events: LlmChunk[] = [];
+  for await (const c of stream) events.push(c);
+
+  const deltas = events.filter((e) => e.type === "content_delta").map((e) => (e as { content: string }).content);
+  assert.deepEqual(deltas, ["Hel", "lo"]);
+  const finish = events.find((e) => e.type === "finish") as Extract<LlmChunk, { type: "finish" }>;
+  assert.equal(finish.finish_reason, "stop");
+  assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
+});
