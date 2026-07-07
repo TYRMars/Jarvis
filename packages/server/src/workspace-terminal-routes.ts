@@ -155,12 +155,22 @@ function safeRelative(rel: string): { ok: true; value: string } | { ok: false; e
   return { ok: true, value: rel };
 }
 
+/**
+ * Clamp a numeric terminal dimension to a positive integer `<= 0xffff`;
+ * undefined when out of range / non-finite. Shared by the query-param path and
+ * the WS `resize` frame so both entry points enforce identical bounds.
+ */
+export function clampDim(n: unknown): number | undefined {
+  if (typeof n !== "number" || !Number.isFinite(n)) return undefined;
+  const t = Math.trunc(n);
+  if (t <= 0 || t > 0xffff) return undefined;
+  return t;
+}
+
 /** Parse a u16-ish dimension from a query string; undefined when absent/invalid. */
 function parseDim(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n <= 0 || n > 0xffff) return undefined;
-  return n;
+  return clampDim(Number.parseInt(raw, 10));
 }
 
 // ---------------------------------------------------------------------------
@@ -284,9 +294,11 @@ function runTerminal(socket: WebSocket, shell: string, cwd: string, cols: number
         return;
       }
       case "resize": {
-        const c = typeof frame.cols === "number" ? frame.cols : undefined;
-        const r = typeof frame.rows === "number" ? frame.rows : undefined;
-        if (c !== undefined && r !== undefined && c > 0 && r > 0) {
+        // Clamp/truncate to the same bounds as the `?cols=/?rows=` query path
+        // so the frame path can't bypass the hardened dimension guard.
+        const c = clampDim(frame.cols);
+        const r = clampDim(frame.rows);
+        if (c !== undefined && r !== undefined) {
           try {
             pty.resize(c, r);
           } catch {

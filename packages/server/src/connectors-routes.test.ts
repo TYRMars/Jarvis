@@ -520,6 +520,46 @@ test("push: empty body → 400; conflict gate → 409; force overrides + stamps 
   await app.close();
 });
 
+test("push: undefined conflict baseline fails closed → 409 (no blind overwrite)", async () => {
+  // A remote issue whose payload omits `updated_at` (GHES / edge variant) →
+  // the binding's `remote_updated_at` baseline is undefined. The push must
+  // fail closed with a 409, never a blind overwrite.
+  const bare = issue("1", "thing", "open");
+  delete bare.updated_at;
+  const mock = new MockConnector([bare]);
+  const built = makeState({ mock });
+  const app = await buildApp(built.state);
+  const accountId = await setupAccount(app);
+
+  const imported = await app.inject({
+    method: "POST",
+    url: "/v1/connectors/mock/import",
+    payload: { account_id: accountId, remote_project_id: "acme/demo" },
+  });
+  const bindingId = (imported.json() as { binding: { id: string } }).binding.id;
+  const rb = (await built.rbStore!.listForProjectBinding(bindingId))[0]!;
+  assert.equal(rb.remote_updated_at, undefined, "baseline is undefined for this fixture");
+
+  // fetchIssue still returns no updated_at → cannot prove safety → 409.
+  const blind = await app.inject({
+    method: "POST",
+    url: `/v1/requirement-bindings/${rb.id}/push`,
+    payload: { action: "close", comment: "done by jarvis" },
+  });
+  assert.equal(blind.statusCode, 409, blind.body);
+  assert.equal(mock.pushes.length, 0, "must not push when safety is unprovable");
+
+  // force=true still overrides the closed gate.
+  const forced = await app.inject({
+    method: "POST",
+    url: `/v1/requirement-bindings/${rb.id}/push`,
+    payload: { action: "close", comment: "done by jarvis", force: true },
+  });
+  assert.equal(forced.statusCode, 200, forced.body);
+  assert.equal(mock.pushes.length, 1, "force overrides the fail-closed gate");
+  await app.close();
+});
+
 test("push: unknown requirement binding → 404", async () => {
   const { state } = makeState({ mock: new MockConnector([]) });
   const app = await buildApp(state);

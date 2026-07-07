@@ -634,15 +634,23 @@ export function registerConnectorsRoutes(app: FastifyInstance, state: AppState):
         const remote = await cx.connector.fetchIssue(auth, projectBinding, rb.remote_task_id);
         const remoteNow = remote.updated_at;
         const baseline = rb.remote_updated_at;
-        if (
-          remoteNow !== undefined &&
-          baseline !== undefined &&
-          remoteNow > baseline
-        ) {
+        // Fail closed: only push when we can positively prove the remote has
+        // NOT moved since our last sync — i.e. both timestamps are known and
+        // the remote is not newer than our baseline. A missing timestamp on
+        // either side means we cannot prove safety (e.g. a GHES / edge payload
+        // that omits `updated_at`), so we surface 409 rather than overwrite
+        // blind. Previously an undefined baseline skipped the check entirely,
+        // silently clobbering remote state.
+        const provablySafe =
+          remoteNow !== undefined && baseline !== undefined && remoteNow <= baseline;
+        if (!provablySafe) {
+          const changed = remoteNow !== undefined && baseline !== undefined;
           return reply.code(409).send({
-            error: "remote issue changed since last sync; re-sync or pass force=true",
-            remote_updated_at: remoteNow,
-            last_synced_at: baseline,
+            error: changed
+              ? "remote issue changed since last sync; re-sync or pass force=true"
+              : "cannot verify remote sync state (missing update timestamp); re-sync or pass force=true",
+            remote_updated_at: remoteNow ?? null,
+            last_synced_at: baseline ?? null,
           });
         }
       } catch (e) {

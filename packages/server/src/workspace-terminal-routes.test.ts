@@ -9,6 +9,7 @@ import { WebSocket } from "ws";
 import { Agent, ToolRegistry, defaultAgentConfig, type LlmProvider } from "@jarvis/core";
 import { serve } from "./server.ts";
 import type { AppState } from "./state.ts";
+import { clampDim } from "./workspace-terminal-routes.ts";
 
 // ---------- fixtures ----------
 
@@ -123,6 +124,29 @@ test("WS terminal streams shell output for an input command", async () => {
     await close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// ---------- clampDim: shared dimension guard ----------
+
+test("clampDim truncates, clamps to 0xffff, and rejects junk", () => {
+  // valid integers pass through
+  assert.equal(clampDim(120), 120);
+  assert.equal(clampDim(0xffff), 0xffff);
+  // fractional values are truncated, not rejected
+  assert.equal(clampDim(80.5), 80);
+  assert.equal(clampDim(24.9), 24);
+  // out-of-range / non-positive / non-finite are rejected
+  assert.equal(clampDim(0), undefined);
+  assert.equal(clampDim(-5), undefined);
+  assert.equal(clampDim(0.5), undefined); // truncates to 0
+  assert.equal(clampDim(1e12), undefined);
+  assert.equal(clampDim(0xffff + 1), undefined);
+  assert.equal(clampDim(Number.NaN), undefined);
+  assert.equal(clampDim(Number.POSITIVE_INFINITY), undefined);
+  // non-number frame fields are rejected
+  assert.equal(clampDim("80"), undefined);
+  assert.equal(clampDim(undefined), undefined);
+  assert.equal(clampDim(null), undefined);
 });
 
 // ---------- WS PTY: resize is accepted ----------
