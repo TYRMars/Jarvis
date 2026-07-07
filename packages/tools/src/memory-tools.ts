@@ -207,12 +207,14 @@ export async function readIndex(root: string): Promise<string | undefined> {
  */
 function mergeIndexLine(existing: string | undefined, slug: string, summary: string): string {
   const newLine = `- [${summary}](${slug}.md)`;
+  // Anchor to the full line shape: every index line ends with `](<slug>.md)`, so
+  // `endsWith` can't be fooled by a `](other.md)` sequence embedded mid-summary.
   const needle = `](${slug}.md)`;
   const lines = existing !== undefined ? splitLines(existing) : [];
   const out: string[] = [];
   let replaced = false;
   for (const line of lines) {
-    if (line.includes(needle)) {
+    if (line.endsWith(needle)) {
       out.push(newLine);
       replaced = true;
     } else {
@@ -239,7 +241,7 @@ function mergeIndexLine(existing: string | undefined, slug: string, summary: str
 function removeIndexLine(existing: string, slug: string): { body: string; removed: boolean } {
   const needle = `](${slug}.md)`;
   const all = splitLines(existing);
-  const kept = all.filter((line) => !line.includes(needle));
+  const kept = all.filter((line) => !line.endsWith(needle));
   const removed = kept.length < all.length;
   let joined = kept.join("\n");
   if (joined.length > 0 && !joined.endsWith("\n")) {
@@ -514,6 +516,12 @@ export class MemoryWriteTool implements Tool {
     }
     if (summary.includes("\n")) {
       throw new Error("`summary` must be a single line");
+    }
+    // The index line is `- [<summary>](<slug>.md)` and entries are located by the
+    // needle `](<slug>.md)`. A summary containing `](` could forge another slug's
+    // needle and corrupt that entry's index line, so reject it at the boundary.
+    if (summary.includes("](")) {
+      throw new Error("`summary` must not contain the markdown link sequence `](`");
     }
     const contentBytes = Buffer.byteLength(content, "utf8");
     if (contentBytes > MAX_ENTRY_BYTES) {
