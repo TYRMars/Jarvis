@@ -622,6 +622,10 @@ async function* sseChunks(
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
+      // SSE permits CRLF terminators; \r\n\r\n has no \n\n substring. Normalise
+      // so a CRLF-emitting intermediary still frames events incrementally. A
+      // lone trailing \r is left until its \n arrives in the next chunk.
+      buf = buf.replace(/\r\n/g, "\n");
 
       // Each block is `event: <name>\ndata: <json>\n\n`. We ignore the `event:`
       // header — the JSON body always carries a `type` field that identifies it.

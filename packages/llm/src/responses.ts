@@ -683,6 +683,10 @@ async function* sseChunks(body: ReadableStream<Uint8Array>, acc: StreamAccumulat
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
+      // SSE permits CRLF terminators; \r\n\r\n has no \n\n substring. Normalise
+      // so a CRLF-emitting intermediary still frames events incrementally. A
+      // lone trailing \r is left until its \n arrives in the next chunk.
+      buf = buf.replace(/\r\n/g, "\n");
 
       let pos: number;
       while ((pos = buf.indexOf("\n\n")) !== -1) {
