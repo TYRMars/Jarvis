@@ -212,7 +212,9 @@ function mergeIndexLine(existing: string | undefined, slug: string, summary: str
   const out: string[] = [];
   let replaced = false;
   for (const line of lines) {
-    if (line.includes(needle)) {
+    // Anchor to the end of the line so a crafted `summary` can't forge another
+    // slug's needle mid-line and corrupt an unrelated entry (#382).
+    if (line.endsWith(needle)) {
       out.push(newLine);
       replaced = true;
     } else {
@@ -239,7 +241,8 @@ function mergeIndexLine(existing: string | undefined, slug: string, summary: str
 function removeIndexLine(existing: string, slug: string): { body: string; removed: boolean } {
   const needle = `](${slug}.md)`;
   const all = splitLines(existing);
-  const kept = all.filter((line) => !line.includes(needle));
+  // Anchor to the end of the line (see mergeIndexLine) — #382.
+  const kept = all.filter((line) => !line.endsWith(needle));
   const removed = kept.length < all.length;
   let joined = kept.join("\n");
   if (joined.length > 0 && !joined.endsWith("\n")) {

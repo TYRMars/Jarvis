@@ -622,6 +622,9 @@ async function* sseChunks(
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
+      // Normalise CRLF so `\r\n\r\n` frames split and `data:` lines match even
+      // through a CRLF-normalising proxy/intermediary (#383).
+      buf = buf.replace(/\r\n/g, "\n");
 
       // Each block is `event: <name>\ndata: <json>\n\n`. We ignore the `event:`
       // header — the JSON body always carries a `type` field that identifies it.

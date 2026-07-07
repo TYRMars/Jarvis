@@ -155,12 +155,18 @@ function safeRelative(rel: string): { ok: true; value: string } | { ok: false; e
   return { ok: true, value: rel };
 }
 
+/** Clamp a numeric dimension to a positive integer `<= 0xffff`; undefined when invalid. */
+function clampDim(n: number | undefined): number | undefined {
+  if (n === undefined || !Number.isFinite(n)) return undefined;
+  const i = Math.trunc(n);
+  if (i <= 0 || i > 0xffff) return undefined;
+  return i;
+}
+
 /** Parse a u16-ish dimension from a query string; undefined when absent/invalid. */
 function parseDim(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n <= 0 || n > 0xffff) return undefined;
-  return n;
+  return clampDim(Number.parseInt(raw, 10));
 }
 
 // ---------------------------------------------------------------------------
@@ -284,9 +290,11 @@ function runTerminal(socket: WebSocket, shell: string, cwd: string, cols: number
         return;
       }
       case "resize": {
-        const c = typeof frame.cols === "number" ? frame.cols : undefined;
-        const r = typeof frame.rows === "number" ? frame.rows : undefined;
-        if (c !== undefined && r !== undefined && c > 0 && r > 0) {
+        // Clamp to the same integer + `<= 0xffff` bounds as the query-param path
+        // so the frame path can't bypass the initial-size guard (#385).
+        const c = clampDim(typeof frame.cols === "number" ? frame.cols : undefined);
+        const r = clampDim(typeof frame.rows === "number" ? frame.rows : undefined);
+        if (c !== undefined && r !== undefined) {
           try {
             pty.resize(c, r);
           } catch {
