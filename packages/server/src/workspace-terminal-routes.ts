@@ -163,6 +163,18 @@ function parseDim(raw: string | undefined): number | undefined {
   return n;
 }
 
+/**
+ * Clamp a terminal dimension from a WS `resize` frame to the same bounds as the
+ * query path: a positive integer <= 0xffff. Truncates fractional values and
+ * rejects non-numbers / out-of-range values (undefined = don't resize).
+ */
+export function clampDim(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+  const n = Math.trunc(raw);
+  if (n <= 0 || n > 0xffff) return undefined;
+  return n;
+}
+
 // ---------------------------------------------------------------------------
 // GET /v1/workspace/terminal — capability probe
 // ---------------------------------------------------------------------------
@@ -284,9 +296,12 @@ function runTerminal(socket: WebSocket, shell: string, cwd: string, cols: number
         return;
       }
       case "resize": {
-        const c = typeof frame.cols === "number" ? frame.cols : undefined;
-        const r = typeof frame.rows === "number" ? frame.rows : undefined;
-        if (c !== undefined && r !== undefined && c > 0 && r > 0) {
+        // Clamp to the same bounds as the `?cols=/?rows=` query path (parseDim):
+        // a positive integer <= 0xffff. Reject non-integers/unbounded values so
+        // the frame path can't bypass the hardened query-path guard.
+        const c = clampDim(frame.cols);
+        const r = clampDim(frame.rows);
+        if (c !== undefined && r !== undefined) {
           try {
             pty.resize(c, r);
           } catch {
