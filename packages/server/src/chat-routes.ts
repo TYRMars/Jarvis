@@ -113,6 +113,9 @@ interface WsFrame {
   type?: string;
   content?: unknown;
   id?: unknown;
+  mode?: unknown;
+  project_id?: unknown;
+  workspace_path?: unknown;
   tool_call_id?: unknown;
   reason?: unknown;
 }
@@ -206,6 +209,54 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
       return;
     }
     switch (msg.type) {
+      // The web Composer's persisted (default) path opens a fresh socket and
+      // sends a single `start_turn` frame that folds create/resume + the first
+      // user turn into one message. It expects a `started` (new) or `resumed`
+      // (resume) acknowledgement before the agent events stream. Without this
+      // case the frame fell through to `default` → `unknown frame type`, and
+      // the client's legacy fallback only matched the old Rust error wording,
+      // so the default chat turn was silently rolled back.
+      case "start_turn": {
+        if (!guardIdle()) return;
+        if (typeof msg.content !== "string") {
+          send({ type: "error", message: "`start_turn` frame requires string content" });
+          return;
+        }
+        const mode = msg.mode === "new" ? "new" : "resume";
+        const id = typeof msg.id === "string" && msg.id ? msg.id : randomUUID();
+        if (mode === "resume") {
+          if (!state.store) {
+            send({ type: "error", message: "no conversation store configured" });
+            return;
+          }
+          const loaded = await state.store.load(id);
+          if (!loaded) {
+            // Backtick shape matches the web NOT_FOUND regex so the stale row is dropped.
+            send({ type: "error", message: `conversation \`${id}\` not found` });
+            return;
+          }
+          conv = loaded;
+          persistedId = id;
+          send({ type: "resumed", id });
+        } else {
+          conv = newConversation();
+          persistedId = id;
+          if (state.store) {
+            try {
+              await state.store.save(id, conv);
+            } catch (e) {
+              send({ type: "error", message: `save failed: ${errorText(e)}` });
+            }
+          }
+          const started: Record<string, unknown> = { type: "started", id };
+          if (typeof msg.project_id === "string") started.project_id = msg.project_id;
+          if (typeof msg.workspace_path === "string") started.workspace_path = msg.workspace_path;
+          send(started);
+        }
+        conv.messages.push(userMessage(msg.content));
+        void runTurn();
+        return;
+      }
       case "user": {
         if (!guardIdle()) return;
         if (typeof msg.content !== "string") {

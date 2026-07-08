@@ -118,7 +118,7 @@ test("ask.text: carries body, default_value, multiline metadata", async () => {
   assert.equal(parsed.request.transport, "text");
   assert.equal(parsed.request.metadata.tool, "ask.text");
   assert.equal(parsed.request.metadata.multiline, false);
-  assert.match(parsed.request.id, /^hitl_\d+$/);
+  assert.match(parsed.request.id, /^hitl_[0-9a-f-]{36}$/);
 });
 
 test("ask.text: multiline defaults to true", async () => {

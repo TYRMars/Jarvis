@@ -358,3 +358,45 @@ test("WS: new allocates a session id; reset acks; resume loads from store", asyn
     await app.close();
   }
 });
+
+test("WS: start_turn (new) acks with `started` then runs the turn to done", async () => {
+  const store = new MemoryConversationStore();
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "hi there" }], { store }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "start_turn", mode: "new", id: "fresh-1", content: "hello" });
+    const started = await client.waitFor((f) => f.type === "started");
+    assert.equal(started.id as string, "fresh-1");
+    const done = await client.waitFor((f) => f.type === "done");
+    assert.ok(done);
+    // The turn was persisted under the supplied id (user + assistant reply).
+    const saved = await store.load("fresh-1");
+    assert.ok(saved);
+    assert.equal(saved!.messages[0]!.role, "user");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: start_turn (resume) acks with `resumed`; missing id errors", async () => {
+  const store = new MemoryConversationStore();
+  await store.save("conv-2", { messages: [{ role: "user", content: "earlier" }] });
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "resumed reply" }], { store }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "start_turn", mode: "resume", id: "conv-2", content: "continue" });
+    const resumed = await client.waitFor((f) => f.type === "resumed");
+    assert.equal(resumed.id as string, "conv-2");
+    await client.waitFor((f) => f.type === "done");
+
+    client.send({ type: "start_turn", mode: "resume", id: "ghost", content: "x" });
+    const err = await client.waitFor((f) => f.type === "error" && /not found/.test(f.message as string));
+    assert.match(err.message as string, /^conversation `ghost` not found$/);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});

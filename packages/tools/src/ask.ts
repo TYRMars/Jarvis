@@ -15,6 +15,7 @@
 // JSON tagged `"deferred": "no HITL channel"` so the agent loop has a textual
 // result and the clarification text is surfaced. Swap the body of #dispatch
 // for a real `requestHuman(req)` await once core lands the channel.
+import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@jarvis/core";
 import type { Tool, ToolCategory } from "@jarvis/core";
 
@@ -36,9 +37,13 @@ export interface HitlRequest {
   metadata?: JsonValue;
 }
 
-let nextId = 1;
+// Ids must be collision-proof across process restarts: the web store dedups
+// incoming HITL cards on `request.id` and retains cancelled cards, so a
+// process-global counter that resets to 1 on restart could re-mint an id that
+// collides with a stale cancelled card, silently dropping the new card and
+// hanging the turn on `human.request()`. A random UUID never collides.
 function mintId(): string {
-  return `hitl_${nextId++}`;
+  return `hitl_${randomUUID()}`;
 }
 
 function asObject(args: JsonValue): { [k: string]: JsonValue } {
