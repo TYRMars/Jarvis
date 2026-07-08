@@ -358,3 +358,65 @@ test("WS: new allocates a session id; reset acks; resume loads from store", asyn
     await app.close();
   }
 });
+
+// Contract test for the DEFAULT persisted-chat path (issue #397): the web
+// Composer sends a single `start_turn` frame, not `new` + `user`. Exercise the
+// real Node handler — not a mocked Rust error string — end to end.
+test("WS: start_turn mode=new acknowledges `started`, runs the turn, persists", async () => {
+  const store = new MemoryConversationStore();
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "hi there" }], { store }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({
+      type: "start_turn",
+      mode: "new",
+      id: "conv-new",
+      content: "hello",
+      active_skills: [],
+    });
+    // The client waits on `started` before it will render the turn.
+    const started = await client.waitFor((f) => f.type === "started");
+    assert.equal(started.id as string, "conv-new");
+    // The turn actually runs and completes.
+    const done = await client.waitFor((f) => f.type === "done");
+    assert.ok(done);
+    // Persisted: the user message + assistant reply are saved under the id.
+    const saved = await store.load("conv-new");
+    assert.ok(saved);
+    assert.equal(saved!.messages[0]!.role, "user");
+    assert.equal(saved!.messages.at(-1)!.role, "assistant");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: start_turn mode=resume acknowledges `resumed`; unknown id → not-found", async () => {
+  const store = new MemoryConversationStore();
+  await store.save("conv-r", { messages: [{ role: "user", content: "earlier" }] });
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "ok" }], { store }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "start_turn", mode: "resume", id: "conv-r", content: "again" });
+    const resumed = await client.waitFor((f) => f.type === "resumed");
+    assert.equal(resumed.id as string, "conv-r");
+    await client.waitFor((f) => f.type === "done");
+    client.close();
+
+    // A fresh socket resuming an unknown id: the not-found message matches the
+    // client's `conversation `<id>` not found` regex so the stale sidebar row
+    // is cleaned up rather than left hammering a ghost id.
+    const client2 = await openWs(port);
+    try {
+      client2.send({ type: "start_turn", mode: "resume", id: "ghost", content: "x" });
+      const err = await client2.waitFor((f) => f.type === "error");
+      assert.match(err.message as string, /^conversation `ghost` not found$/);
+    } finally {
+      client2.close();
+    }
+  } finally {
+    await app.close();
+  }
+});
