@@ -36,9 +36,14 @@ export interface HitlRequest {
   metadata?: JsonValue;
 }
 
-let nextId = 1;
+// Ids must be collision-proof across process restarts: the web store dedups
+// incoming HITL cards on `request.id` and retains finalized/cancelled cards, so
+// a restart-reset counter could re-mint an id that shadows a stale cancelled
+// card in a still-open tab, silently dropping the new card and hanging the turn
+// (issue #399). A random UUID makes collisions vanishingly unlikely regardless
+// of restarts.
 function mintId(): string {
-  return `hitl_${nextId++}`;
+  return `hitl_${crypto.randomUUID()}`;
 }
 
 function asObject(args: JsonValue): { [k: string]: JsonValue } {

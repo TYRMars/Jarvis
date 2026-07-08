@@ -118,7 +118,11 @@ test("ask.text: carries body, default_value, multiline metadata", async () => {
   assert.equal(parsed.request.transport, "text");
   assert.equal(parsed.request.metadata.tool, "ask.text");
   assert.equal(parsed.request.metadata.multiline, false);
-  assert.match(parsed.request.id, /^hitl_\d+$/);
+  // Ids are collision-proof across restarts (issue #399): `hitl_<uuid>`.
+  assert.match(
+    parsed.request.id,
+    /^hitl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
 });
 
 test("ask.text: multiline defaults to true", async () => {
