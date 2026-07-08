@@ -142,6 +142,19 @@ function requirementTriageState(req: Requirement): TriageState {
 const HUMAN_ACTOR: ActivityActor = { type: "human" };
 const SYSTEM_ACTOR: ActivityActor = { type: "system" };
 
+/**
+ * Validate a request-body field expected to be an array of strings. The route
+ * bodies are arbitrary JSON at runtime (no Fastify body schema), so a caller
+ * can send `"foo"` or `[5]` for `depends_on`/`label_ids`. Returns the array
+ * when valid, or `null` when it is not an array of strings — callers turn
+ * `null` into a clean 400 instead of letting `.filter`/`.trim` throw an
+ * uncaught TypeError that Fastify surfaces as a 500 with the raw message.
+ */
+function asStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) return null;
+  return value as string[];
+}
+
 // ---------- request body shapes -------------------------------------------
 
 interface CreateBody {
@@ -228,7 +241,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
       item.triage_state = parsed;
     }
     if (body.depends_on !== undefined) {
-      item.depends_on = body.depends_on.filter((d) => d.trim() !== "");
+      const arr = asStringArray(body.depends_on);
+      if (!arr) return reply.code(400).send({ error: "`depends_on` must be an array of strings" });
+      item.depends_on = arr.filter((d) => d.trim() !== "");
     }
     if (item.depends_on?.some((d) => d === item.id)) {
       return reply
@@ -236,7 +251,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
         .send({ error: "`depends_on` must not contain the requirement's own id (self-dependency)" });
     }
     if (body.label_ids !== undefined) {
-      item.label_ids = body.label_ids.filter((id) => id.trim() !== "");
+      const arr = asStringArray(body.label_ids);
+      if (!arr) return reply.code(400).send({ error: "`label_ids` must be an array of strings" });
+      item.label_ids = arr.filter((id) => id.trim() !== "");
     }
     if (body.description !== undefined) {
       const trimmed = body.description.trim();
@@ -293,7 +310,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
       item.triage_state = parsed;
     }
     if (body.depends_on !== undefined) {
-      item.depends_on = body.depends_on.filter((d) => d.trim() !== "");
+      const arr = asStringArray(body.depends_on);
+      if (!arr) return reply.code(400).send({ error: "`depends_on` must be an array of strings" });
+      item.depends_on = arr.filter((d) => d.trim() !== "");
     }
     if (item.depends_on?.some((d) => d === item!.id)) {
       return reply
@@ -301,7 +320,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
         .send({ error: "`depends_on` must not contain the requirement's own id (self-dependency)" });
     }
     if (body.label_ids !== undefined) {
-      item.label_ids = body.label_ids.filter((lid) => lid.trim() !== "");
+      const arr = asStringArray(body.label_ids);
+      if (!arr) return reply.code(400).send({ error: "`label_ids` must be an array of strings" });
+      item.label_ids = arr.filter((lid) => lid.trim() !== "");
     }
     touchRequirement(item);
 
