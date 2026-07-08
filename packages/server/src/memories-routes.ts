@@ -39,6 +39,14 @@ import type { AppState } from "./state.ts";
  */
 const DEFAULT_LIST_LIMIT = 200;
 
+/**
+ * Hard upper bound on a caller-supplied `limit`. Without it `?limit=100000000`
+ * bypasses the default cap and forces a full memories-directory walk — a
+ * caller-controlled request-amplification vector. Mirrors the `clampLimit`
+ * ceiling used by `/v1/projects`.
+ */
+const MAX_LIST_LIMIT = 500;
+
 /** The wire-valid `kind` values (snake_case union). */
 const MEMORY_KINDS: readonly MemoryKind[] = [
   "preference",
@@ -121,10 +129,13 @@ function intoFilter(query: MemoryQuery, reply: FastifyReply): MemoryFilter | und
   else if (query.pinned === "false") pinned = false;
 
   // ---- limit (u32; a non-numeric value is treated as absent) ----
+  // A positive value is clamped to MAX_LIST_LIMIT; 0 / negative / non-numeric
+  // fall through to the default cap (limit stays undefined), so `?limit=0`
+  // can't defeat the default any more.
   let limit: number | undefined;
   if (query.limit !== undefined) {
     const n = Number.parseInt(query.limit, 10);
-    if (Number.isFinite(n) && n >= 0) limit = n;
+    if (Number.isFinite(n) && n > 0) limit = Math.min(n, MAX_LIST_LIMIT);
   }
 
   return { scope, kind, tags, pinned, limit };

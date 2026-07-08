@@ -274,6 +274,27 @@ test("recent runs: default limit applies when query absent", async () => {
   assert.equal((res.json() as { items: unknown[] }).items.length, 1);
 });
 
+test("recent/failed runs: a huge caller `limit` is clamped before hitting listAll", async () => {
+  // Guards #395: without the MAX_SCAN_LIMIT clamp, `?limit=100000000` becomes
+  // a `listAll(limit * 5)` = 5e8 full-store walk.
+  const store = new MemoryRequirementRunStore();
+  const seen: number[] = [];
+  const orig = store.listAll.bind(store);
+  store.listAll = ((n: number) => {
+    seen.push(n);
+    return orig(n);
+  }) as typeof store.listAll;
+
+  const app = await buildApp(makeState({ runStore: store }));
+  await app.inject({ method: "GET", url: "/v1/diagnostics/runs/recent?limit=100000000" });
+  await app.inject({ method: "GET", url: "/v1/diagnostics/runs/failed?limit=100000000" });
+  await app.inject({ method: "GET", url: "/v1/diagnostics/runs/stuck?limit=100000000" });
+
+  // recent/failed scan is limit*5; stuck scans limit directly. Every request
+  // must be bounded by MAX_SCAN_LIMIT (500) → at most 2500 rows.
+  for (const n of seen) assert.ok(n <= 2500, `listAll scan not clamped: ${n}`);
+});
+
 // ---------- memory ----------
 
 test("memory: minimal snapshot when no stats provider is configured", async () => {
