@@ -121,6 +121,27 @@ async function recordActivity(
   }
 }
 
+/**
+ * Validate that a request-body value is an array of strings, returning the
+ * trimmed non-empty entries. On a malformed shape (non-array, or an element
+ * that isn't a string) it sends a clean `400` via `reply` and returns
+ * `undefined` — callers must `return reply` when that happens. This guards the
+ * `depends_on` / `label_ids` coercions, which would otherwise call array/string
+ * methods on arbitrary JSON and throw an uncaught `TypeError` (→ 500 + stack
+ * leak) since no Fastify body schema narrows these routes.
+ */
+function stringArrayField(
+  value: unknown,
+  field: string,
+  reply: FastifyReply,
+): string[] | undefined {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    reply.code(400).send({ error: `\`${field}\` must be an array of strings` });
+    return undefined;
+  }
+  return (value as string[]).filter((v) => v.trim() !== "");
+}
+
 // ---------- triage filter --------------------------------------------------
 
 type TriageFilter = { kind: "exact"; target: TriageState } | { kind: "any_proposed" };
@@ -228,7 +249,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
       item.triage_state = parsed;
     }
     if (body.depends_on !== undefined) {
-      item.depends_on = body.depends_on.filter((d) => d.trim() !== "");
+      const parsed = stringArrayField(body.depends_on, "depends_on", reply);
+      if (!parsed) return reply;
+      item.depends_on = parsed;
     }
     if (item.depends_on?.some((d) => d === item.id)) {
       return reply
@@ -236,7 +259,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
         .send({ error: "`depends_on` must not contain the requirement's own id (self-dependency)" });
     }
     if (body.label_ids !== undefined) {
-      item.label_ids = body.label_ids.filter((id) => id.trim() !== "");
+      const parsed = stringArrayField(body.label_ids, "label_ids", reply);
+      if (!parsed) return reply;
+      item.label_ids = parsed;
     }
     if (body.description !== undefined) {
       const trimmed = body.description.trim();
@@ -293,7 +318,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
       item.triage_state = parsed;
     }
     if (body.depends_on !== undefined) {
-      item.depends_on = body.depends_on.filter((d) => d.trim() !== "");
+      const parsed = stringArrayField(body.depends_on, "depends_on", reply);
+      if (!parsed) return reply;
+      item.depends_on = parsed;
     }
     if (item.depends_on?.some((d) => d === item!.id)) {
       return reply
@@ -301,7 +328,9 @@ export function registerRequirementsRoutes(app: FastifyInstance, state: AppState
         .send({ error: "`depends_on` must not contain the requirement's own id (self-dependency)" });
     }
     if (body.label_ids !== undefined) {
-      item.label_ids = body.label_ids.filter((lid) => lid.trim() !== "");
+      const parsed = stringArrayField(body.label_ids, "label_ids", reply);
+      if (!parsed) return reply;
+      item.label_ids = parsed;
     }
     touchRequirement(item);
 

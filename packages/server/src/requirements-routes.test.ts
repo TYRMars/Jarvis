@@ -189,6 +189,60 @@ test("self-dependency is rejected at create and at update", async () => {
   await app.close();
 });
 
+// ---------- malformed depends_on / label_ids → clean 400 ----------
+
+test("non-array / non-string depends_on and label_ids yield 400, not 500", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(makeState(stores));
+
+  // create: depends_on is a bare string (not an array)
+  const createStr = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", depends_on: "foo" },
+  });
+  assert.equal(createStr.statusCode, 400);
+  assert.match((createStr.json() as { error: string }).error, /depends_on.*array of strings/);
+
+  // create: depends_on is an array with a non-string element
+  const createNum = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", depends_on: [5] },
+  });
+  assert.equal(createNum.statusCode, 400);
+  assert.match((createNum.json() as { error: string }).error, /depends_on.*array of strings/);
+
+  // create: label_ids is a non-array
+  const createLabels = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", label_ids: { bad: true } },
+  });
+  assert.equal(createLabels.statusCode, 400);
+  assert.match((createLabels.json() as { error: string }).error, /label_ids.*array of strings/);
+
+  // patch: same guard on the update path
+  const { id } = await createRequirement(app, "p", { title: "a" });
+  const patchBad = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${id}`,
+    payload: { depends_on: "foo" },
+  });
+  assert.equal(patchBad.statusCode, 400);
+  assert.match((patchBad.json() as { error: string }).error, /depends_on.*array of strings/);
+
+  const patchLabels = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${id}`,
+    payload: { label_ids: [1, 2] },
+  });
+  assert.equal(patchLabels.statusCode, 400);
+  assert.match((patchLabels.json() as { error: string }).error, /label_ids.*array of strings/);
+
+  await app.close();
+});
+
 // ---------- update + Activity emission on status change ----------
 
 test("PATCH status change emits a status_change Activity; triage change emits a comment", async () => {
