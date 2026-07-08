@@ -274,6 +274,31 @@ test("recent runs: default limit applies when query absent", async () => {
   assert.equal((res.json() as { items: unknown[] }).items.length, 1);
 });
 
+test("runs routes clamp a caller-supplied limit before the listAll scan", async () => {
+  // Spy store recording the scan size the route requests.
+  class SpyStore extends MemoryRequirementRunStore {
+    scans: number[] = [];
+    async listAll(limit: number): Promise<RequirementRun[]> {
+      this.scans.push(limit);
+      return super.listAll(limit);
+    }
+  }
+  const store = new SpyStore();
+  const app = await buildApp(makeState({ runStore: store }));
+
+  // recent/failed multiply the limit by 5 for the scan window; an unclamped
+  // ?limit=1e8 would request a 5e8-row walk. Clamp caps limit at 500 → 2500.
+  await app.inject({ method: "GET", url: "/v1/diagnostics/runs/recent?limit=100000000" });
+  await app.inject({ method: "GET", url: "/v1/diagnostics/runs/failed?limit=100000000" });
+  // stuck passes the limit straight through to listAll (no ×5).
+  await app.inject({
+    method: "GET",
+    url: "/v1/diagnostics/runs/stuck?limit=100000000",
+  });
+  assert.deepEqual(store.scans, [2500, 2500, 500]);
+  await app.close();
+});
+
 // ---------- memory ----------
 
 test("memory: minimal snapshot when no stats provider is configured", async () => {

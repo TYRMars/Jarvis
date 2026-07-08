@@ -36,6 +36,13 @@ import type { AppState } from "./state.ts";
  */
 const DEFAULT_LIST_LIMIT = 200;
 
+/**
+ * Hard upper bound on a caller-supplied `limit`, so a single request can't
+ * force a full store walk via `?limit=100000000`. Mirrors the `clampLimit`
+ * cap used by `/v1/projects`.
+ */
+const MAX_LIST_LIMIT = 500;
+
 /** The set of wire-valid `action` values (snake_case union). */
 const SKILL_USAGE_ACTIONS: readonly SkillUsageAction[] = [
   "listed",
@@ -107,10 +114,12 @@ function intoFilter(query: SkillUsageQuery, reply: FastifyReply): SkillUsageFilt
 
   // ---- limit (u32; a non-numeric value is ignored, matching serde's
   // Option<u32> on a missing/unparseable query param being absent) ----
+  // A supplied `limit` is clamped to `[1, MAX_LIST_LIMIT]`; `0` / negative /
+  // unparseable is left absent so the per-route default cap applies.
   let limit: number | undefined;
   if (query.limit !== undefined) {
     const n = Number.parseInt(query.limit, 10);
-    if (Number.isFinite(n) && n >= 0) limit = n;
+    if (Number.isFinite(n) && n > 0) limit = Math.min(n, MAX_LIST_LIMIT);
   }
 
   return {
@@ -145,6 +154,12 @@ export function registerLearningRoutes(app: FastifyInstance, state: AppState): v
     if (!store) return reply;
     const filter = intoFilter(req.query as SkillUsageQuery, reply);
     if (!filter) return reply;
+    // Carry the same default cap as the list route. The current backends
+    // intentionally widen the report past `limit` (folding every matching
+    // event — see the store contract test), so this only bounds a backend
+    // that pages its report; the caller-supplied `limit` is still clamped in
+    // `intoFilter` regardless.
+    if (filter.limit === undefined) filter.limit = DEFAULT_LIST_LIMIT;
     try {
       const rows = await store.report(filter);
       return reply.send({ rows });
