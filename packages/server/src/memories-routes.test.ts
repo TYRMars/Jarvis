@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Fastify from "fastify";
-import { MemoryMemoryStore, type MemoryItem } from "@jarvis/learning";
+import { MemoryMemoryStore, type MemoryFilter, type MemoryItem } from "@jarvis/learning";
 import { registerMemoriesRoutes } from "./memories-routes.ts";
 import type { AppState } from "./state.ts";
 
@@ -70,6 +70,26 @@ test("POST then GET-list then DELETE round-trips a memory", async () => {
   const deleted = await app.inject({ method: "DELETE", url: `/v1/memories/${item.id}` });
   assert.equal(deleted.statusCode, 200);
   assert.equal((deleted.json() as { deleted: boolean }).deleted, true);
+});
+
+test("GET /v1/memories clamps limit: huge → 500, 0 → default 200, omitted → 200", async () => {
+  // Spy store recording the filter.limit forwarded to the backend.
+  class SpyStore extends MemoryMemoryStore {
+    seen: (number | undefined)[] = [];
+    async list(filter: MemoryFilter): Promise<MemoryItem[]> {
+      this.seen.push(filter.limit);
+      return super.list(filter);
+    }
+  }
+  const store = new SpyStore();
+  const state: AppState = { createAgent: agentUnused, learningMemory: store };
+  const app = await buildApp(state);
+
+  await app.inject({ method: "GET", url: "/v1/memories?limit=100000000" });
+  await app.inject({ method: "GET", url: "/v1/memories?limit=0" });
+  await app.inject({ method: "GET", url: "/v1/memories" });
+  assert.deepEqual(store.seen, [500, 200, 200]);
+  await app.close();
 });
 
 test("PATCH updates title and pin", async () => {

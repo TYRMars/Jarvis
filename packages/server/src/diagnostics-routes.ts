@@ -68,12 +68,23 @@ const DEFAULT_STUCK_SECONDS = 60 * 60; // 1h
 const DEFAULT_SCAN_LIMIT = 500;
 const DEFAULT_FAILED_LIMIT = 20;
 const DEFAULT_RECENT_LIMIT = 50;
+/**
+ * Hard upper bound on a caller-supplied `limit`. The runs routes multiply the
+ * limit by 5 for the `listAll` scan window, so without a cap `?limit=1e8` would
+ * request a 5e8-row store walk. Not applied to non-limit params like
+ * `threshold_seconds`.
+ */
+const MAX_LIMIT = 500;
 
-/** Parse a positive integer query param, falling back to `def`. */
-function intParam(raw: unknown, def: number): number {
+/**
+ * Parse a positive integer query param, falling back to `def`, clamped to
+ * `max` (default: no cap). Pass `max` for caller-supplied `limit` params to
+ * bound the store scan.
+ */
+function intParam(raw: unknown, def: number, max = Infinity): number {
   const n = typeof raw === "string" ? Number.parseInt(raw, 10) : typeof raw === "number" ? raw : NaN;
   if (!Number.isFinite(n) || n <= 0) return def;
-  return Math.trunc(n);
+  return Math.min(Math.trunc(n), max);
 }
 
 // ----------------------- 503 guards -------------------------------------
@@ -339,7 +350,7 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, state: AppState)
     if (!runs) return reply;
     const q = req.query as { threshold_seconds?: string; limit?: string };
     const threshold = intParam(q.threshold_seconds, DEFAULT_STUCK_SECONDS);
-    const limit = intParam(q.limit, DEFAULT_SCAN_LIMIT);
+    const limit = intParam(q.limit, DEFAULT_SCAN_LIMIT, MAX_LIMIT);
     try {
       const items = await stuckRuns(runs, threshold, limit);
       return reply.send({ items });
@@ -352,7 +363,7 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, state: AppState)
   app.get("/v1/diagnostics/runs/failed", async (req, reply) => {
     const runs = requireRunStore(state, reply);
     if (!runs) return reply;
-    const limit = intParam((req.query as { limit?: string }).limit, DEFAULT_FAILED_LIMIT);
+    const limit = intParam((req.query as { limit?: string }).limit, DEFAULT_FAILED_LIMIT, MAX_LIMIT);
     try {
       const items = await recentFailures(runs, limit);
       return reply.send({ items });
@@ -365,7 +376,7 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, state: AppState)
   app.get("/v1/diagnostics/runs/recent", async (req, reply) => {
     const runs = requireRunStore(state, reply);
     if (!runs) return reply;
-    const limit = intParam((req.query as { limit?: string }).limit, DEFAULT_RECENT_LIMIT);
+    const limit = intParam((req.query as { limit?: string }).limit, DEFAULT_RECENT_LIMIT, MAX_LIMIT);
     try {
       const items = await recentRuns(runs, limit);
       return reply.send({ items });
