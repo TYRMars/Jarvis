@@ -36,6 +36,14 @@ import type { AppState } from "./state.ts";
  */
 const DEFAULT_LIST_LIMIT = 200;
 
+/**
+ * Hard upper bound on a caller-supplied `limit`. Without it `?limit=100000000`
+ * bypasses the default cap and forces a full O(N) store walk — a
+ * caller-controlled request-amplification vector. Mirrors the `clampLimit`
+ * ceiling used by `/v1/projects`.
+ */
+const MAX_LIST_LIMIT = 500;
+
 /** The set of wire-valid `action` values (snake_case union). */
 const SKILL_USAGE_ACTIONS: readonly SkillUsageAction[] = [
   "listed",
@@ -107,10 +115,13 @@ function intoFilter(query: SkillUsageQuery, reply: FastifyReply): SkillUsageFilt
 
   // ---- limit (u32; a non-numeric value is ignored, matching serde's
   // Option<u32> on a missing/unparseable query param being absent) ----
+  // A positive value is clamped to MAX_LIST_LIMIT; 0 / negative / non-numeric
+  // fall through to the default cap (limit stays undefined), so `?limit=0`
+  // can't defeat the default any more.
   let limit: number | undefined;
   if (query.limit !== undefined) {
     const n = Number.parseInt(query.limit, 10);
-    if (Number.isFinite(n) && n >= 0) limit = n;
+    if (Number.isFinite(n) && n > 0) limit = Math.min(n, MAX_LIST_LIMIT);
   }
 
   return {
@@ -145,6 +156,9 @@ export function registerLearningRoutes(app: FastifyInstance, state: AppState): v
     if (!store) return reply;
     const filter = intoFilter(req.query as SkillUsageQuery, reply);
     if (!filter) return reply;
+    // Cap default page size when the caller omitted `limit` — without it the
+    // JSON-file backend walks the whole events dir on every unparametrized hit.
+    if (filter.limit === undefined) filter.limit = DEFAULT_LIST_LIMIT;
     try {
       const rows = await store.report(filter);
       return reply.send({ rows });
