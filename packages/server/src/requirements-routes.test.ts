@@ -189,6 +189,56 @@ test("self-dependency is rejected at create and at update", async () => {
   await app.close();
 });
 
+// ---------- malformed array fields → 400, not 500 ----------
+
+test("non-array / non-string depends_on & label_ids yield 400 on create and patch", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(makeState(stores));
+
+  // create: depends_on is a string, not an array
+  const c1 = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", depends_on: "foo" },
+  });
+  assert.equal(c1.statusCode, 400);
+  assert.match((c1.json() as { error: string }).error, /depends_on.*array of strings/);
+
+  // create: depends_on element is a number
+  const c2 = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", depends_on: [5] },
+  });
+  assert.equal(c2.statusCode, 400);
+
+  // create: label_ids is not an array
+  const c3 = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", label_ids: { a: 1 } },
+  });
+  assert.equal(c3.statusCode, 400);
+  assert.match((c3.json() as { error: string }).error, /label_ids.*array of strings/);
+
+  // patch: a real row, then a malformed depends_on
+  const { id } = await createRequirement(app, "p", { title: "a" });
+  const p1 = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${id}`,
+    payload: { depends_on: "foo" },
+  });
+  assert.equal(p1.statusCode, 400);
+  const p2 = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${id}`,
+    payload: { label_ids: [1, 2] },
+  });
+  assert.equal(p2.statusCode, 400);
+
+  await app.close();
+});
+
 // ---------- update + Activity emission on status change ----------
 
 test("PATCH status change emits a status_change Activity; triage change emits a comment", async () => {
