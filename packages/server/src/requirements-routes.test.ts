@@ -189,6 +189,53 @@ test("self-dependency is rejected at create and at update", async () => {
   await app.close();
 });
 
+test("non-array / non-string depends_on & label_ids → 400 (not an uncaught 500)", async () => {
+  const stores = makeMemoryStores();
+  const app = await buildApp(makeState(stores));
+
+  // create: non-array depends_on
+  const c1 = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", depends_on: "foo" },
+  });
+  assert.equal(c1.statusCode, 400);
+  assert.match((c1.json() as { error: string }).error, /depends_on.*array of strings/);
+
+  // create: array with a non-string element
+  const c2 = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", depends_on: [5] },
+  });
+  assert.equal(c2.statusCode, 400);
+
+  // create: non-array label_ids
+  const c3 = await app.inject({
+    method: "POST",
+    url: "/v1/projects/p/requirements",
+    payload: { title: "t", label_ids: { a: 1 } },
+  });
+  assert.equal(c3.statusCode, 400);
+  assert.match((c3.json() as { error: string }).error, /label_ids.*array of strings/);
+
+  // patch: same guards on an existing row
+  const { id } = await createRequirement(app, "p", { title: "a" });
+  const p1 = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${id}`,
+    payload: { depends_on: "foo" },
+  });
+  assert.equal(p1.statusCode, 400);
+  const p2 = await app.inject({
+    method: "PATCH",
+    url: `/v1/requirements/${id}`,
+    payload: { label_ids: [7] },
+  });
+  assert.equal(p2.statusCode, 400);
+  await app.close();
+});
+
 // ---------- update + Activity emission on status change ----------
 
 test("PATCH status change emits a status_change Activity; triage change emits a comment", async () => {

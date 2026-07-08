@@ -3,7 +3,7 @@
 // each with the same organize menu.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { convoGroupLabel } from "../../utils/time";
@@ -49,6 +49,7 @@ export function ConvoList() {
   const sectionOrder = useAppStore((s) => s.convoSectionOrder);
   const setSectionOrder = useAppStore((s) => s.setConvoSectionOrder);
   const navigate = useNavigate();
+  const location = useLocation();
   const railRef = useRef<HTMLDivElement | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [conversationsExpanded, setConversationsExpanded] = useState(false);
@@ -121,7 +122,11 @@ export function ConvoList() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-      if (window.location.pathname !== "/" && !window.location.pathname.startsWith("/sessions/")) return;
+      // Router-aware path: under the desktop HashRouter `window.location.pathname`
+      // is always "/" (the route lives in the hash), so read react-router's
+      // location instead — otherwise the guard never trips and arrow keys hijack
+      // conversation-switching on every desktop page (#398).
+      if (location.pathname !== "/" && !location.pathname.startsWith("/sessions/")) return;
       if (quickOpen || openMenu) return;
       const target = e.target as HTMLElement | null;
       const inEditable =
@@ -145,7 +150,7 @@ export function ConvoList() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, openMenu, quickOpen, visibleRows]);
+  }, [activeId, openMenu, quickOpen, visibleRows, location.pathname]);
 
   useEffect(() => {
     if (!openMenu) return;
