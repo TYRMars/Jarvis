@@ -115,6 +115,9 @@ interface WsFrame {
   id?: unknown;
   tool_call_id?: unknown;
   reason?: unknown;
+  mode?: unknown;
+  project_id?: unknown;
+  workspace_path?: unknown;
 }
 
 function handleWsConnection(socket: WsSocket, state: AppState): void {
@@ -206,6 +209,63 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
       return;
     }
     switch (msg.type) {
+      // Persisted-chat turn lifecycle — the DEFAULT web Composer path. The
+      // client opens a socket and sends one `start_turn` frame carrying the
+      // conversation mode + first user message, then waits for the matching
+      // `started` / `resumed` acknowledgement before it will render the turn.
+      // This case was never ported from the Rust WS handler, so the default
+      // path replied "unknown frame type" and the client silently rolled the
+      // turn back (issue #397). Acknowledge, seed the user message, run.
+      // (`active_skills` is accepted but not yet acted on — the Node WS has no
+      // skill-activation channel; unknown extra fields are ignored, not
+      // rejected, so the client contract holds.)
+      case "start_turn": {
+        if (!guardIdle()) return;
+        if (msg.mode !== "new" && msg.mode !== "resume") {
+          send({ type: "error", message: "`start_turn` frame requires mode `new` or `resume`" });
+          return;
+        }
+        if (typeof msg.content !== "string") {
+          send({ type: "error", message: "`start_turn` frame requires string content" });
+          return;
+        }
+        const id = typeof msg.id === "string" && msg.id ? msg.id : randomUUID();
+        if (msg.mode === "resume") {
+          if (!state.store) {
+            send({ type: "error", message: "no conversation store configured" });
+            return;
+          }
+          const loaded = await state.store.load(id);
+          if (!loaded) {
+            // Match the client's `conversation `<id>` not found` regex so the
+            // stale sidebar row is dropped instead of hammering a ghost id.
+            send({ type: "error", message: `conversation \`${id}\` not found` });
+            return;
+          }
+          conv = loaded;
+          persistedId = id;
+          send({ type: "resumed", id });
+        } else {
+          conv = newConversation();
+          persistedId = id;
+          // Acknowledge before the (best-effort) save so a save failure can't
+          // masquerade as a startup rejection and trigger a client rollback.
+          const started: { [k: string]: unknown } = { type: "started", id };
+          if (typeof msg.project_id === "string") started.project_id = msg.project_id;
+          if (typeof msg.workspace_path === "string") started.workspace_path = msg.workspace_path;
+          send(started);
+          if (state.store) {
+            try {
+              await state.store.save(id, conv);
+            } catch (e) {
+              send({ type: "error", message: `save failed: ${errorText(e)}` });
+            }
+          }
+        }
+        conv.messages.push(userMessage(msg.content));
+        void runTurn();
+        return;
+      }
       case "user": {
         if (!guardIdle()) return;
         if (typeof msg.content !== "string") {
