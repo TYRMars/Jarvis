@@ -291,7 +291,11 @@ export function installConnectivityListeners(): void {
   // suspend + resume. Re-test the connection on `pageshow` /
   // `visibilitychange` so we recover faster than the next ping.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && !isOpen() && reconnectTimer != null) {
+    // A quiet drop fires no `close` event, so `scheduleReconnect` never
+    // runs and `reconnectTimer` stays null — the exact case this handler
+    // targets. Don't gate on a pending backoff; `connect()` is idempotent
+    // (early-returns when a CONNECTING/OPEN socket exists).
+    if (document.visibilityState === "visible" && !isOpen()) {
       clearReconnectTimer();
       connect();
     }
