@@ -42,6 +42,21 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  */
 export function isTransientError(err: unknown): boolean {
   const msg = errorText(err).toLowerCase();
+  // Explicit transient status / rate-limit signals take precedence over the
+  // looser auth substring scan below. A 5xx or 429 whose body merely mentions
+  // "authentication" (e.g. "503: authentication service is down") is still a
+  // this-provider-is-unhealthy-*right-now* failure and must fail over — the old
+  // ordering let that "authentication" substring defeat failover (#366).
+  const transientStatus =
+    msg.includes("429") ||
+    msg.includes("rate limit") ||
+    msg.includes("rate-limit") ||
+    msg.includes("rate_limit") ||
+    msg.includes("500") ||
+    msg.includes("502") ||
+    msg.includes("503") ||
+    msg.includes("504");
+  if (transientStatus) return true;
   // Definite-not-transient: auth + bad-request signals.
   const authOrBadRequest =
     msg.includes("401") ||
@@ -50,16 +65,8 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("invalid api key") ||
     msg.includes("authentication");
   if (authOrBadRequest) return false;
-  // Transient: rate limit / server error / network.
+  // Remaining transient: network / timeout signals.
   return (
-    msg.includes("429") ||
-    msg.includes("rate limit") ||
-    msg.includes("rate-limit") ||
-    msg.includes("rate_limit") ||
-    msg.includes("500") ||
-    msg.includes("502") ||
-    msg.includes("503") ||
-    msg.includes("504") ||
     msg.includes("timeout") ||
     msg.includes("timed out") ||
     msg.includes("connection") ||

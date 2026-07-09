@@ -36,8 +36,15 @@ export async function forceReloadActiveConversation(): Promise<boolean> {
   if (!id) return false;
   try {
     const r = await fetch(apiUrl(`/v1/conversations/${encodeURIComponent(id)}`));
+    // Stale-request guard: the user may have switched conversations while this
+    // fetch was in flight. Without this re-check, a slow rehydrate for the old
+    // conversation would clobber the now-active view with the wrong history
+    // (a last-response-wins race). Mirrors the guard `refreshConvoList` gets
+    // from `convoListSeq`; here a single-flight id compare suffices. (#407)
+    if (appStore.getState().activeId !== id) return false;
     if (!r.ok) return false;
     const body = await r.json();
+    if (appStore.getState().activeId !== id) return false;
     appStore.getState().loadHistory(body.messages || []);
     return true;
   } catch (e: any) {
