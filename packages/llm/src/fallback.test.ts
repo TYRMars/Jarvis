@@ -169,3 +169,21 @@ test("isTransientError tolerates non-Error throwables (string / plain object)", 
   assert.equal(isTransientError("503 service unavailable"), true);
   assert.equal(isTransientError("401 unauthorized"), false);
 });
+
+test("isTransientError: 5xx/429 body mentioning auth still fails over (#366)", () => {
+  // A transient status must win over the loose "authentication" substring.
+  assert.equal(
+    isTransientError(new ProviderError("503 Service Unavailable: authentication service is down")),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("HTTP 429: too many authentication requests")),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("500 internal error while validating authentication")),
+    true,
+  );
+  // Genuine auth failures (no transient status code) remain non-transient.
+  assert.equal(isTransientError(new ProviderError("401 authentication failed")), false);
+});
