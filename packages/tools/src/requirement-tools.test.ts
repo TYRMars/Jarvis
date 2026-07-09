@@ -470,6 +470,22 @@ test("update no-op when nothing changes", async () => {
   assert.equal(after?.updated_at, baseline, "no-op should not touch updated_at once checklist is set");
 });
 
+test("update honors an explicit empty todos array (no re-seed)", async () => {
+  const { rs, acts } = fixtures();
+  const r = await seed(rs, "p", "x");
+  const update = new RequirementUpdateTool(rs, acts);
+  // First update seeds the Jarvis-owned execution checklist.
+  await update.invoke({ id: r.id });
+  const seeded = await rs.get(r.id);
+  assert.ok((seeded?.todos?.length ?? 0) > 0, "checklist should be seeded");
+
+  // Clearing with `todos: []` must be honored, not silently re-seeded.
+  const out = parse(await update.invoke({ id: r.id, todos: [] }));
+  assert.deepEqual(out["todos"], []);
+  const stored = await rs.get(r.id);
+  assert.deepEqual(stored?.todos ?? [], [], "explicit todos:[] must clear the checklist");
+});
+
 test("update clears description with empty string", async () => {
   const { rs, acts } = fixtures();
   const r = newRequirement("p", "x");

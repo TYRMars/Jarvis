@@ -856,7 +856,8 @@ export class RequirementUpdateTool implements Tool {
         changed = true;
       }
     }
-    if (obj["todos"] !== undefined) {
+    const todosExplicit = obj["todos"] !== undefined;
+    if (todosExplicit) {
       const todosRaw = obj["todos"];
       if (!Array.isArray(todosRaw)) {
         throw new Error("requirement.update: `todos` must be an array");
@@ -876,7 +877,11 @@ export class RequirementUpdateTool implements Tool {
         changed = true;
       }
     }
-    if (ensureExecutionChecklist(item)) {
+    // Only auto-seed a Jarvis-owned checklist when the caller did not set
+    // `todos` in this update. Re-seeding on an explicit `todos: []` would
+    // silently override the caller (who asked to clear it) and contradict the
+    // success result we return. See issue #406.
+    if (!todosExplicit && ensureExecutionChecklist(item)) {
       changed = true;
     }
     if (!changed) {

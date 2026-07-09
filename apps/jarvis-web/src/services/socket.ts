@@ -291,7 +291,13 @@ export function installConnectivityListeners(): void {
   // suspend + resume. Re-test the connection on `pageshow` /
   // `visibilitychange` so we recover faster than the next ping.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && !isOpen() && reconnectTimer != null) {
+    // The quiet-drop case this handler targets (Firefox tab-suspend) fires no
+    // `close` event, so `scheduleReconnect` never ran and `reconnectTimer` is
+    // still null. Gating on `reconnectTimer != null` would skip exactly that
+    // scenario, so we only require the socket to be closed. `connect()` is
+    // idempotent (early-returns on a CONNECTING/OPEN socket), so this is safe
+    // even when a backoff is already pending.
+    if (document.visibilityState === "visible" && !isOpen()) {
       clearReconnectTimer();
       connect();
     }
