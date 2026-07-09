@@ -470,6 +470,23 @@ test("update no-op when nothing changes", async () => {
   assert.equal(after?.updated_at, baseline, "no-op should not touch updated_at once checklist is set");
 });
 
+// Regression for #406: an explicit `todos: []` must clear the checklist and
+// not be silently re-seeded by ensureExecutionChecklist (which only skips when
+// todos is already non-empty).
+test("update honors explicit todos:[] (no silent re-seed)", async () => {
+  const { rs, acts } = fixtures();
+  const r = await seed(rs, "p", "x");
+  const update = new RequirementUpdateTool(rs, acts);
+  // First a normal update seeds the default checklist.
+  await update.invoke({ id: r.id });
+  assert.ok(((await rs.get(r.id))?.todos?.length ?? 0) > 0, "checklist seeded");
+
+  const out = parse(await update.invoke({ id: r.id, todos: [] }));
+  assert.deepEqual(out.todos ?? [], [], "returned JSON reflects the cleared checklist");
+  const stored = await rs.get(r.id);
+  assert.deepEqual(stored?.todos ?? [], [], "persisted checklist is empty");
+});
+
 test("update clears description with empty string", async () => {
   const { rs, acts } = fixtures();
   const r = newRequirement("p", "x");

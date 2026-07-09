@@ -291,7 +291,12 @@ export function installConnectivityListeners(): void {
   // suspend + resume. Re-test the connection on `pageshow` /
   // `visibilitychange` so we recover faster than the next ping.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && !isOpen() && reconnectTimer != null) {
+    // Reconnect on any visible+closed transition — a quiet tab-suspend
+    // drop fires no `close` event, so `reconnectTimer` stays null and
+    // gating on it would skip the exact case this handler targets.
+    // `connect()` is idempotent (early-returns on a CONNECTING/OPEN
+    // socket), so an unnecessary call is a no-op.
+    if (document.visibilityState === "visible" && !isOpen()) {
       clearReconnectTimer();
       connect();
     }
