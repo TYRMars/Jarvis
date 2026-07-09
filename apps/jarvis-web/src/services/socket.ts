@@ -290,8 +290,14 @@ export function installConnectivityListeners(): void {
   // Some browsers (Firefox in particular) drop WS quietly on tab
   // suspend + resume. Re-test the connection on `pageshow` /
   // `visibilitychange` so we recover faster than the next ping.
+  // A quiet drop fires no `close` event, so `scheduleReconnect`
+  // never runs and `reconnectTimer` stays null — the very case this
+  // handler exists for. So we must NOT gate on `reconnectTimer`;
+  // reconnect whenever the tab is visible and the socket isn't open.
+  // `connect()` is idempotent (early-returns on a CONNECTING/OPEN
+  // socket), so dropping the guard is safe.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && !isOpen() && reconnectTimer != null) {
+    if (document.visibilityState === "visible" && !isOpen()) {
       clearReconnectTimer();
       connect();
     }
