@@ -876,7 +876,12 @@ export class RequirementUpdateTool implements Tool {
         changed = true;
       }
     }
-    if (ensureExecutionChecklist(item)) {
+    // Only auto-seed the execution checklist when the caller did NOT
+    // explicitly provide `todos` in this update. An explicit `todos: []`
+    // means "clear the checklist" and must be honored — otherwise
+    // ensureExecutionChecklist sees length === 0 and silently re-seeds a
+    // Jarvis-owned checklist, contradicting the request.
+    if (obj["todos"] === undefined && ensureExecutionChecklist(item)) {
       changed = true;
     }
     if (!changed) {

@@ -160,6 +160,25 @@ test("json-file: state survives a reopen", async () => {
   });
 });
 
+// Regression for #404: concurrent same-scope activations must not lost-update.
+// Before the per-scope write lock, both calls read the same (empty) base record
+// and the later atomicWrite clobbered the earlier one, dropping a skill.
+test("json-file: concurrent same-scope activations both persist", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileSkillStore.open(dir);
+    const [a, b] = await Promise.all([
+      store.activate("session-1", "skill-a"),
+      store.activate("session-1", "skill-b"),
+    ]);
+    assert.equal(a, true);
+    assert.equal(b, true);
+    assert.deepEqual(await store.activeNames("session-1"), ["skill-a", "skill-b"]);
+    // Survives a reopen (the on-disk record holds both, not just the last writer).
+    const reopened = await JsonFileSkillStore.open(dir);
+    assert.deepEqual(await reopened.activeNames("session-1"), ["skill-a", "skill-b"]);
+  });
+});
+
 // `:`-bearing scope keys (e.g. namespaced ids) survive the filename encode.
 test("json-file: a scope key with reserved chars round-trips", async () => {
   await withTempDir(async (dir) => {
