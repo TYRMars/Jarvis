@@ -60,9 +60,30 @@ function normaliseNames(names: readonly string[]): string[] {
 export class JsonFileSkillStore implements SkillStore {
   readonly #dir: string;
   readonly #listeners = new Listeners<SkillActivationEvent>();
+  // Serialises the read-modify-write mutations (`activate`/`deactivate`/`clear`)
+  // against each other. Without it the `await #read()` → `await #write()` window
+  // could interleave: two concurrent same-scope activations both read the same
+  // base record and each write their own `next`, so the later `atomicWrite`
+  // rename wins and the first activation is silently lost. Mirrors the
+  // @jarvis/learning JsonFileMemoryStore `#writeChain`: a promise chain where
+  // each guarded op awaits the previous one before running.
+  #writeChain: Promise<unknown> = Promise.resolve();
 
   private constructor(dir: string) {
     this.#dir = dir;
+  }
+
+  /** Run `fn` after all previously-enqueued guarded ops settle (serial). */
+  #withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#writeChain.then(fn, fn);
+    // Keep the chain alive even if `fn` rejects, but don't let the stored
+    // promise carry a rejection (which would surface as an unhandled rejection
+    // when the next op chains off it).
+    this.#writeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Open or create a store at `<baseDir>/skill-activations/` (created recursively). */
@@ -131,48 +152,54 @@ export class JsonFileSkillStore implements SkillStore {
     return rows.slice(0, limit);
   }
 
-  async activate(scope: string, name: string): Promise<boolean> {
-    const existing = await this.#read(scope);
-    const now = new Date().toISOString();
-    if (existing) {
-      if (existing.names.includes(name)) return false;
+  activate(scope: string, name: string): Promise<boolean> {
+    return this.#withLock(async () => {
+      const existing = await this.#read(scope);
+      const now = new Date().toISOString();
+      if (existing) {
+        if (existing.names.includes(name)) return false;
+        const next: SkillActivationRecord = {
+          scope,
+          names: normaliseNames([...existing.names, name]),
+          created_at: existing.created_at,
+          updated_at: now,
+        };
+        await this.#write(next);
+      } else {
+        await this.#write({ scope, names: [name], created_at: now, updated_at: now });
+      }
+      this.#listeners.emit({ type: "activated", scope, name });
+      return true;
+    });
+  }
+
+  deactivate(scope: string, name: string): Promise<boolean> {
+    return this.#withLock(async () => {
+      const existing = await this.#read(scope);
+      if (!existing || !existing.names.includes(name)) return false;
       const next: SkillActivationRecord = {
         scope,
-        names: normaliseNames([...existing.names, name]),
+        names: existing.names.filter((n) => n !== name),
         created_at: existing.created_at,
-        updated_at: now,
+        updated_at: new Date().toISOString(),
       };
       await this.#write(next);
-    } else {
-      await this.#write({ scope, names: [name], created_at: now, updated_at: now });
-    }
-    this.#listeners.emit({ type: "activated", scope, name });
-    return true;
+      this.#listeners.emit({ type: "deactivated", scope, name });
+      return true;
+    });
   }
 
-  async deactivate(scope: string, name: string): Promise<boolean> {
-    const existing = await this.#read(scope);
-    if (!existing || !existing.names.includes(name)) return false;
-    const next: SkillActivationRecord = {
-      scope,
-      names: existing.names.filter((n) => n !== name),
-      created_at: existing.created_at,
-      updated_at: new Date().toISOString(),
-    };
-    await this.#write(next);
-    this.#listeners.emit({ type: "deactivated", scope, name });
-    return true;
-  }
-
-  async clear(scope: string): Promise<boolean> {
-    try {
-      await rm(this.#pathFor(scope));
-    } catch (e) {
-      if (isNotFound(e)) return false;
-      throw e;
-    }
-    this.#listeners.emit({ type: "cleared", scope });
-    return true;
+  clear(scope: string): Promise<boolean> {
+    return this.#withLock(async () => {
+      try {
+        await rm(this.#pathFor(scope));
+      } catch (e) {
+        if (isNotFound(e)) return false;
+        throw e;
+      }
+      this.#listeners.emit({ type: "cleared", scope });
+      return true;
+    });
   }
 
   subscribe(listener: EventListener<SkillActivationEvent>): Unsubscribe {

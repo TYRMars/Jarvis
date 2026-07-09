@@ -160,6 +160,40 @@ test("json-file: state survives a reopen", async () => {
   });
 });
 
+// Concurrent same-scope mutations must not lose an update. The JSON-file
+// store does an unlocked read-modify-write across an `await`; without the
+// per-store write lock two concurrent `activate` calls both read the same
+// base record and the later `atomicWrite` rename drops the other's write.
+test("json-file: concurrent same-scope activations don't lost-update", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileSkillStore.open(dir);
+    const names = Array.from({ length: 12 }, (_, i) => `skill-${i}`);
+    const results = await Promise.all(names.map((n) => store.activate("session-1", n)));
+    // Every distinct activation reports a real change...
+    assert.deepEqual(results, names.map(() => true));
+    // ...and all of them survive on disk (nothing silently dropped).
+    assert.deepEqual(await store.activeNames("session-1"), [...names].sort());
+    // Survives a reopen too — the on-disk record is complete.
+    const reopened = await JsonFileSkillStore.open(dir);
+    assert.deepEqual(await reopened.activeNames("session-1"), [...names].sort());
+  });
+});
+
+// Interleaved concurrent activate/deactivate on one scope stays consistent.
+test("json-file: concurrent activate/deactivate on one scope stays consistent", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileSkillStore.open(dir);
+    await store.activate("s1", "keep");
+    await Promise.all([
+      store.activate("s1", "a"),
+      store.activate("s1", "b"),
+      store.deactivate("s1", "keep"),
+      store.activate("s1", "c"),
+    ]);
+    assert.deepEqual(await store.activeNames("s1"), ["a", "b", "c"]);
+  });
+});
+
 // `:`-bearing scope keys (e.g. namespaced ids) survive the filename encode.
 test("json-file: a scope key with reserved chars round-trips", async () => {
   await withTempDir(async (dir) => {
