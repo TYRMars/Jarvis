@@ -38,6 +38,10 @@ export async function forceReloadActiveConversation(): Promise<boolean> {
     const r = await fetch(apiUrl(`/v1/conversations/${encodeURIComponent(id)}`));
     if (!r.ok) return false;
     const body = await r.json();
+    // Guard against a stale response: if the user switched conversations while
+    // this fetch was in flight, dropping A's history into the now-active B is a
+    // last-response-wins clobber. Re-check the active id before rehydrating.
+    if (appStore.getState().activeId !== id) return false;
     appStore.getState().loadHistory(body.messages || []);
     return true;
   } catch (e: any) {
