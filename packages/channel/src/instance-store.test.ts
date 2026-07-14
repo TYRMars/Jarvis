@@ -89,6 +89,31 @@ function contract(name: string, make: (dir: string) => Promise<ChannelInstanceSt
       assert.equal((await store.get("i1"))?.display_name, "a");
     });
   });
+
+  test(`${name}: mutating a returned row's nested config does not corrupt the store`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const row = inst("i1", "a", "2026-06-16T10:00:00.000Z");
+      row.config = { token: "original" };
+      await store.upsert(row);
+
+      // Caller's own object must not be aliased into #state.
+      row.config.token = "mutated-via-caller";
+
+      // Reads must hand back deep copies, so in-place mutation is isolated.
+      const got = await store.get("i1");
+      assert.ok(got);
+      got.config.token = "mutated-via-get";
+      const listed = (await store.list()).find((r) => r.id === "i1");
+      assert.ok(listed);
+      listed.config.token = "mutated-via-list";
+
+      // An unrelated upsert must not persist any of the above accidental edits.
+      await store.upsert(inst("i2", "b", "2026-06-16T11:00:00.000Z"));
+
+      assert.equal((await store.get("i1"))?.config.token, "original");
+    });
+  });
 }
 
 contract("json-file", (dir) => JsonFileChannelInstanceStore.open(dir));
