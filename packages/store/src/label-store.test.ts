@@ -126,6 +126,18 @@ export function contract(name: string, make: (dir: string) => Promise<LabelStore
     });
   });
 
+  test(`${name}: update of a missing id whose name collides resolves false (existence beats uniqueness)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      await store.create(label("p1", "foo"));
+      // The id does not exist, but the name collides with an existing label.
+      // Existence is checked first, so this is a clean "no such label" → false,
+      // never a thrown uniqueness error (all three backends must agree here).
+      const patch: Label = { ...label("p1", "foo"), id: "does-not-exist" };
+      assert.equal(await store.update(patch), false);
+    });
+  });
+
   test(`${name}: delete removes the row and broadcasts; idempotent false after`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
