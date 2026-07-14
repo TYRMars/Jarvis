@@ -153,6 +153,53 @@ test("refresh: non-2xx surfaces status + body", async () => {
   });
 });
 
+test("refresh: concurrent calls coalesce into a single network round-trip", async () => {
+  await withTempDir(async (dir) => {
+    await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));
+
+    let calls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      // Hold the first (winning) request open so a second refresh() overlaps it.
+      await gate;
+      return new Response(JSON.stringify({ access_token: "new-at", refresh_token: "rt-2" }), { status: 200 });
+    };
+
+    const auth = await CodexAuth.loadFromCodexHome(dir, { refreshUrl: "https://stub.test/oauth/token", fetchImpl });
+
+    const first = auth.refresh();
+    const second = auth.refresh();
+    // Both started while the first fetch is still pending; only one POSTs.
+    release();
+    await Promise.all([first, second]);
+
+    assert.equal(calls, 1, "only the winning refresh should POST the (rotating) refresh_token");
+    assert.equal(auth.accessToken, "new-at");
+    assert.equal(auth.refreshToken, "rt-2");
+  });
+});
+
+test("refresh: a fresh call after one settles POSTs again", async () => {
+  await withTempDir(async (dir) => {
+    await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));
+    let calls = 0;
+    const auth = await CodexAuth.loadFromCodexHome(dir, {
+      refreshUrl: "https://stub.test/oauth/token",
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ access_token: `at-${calls}` }), { status: 200 });
+      },
+    });
+    await auth.refresh();
+    await auth.refresh();
+    assert.equal(calls, 2, "sequential refreshes are independent — coalescing only spans in-flight overlap");
+  });
+});
+
 // ---------- writeBack ----------
 
 test("writeBack: preserves unrelated fields and creates the tokens block when absent", async () => {

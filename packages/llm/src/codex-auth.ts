@@ -61,6 +61,14 @@ export class CodexAuth {
   readonly #refreshUrl: string;
   /** Injected `fetch` (tests / proxies). Defaults to global fetch. */
   readonly #fetch: typeof fetch;
+  /**
+   * In-flight refresh, if any. Concurrent 401s coalesce onto this single
+   * promise instead of each POSTing `grant_type=refresh_token` — critical
+   * because OpenAI rotates the refresh token, so a second refresh would send
+   * an already-consumed token (→ 400) and race on the same `auth.json.tmp`
+   * write. Restores the `Arc<Mutex>` coalescing the Rust original had.
+   */
+  #refreshInFlight: Promise<void> | null = null;
 
   private constructor(init: {
     accessToken: string;
@@ -154,8 +162,29 @@ export class CodexAuth {
    * the access token. On success, in-memory state and (if loaded from disk)
    * the on-disk auth.json are both updated. Failures throw with the upstream
    * status / body text.
+   *
+   * Concurrent calls coalesce: while one refresh is in flight, later callers
+   * await the same promise rather than starting a second network round-trip
+   * (which would consume the already-rotated refresh token and race on the
+   * atomic `auth.json` write).
    */
   async refresh(): Promise<void> {
+    if (this.#refreshInFlight !== null) {
+      return this.#refreshInFlight;
+    }
+    // `#doRefresh()` runs synchronously up to its first `await`, so assigning
+    // the promise here (before yielding) closes any window for a racing caller
+    // to start a second refresh.
+    const inFlight = this.#doRefresh();
+    this.#refreshInFlight = inFlight;
+    try {
+      await inFlight;
+    } finally {
+      this.#refreshInFlight = null;
+    }
+  }
+
+  async #doRefresh(): Promise<void> {
     const refreshToken = this.refreshToken;
     if (refreshToken === null) {
       throw new ProviderError("no refresh_token available; static-token mode cannot refresh");
