@@ -62,6 +62,23 @@ test("respects gitignore", async () => {
   assert.equal(cs[0]!.path, "kept.rs");
 });
 
+test("nested .gitignore rooted patterns anchor to their own directory", async () => {
+  // `subdir/.gitignore` with `/secret.rs` means "ignore subdir/secret.rs"
+  // (git semantics), NOT a file anchored at the scan root. A bare top-level
+  // `secret.rs` must therefore still surface, and the nested one must not.
+  const dir = await tempDir();
+  await write(path.join(dir, "subdir/.gitignore"), "/secret.rs\n");
+  await write(path.join(dir, "subdir/secret.rs"), "// TODO: nested secret, must be ignored\n");
+  await write(path.join(dir, "secret.rs"), "// TODO: top-level secret, must surface\n");
+  const tool = new TriageScanTool({ root: dir });
+  const v = parse(await tool.invoke({}));
+  const cs = v.candidates as Array<Record<string, JsonValue>>;
+  assert.deepEqual(
+    cs.map((c) => c.path),
+    ["secret.rs"],
+  );
+});
+
 test("limit caps results", async () => {
   const dir = await tempDir();
   let body = "";

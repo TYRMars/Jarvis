@@ -221,7 +221,7 @@ export class FsFindTool implements Tool {
  * We keep this conservative: when there's a prefix, prepend it so a rooted or
  * pathful pattern stays scoped to the subtree it was declared in.
  */
-function anchorPatterns(raw: string, relPrefix: string): string[] {
+export function anchorPatterns(raw: string, relPrefix: string): string[] {
   const out: string[] = [];
   for (const lineRaw of raw.split(/\r?\n/)) {
     const line = lineRaw.replace(/\s+$/, "");
