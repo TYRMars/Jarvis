@@ -12,7 +12,8 @@
 //     "stop".
 //   * Streaming: manual SSE framing (`data: <json>\n\n`, `[DONE]` sentinel);
 //     StreamAccumulator reassembles argument fragments in index order and
-//     normalises cumulative content snapshots; exactly one `finish` is
+//     appends pure content deltas (cumulative-snapshot normalisation is
+//     opt-in via `assumeSnapshots`; off for real providers); exactly one `finish` is
 //     emitted, held back until stream close so a trailing usage-only chunk is
 //     surfaced first (issue #48 parity).
 //   * Optional `prompt_cache_key` auto-derived from (model, systems, tools).
@@ -381,9 +382,17 @@ export class StreamAccumulator {
   #pendingFinish: LlmChunk | undefined;
   #reasoning = "";
   readonly #nameMap: Map<string, string>;
+  readonly #assumeSnapshots: boolean;
 
-  constructor(nameMap: Map<string, string> = new Map()) {
+  // `assumeSnapshots` opts into the cumulative-snapshot heuristic ("Hel" →
+  // "Hello"). It defaults OFF: every provider wired to this accumulator
+  // (OpenAI/Kimi/Ollama, Anthropic, Google, Responses/Codex) streams pure
+  // deltas, and the heuristic silently drops any delta equal to — or a prefix
+  // of — the accumulation so far (e.g. "\n","\n" → "\n"), losing characters.
+  // See issue #420.
+  constructor(nameMap: Map<string, string> = new Map(), assumeSnapshots = false) {
     this.#nameMap = nameMap;
+    this.#assumeSnapshots = assumeSnapshots;
   }
 
   ingest(chunk: StreamChunkRaw): LlmChunk[] {
@@ -404,11 +413,21 @@ export class StreamAccumulator {
     const delta = choice.delta ?? {};
 
     if (delta.reasoning_content != null) {
-      appendStreamFragment({ acc: this.#reasoning }, delta.reasoning_content, (v) => (this.#reasoning = v));
+      appendStreamFragment(
+        { acc: this.#reasoning },
+        delta.reasoning_content,
+        (v) => (this.#reasoning = v),
+        this.#assumeSnapshots,
+      );
     }
 
     if (delta.content != null) {
-      const fragment = appendStreamFragment({ acc: this.#content }, delta.content, (v) => (this.#content = v));
+      const fragment = appendStreamFragment(
+        { acc: this.#content },
+        delta.content,
+        (v) => (this.#content = v),
+        this.#assumeSnapshots,
+      );
       if (fragment !== undefined) out.push({ type: "content_delta", content: fragment });
     }
 
@@ -489,17 +508,24 @@ export class StreamAccumulator {
 }
 
 /**
- * Append `incoming` to `state.acc`, returning only the NEW fragment. Handles
- * providers that stream cumulative snapshots ("Hel" → "Hello") as well as
- * pure deltas. Mirrors Rust `append_stream_fragment`.
+ * Append `incoming` to `state.acc`, returning only the NEW fragment.
+ *
+ * Pure-delta providers (the default, `assumeSnapshots=false`) always append
+ * verbatim. When `assumeSnapshots` is set, a chunk equal to the accumulation
+ * is treated as a no-op snapshot and one that extends it ("Hel" → "Hello")
+ * yields only the tail — but that heuristic is lossy for pure deltas (a delta
+ * that equals or prefixes the accumulation gets misread as a snapshot and
+ * dropped, e.g. "\n","\n" → "\n"), so it is opt-in only. See issue #420.
+ * Mirrors Rust `append_stream_fragment`.
  */
 function appendStreamFragment(
   state: { acc: string },
   incoming: string,
   commit: (v: string) => void,
+  assumeSnapshots = false,
 ): string | undefined {
   if (incoming === "") return undefined;
-  if (state.acc !== "") {
+  if (assumeSnapshots && state.acc !== "") {
     if (incoming === state.acc) return undefined;
     if (incoming.startsWith(state.acc)) {
       const fragment = incoming.slice(state.acc.length);
