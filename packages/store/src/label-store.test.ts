@@ -126,6 +126,19 @@ export function contract(name: string, make: (dir: string) => Promise<LabelStore
     });
   });
 
+  test(`${name}: update of an absent id resolves false even when the name collides`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      await store.create(label("p1", "Alpha"));
+      // The id does not exist, but the name collides with an existing label.
+      // Existence must be checked before uniqueness, so this resolves false
+      // (a clean "no such label") rather than rejecting — the JSON-file and
+      // SQLite backends behave this way; the in-memory backend must match.
+      const ghost: Label = { ...label("p1", "ALPHA"), id: "does-not-exist" };
+      assert.equal(await store.update(ghost), false);
+    });
+  });
+
   test(`${name}: delete removes the row and broadcasts; idempotent false after`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
