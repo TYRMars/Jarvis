@@ -35,8 +35,8 @@ test("accumulator: content deltas reassemble; finish held until close", () => {
   assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello");
 });
 
-test("accumulator: normalises cumulative content snapshots", () => {
-  const acc = new StreamAccumulator();
+test("accumulator: normalises cumulative content snapshots when assumeSnapshots is set", () => {
+  const acc = new StreamAccumulator(new Map(), true);
   const out = ingestAll(acc, [
     { choices: [{ delta: { content: "Hel" } }] },
     { choices: [{ delta: { content: "Hello" } }] },
@@ -48,6 +48,24 @@ test("accumulator: normalises cumulative content snapshots", () => {
   const finish = out.at(-1)!;
   assert.ok(finish.type === "finish");
   assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "Hello world");
+});
+
+test("accumulator (default): pure deltas that repeat/prefix the accumulation are not dropped (#420)", () => {
+  // A leading blank line tokenised as two newline deltas: without the fix the
+  // 2nd "\n" (equal to the accumulation) was silently dropped → "\n".
+  const acc = new StreamAccumulator();
+  const out = ingestAll(acc, [
+    { choices: [{ delta: { content: "\n" } }] },
+    { choices: [{ delta: { content: "\n" } }] },
+    { choices: [{ delta: { content: "x" } }] },
+    { choices: [{ delta: { content: "x" } }] },
+    { choices: [{ delta: {}, finish_reason: "stop" }] },
+  ]);
+  const deltas = out.filter((c) => c.type === "content_delta").map((c) => (c as { content: string }).content);
+  assert.deepEqual(deltas, ["\n", "\n", "x", "x"]);
+  const finish = out.at(-1)!;
+  assert.ok(finish.type === "finish");
+  assert.equal((finish.message as Extract<Message, { role: "assistant" }>).content, "\n\nxx");
 });
 
 test("accumulator: reassembles a tool call across chunks (args → parsed JSON)", () => {
