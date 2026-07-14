@@ -89,6 +89,47 @@ function contract(name: string, make: (dir: string) => Promise<ChannelInstanceSt
       assert.equal((await store.get("i1"))?.display_name, "a");
     });
   });
+
+  test(`${name}: nested config is deep-copied on get/list (no aliasing)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const row = inst("i1", "a", "2026-06-16T10:00:00.000Z");
+      row.config = { token: "original" };
+      await store.upsert(row);
+
+      // Mutating a returned row's nested config must not leak into the store.
+      const got = await store.get("i1");
+      assert.equal((got?.config as Record<string, unknown>)?.token, "original");
+      (got!.config as Record<string, unknown>).token = "leaked";
+      assert.equal(
+        ((await store.get("i1"))?.config as Record<string, unknown>)?.token,
+        "original",
+      );
+
+      const listed = await store.list();
+      (listed[0]!.config as Record<string, unknown>).token = "leaked-via-list";
+      assert.equal(
+        ((await store.get("i1"))?.config as Record<string, unknown>)?.token,
+        "original",
+      );
+    });
+  });
+
+  test(`${name}: upsert snapshots the caller's config (later mutation isolated)`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const row = inst("i1", "a", "2026-06-16T10:00:00.000Z");
+      row.config = { token: "original" };
+      await store.upsert(row);
+
+      // Mutating the caller's object after upsert must not reach the store.
+      (row.config as Record<string, unknown>).token = "leaked-after-upsert";
+      assert.equal(
+        ((await store.get("i1"))?.config as Record<string, unknown>)?.token,
+        "original",
+      );
+    });
+  });
 }
 
 contract("json-file", (dir) => JsonFileChannelInstanceStore.open(dir));
