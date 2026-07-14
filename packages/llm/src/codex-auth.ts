@@ -61,6 +61,15 @@ export class CodexAuth {
   readonly #refreshUrl: string;
   /** Injected `fetch` (tests / proxies). Defaults to global fetch. */
   readonly #fetch: typeof fetch;
+  /**
+   * In-flight refresh, or `null` when none is running. Concurrent `refresh()`
+   * callers coalesce onto this single promise instead of each firing their own
+   * network round-trip — the OAuth server rotates the refresh token, so a
+   * second concurrent POST would send an already-consumed token (400) and both
+   * would race on the same `auth.json.tmp` write. This restores the "concurrent
+   * requests coalesce" semantics the Rust `Arc<Mutex<CodexAuth>>` had.
+   */
+  #inflightRefresh: Promise<void> | null = null;
 
   private constructor(init: {
     accessToken: string;
@@ -154,8 +163,26 @@ export class CodexAuth {
    * the access token. On success, in-memory state and (if loaded from disk)
    * the on-disk auth.json are both updated. Failures throw with the upstream
    * status / body text.
+   *
+   * Concurrent callers coalesce onto a single in-flight refresh (see
+   * {@link #inflightRefresh}): the first caller performs the network round-trip
+   * + `writeBack`; any caller that arrives while it is running awaits the same
+   * promise and observes the rotated token, rather than firing a duplicate
+   * refresh with an already-consumed refresh token.
    */
-  async refresh(): Promise<void> {
+  refresh(): Promise<void> {
+    if (this.#inflightRefresh !== null) {
+      return this.#inflightRefresh;
+    }
+    const pending = this.#doRefresh().finally(() => {
+      this.#inflightRefresh = null;
+    });
+    this.#inflightRefresh = pending;
+    return pending;
+  }
+
+  /** The actual refresh round-trip; serialised behind {@link refresh}. */
+  async #doRefresh(): Promise<void> {
     const refreshToken = this.refreshToken;
     if (refreshToken === null) {
       throw new ProviderError("no refresh_token available; static-token mode cannot refresh");
