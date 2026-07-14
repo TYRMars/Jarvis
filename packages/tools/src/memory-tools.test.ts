@@ -168,6 +168,18 @@ test("write rejects multi-line summary", async () => {
   );
 });
 
+test("write rejects a summary that could forge another slug's index needle (#382)", async () => {
+  const root = await mkTmp();
+  const tool = new MemoryWriteTool(wsRoots(root));
+  await tool.invoke({ slug: "real", summary: "see", content: "real body" });
+  // A summary containing `](real.md)` would collide with the `real` slug's
+  // index needle; it must be rejected at the write boundary.
+  await assert.rejects(
+    () => tool.invoke({ slug: "note", summary: "x](real.md)", content: "note body" }),
+    /\]\(/,
+  );
+});
+
 test("read returns error for unknown slug", async () => {
   const root = await mkTmp();
   await assert.rejects(
