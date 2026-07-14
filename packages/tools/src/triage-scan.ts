@@ -31,6 +31,7 @@ const ignore = ignoreDefault as unknown as (options?: {
 }) => Ignore;
 import type { JsonValue, Tool, ToolCategory } from "@jarvis/core";
 import { resolveUnder } from "./sandbox.ts";
+import { anchorPatterns } from "./fs-find.ts";
 
 const DEFAULT_MAX_CANDIDATES = 50;
 const MAX_CANDIDATE_LIMIT = 200;
@@ -181,7 +182,14 @@ async function scanTodoComments(
     const gitignorePath = path.join(dir, ".gitignore");
     try {
       const gi = await readFile(gitignorePath, "utf8");
-      localIg.add(gi);
+      // Anchor nested patterns to the directory that owns this `.gitignore`
+      // (relative to the scan root) before adding — a rooted (`/x`) or
+      // interior-slash (`a/b`) rule is relative to its own directory, not the
+      // scan root. Mirrors fs.find's traversal. `relPrefix` is empty at the
+      // scan root, so top-level rules stay as-is.
+      const relPrefix = path.relative(scopeRoot, dir).split(path.sep).join("/");
+      const anchored = anchorPatterns(gi, relPrefix);
+      if (anchored.length > 0) localIg.add(anchored);
     } catch {
       // No .gitignore here — inherit only.
     }
