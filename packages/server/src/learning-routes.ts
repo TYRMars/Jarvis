@@ -157,11 +157,23 @@ export function registerLearningRoutes(app: FastifyInstance, state: AppState): v
   app.post("/v1/learning/skill-usage", async (req, reply) => {
     const store = requireStore(state, reply);
     if (!store) return reply;
+    // Guard the wire shape before sanitizing: sanitizeSkillUsageEvent opens
+    // with `event.skill_name.trim()`, so a missing/mistyped body throws a raw
+    // TypeError (not a SkillUsageRejectionError) that would otherwise re-throw
+    // to a 500. Answer 400 instead (see issue #415).
+    const rawEvent = req.body;
+    if (
+      rawEvent === null ||
+      typeof rawEvent !== "object" ||
+      typeof (rawEvent as { skill_name?: unknown }).skill_name !== "string"
+    ) {
+      return reply.code(400).send({ error: "skill_name is required and must be a string" });
+    }
     let event: SkillUsageEvent;
     try {
       // Never trust the wire payload: blank client-supplied id/created_at and
       // enforce size caps on skill_name / attributes.
-      event = sanitizeSkillUsageEvent(req.body as SkillUsageEvent);
+      event = sanitizeSkillUsageEvent(rawEvent as SkillUsageEvent);
     } catch (e) {
       if (e instanceof SkillUsageRejectionError) {
         return reply.code(400).send({ error: e.message });

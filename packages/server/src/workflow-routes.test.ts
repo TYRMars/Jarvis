@@ -145,6 +145,54 @@ test("create rejects a blank prompt nested inside a group", async () => {
   }
 });
 
+test("create with malformed fields → 400, not 500 (issue #415)", async () => {
+  const app = await build(makeState());
+  try {
+    // description mistyped → previously `(5).trim()` → 500
+    const badDesc = await createWorkflow(app, { name: "x", description: 5 });
+    assert.equal(badDesc.statusCode, 400);
+    assert.match(badDesc.json().error, /description/);
+
+    // steps not an array → previously `5.map` → 500
+    const badSteps = await createWorkflow(app, { name: "x", steps: 5 });
+    assert.equal(badSteps.statusCode, 400);
+    assert.match(badSteps.json().error, /steps must be an array/);
+
+    // step missing its `kind` → previously `s.kind.type` on undefined → 500
+    const noKind = await createWorkflow(app, { name: "x", steps: [{}] });
+    assert.equal(noKind.statusCode, 400);
+    assert.match(noKind.json().error, /kind/);
+  } finally {
+    await app.close();
+  }
+});
+
+test("update with malformed fields → 400, not 500 (issue #415)", async () => {
+  const app = await build(makeState());
+  try {
+    const created = await createWorkflow(app, { name: "seed", steps: [agentStep("a", "go")] });
+    const id = created.json().id as string;
+
+    const badDesc = await app.inject({
+      method: "PATCH",
+      url: `/v1/workflows/${id}`,
+      payload: { description: 5 },
+    });
+    assert.equal(badDesc.statusCode, 400);
+    assert.match(badDesc.json().error, /description/);
+
+    const badSteps = await app.inject({
+      method: "PATCH",
+      url: `/v1/workflows/${id}`,
+      payload: { steps: [{}] },
+    });
+    assert.equal(badSteps.statusCode, 400);
+    assert.match(badSteps.json().error, /kind/);
+  } finally {
+    await app.close();
+  }
+});
+
 // ---------- get / update / delete ----------
 
 test("get 404s an unknown id; get returns the definition", async () => {

@@ -84,6 +84,29 @@ function cleanOpt(value: string | undefined): string | undefined {
 }
 
 /**
+ * Validate the wire shape of a step tree, returning a human-readable error
+ * string (or `null` when well-formed). `normalizeSteps` reads `s.kind.type`
+ * and recurses into container `steps`, so a malformed payload (non-array, a
+ * non-object step, or a step missing its `kind`) would throw a raw TypeError
+ * → 500. Checking the shape first lets the routes answer 400 (see issue #415).
+ */
+function stepsShapeError(steps: unknown): string | null {
+  if (!Array.isArray(steps)) return "steps must be an array";
+  for (const s of steps) {
+    if (s === null || typeof s !== "object") return "each step must be an object";
+    const kind = (s as { kind?: unknown }).kind;
+    if (kind === null || typeof kind !== "object") return "each step requires a `kind` object";
+    const type = (kind as { type?: unknown }).type;
+    if (typeof type !== "string") return "each step's `kind.type` must be a string";
+    if (type === "pipeline" || type === "phase" || type === "parallel") {
+      const nested = stepsShapeError((kind as { steps?: unknown }).steps);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+/**
  * Assign a fresh UUID to any step (recursively) whose id is blank, so clients
  * can POST step trees without minting ids themselves. Mirrors `normalize_steps`.
  */
@@ -150,6 +173,19 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
     if (name.trim().length === 0) {
       return reply.code(400).send({ error: "name is required" });
     }
+    // Guard optional fields before `cleanOpt`/`normalizeSteps` dereference them:
+    // a mistyped `description`/`project_id`/`steps` would otherwise throw a raw
+    // TypeError → 500 instead of a clean 400 (see issue #415).
+    if (body.description !== undefined && typeof body.description !== "string") {
+      return reply.code(400).send({ error: "description must be a string" });
+    }
+    if (body.project_id !== undefined && typeof body.project_id !== "string") {
+      return reply.code(400).send({ error: "project_id must be a string" });
+    }
+    if (body.steps !== undefined) {
+      const stepsErr = stepsShapeError(body.steps);
+      if (stepsErr) return reply.code(400).send({ error: stepsErr });
+    }
     const def = newWorkflowDefinition(name.trim());
     def.description = cleanOpt(body.description);
     def.project_id = cleanOpt(body.project_id);
@@ -196,19 +232,30 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
     }
     if (!def) return reply.code(404).send({ error: "workflow not found" });
     const body = (req.body ?? {}) as PatchWorkflowRequest;
+    // Guard each optional field's type before dereferencing (issue #415):
+    // `name`/`description`/`project_id` feed `.trim()`/`cleanOpt`, and `steps`
+    // feeds `normalizeSteps` — a mistyped value would throw a raw TypeError → 500.
     if (body.name !== undefined) {
-      if (body.name.trim().length === 0) {
+      if (typeof body.name !== "string" || body.name.trim().length === 0) {
         return reply.code(400).send({ error: "name cannot be empty" });
       }
       def.name = body.name.trim();
     }
     if (body.description !== undefined) {
+      if (typeof body.description !== "string") {
+        return reply.code(400).send({ error: "description must be a string" });
+      }
       def.description = cleanOpt(body.description);
     }
     if (body.project_id !== undefined) {
+      if (typeof body.project_id !== "string") {
+        return reply.code(400).send({ error: "project_id must be a string" });
+      }
       def.project_id = cleanOpt(body.project_id);
     }
     if (body.steps !== undefined) {
+      const stepsErr = stepsShapeError(body.steps);
+      if (stepsErr) return reply.code(400).send({ error: stepsErr });
       def.steps = normalizeSteps(body.steps);
     }
     try {
