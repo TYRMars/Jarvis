@@ -74,12 +74,33 @@ function contract(label: string, open: () => Promise<SubAgentRunStore>): void {
     assert.equal((await s.get("s5"))!.status, "completed");
   });
 
-  test(`[${label}] done after cancel keeps cancelled status`, async () => {
+  test(`[${label}] done after cancel keeps cancelled status + snapshot`, async () => {
     const s = await open();
     await s.recordFrame(undefined, frame("s6", "codex", { kind: "started", task: "x" }));
     assert.ok(await s.cancel("s6"));
+    const cancelled = (await s.get("s6"))!;
+    // Let wall-clock advance so a recomputed duration would differ visibly.
+    await new Promise((r) => setTimeout(r, 6));
     await s.recordFrame(undefined, frame("s6", "codex", { kind: "done", final_message: "lol" }));
-    assert.equal((await s.get("s6"))!.status, "cancelled");
+    const after = (await s.get("s6"))!;
+    assert.equal(after.status, "cancelled");
+    // The natural terminal frame must NOT overwrite the cancel snapshot:
+    // no success message and no full-duration recompute leaks into the row.
+    assert.equal(after.final_message, undefined);
+    assert.equal(after.duration_ms, cancelled.duration_ms);
+  });
+
+  test(`[${label}] error after cancel keeps cancelled status + snapshot`, async () => {
+    const s = await open();
+    await s.recordFrame(undefined, frame("s6b", "codex", { kind: "started", task: "x" }));
+    assert.ok(await s.cancel("s6b"));
+    const cancelled = (await s.get("s6b"))!;
+    await new Promise((r) => setTimeout(r, 6));
+    await s.recordFrame(undefined, frame("s6b", "codex", { kind: "error", message: "boom" }));
+    const after = (await s.get("s6b"))!;
+    assert.equal(after.status, "cancelled");
+    assert.equal(after.error, undefined);
+    assert.equal(after.duration_ms, cancelled.duration_ms);
   });
 
   test(`[${label}] list returns runs newest-first by started_at`, async () => {

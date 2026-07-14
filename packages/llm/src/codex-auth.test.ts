@@ -142,6 +142,42 @@ test("refresh: keeps existing refresh_token when the response omits a new one", 
   });
 });
 
+test("refresh: concurrent calls coalesce into a single network round-trip", async () => {
+  await withTempDir(async (dir) => {
+    await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old-at", refresh_token: "rt-1" } }));
+
+    let calls = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      // Hold the first refresh open so a second concurrent caller has a chance
+      // to (wrongly) fire its own POST before this one resolves.
+      await gate;
+      return new Response(JSON.stringify({ access_token: "new-at", refresh_token: "rt-2" }), { status: 200 });
+    };
+
+    const auth = await CodexAuth.loadFromCodexHome(dir, { refreshUrl: "https://stub.test/oauth/token", fetchImpl });
+
+    const first = auth.refresh();
+    const second = auth.refresh();
+    release?.();
+    await Promise.all([first, second]);
+
+    // Only one network call despite two concurrent refreshes; the rotated
+    // refresh token is never re-sent.
+    assert.equal(calls, 1);
+    assert.equal(auth.accessToken, "new-at");
+    assert.equal(auth.refreshToken, "rt-2");
+
+    // A subsequent refresh after the in-flight one settled starts a fresh call.
+    await auth.refresh();
+    assert.equal(calls, 2);
+  });
+});
+
 test("refresh: non-2xx surfaces status + body", async () => {
   await withTempDir(async (dir) => {
     await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));

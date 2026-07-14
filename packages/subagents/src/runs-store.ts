@@ -162,13 +162,17 @@ function applyEvent(rec: SubAgentRunRecord, event: SubAgentEvent, now: number): 
   } else if (event.kind === "tool_start") {
     rec.tool_call_count += 1;
   } else if (event.kind === "done") {
-    // Don't overwrite a prior cancel mark — a manual cancel is the operator's
-    // truth and typically arrives before the natural done.
-    if (rec.status !== "cancelled") rec.status = "completed";
+    // A prior cancel is the operator's truth and typically arrives before the
+    // natural done. Preserve not just its status but its whole snapshot —
+    // final_message/error/duration_ms stay at their cancel-time values so a
+    // "cancelled" row can't masquerade as a full-duration success.
+    if (rec.status === "cancelled") return;
+    rec.status = "completed";
     rec.final_message = event.final_message;
     rec.duration_ms = Math.max(0, now - rec.started_at);
   } else if (event.kind === "error") {
-    if (rec.status !== "cancelled") rec.status = "failed";
+    if (rec.status === "cancelled") return;
+    rec.status = "failed";
     rec.error = event.message;
     rec.duration_ms = Math.max(0, now - rec.started_at);
   }
