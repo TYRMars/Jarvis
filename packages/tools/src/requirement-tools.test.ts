@@ -481,6 +481,37 @@ test("update clears description with empty string", async () => {
   assert.equal(after?.description, undefined);
 });
 
+test("update honors explicit empty todos instead of re-seeding checklist", async () => {
+  const { rs, acts } = fixtures();
+  const create = new RequirementCreateTool(rs, acts);
+  const created = parse(
+    await create.invoke({
+      project_id: "p",
+      title: "x",
+      todos: [{ title: "custom step", kind: "check" }],
+    }),
+  );
+  const id = created["id"] as string;
+  assert.equal((await rs.get(id))?.todos?.length, 1);
+
+  const update = new RequirementUpdateTool(rs, acts);
+  // Explicit `todos: []` must clear the checklist and stay cleared — not be
+  // silently re-seeded by ensureExecutionChecklist (issue #406).
+  const out = parse(await update.invoke({ id, todos: [] }));
+  assert.equal((out["todos"] as unknown[]).length, 0, "returned JSON reports the cleared checklist");
+  assert.equal((await rs.get(id))?.todos?.length, 0, "persisted row keeps the empty checklist");
+});
+
+test("update without todos still auto-seeds the execution checklist", async () => {
+  const { rs, acts } = fixtures();
+  const r = await seed(rs, "p", "x");
+  assert.equal((await rs.get(r.id))?.todos?.length ?? 0, 0);
+
+  const update = new RequirementUpdateTool(rs, acts);
+  await update.invoke({ id: r.id, title: "renamed" });
+  assert.ok(((await rs.get(r.id))?.todos?.length ?? 0) > 0, "omitted todos → checklist seeded as before");
+});
+
 test("delete removes row", async () => {
   const { rs } = fixtures();
   const r = await seed(rs, "p", "x");
