@@ -67,12 +67,12 @@ export class JsonFileChannelInstanceStore implements ChannelInstanceStore {
   }
 
   async upsert(instance: ChannelInstance): Promise<void> {
-    const next = this.#state.map((i) => ({ ...i }));
+    const next = this.#state.map((i) => structuredClone(i));
     const slot = next.findIndex((i) => i.id === instance.id);
     if (slot !== -1) {
-      next[slot] = { ...instance };
+      next[slot] = structuredClone(instance);
     } else {
-      next.push({ ...instance });
+      next.push(structuredClone(instance));
     }
     await this.#flush(next);
     this.#state = next;
@@ -80,11 +80,11 @@ export class JsonFileChannelInstanceStore implements ChannelInstanceStore {
 
   get(id: string): Promise<ChannelInstance | undefined> {
     const row = this.#state.find((i) => i.id === id);
-    return Promise.resolve(row ? { ...row } : undefined);
+    return Promise.resolve(row ? structuredClone(row) : undefined);
   }
 
   list(): Promise<ChannelInstance[]> {
-    const rows = this.#state.map((i) => ({ ...i })).sort(byUpdatedDesc);
+    const rows = this.#state.map((i) => structuredClone(i)).sort(byUpdatedDesc);
     return Promise.resolve(rows);
   }
 
@@ -107,20 +107,20 @@ export class MemoryChannelInstanceStore implements ChannelInstanceStore {
   upsert(instance: ChannelInstance): Promise<void> {
     const slot = this.#rows.findIndex((i) => i.id === instance.id);
     if (slot !== -1) {
-      this.#rows[slot] = { ...instance };
+      this.#rows[slot] = structuredClone(instance);
     } else {
-      this.#rows.push({ ...instance });
+      this.#rows.push(structuredClone(instance));
     }
     return Promise.resolve();
   }
 
   get(id: string): Promise<ChannelInstance | undefined> {
     const row = this.#rows.find((i) => i.id === id);
-    return Promise.resolve(row ? { ...row } : undefined);
+    return Promise.resolve(row ? structuredClone(row) : undefined);
   }
 
   list(): Promise<ChannelInstance[]> {
-    const rows = this.#rows.map((i) => ({ ...i })).sort(byUpdatedDesc);
+    const rows = this.#rows.map((i) => structuredClone(i)).sort(byUpdatedDesc);
     return Promise.resolve(rows);
   }
 
