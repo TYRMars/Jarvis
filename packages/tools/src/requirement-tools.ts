@@ -856,7 +856,8 @@ export class RequirementUpdateTool implements Tool {
         changed = true;
       }
     }
-    if (obj["todos"] !== undefined) {
+    const todosProvided = obj["todos"] !== undefined;
+    if (todosProvided) {
       const todosRaw = obj["todos"];
       if (!Array.isArray(todosRaw)) {
         throw new Error("requirement.update: `todos` must be an array");
@@ -876,7 +877,12 @@ export class RequirementUpdateTool implements Tool {
         changed = true;
       }
     }
-    if (ensureExecutionChecklist(item)) {
+    // Only auto-seed the Jarvis-owned checklist when the caller did NOT
+    // explicitly set `todos` in this update. An explicit `todos` (including
+    // `todos: []` to clear the checklist) is honored as-is; re-seeding it here
+    // would silently override the caller and make the returned JSON contradict
+    // the request (see issue #406).
+    if (!todosProvided && ensureExecutionChecklist(item)) {
       changed = true;
     }
     if (!changed) {

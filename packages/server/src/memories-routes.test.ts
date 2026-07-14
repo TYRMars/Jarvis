@@ -113,6 +113,24 @@ test("POST rejects an empty title", async () => {
   assert.match((res.json() as { error: string }).error, /title/);
 });
 
+test("POST with malformed body → 400, not 500 (issue #415)", async () => {
+  const app = await buildApp(makeState());
+  // Missing everything: `item.scope` is undefined; previously threw a raw
+  // TypeError (`undefined.kind`) that escaped to a 500.
+  const empty = await app.inject({ method: "POST", url: "/v1/memories", payload: {} });
+  assert.equal(empty.statusCode, 400);
+  assert.match((empty.json() as { error: string }).error, /scope/);
+
+  // Scope present but no title → previously `undefined.trim()` → 500.
+  const noTitle = await app.inject({
+    method: "POST",
+    url: "/v1/memories",
+    payload: { scope: { kind: "user" } },
+  });
+  assert.equal(noTitle.statusCode, 400);
+  assert.match((noTitle.json() as { error: string }).error, /title/);
+});
+
 test("POST rejected by the safety validator surfaces as 400", async () => {
   const state = makeState();
   const app = await buildApp(state);

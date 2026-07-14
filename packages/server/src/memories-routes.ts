@@ -165,7 +165,17 @@ export function registerMemoriesRoutes(app: FastifyInstance, state: AppState): v
   app.post("/v1/memories", async (req, reply) => {
     const store = requireStore(state, reply);
     if (!store) return reply;
+    // Guard the wire shape before dereferencing: malformed-but-valid JSON
+    // (missing/mistyped fields) must yield a clean 400, not a raw TypeError
+    // that escapes to Fastify's default handler as a 500 (see issue #415).
     const item = req.body as MemoryItem;
+    if (item === null || typeof item !== "object") {
+      return reply.code(400).send({ error: "request body must be a JSON object" });
+    }
+    const scope = (item as { scope?: unknown }).scope;
+    if (scope === null || typeof scope !== "object" || typeof (scope as { kind?: unknown }).kind !== "string") {
+      return reply.code(400).send({ error: "scope is required and must carry a string `kind`" });
+    }
     // Project / Workspace scopes still go through their per-domain APIs until
     // the unified-memory migration in Phase 2.
     if (!memoryScopeIsUser(item.scope)) {
@@ -173,7 +183,7 @@ export function registerMemoriesRoutes(app: FastifyInstance, state: AppState): v
         error: "POST /v1/memories only accepts user-scope items in phase 1",
       });
     }
-    if (item.title.trim().length === 0) {
+    if (typeof item.title !== "string" || item.title.trim().length === 0) {
       return reply.code(400).send({ error: "title must be non-empty" });
     }
     try {
