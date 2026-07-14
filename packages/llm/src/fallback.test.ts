@@ -169,3 +169,22 @@ test("isTransientError tolerates non-Error throwables (string / plain object)", 
   assert.equal(isTransientError("503 service unavailable"), true);
   assert.equal(isTransientError("401 unauthorized"), false);
 });
+
+test("isTransientError: transient status wins when the body mentions auth (#366)", () => {
+  // A genuine 5xx/429 whose response body merely mentions an auth subsystem
+  // must still fail over — the auth substring must not veto the transient status.
+  assert.equal(
+    isTransientError(
+      new ProviderError("status 503: authentication service temporarily unavailable"),
+    ),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 429: rate limited (trace 401-abc)")),
+    true,
+  );
+  assert.equal(
+    isTransientError(new ProviderError("status 500: unauthorized dependency failed")),
+    true,
+  );
+});

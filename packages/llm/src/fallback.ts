@@ -42,16 +42,15 @@ export function fallbackEntry(name: string, provider: LlmProvider): FallbackEntr
  */
 export function isTransientError(err: unknown): boolean {
   const msg = errorText(err).toLowerCase();
-  // Definite-not-transient: auth + bad-request signals.
-  const authOrBadRequest =
-    msg.includes("401") ||
-    msg.includes("403") ||
-    msg.includes("unauthorized") ||
-    msg.includes("invalid api key") ||
-    msg.includes("authentication");
-  if (authOrBadRequest) return false;
-  // Transient: rate limit / server error / network.
-  return (
+  // Transient signals (rate limit / server error / network) are checked FIRST
+  // and win over auth substrings. The error text includes the raw upstream
+  // response *body*, so a genuine 429/5xx/network failure must still fail over
+  // even when that body happens to mention an auth subsystem — e.g.
+  // "503 Service Unavailable: authentication service temporarily unavailable",
+  // or a rate-limit trace id containing the substring "401". Ordering the auth
+  // veto ahead of this (the previous behaviour) defeated failover for exactly
+  // the upstream outages fallback exists to cover. See issue #366.
+  const transient =
     msg.includes("429") ||
     msg.includes("rate limit") ||
     msg.includes("rate-limit") ||
@@ -67,8 +66,13 @@ export function isTransientError(err: unknown): boolean {
     msg.includes("dns") ||
     msg.includes("reset by peer") ||
     msg.includes("transport:") ||
-    msg.includes("error sending request")
-  );
+    msg.includes("error sending request");
+  if (transient) return true;
+  // Everything else is fatal: auth failures (401 / 403 / unauthorized /
+  // invalid api key / authentication) and other 4xx (bad request,
+  // model-not-found) won't be fixed by retrying — the next provider shares the
+  // same auth surface and the request itself is unchanged.
+  return false;
 }
 
 /**

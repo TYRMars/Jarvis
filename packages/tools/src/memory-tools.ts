@@ -515,6 +515,15 @@ export class MemoryWriteTool implements Tool {
     if (summary.includes("\n")) {
       throw new Error("`summary` must be a single line");
     }
+    // The MEMORY.md index line is `- [<summary>](<slug>.md)` and entries are
+    // located/replaced/deleted by the literal substring needle `](<slug>.md)`.
+    // A summary containing `](` could forge another slug's needle (e.g.
+    // `x](other.md)`), so a later write/delete of that other slug would rewrite
+    // or drop the wrong index line and orphan its body file. Reject it here — a
+    // one-line summary has no legitimate need for markdown-link syntax. See #382.
+    if (summary.includes("](")) {
+      throw new Error("`summary` must not contain `](` (would corrupt the MEMORY.md index)");
+    }
     const contentBytes = Buffer.byteLength(content, "utf8");
     if (contentBytes > MAX_ENTRY_BYTES) {
       throw new Error(

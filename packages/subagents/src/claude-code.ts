@@ -189,7 +189,7 @@ export class ClaudeCodeSubAgent implements SubAgent {
       }
     }
 
-    const code = await waitForExit(child);
+    const { code, signal } = await waitForExit(child);
     if (spawnError !== undefined) {
       throw new Error(`spawn \`${this.#config.claude_bin}\`: ${spawnError.message}`);
     }
@@ -199,9 +199,13 @@ export class ClaudeCodeSubAgent implements SubAgent {
       throw new Error(`subagent error: ${errorMessage}`);
     }
 
-    if (code !== 0) {
+    // A signal-killed child reports `code === null` (e.g. OOM-kill / SIGTERM
+    // before a terminal `result` message). Treat that — and any non-zero exit —
+    // as a failure so an empty run is never reported as success.
+    if (signal !== null || code !== 0) {
       const trimmed = stderrText.trim();
-      const msg = trimmed.length === 0 ? `\`claude\` exited ${code}` : `\`claude\` exited ${code}: ${trimmed}`;
+      const reason = signal !== null ? `killed by signal ${signal}` : `exited ${code}`;
+      const msg = trimmed.length === 0 ? `\`claude\` ${reason}` : `\`claude\` ${reason}: ${trimmed}`;
       push({ kind: "error", message: msg });
       throw new Error(msg);
     }
@@ -335,9 +339,19 @@ export function stringifyToolResult(v: JsonValue): string {
   return JSON.stringify(v);
 }
 
-function waitForExit(child: ReturnType<typeof spawn>): Promise<number> {
+interface ExitResult {
+  /** Exit code, or `null` when the child was terminated by a signal. */
+  code: number | null;
+  /** Signal name when the child was killed by a signal, else `null`. */
+  signal: NodeJS.Signals | null;
+}
+
+function waitForExit(child: ReturnType<typeof spawn>): Promise<ExitResult> {
   return new Promise((resolve) => {
-    child.on("close", (code) => resolve(code ?? 0));
+    // On a signal death Node fires `close` with `code === null` and the signal
+    // name as the second arg. Preserve both so the caller can tell a clean
+    // exit 0 from a signal-killed run (which `code ?? 0` used to hide as success).
+    child.on("close", (code, signal) => resolve({ code, signal }));
   });
 }
 

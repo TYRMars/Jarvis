@@ -161,6 +161,39 @@ process.exit(0);
   }
 });
 
+test("a signal-killed `claude` run is surfaced as a failure, not an empty success (#417)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "jarvis-claude-sig-"));
+  const fakeJs = path.join(dir, "fake-claude.mjs");
+  // A fake CLI that emits some output but then kills itself with a signal
+  // *before* any terminal `result` message — mimicking an OOM-kill / SIGTERM.
+  // `close` fires with code === null, which must NOT be coerced to a success.
+  await writeFile(
+    fakeJs,
+    `process.stdout.write(JSON.stringify({ type: "system", subtype: "init" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } }) + "\\n");
+process.kill(process.pid, "SIGKILL");
+`,
+    "utf8",
+  );
+  const fake = path.join(dir, "fake-claude.sh");
+  await writeFile(fake, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeJs)}\n`, "utf8");
+  await chmod(fake, 0o755);
+
+  const sub = new ClaudeCodeSubAgent({ claude_bin: fake });
+  const frames: SubAgentFrame[] = [];
+  await assert.rejects(
+    () =>
+      withSubagent(
+        (f) => frames.push(f),
+        () => sub.invoke({ task: "edit a.ts", workspace_root: dir }),
+      ),
+    /killed by signal/,
+  );
+  const kinds = frames.map((f) => f.event.kind);
+  assert.ok(kinds.includes("error"), "a signal death must emit an error frame");
+  assert.ok(!kinds.includes("done"), "a signal-killed run must not report done");
+});
+
 test("requiresApproval is true (workspace-mutating)", () => {
   const sub = new ClaudeCodeSubAgent(defaultClaudeCodeConfig());
   assert.ok(sub.requiresApproval());
