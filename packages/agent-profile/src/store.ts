@@ -75,7 +75,10 @@ export interface AgentProfileStore extends EventSource<AgentProfileEvent> {
  * Delivery is synchronous fan-out in registration order. Backends call `emit`
  * only after the durable write has succeeded, mirroring Rust's "broadcast
  * after commit" ordering. Snapshot-on-emit so a listener that (un)subscribes
- * during delivery does not perturb the in-flight iteration.
+ * during delivery does not perturb the in-flight iteration. A listener that
+ * throws is isolated so it neither rejects the already-committed mutation nor
+ * starves the listeners registered after it — the mirror of broadcast's
+ * per-receiver isolation.
  */
 export class Fanout<E> implements EventSource<E> {
   readonly #listeners = new Set<EventListener<E>>();
@@ -94,7 +97,13 @@ export class Fanout<E> implements EventSource<E> {
   /** Fan `event` out to every currently-registered listener, synchronously. */
   emit(event: E): void {
     for (const listener of [...this.#listeners]) {
-      listener(event);
+      try {
+        listener(event);
+      } catch {
+        // Isolate listener faults; the mutation already succeeded, so a
+        // throwing subscriber must neither reject the caller nor starve the
+        // listeners after it.
+      }
     }
   }
 }
