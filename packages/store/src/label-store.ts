@@ -268,11 +268,15 @@ export class MemoryLabelStore implements LabelStore {
   update(label: Label): Promise<boolean> {
     const bucket = this.#byProject.get(label.project_id);
     if (!bucket) return Promise.resolve(false);
+    // Existence check first — a missing id resolves `false` before the
+    // uniqueness scan, matching the JSON-file / SQLite backends (which read
+    // the row / SELECT by (id, project_id) up front). Ordering it the other
+    // way rejected a no-such-label update whose name happened to collide.
+    const slot = bucket.find((l) => l.id === label.id);
+    if (!slot) return Promise.resolve(false);
     if (bucket.some((l) => l.id !== label.id && sameName(l.name, label.name))) {
       return Promise.reject(new Error(`label name \`${label.name}\` already exists in project`));
     }
-    const slot = bucket.find((l) => l.id === label.id);
-    if (!slot) return Promise.resolve(false);
     slot.name = label.name;
     slot.colour = label.colour;
     if (label.description != null) slot.description = label.description;
