@@ -175,14 +175,20 @@ export class ShellExecTool implements Tool {
   #accumulate(stream: NodeJS.ReadableStream | null, out: StreamBuf): void {
     if (!stream) return;
     let pending = "";
+    // UTF-8 byte length of `out.buf`, tracked incrementally so the cap
+    // comparison stays in true bytes (matching the Rust origin's `line.len()`,
+    // which is UTF-8 byte length) rather than JS `.length` (UTF-16 code units).
+    let bufBytes = 0;
     const onLine = (line: string) => {
-      out.total += line.length + 1; // +1 for the stripped newline
+      const lineBytes = Buffer.byteLength(line, "utf8");
+      out.total += lineBytes + 1; // +1 for the stripped newline
       if (out.truncated) return;
-      if (out.buf.length + line.length + 1 > this.#maxBytes) {
+      if (bufBytes + lineBytes + 1 > this.#maxBytes) {
         out.truncated = true;
       } else {
         out.buf += line;
         out.buf += "\n";
+        bufBytes += lineBytes + 1;
       }
     };
     stream.setEncoding("utf8");
