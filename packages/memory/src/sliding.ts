@@ -51,10 +51,28 @@ export function compact(
 
   const dropped = turns.length - kept.length;
 
+  // Walk turns in original order, emitting kept turns in place and the omitted
+  // marker once at the position of the first dropped turn. On the breakpoint
+  // path `kept` is non-contiguous (cached prefix + recent tail with a hole in
+  // the middle), so the marker must sit AT the gap — after the cached prefix,
+  // before the recent tail — not above the whole kept set. Placing it above
+  // the cached prefix would both annotate a non-gap and shift the byte-stable
+  // token prefix the breakpoint path exists to preserve, busting the prompt
+  // cache on the transition request. Mirrors SummarizingMemory.compact.
+  const keptSet = new Set<TurnIndices>(kept);
   const out: Message[] = [];
   for (const i of systemIdxs) out.push(messages[i]!);
-  if (insertMarker && dropped > 0) out.push(systemMessage(OMITTED_MARKER));
-  for (const turn of kept) for (const i of turn) out.push(messages[i]!);
+
+  let markerEmitted = false;
+  for (const turn of turns) {
+    if (keptSet.has(turn)) {
+      for (const i of turn) out.push(messages[i]!);
+    } else if (insertMarker && !markerEmitted) {
+      out.push(systemMessage(OMITTED_MARKER));
+      markerEmitted = true;
+    }
+    // Subsequent dropped turns are skipped — already covered by the marker.
+  }
 
   return { out, dropped };
 }
