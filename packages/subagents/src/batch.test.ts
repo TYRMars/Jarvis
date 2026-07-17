@@ -124,6 +124,48 @@ test("race returns at least one ok", async () => {
   assert.ok(okCount >= 1, out);
 });
 
+test("race reports a completed loser as `superseded` (not `cancelled`), preserving its output", async () => {
+  // Regression for #442: `collectRace` used to relabel a completed, possibly
+  // side-effecting child as `cancelled`, lying to the orchestrator about work
+  // that actually happened. It must now be `superseded` with the real message.
+  const tool = new SubAgentBatchTool(registryWithEcho(), "/tmp", 3);
+  const out = await tool.invoke({
+    tasks: [
+      { subagent: "echo", task: "alpha" },
+      { subagent: "echo-2", task: "beta" },
+    ],
+    join: "race",
+  });
+  // Exactly one primary winner, one superseded loser.
+  assert.equal((out.match(/\[ok\] /g) ?? []).length, 1, out);
+  assert.equal((out.match(/\[superseded\] /g) ?? []).length, 1, out);
+  // The old dishonest label must be gone entirely.
+  assert.ok(!out.includes("[cancelled]"), out);
+  assert.ok(!out.includes("cancelled by race winner"), out);
+  // Both children's real output is preserved (loser is not discarded).
+  assert.ok(out.includes("echoed: alpha"), out);
+  assert.ok(out.includes("echoed: beta"), out);
+  // The loser's side-effect caveat is surfaced.
+  assert.ok(out.includes("any side effects already occurred"), out);
+});
+
+test("race with all children failing reports no winner and no superseded", async () => {
+  const reg = new SubAgentRegistry();
+  reg.register(new FailingSubAgent("boom"));
+  reg.register(new FailingSubAgent("boom-2"));
+  const tool = new SubAgentBatchTool(reg, "/tmp", 3);
+  const out = await tool.invoke({
+    tasks: [
+      { subagent: "boom", task: "a" },
+      { subagent: "boom-2", task: "b" },
+    ],
+    join: "race",
+  });
+  assert.equal((out.match(/\[error\] /g) ?? []).length, 2, out);
+  assert.ok(!out.includes("[superseded]"), out);
+  assert.ok(!out.includes("[ok]"), out);
+});
+
 test("parameters schema is well-formed (object + required tasks)", () => {
   const tool = new SubAgentBatchTool(registryWithEcho(), "/tmp", 3);
   const p = tool.parameters as Record<string, unknown>;

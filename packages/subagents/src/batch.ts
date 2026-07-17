@@ -45,7 +45,12 @@ interface BatchInvocation {
 type BatchChildOutcome =
   | { status: "ok"; message: string }
   | { status: "error"; error: string }
-  | { status: "cancelled" };
+  // A `race` loser that nonetheless ran to completion (we have no seam to
+  // abort a child mid-flight — see `collectRace`). It is NOT `cancelled`: its
+  // inner loop finished and, for write-capable subagents, its side effects
+  // (file edits / commits) already landed. We keep its `message` so the
+  // orchestrator sees the real work instead of being told it never happened.
+  | { status: "superseded"; message: string };
 
 interface BatchChildResult {
   subagent: string;
@@ -207,38 +212,59 @@ function runChild(outerSink: SubAgentSink | undefined, sub: SubAgent, input: Sub
 }
 
 /**
- * Race: first successful child wins; the rest still finish (frames stream out)
- * but extra successes are demoted to `cancelled` so the aggregate keeps a
- * single primary. We await all (each is non-throwing) then post-process, which
- * keeps the wire output deterministic regardless of completion order.
+ * Race: the first child to *complete* successfully is the primary winner.
+ *
+ * There is no seam to abort the losers — `SubAgent.invoke` takes no
+ * `AbortSignal`, so every child runs its full inner loop to completion whether
+ * or not it wins. That means a losing child of a write-capable subagent
+ * (`codex` / `claude_code`) has already edited files / run commands by the time
+ * the winner is picked. We therefore MUST NOT relabel it `cancelled` (which
+ * would tell the orchestrator its work never happened while its edits sit in
+ * the workspace); we mark it `superseded` and preserve its `message` so the
+ * orchestrator plans against the true workspace state.
+ *
+ * Winner selection is by completion order (genuine race), not array order:
+ * `winnerIdx` latches onto the first child whose promise resolves `ok`. Each
+ * child promise is non-throwing (`runChildRecord` captures errors), so
+ * `Promise.all` here never rejects.
  */
 async function collectRace(tasks: Array<Promise<BatchChildResult>>): Promise<BatchChildResult[]> {
-  const settled = await Promise.all(tasks);
-  let winnerSeen = false;
-  const out: BatchChildResult[] = [];
-  for (const res of settled) {
-    const isOk = res.outcome.status === "ok";
-    if (winnerSeen && isOk) {
-      out.push({ subagent: res.subagent, task: res.task, duration_ms: res.duration_ms, outcome: { status: "cancelled" } });
-    } else {
-      if (isOk) winnerSeen = true;
-      out.push(res);
+  const settled: BatchChildResult[] = new Array(tasks.length);
+  let winnerIdx = -1;
+  await Promise.all(
+    tasks.map(async (t, i) => {
+      const res = await t;
+      settled[i] = res;
+      // Completion-order latch: the first success to arrive is the winner.
+      if (winnerIdx === -1 && res.outcome.status === "ok") winnerIdx = i;
+    }),
+  );
+  return settled.map((res, i) => {
+    if (i !== winnerIdx && res.outcome.status === "ok") {
+      return {
+        subagent: res.subagent,
+        task: res.task,
+        duration_ms: res.duration_ms,
+        outcome: { status: "superseded", message: res.outcome.message },
+      };
     }
-  }
-  return out;
+    return res;
+  });
 }
 
 function formatSummary(strategy: JoinStrategy, results: readonly BatchChildResult[]): string {
   let out = `subagent.batch (${strategy}, ${results.length} task${results.length === 1 ? "" : "s"}):\n`;
   for (const r of results) {
-    const status = r.outcome.status === "ok" ? "ok" : r.outcome.status === "error" ? "error" : "cancelled";
-    out += `- [${status}] ${r.subagent} (${r.duration_ms}ms)\n`;
+    out += `- [${r.outcome.status}] ${r.subagent} (${r.duration_ms}ms)\n`;
     if (r.outcome.status === "ok") {
       out += indent(r.outcome.message);
     } else if (r.outcome.status === "error") {
       out += indent(`[warning] ${r.outcome.error}`);
     } else {
-      out += indent("(cancelled by race winner)");
+      // superseded: not the race winner, but it ran to completion — surface the
+      // real output and flag that any side effects already occurred.
+      out += indent("[note] superseded by the race winner, but this child ran to completion; any side effects already occurred:");
+      out += indent(r.outcome.message);
     }
   }
   return out;
