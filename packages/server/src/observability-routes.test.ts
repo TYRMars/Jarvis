@@ -223,6 +223,23 @@ test("runs returns matching rows and applies kind/outcome filters", async () => 
   await app.close();
 });
 
+test("runs ignores a negative limit instead of slicing a wrong subset", async () => {
+  const obs = new MemoryObservabilityStore();
+  await obs.appendRun(run("fs.read", "tool", "success", 10));
+  await obs.appendRun(run("shell.exec", "tool", "error", 50));
+  await obs.appendRun(run("jarvis.agent.run", "agent", "success", 900));
+  const app = await buildApp(emptyState({ observability: obs }));
+
+  // A negative `?limit=` must not reach `slice(0, -N)` and drop the newest rows.
+  const negative = await app.inject({
+    method: "GET",
+    url: "/v1/observability/runs?limit=-2",
+  });
+  assert.equal(negative.statusCode, 200);
+  assert.equal((negative.json() as { runs: ObservedRun[] }).runs.length, 3);
+  await app.close();
+});
+
 // ---------- tools / subagents summary ----------
 
 test("tools summary groups by name and computes rates / averages", async () => {

@@ -59,10 +59,10 @@ import type { AppState } from "./state.ts";
 
 /** Parse a `?limit=` style numeric query param. `undefined` when absent/NaN. */
 function parseLimit(raw: unknown): number | undefined {
-  if (typeof raw === "number" && Number.isFinite(raw)) return Math.trunc(raw);
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) return Math.trunc(raw);
   if (typeof raw === "string") {
     const n = Number.parseInt(raw, 10);
-    if (Number.isFinite(n)) return n;
+    if (Number.isFinite(n) && n >= 0) return n;
   }
   return undefined;
 }
