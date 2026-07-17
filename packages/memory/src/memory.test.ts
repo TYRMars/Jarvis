@@ -162,6 +162,34 @@ test("cache breakpoint protects pre-breakpoint turns over plain recency", () => 
   assert.ok(out.some((m) => m.role === "user" && m.content === "turn 3 user"), "recent turn kept");
 });
 
+test("breakpoint path: omitted marker sits at the gap, not above the cached prefix", () => {
+  // 5 turns; cache hint on turn 0's assistant → cached prefix is turn 0.
+  // Budget keeps the cached prefix (T0) plus the recent tail (T3, T4),
+  // dropping T1 and T2 — a NON-contiguous kept set with a hole in the middle.
+  // The marker must land AT that hole (after T0, before T3), not above T0.
+  const msgs: Message[] = [
+    systemMessage("sys"),
+    userMessage("turn 0 user"), withCache(assistantText("turn 0 reply"), "ephemeral"),
+    userMessage("turn 1 user"), assistantText("turn 1 reply"),
+    userMessage("turn 2 user"), assistantText("turn 2 reply"),
+    userMessage("turn 3 user"), assistantText("turn 3 reply"),
+    userMessage("turn 4 user"), assistantText("turn 4 reply"),
+  ];
+  const budget =
+    tokens(msgs.slice(0, 1)) + tokens(msgs.slice(1, 3)) + tokens(msgs.slice(7, 9)) + tokens(msgs.slice(9, 11));
+  const { out } = compact(msgs, budget, true, est);
+
+  // Cached prefix + recent tail survive; the middle turns are dropped.
+  assert.deepEqual(userTexts(out), ["turn 0 user", "turn 3 user", "turn 4 user"]);
+
+  const markerIdx = out.findIndex((m) => m.role === "system" && m.content.includes("omitted"));
+  const cachedIdx = out.findIndex((m) => m.role === "user" && m.content === "turn 0 user");
+  const tailIdx = out.findIndex((m) => m.role === "user" && m.content === "turn 3 user");
+  assert.ok(markerIdx !== -1, "marker present");
+  assert.ok(cachedIdx < markerIdx, "marker sits AFTER the cached prefix, not above it");
+  assert.ok(markerIdx < tailIdx, "marker sits BEFORE the recent tail (at the real gap)");
+});
+
 test("SlidingWindowMemory.compact applies the budget; withoutMarker suppresses the note", async () => {
   const msgs = [
     systemMessage("sys"),
