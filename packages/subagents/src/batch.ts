@@ -45,7 +45,13 @@ interface BatchInvocation {
 type BatchChildOutcome =
   | { status: "ok"; message: string }
   | { status: "error"; error: string }
-  | { status: "cancelled" };
+  // `race` join: a child that completed successfully but was not the first to
+  // finish. It genuinely ran its full inner loop (and any side effects — e.g. a
+  // write-capable subagent's file edits — persisted), so we keep its message and
+  // report it honestly as `superseded` rather than falsely claiming it was
+  // `cancelled`. There is no true cancellation here: all children run to
+  // completion (the SubAgent contract has no abort channel).
+  | { status: "superseded"; message: string };
 
 interface BatchChildResult {
   subagent: string;
@@ -207,38 +213,58 @@ function runChild(outerSink: SubAgentSink | undefined, sub: SubAgent, input: Sub
 }
 
 /**
- * Race: first successful child wins; the rest still finish (frames stream out)
- * but extra successes are demoted to `cancelled` so the aggregate keeps a
- * single primary. We await all (each is non-throwing) then post-process, which
- * keeps the wire output deterministic regardless of completion order.
+ * Race: the first successful child to *finish* wins; the others still run to
+ * completion (there is no abort channel into a child agent, so their side
+ * effects persist) and are reported as `superseded` — never as `cancelled`,
+ * which would tell the orchestrator that real, already-committed work never
+ * happened. The winner is chosen by genuine completion order, not array order:
+ * each task is non-throwing (runChildRecord captures errors), so we record the
+ * index of each as it settles. Output row order stays the input order for a
+ * deterministic wire shape.
  */
 async function collectRace(tasks: Array<Promise<BatchChildResult>>): Promise<BatchChildResult[]> {
-  const settled = await Promise.all(tasks);
-  let winnerSeen = false;
-  const out: BatchChildResult[] = [];
-  for (const res of settled) {
-    const isOk = res.outcome.status === "ok";
-    if (winnerSeen && isOk) {
-      out.push({ subagent: res.subagent, task: res.task, duration_ms: res.duration_ms, outcome: { status: "cancelled" } });
-    } else {
-      if (isOk) winnerSeen = true;
-      out.push(res);
+  const finishOrder: number[] = [];
+  const settled = await Promise.all(
+    tasks.map((task, i) => task.then((res) => {
+      finishOrder.push(i);
+      return res;
+    })),
+  );
+
+  // Winner = first child (in completion order) that succeeded.
+  let winnerIdx = -1;
+  for (const i of finishOrder) {
+    if (settled[i].outcome.status === "ok") {
+      winnerIdx = i;
+      break;
     }
   }
-  return out;
+
+  return settled.map((res, i) => {
+    if (i !== winnerIdx && res.outcome.status === "ok") {
+      return {
+        subagent: res.subagent,
+        task: res.task,
+        duration_ms: res.duration_ms,
+        outcome: { status: "superseded", message: res.outcome.message },
+      };
+    }
+    return res;
+  });
 }
 
 function formatSummary(strategy: JoinStrategy, results: readonly BatchChildResult[]): string {
   let out = `subagent.batch (${strategy}, ${results.length} task${results.length === 1 ? "" : "s"}):\n`;
   for (const r of results) {
-    const status = r.outcome.status === "ok" ? "ok" : r.outcome.status === "error" ? "error" : "cancelled";
-    out += `- [${status}] ${r.subagent} (${r.duration_ms}ms)\n`;
+    out += `- [${r.outcome.status}] ${r.subagent} (${r.duration_ms}ms)\n`;
     if (r.outcome.status === "ok") {
+      out += indent(r.outcome.message);
+    } else if (r.outcome.status === "superseded") {
+      // Still ran to completion; its side effects (if any) persisted.
+      out += indent("[superseded by race winner — this child still ran to completion]");
       out += indent(r.outcome.message);
     } else if (r.outcome.status === "error") {
       out += indent(`[warning] ${r.outcome.error}`);
-    } else {
-      out += indent("(cancelled by race winner)");
     }
   }
   return out;
