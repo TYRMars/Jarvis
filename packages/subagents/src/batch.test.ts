@@ -124,6 +124,30 @@ test("race returns at least one ok", async () => {
   assert.ok(okCount >= 1, out);
 });
 
+test("race reports a non-winning completed child as superseded, not cancelled", async () => {
+  // Both children complete successfully. Exactly one is the winner; the other
+  // ran its full loop (side effects persisted) so it must be reported honestly
+  // as `superseded` with its message preserved — never `cancelled`, which would
+  // tell the orchestrator the work never happened.
+  const tool = new SubAgentBatchTool(registryWithEcho(), "/tmp", 3);
+  const out = await tool.invoke({
+    tasks: [
+      { subagent: "echo", task: "fast" },
+      { subagent: "echo-2", task: "also-fast" },
+    ],
+    join: "race",
+  });
+  const okCount = (out.match(/\[ok\] /g) ?? []).length;
+  const supersededCount = (out.match(/\[superseded\] /g) ?? []).length;
+  assert.equal(okCount, 1, out);
+  assert.equal(supersededCount, 1, out);
+  assert.ok(!out.includes("[cancelled]"), out);
+  assert.ok(!out.toLowerCase().includes("cancelled by race winner"), out);
+  // The superseded child's real output is preserved, not discarded.
+  assert.ok(out.includes("echoed: fast"), out);
+  assert.ok(out.includes("echoed: also-fast"), out);
+});
+
 test("parameters schema is well-formed (object + required tasks)", () => {
   const tool = new SubAgentBatchTool(registryWithEcho(), "/tmp", 3);
   const p = tool.parameters as Record<string, unknown>;
