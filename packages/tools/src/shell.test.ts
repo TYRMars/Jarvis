@@ -128,6 +128,23 @@ test("reports the full observed byte count even after truncation", posix, async 
   assert.ok(out.includes("stdout truncated at 8"), `got: ${out}`);
 });
 
+test("caps multibyte stdout in UTF-8 bytes, not UTF-16 code units", posix, async () => {
+  const root = await tempRoot();
+  // Each CJADD char (中) is 3 UTF-8 bytes but 1 UTF-16 code unit. With a 16-byte
+  // cap, buffering must latch after ~5 chars (5*3+1=16 fits, 6th would exceed),
+  // not after 16 chars. The buffered payload must never exceed the byte cap.
+  const tool = new ShellExecTool({ root, maxBytes: 16 });
+  const out = await tool.invoke({ command: "printf '中%.0s' $(seq 1 60000)" });
+  assert.ok(out.includes("stdout truncated at 16"), `expected truncation marker: ${out}`);
+  // 60000 chars * 3 bytes + 1 stripped newline = 180001 observed bytes.
+  assert.ok(out.includes("--- stdout (180001 bytes) ---"), `byte count wrong: ${out.slice(0, 120)}`);
+  // The buffered stdout segment must be within the cap (well under the 180 KB line).
+  const startIdx = out.indexOf("---\n", out.indexOf("--- stdout")) + 4;
+  const endIdx = out.indexOf("\n[... stdout truncated");
+  const buffered = out.slice(startIdx, endIdx);
+  assert.ok(Buffer.byteLength(buffered, "utf8") <= 16, `buffered payload overran cap: ${Buffer.byteLength(buffered, "utf8")} bytes`);
+});
+
 test("missing command argument throws", async () => {
   const tool = new ShellExecTool({ root: "/tmp" });
   await assert.rejects(() => tool.invoke({}), /missing `command`/);
