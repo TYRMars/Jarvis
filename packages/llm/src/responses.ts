@@ -628,7 +628,15 @@ export class StreamAccumulator {
         }
         break;
       }
-      case "response.completed": {
+      // `response.completed` and `response.incomplete` are both terminal: the
+      // former on a clean finish, the latter when the turn is cut off by the
+      // output-token cap (status "incomplete",
+      // incomplete_details.reason "max_output_tokens"). Both must capture
+      // status/usage and finalise, otherwise a token-capped turn falls through
+      // to the body-close fallback with #status === null and finalises as
+      // "stop" instead of "length".
+      case "response.completed":
+      case "response.incomplete": {
         const response = ev.response ?? {};
         if (response.status != null) this.#status = response.status;
         if (response.incomplete_details?.reason != null) {
