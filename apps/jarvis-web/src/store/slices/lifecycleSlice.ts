@@ -206,6 +206,16 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
         activeRow.workspace_path ??
         (projectId ? s.projectsById[projectId]?.workspaces?.[0]?.path ?? null : null);
       const workspaceChanged = workspacePath !== s.socketWorkspace;
+      // When the active conversation's workspace is unchanged, only refresh the
+      // row list. Nulling the fetched WorkspaceInfo (branch/dirty state) or
+      // rebuilding the draft bindings here — as `setConvoRows` runs after every
+      // terminal WS frame, on boot, and on domain frames — would blank the
+      // branch chip (forcing a refetch + flicker) and clobber the user's
+      // in-progress draft mid-compose. Guard them the same way the heavier diff
+      // caches below already are.
+      if (!workspaceChanged) {
+        return { convoRows: rows, convoListLoading: false };
+      }
       return {
         convoRows: rows,
         convoListLoading: false,
@@ -214,9 +224,8 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
         socketWorkspaceInfo: null,
         draftWorkspacePath: workspacePath,
         draftWorkspaceInfo: null,
-        ...(workspaceChanged
-          ? { workspaceDiff: null, workspaceDiffFileCache: {} }
-          : {}),
+        workspaceDiff: null,
+        workspaceDiffFileCache: {},
       };
     }),
   setConvoListLoading: (v) => set({ convoListLoading: v }),
