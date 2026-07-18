@@ -264,8 +264,15 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     httpMaxBytes: parseIntOr(env.JARVIS_HTTP_MAX_BYTES, 256 * 1024),
   };
 
+  // Mirror the CLI composition root (`jarvis-cli/src/config.ts`): a non-positive
+  // or unparseable budget (`0`, negatives, or a typo like `8k` → `8`) disables
+  // memory rather than installing an effectively-zero-budget backend that would
+  // strip the agent's history down to the most-recent turn on every request.
   const memoryTokensRaw = firstNonEmpty(env, "JARVIS_MEMORY_TOKENS");
-  const memoryTokens = memoryTokensRaw === undefined ? undefined : parseIntOr(memoryTokensRaw, 0);
+  const memoryTokensParsed =
+    memoryTokensRaw === undefined ? undefined : parseIntOr(memoryTokensRaw, 0);
+  const memoryTokens =
+    memoryTokensParsed !== undefined && memoryTokensParsed > 0 ? memoryTokensParsed : undefined;
 
   const router: RouterConfigParsed = {
     enabled: truthy(env.JARVIS_ROUTER_ENABLED),
