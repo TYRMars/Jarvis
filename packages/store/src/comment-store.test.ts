@@ -58,6 +58,25 @@ export function contract(name: string, make: (dir: string) => Promise<CommentSto
     });
   });
 
+  test(`${name}: a throwing listener neither rejects create nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: CommentEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      const c = top("r1", "2026-06-16T10:00:00.000Z");
+      // The row is durably written before fan-out; a throwing subscriber must
+      // not turn a committed write into a rejected create, and listeners after
+      // it must still receive the event.
+      await store.create(c);
+      assert.equal((await store.listForRequirement("r1")).length, 1);
+      assert.equal(seen.length, 1);
+      assert.equal((seen[0] as Comment).id, c.id);
+    });
+  });
+
   test(`${name}: reply to a top-level comment is allowed`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

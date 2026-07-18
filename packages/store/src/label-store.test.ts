@@ -64,6 +64,25 @@ export function contract(name: string, make: (dir: string) => Promise<LabelStore
     });
   });
 
+  test(`${name}: a throwing listener neither rejects create nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: LabelEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      const l = label("p1", "Feature");
+      // The row is durably written before fan-out; a throwing subscriber must
+      // not turn a committed write into a rejected create, and listeners after
+      // it must still receive the event.
+      await store.create(l);
+      assert.equal((await store.listForProject("p1")).length, 1);
+      assert.equal(seen.length, 1);
+      assert.equal((seen[0] as Label).id, l.id);
+    });
+  });
+
   test(`${name}: get walks projects; undefined when absent`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
