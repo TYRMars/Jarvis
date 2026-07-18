@@ -525,9 +525,11 @@ export class MemoryWriteTool implements Tool {
     const scope: MemoryScope = scopeRaw !== undefined ? parseScopeArg(scopeRaw) : "workspace";
 
     const root = rootFor(this.#roots, scope);
-    const entry = entryPath(root, slug);
-    await atomicWrite(entry, content);
 
+    // Compute the merged index and enforce the caps BEFORE committing the body:
+    // MemoryReadTool reads `<slug>.md` independently of the index, so writing
+    // the body first and then throwing on a cap would orphan the `.md` and make
+    // memory.read/memory.list disagree on the error path.
     const existingIndex = await readIndex(root);
     const newIndex = mergeIndexLine(existingIndex, slug, summary);
     const lineCount = splitLines(newIndex).length;
@@ -541,6 +543,9 @@ export class MemoryWriteTool implements Tool {
         `memory index would exceed ${MAX_INDEX_BYTES} bytes — delete some entries first`,
       );
     }
+
+    const entry = entryPath(root, slug);
+    await atomicWrite(entry, content);
     await atomicWrite(indexPath(root), newIndex);
 
     return (

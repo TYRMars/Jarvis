@@ -18,6 +18,7 @@ import { ToolRegistry } from "@jarvis/core";
 import {
   MEMORY_DIR,
   MAX_ENTRY_BYTES,
+  MAX_INDEX_LINES,
   MemoryDeleteTool,
   MemoryIncludeAddTool,
   MemoryIncludeListTool,
@@ -153,6 +154,29 @@ test("write rejects oversized content", async () => {
     () => new MemoryWriteTool(wsRoots(root)).invoke({ slug: "big", summary: "big", content: huge }),
     /content too large/,
   );
+});
+
+test("write enforces the index-line cap before committing the body (no orphan .md)", async () => {
+  const root = await mkTmp();
+  const tool = new MemoryWriteTool(wsRoots(root));
+  // Fill the index to exactly MAX_INDEX_LINES entries.
+  for (let i = 0; i < MAX_INDEX_LINES; i++) {
+    await tool.invoke({ slug: `e${i}`, summary: `s${i}`, content: "." });
+  }
+  // The (MAX_INDEX_LINES + 1)-th distinct slug must be rejected on the cap...
+  await assert.rejects(
+    () => tool.invoke({ slug: "overflow", summary: "over", content: "body" }),
+    /exceed .* lines/,
+  );
+  // ...and must NOT leave an orphaned body file behind: the cap is enforced
+  // before the body is committed, so read/list stay consistent on the error path.
+  assert.equal(await pathExists(path.join(root, MEMORY_DIR, "overflow.md")), false);
+  await assert.rejects(
+    () => new MemoryReadTool(wsRoots(root)).invoke({ slug: "overflow" }),
+    /no memory entry/,
+  );
+  const list = await new MemoryListTool(wsRoots(root)).invoke({});
+  assert.ok(!list.includes("overflow"));
 });
 
 test("write rejects multi-line summary", async () => {

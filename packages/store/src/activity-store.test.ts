@@ -68,6 +68,24 @@ export function contract(name: string, make: (dir: string) => Promise<ActivitySt
       assert.equal(seen.length, 1);
     });
   });
+
+  test(`${name}: a throwing listener neither rejects the write nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const later: ActivityEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => later.push(e));
+      // The row is durably written before listeners fire; a throwing
+      // subscriber must not surface as a rejected append.
+      await store.append(act("r1", "2026-06-16T10:00:00.000Z"));
+      assert.equal((await store.listForRequirement("r1")).length, 1);
+      // The listener registered after the throwing one still received the event.
+      assert.equal(later.length, 1);
+      assert.equal(later[0]?.type, "appended");
+    });
+  });
 }
 
 contract("json-file", (dir) => JsonFileActivityStore.open(dir));
