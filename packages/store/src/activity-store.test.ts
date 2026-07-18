@@ -68,7 +68,20 @@ export function contract(name: string, make: (dir: string) => Promise<ActivitySt
       assert.equal(seen.length, 1);
     });
   });
+}
 
+contract("json-file", (dir) => JsonFileActivityStore.open(dir));
+contract("memory", () => Promise.resolve(new MemoryActivityStore()));
+
+// ---------- listener isolation (json-file + memory `Listeners`) ----------
+//
+// Scoped to the private `Listeners` class in these two backends; the SQLite
+// backend fans out via the shared `Fanout` (issue #340), so it is deliberately
+// not exercised here.
+for (const [name, make] of [
+  ["json-file", (dir: string) => JsonFileActivityStore.open(dir)],
+  ["memory", () => Promise.resolve(new MemoryActivityStore())],
+] as const) {
   test(`${name}: a throwing listener neither rejects the write nor starves later listeners`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
@@ -85,9 +98,6 @@ export function contract(name: string, make: (dir: string) => Promise<ActivitySt
     });
   });
 }
-
-contract("json-file", (dir) => JsonFileActivityStore.open(dir));
-contract("memory", () => Promise.resolve(new MemoryActivityStore()));
 
 // ---------- JSON-file-specific ----------
 

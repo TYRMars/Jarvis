@@ -64,22 +64,6 @@ export function contract(name: string, make: (dir: string) => Promise<LabelStore
     });
   });
 
-  test(`${name}: a throwing listener neither rejects the write nor starves later listeners`, async () => {
-    await withTempDir(async (dir) => {
-      const store = await make(dir);
-      const seen: LabelEvent[] = [];
-      store.subscribe(() => {
-        throw new Error("boom");
-      });
-      store.subscribe((e) => seen.push(e));
-      // The label is durably written before emit; a throwing subscriber must not
-      // surface as a rejected create, and the later listener still runs.
-      await store.create(label("p1", "Feature"));
-      assert.equal((await store.listForProject("p1")).length, 1);
-      assert.equal(seen.length, 1);
-    });
-  });
-
   test(`${name}: get walks projects; undefined when absent`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
@@ -159,3 +143,29 @@ export function contract(name: string, make: (dir: string) => Promise<LabelStore
 
 contract("json-file", (dir) => JsonFileLabelStore.open(dir));
 contract("memory", () => Promise.resolve(new MemoryLabelStore()));
+
+// ---------- listener isolation (json-file + memory `Listeners`) ----------
+//
+// Scoped to the private `Listeners` class in these two backends; the SQLite
+// backend fans out via the shared `Fanout` (issue #340), so it is deliberately
+// not exercised here.
+for (const [name, make] of [
+  ["json-file", (dir: string) => JsonFileLabelStore.open(dir)],
+  ["memory", () => Promise.resolve(new MemoryLabelStore())],
+] as const) {
+  test(`${name}: a throwing listener neither rejects the write nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: LabelEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      // The label is durably written before emit; a throwing subscriber must not
+      // surface as a rejected create, and the later listener still runs.
+      await store.create(label("p1", "Feature"));
+      assert.equal((await store.listForProject("p1")).length, 1);
+      assert.equal(seen.length, 1);
+    });
+  });
+}

@@ -58,23 +58,6 @@ export function contract(name: string, make: (dir: string) => Promise<CommentSto
     });
   });
 
-  test(`${name}: a throwing listener neither rejects the write nor starves later listeners`, async () => {
-    await withTempDir(async (dir) => {
-      const store = await make(dir);
-      const seen: CommentEvent[] = [];
-      store.subscribe(() => {
-        throw new Error("boom");
-      });
-      store.subscribe((e) => seen.push(e));
-      // The comment is durably written before emit; a throwing subscriber must
-      // not surface as a rejected create, and the later listener still runs.
-      const c = top("r1", "2026-06-16T10:00:00.000Z");
-      await store.create(c);
-      assert.equal((await store.listForRequirement("r1")).length, 1);
-      assert.equal(seen.length, 1);
-    });
-  });
-
   test(`${name}: reply to a top-level comment is allowed`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
@@ -191,3 +174,29 @@ export function contract(name: string, make: (dir: string) => Promise<CommentSto
 
 contract("json-file", (dir) => JsonFileCommentStore.open(dir));
 contract("memory", () => Promise.resolve(new MemoryCommentStore()));
+
+// ---------- listener isolation (json-file + memory `Listeners`) ----------
+//
+// Scoped to the private `Listeners` class in these two backends; the SQLite
+// backend fans out via the shared `Fanout` (issue #340), so it is deliberately
+// not exercised here.
+for (const [name, make] of [
+  ["json-file", (dir: string) => JsonFileCommentStore.open(dir)],
+  ["memory", () => Promise.resolve(new MemoryCommentStore())],
+] as const) {
+  test(`${name}: a throwing listener neither rejects the write nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: CommentEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      // The comment is durably written before emit; a throwing subscriber must
+      // not surface as a rejected create, and the later listener still runs.
+      await store.create(top("r1", "2026-06-16T10:00:00.000Z"));
+      assert.equal((await store.listForRequirement("r1")).length, 1);
+      assert.equal(seen.length, 1);
+    });
+  });
+}
