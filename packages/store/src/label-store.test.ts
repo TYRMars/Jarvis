@@ -20,7 +20,15 @@ function label(projectId: string, name: string, colour = "#aabbcc"): Label {
   return newLabel(projectId, name, colour);
 }
 
-export function contract(name: string, make: (dir: string) => Promise<LabelStore>): void {
+export function contract(
+  name: string,
+  make: (dir: string) => Promise<LabelStore>,
+  // The private `Listeners` class in the JSON-file/in-memory backends isolates
+  // throwing subscribers (issue #454). The SQLite backend fans out over the
+  // shared `Fanout`, whose isolation is tracked separately by #340, so it opts
+  // out of the isolation assertion below.
+  opts: { isolatesListeners?: boolean } = {},
+): void {
   test(`${name}: create then list-for-project, sorted case-insensitively by name`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
@@ -64,19 +72,21 @@ export function contract(name: string, make: (dir: string) => Promise<LabelStore
     });
   });
 
-  test(`${name}: a throwing listener neither rejects create nor starves later listeners`, async () => {
-    await withTempDir(async (dir) => {
-      const store = await make(dir);
-      const seen: LabelEvent[] = [];
-      store.subscribe(() => {
-        throw new Error("boom");
+  if (opts.isolatesListeners ?? true) {
+    test(`${name}: a throwing listener neither rejects create nor starves later listeners`, async () => {
+      await withTempDir(async (dir) => {
+        const store = await make(dir);
+        const seen: LabelEvent[] = [];
+        store.subscribe(() => {
+          throw new Error("boom");
+        });
+        store.subscribe((e) => seen.push(e));
+        await assert.doesNotReject(store.create(label("p1", "Feature")));
+        assert.equal(seen.length, 1);
+        assert.equal(seen[0]?.type, "created");
       });
-      store.subscribe((e) => seen.push(e));
-      await assert.doesNotReject(store.create(label("p1", "Feature")));
-      assert.equal(seen.length, 1);
-      assert.equal(seen[0]?.type, "created");
     });
-  });
+  }
 
   test(`${name}: get walks projects; undefined when absent`, async () => {
     await withTempDir(async (dir) => {
