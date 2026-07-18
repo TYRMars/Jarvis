@@ -80,6 +80,26 @@ test("loadConfig honors per-provider defaults + base-url + disable flags", () =>
   assert.equal(config.router.simple, "openai/gpt-4o-mini");
 });
 
+test("loadConfig treats a non-positive JARVIS_MEMORY_TOKENS as disabled", () => {
+  // Mirrors the CLI composition root: `0`, negatives, and unparseable values
+  // must disable memory (undefined) rather than install a ~zero-budget window
+  // that strips history on every turn.
+  for (const raw of ["0", "-100", "not-a-number", "  "]) {
+    const config = loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MEMORY_TOKENS: raw });
+    assert.equal(config.memoryTokens, undefined, `expected memory disabled for ${JSON.stringify(raw)}`);
+  }
+  // A positive budget is honored. A partial parse (`8k` → 8) stays consistent
+  // with the CLI's `parsePositiveInt`, which also keeps the leading integer.
+  assert.equal(
+    loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MEMORY_TOKENS: "3000" }).memoryTokens,
+    3000,
+  );
+  assert.equal(
+    loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MEMORY_TOKENS: "8k" }).memoryTokens,
+    8,
+  );
+});
+
 test("buildProvider selects + wraps a provider with an injected fetch", async () => {
   // An injected fetch proves we never touch the network: it throws if called.
   const fetchImpl = (() => {

@@ -174,3 +174,30 @@ export function contract(name: string, make: (dir: string) => Promise<CommentSto
 
 contract("json-file", (dir) => JsonFileCommentStore.open(dir));
 contract("memory", () => Promise.resolve(new MemoryCommentStore()));
+
+// Listener isolation lives in the private `Listeners` class of the JSON-file/
+// in-memory backends only; the SQLite backend fans out via the shared `Fanout`
+// (tracked separately by #340), so this stays out of the cross-backend contract.
+for (const [name, make] of [
+  ["json-file", (dir: string) => JsonFileCommentStore.open(dir)],
+  ["memory", () => Promise.resolve(new MemoryCommentStore())],
+] as const) {
+  test(`${name}: a throwing listener neither rejects create nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: CommentEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      const c = top("r1", "2026-06-16T10:00:00.000Z");
+      // The row is durably written before fan-out; a throwing subscriber must
+      // not turn a committed write into a rejected create, and listeners after
+      // it must still receive the event.
+      await store.create(c);
+      assert.equal((await store.listForRequirement("r1")).length, 1);
+      assert.equal(seen.length, 1);
+      assert.equal((seen[0] as Comment).id, c.id);
+    });
+  });
+}

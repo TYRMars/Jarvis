@@ -73,6 +73,34 @@ export function contract(name: string, make: (dir: string) => Promise<ActivitySt
 contract("json-file", (dir) => JsonFileActivityStore.open(dir));
 contract("memory", () => Promise.resolve(new MemoryActivityStore()));
 
+// Listener isolation is a property of the private `Listeners` class in the
+// JSON-file/in-memory backends only. The SQLite backend fans out via the
+// shared `Fanout` (tracked separately by #340), so this is deliberately not
+// part of the cross-backend `contract` above.
+for (const [name, make] of [
+  ["json-file", (dir: string) => JsonFileActivityStore.open(dir)],
+  ["memory", () => Promise.resolve(new MemoryActivityStore())],
+] as const) {
+  test(`${name}: a throwing listener neither rejects append nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: ActivityEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      const a = act("r1", "2026-06-16T10:00:00.000Z");
+      // The row is already durably written before fan-out; a throwing
+      // subscriber must not turn a committed write into a rejected append.
+      await store.append(a);
+      assert.equal((await store.listForRequirement("r1")).length, 1);
+      // The listener registered after the throwing one still received the event.
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0]?.id, a.id);
+    });
+  });
+}
+
 // ---------- JSON-file-specific ----------
 
 test("json-file: rows persist under activities/<reqId>/ and survive reopen", async () => {
