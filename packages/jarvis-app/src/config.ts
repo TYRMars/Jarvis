@@ -171,6 +171,19 @@ function parseIntOr(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * Parse a strictly-positive integer, returning `undefined` for anything else.
+ * Unlike `parseIntOr`, this rejects partial parses (`"8k"` → not `8`) by using
+ * `Number()` (whole-string) rather than `Number.parseInt` (prefix-tolerant),
+ * and rejects `0` / negatives / fractionals. Used where a value's *absence*
+ * (undefined) is meaningful — e.g. "no memory budget" vs. "a budget of 0".
+ */
+function parsePositiveIntOrUndefined(v: string | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v.trim());
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 /** Canonicalise the provider name; unknown values fall back to `openai`. */
 function parseProvider(v: string | undefined): ProviderKind {
   switch ((v ?? "").trim().toLowerCase()) {
@@ -265,7 +278,17 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
   };
 
   const memoryTokensRaw = firstNonEmpty(env, "JARVIS_MEMORY_TOKENS");
-  const memoryTokens = memoryTokensRaw === undefined ? undefined : parseIntOr(memoryTokensRaw, 0);
+  // Only a clean, strictly-positive integer installs a memory backend.
+  // Downstream, buildMemory (state.ts) treats only `undefined` as "no memory",
+  // so any positive-but-tiny budget would silently strip the agent's context
+  // down to the most-recent turn on every request. Guard against the three
+  // failure modes the loose `parseInt` fallback let through:
+  //   * `0` / negative                → memory should be off, not zero-budget.
+  //   * a partial-parse typo (`8k`)   → parseInt("8k") is 8, a nonsense budget.
+  //   * a fractional value (`2000.5`) → not a whole token count.
+  // Any of these (or a non-numeric value) disables memory. This is stricter
+  // than — and a superset of — the CLI composition root's positive guard.
+  const memoryTokens = parsePositiveIntOrUndefined(memoryTokensRaw);
 
   const router: RouterConfigParsed = {
     enabled: truthy(env.JARVIS_ROUTER_ENABLED),
