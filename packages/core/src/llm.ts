@@ -106,6 +106,12 @@ export async function* defaultCompleteStream(
   req: ChatRequest,
 ): AsyncGenerator<LlmChunk> {
   const resp = await provider.complete(req);
+  // Emit usage before `finish` — the `finish` chunk has no usage slot, so
+  // without this any provider delegating streaming to this helper would report
+  // zero token usage over SSE/WS while its blocking path reports full counts.
+  if (resp.usage) {
+    yield { type: "usage", usage: resp.usage };
+  }
   yield {
     type: "finish",
     message: resp.message,
