@@ -58,6 +58,20 @@ export function contract(name: string, make: (dir: string) => Promise<CommentSto
     });
   });
 
+  test(`${name}: a throwing listener neither rejects create nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: CommentEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => seen.push(e));
+      await assert.doesNotReject(store.create(top("r1", "2026-06-16T10:00:00.000Z")));
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0]?.type, "posted");
+    });
+  });
+
   test(`${name}: reply to a top-level comment is allowed`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
