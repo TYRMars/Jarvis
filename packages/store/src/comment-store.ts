@@ -44,7 +44,15 @@ class Listeners<E> {
   }
 
   emit(event: E): void {
-    for (const fn of [...this.#fns]) fn(event);
+    // Isolate each listener so a throwing subscriber can't reject the
+    // already-committed write or starve listeners registered after it.
+    for (const fn of [...this.#fns]) {
+      try {
+        fn(event);
+      } catch {
+        // swallow: the mutation already succeeded.
+      }
+    }
   }
 }
 

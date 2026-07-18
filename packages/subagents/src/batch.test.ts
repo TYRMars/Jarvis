@@ -133,6 +133,61 @@ test("parameters schema is well-formed (object + required tasks)", () => {
   assert.ok((p["required"] as string[]).includes("tasks"));
 });
 
+test("a queued child's duration_ms excludes its semaphore-queue wait (#452)", async (t) => {
+  // Deterministic clock so the assertion is exact, not wall-clock-dependent.
+  let now = 1000;
+  t.mock.method(Date, "now", () => now);
+
+  const gates: Array<() => void> = [];
+  class GatedAgent implements SubAgent {
+    readonly name = "g";
+    readonly description = "gated";
+    inputSchema(): JsonValue {
+      return { type: "object", properties: {}, required: [] };
+    }
+    invoke(): Promise<{ message: string }> {
+      return new Promise<void>((resolve) => gates.push(resolve)).then(() => ({ message: "ok" }));
+    }
+  }
+  const reg = new SubAgentRegistry();
+  reg.register(new GatedAgent());
+  const tool = new SubAgentBatchTool(reg, "/tmp", 1);
+
+  const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+  const until = async (cond: () => boolean): Promise<void> => {
+    for (let i = 0; i < 100 && !cond(); i++) await flush();
+    if (!cond()) throw new Error("condition never met");
+  };
+
+  const pending = tool.invoke({
+    tasks: [
+      { subagent: "g", task: "a" },
+      { subagent: "g", task: "b" },
+    ],
+    max_concurrency: 1,
+    join: "summarize",
+  });
+
+  // With cap 1, child A holds the only permit while child B waits in the
+  // semaphore queue.
+  await until(() => gates.length === 1);
+  // Simulate 1s elapsing while B is queued.
+  now += 1000;
+  // Release A -> B acquires the permit and captures its start time *now*.
+  gates.shift()?.();
+  await until(() => gates.length === 1);
+  // B does ~0 work: release it without advancing the clock.
+  gates.shift()?.();
+
+  const out = await pending;
+  // Durations appear in task order. A held the permit for 1000ms; B's measured
+  // duration must exclude the 1000ms it spent queued (pre-fix it read 1000).
+  const durations = [...out.matchAll(/\((\d+)ms\)/g)].map((m) => Number(m[1]));
+  assert.equal(durations.length, 2, out);
+  assert.equal(durations[0], 1000, `child A held the permit for 1000ms: ${out}`);
+  assert.equal(durations[1], 0, `child B's queue wait must be excluded: ${out}`);
+});
+
 test("concurrency cap is honoured (never more than `cap` children in flight)", async () => {
   // A subagent that holds a permit until released, tracking peak concurrency.
   let inFlight = 0;

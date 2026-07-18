@@ -53,9 +53,19 @@ conversationContract("sqlite", (dir) => Promise.resolve(SqliteConversationStore.
 projectContract("sqlite", (dir) => Promise.resolve(SqliteProjectStore.open(dbUrl(dir))));
 requirementContract("sqlite", (dir) => Promise.resolve(SqliteRequirementStore.open(dbUrl(dir))));
 runContract("sqlite", (dir) => Promise.resolve(SqliteRequirementRunStore.open(dbUrl(dir))));
-activityContract("sqlite", (dir) => Promise.resolve(SqliteActivityStore.open(dbUrl(dir))));
-commentContract("sqlite", (dir) => Promise.resolve(SqliteCommentStore.open(dbUrl(dir))));
-labelContract("sqlite", (dir) => Promise.resolve(SqliteLabelStore.open(dbUrl(dir))));
+// The SQLite activity/comment/label stores fan out over the shared `Fanout`
+// (event-source.ts), whose per-listener isolation is tracked by #340 — not the
+// private `Listeners` class fixed for these backends in #454. Opt out of the
+// isolation assertion here so it's asserted only where #454 applies.
+activityContract("sqlite", (dir) => Promise.resolve(SqliteActivityStore.open(dbUrl(dir))), {
+  isolatesListeners: false,
+});
+commentContract("sqlite", (dir) => Promise.resolve(SqliteCommentStore.open(dbUrl(dir))), {
+  isolatesListeners: false,
+});
+labelContract("sqlite", (dir) => Promise.resolve(SqliteLabelStore.open(dbUrl(dir))), {
+  isolatesListeners: false,
+});
 docContract("sqlite", (dir) => Promise.resolve(SqliteDocStore.open(dbUrl(dir))));
 projectMemoryContract("sqlite", (dir) => Promise.resolve(SqliteProjectMemoryStore.open(dbUrl(dir))));
 workflowContract("sqlite", (dir) => Promise.resolve(SqliteWorkflowStore.open(dbUrl(dir))));
