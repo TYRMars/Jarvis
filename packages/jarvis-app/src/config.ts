@@ -265,7 +265,12 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
   };
 
   const memoryTokensRaw = firstNonEmpty(env, "JARVIS_MEMORY_TOKENS");
-  const memoryTokens = memoryTokensRaw === undefined ? undefined : parseIntOr(memoryTokensRaw, 0);
+  // Mirror the CLI composition root (`jarvis-cli/src/config.ts`): a non-positive
+  // or unparseable budget (`0`, negatives, `abc`) disables memory rather than
+  // installing a ~zero-budget SlidingWindow/Summarizing memory that strips
+  // history down to the single most-recent turn on every request.
+  const memoryTokensParsed = memoryTokensRaw === undefined ? 0 : parseIntOr(memoryTokensRaw, 0);
+  const memoryTokens = memoryTokensParsed > 0 ? memoryTokensParsed : undefined;
 
   const router: RouterConfigParsed = {
     enabled: truthy(env.JARVIS_ROUTER_ENABLED),
