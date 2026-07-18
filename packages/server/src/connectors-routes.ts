@@ -468,6 +468,9 @@ export function registerConnectorsRoutes(app: FastifyInstance, state: AppState):
 
     // Resolve or create the target Jarvis project.
     let project;
+    // Set only when we auto-created the project below, so a failed pull can roll
+    // it back. A caller-supplied `project_id` is never deleted.
+    let autoCreatedProjectId: string | undefined;
     if (reqProjectId !== undefined) {
       let resolved;
       try {
@@ -493,12 +496,27 @@ export function registerConnectorsRoutes(app: FastifyInstance, state: AppState):
         return internalError(reply, e);
       }
       project = p;
+      autoCreatedProjectId = p.id;
     }
 
     const binding = newProjectBinding(cx.connector.id, account.id, project.id, remoteProjectId);
 
     const summary = await pullInto(state, reply, cx, auth, binding, requirements);
-    if (!summary) return reply; // response already sent
+    if (!summary) {
+      // pullInto already sent the response. Roll back the project we just
+      // auto-created so a transient pull failure (GitHub 502 / auth error)
+      // doesn't leave an orphan project with no binding — which a retry would
+      // otherwise duplicate, since the earlier duplicate-binding guard finds no
+      // binding to key off. Best-effort: the response is already committed.
+      if (autoCreatedProjectId) {
+        try {
+          await projects.delete(autoCreatedProjectId);
+        } catch {
+          // Swallow cleanup failure; nothing more we can do after the response.
+        }
+      }
+      return reply;
+    }
 
     try {
       await cx.projectBindings.upsert(binding);

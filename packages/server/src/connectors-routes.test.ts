@@ -22,6 +22,7 @@ import {
   type RequirementPush,
 } from "@jarvis/connectors";
 import { MemoryActivityStore, MemoryProjectStore, MemoryRequirementStore } from "@jarvis/store";
+import { newProject } from "@jarvis/project";
 import { registerConnectorsRoutes } from "./connectors-routes.ts";
 import type { AppState, ConnectorSecretResolver } from "./state.ts";
 
@@ -372,6 +373,56 @@ test("import creates a project, requirements, and bindings; Closed → done", as
     const acts = await built.activities!.listForRequirement(r.id);
     assert.ok(acts.some((a) => a.kind === "connector_sync"));
   }
+  await app.close();
+});
+
+test("import: pull failure rolls back the auto-created project (no orphan, retry doesn't duplicate)", async () => {
+  const mock = new MockConnector([issue("1", "open thing", "open")]);
+  mock.failWith = ConnectorError.auth("bad token"); // pullRequirements rejects
+  const built = makeState({ mock });
+  const app = await buildApp(built.state);
+  const accountId = await setupAccount(app);
+
+  const failed = await app.inject({
+    method: "POST",
+    url: "/v1/connectors/mock/import",
+    payload: { account_id: accountId, remote_project_id: "acme/demo" },
+  });
+  assert.equal(failed.statusCode, 502, failed.body);
+  // The project auto-created before the pull must have been rolled back.
+  assert.equal((await built.state.projects!.list(true, 100)).length, 0, "no orphan project after failed pull");
+
+  // A retry after the transient failure clears must create exactly one project.
+  mock.failWith = undefined;
+  const ok = await app.inject({
+    method: "POST",
+    url: "/v1/connectors/mock/import",
+    payload: { account_id: accountId, remote_project_id: "acme/demo" },
+  });
+  assert.equal(ok.statusCode, 201, ok.body);
+  assert.equal((await built.state.projects!.list(true, 100)).length, 1, "retry creates a single project, not a duplicate");
+  await app.close();
+});
+
+test("import: caller-supplied project_id is never rolled back on pull failure", async () => {
+  const mock = new MockConnector([issue("1", "open thing", "open")]);
+  const built = makeState({ mock });
+  const app = await buildApp(built.state);
+  const accountId = await setupAccount(app);
+
+  // Pre-create a project and import into it, then make the pull fail.
+  const seeded = newProject("kept", "pre-existing");
+  await built.state.projects!.save(seeded);
+  mock.failWith = ConnectorError.auth("bad token");
+
+  const failed = await app.inject({
+    method: "POST",
+    url: "/v1/connectors/mock/import",
+    payload: { account_id: accountId, remote_project_id: "acme/demo", project_id: seeded.id },
+  });
+  assert.equal(failed.statusCode, 502, failed.body);
+  // The caller-supplied project must survive — only auto-created projects roll back.
+  assert.ok(await built.state.projects!.load(seeded.id), "caller-supplied project is preserved");
   await app.close();
 });
 
