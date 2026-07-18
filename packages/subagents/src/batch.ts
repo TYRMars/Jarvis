@@ -176,8 +176,10 @@ async function runChildRecord(
   sub: SubAgent,
   input: SubAgentInput,
 ): Promise<BatchChildResult> {
-  const started = Date.now();
   const release = await sem.acquire();
+  // Start the clock only after acquiring the permit, so children that queue
+  // behind the concurrency cap don't fold their wait time into duration_ms.
+  const started = Date.now();
   let outcome: BatchChildOutcome;
   try {
     const message = await runChild(outerSink, sub, input);

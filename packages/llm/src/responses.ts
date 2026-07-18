@@ -628,7 +628,14 @@ export class StreamAccumulator {
         }
         break;
       }
-      case "response.completed": {
+      // `response.incomplete` is a *distinct* terminal event the Responses API
+      // emits when a turn is cut off by the output-token cap (status
+      // "incomplete", incomplete_details.reason "max_output_tokens"). It carries
+      // the same terminal fields as `response.completed`, so handle it here too;
+      // dropping it would finalise with #status null → finish_reason "stop"
+      // instead of "length", and lose the terminal usage.
+      case "response.completed":
+      case "response.incomplete": {
         const response = ev.response ?? {};
         if (response.status != null) this.#status = response.status;
         if (response.incomplete_details?.reason != null) {

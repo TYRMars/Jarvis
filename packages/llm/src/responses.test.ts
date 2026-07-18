@@ -366,6 +366,24 @@ test("stream: accumulates text deltas, finalises to stop on completed", () => {
   assert.equal((finish.message as AsstMsg).content, "Hello");
 });
 
+test("stream: response.incomplete (token cap) finalises to length + emits usage", () => {
+  const acc = new StreamAccumulator();
+  acc.ingest({ type: "response.output_text.delta", delta: "trunc" });
+  const out = acc.ingest({
+    type: "response.incomplete",
+    response: {
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      output: [],
+      usage: { input_tokens: 8, output_tokens: 4 },
+    },
+  });
+  assert.equal(out[0]?.type, "usage");
+  const finish = out.find((c) => c.type === "finish") as Extract<LlmChunk, { type: "finish" }>;
+  assert.equal(finish.finish_reason, "length");
+  assert.equal((finish.message as AsstMsg).content, "trunc");
+});
+
 test("stream: function-call round trip → tool_call deltas + parsed args in finish", () => {
   const acc = new StreamAccumulator();
   const added = acc.ingest({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "fc_1", name: "echo", arguments: "" } });

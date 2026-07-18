@@ -526,8 +526,10 @@ export class MemoryWriteTool implements Tool {
 
     const root = rootFor(this.#roots, scope);
     const entry = entryPath(root, slug);
-    await atomicWrite(entry, content);
 
+    // Compute the merged index and enforce both caps *before* committing the
+    // body, so a rejected write never orphans a `.md` file that memory.read
+    // would surface while memory.list (index-driven) never shows it.
     const existingIndex = await readIndex(root);
     const newIndex = mergeIndexLine(existingIndex, slug, summary);
     const lineCount = splitLines(newIndex).length;
@@ -541,6 +543,8 @@ export class MemoryWriteTool implements Tool {
         `memory index would exceed ${MAX_INDEX_BYTES} bytes — delete some entries first`,
       );
     }
+
+    await atomicWrite(entry, content);
     await atomicWrite(indexPath(root), newIndex);
 
     return (
