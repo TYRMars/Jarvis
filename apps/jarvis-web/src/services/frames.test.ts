@@ -304,6 +304,35 @@ describe("handleFrameForConversation: scoped background frames", () => {
       expect(last.content).toBe("B-text");
     }
   });
+
+  it("background frames do NOT paint the visible pane when activeId is null (welcome/new-chat)", () => {
+    // Regression: with no active conversation, the old swap-back was
+    // guarded on `before` truthiness, so a background stream's surface
+    // was restored into the visible slots and never swapped back — the
+    // empty welcome pane suddenly showed (and kept mutating with) the
+    // background transcript. The visible pane must stay empty.
+    useAppStore.setState({ activeId: null, conversationSurfaces: {} });
+    get().clearMessages();
+    expect(get().activeId).toBeNull();
+    expect(get().messages).toHaveLength(0);
+
+    handleFrameForConversation("bg", { type: "delta", content: "background-text" });
+
+    // Visible pane untouched: still the empty welcome screen.
+    expect(get().activeId).toBeNull();
+    expect(get().messages).toHaveLength(0);
+    // The transient sentinel snapshot must not leak into the surfaces map.
+    expect(Object.keys(get().conversationSurfaces)).toEqual(["bg"]);
+
+    // The background delta still landed in the isolated bg surface.
+    const restored = get().restoreConversationSurface("bg");
+    expect(restored).toBe(true);
+    const last = get().messages.at(-1);
+    expect(last?.kind).toBe("assistant");
+    if (last?.kind === "assistant") {
+      expect(last.content).toBe("background-text");
+    }
+  });
 });
 
 describe("handleFrame: forked + resumed + started", () => {
