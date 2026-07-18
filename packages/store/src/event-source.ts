@@ -12,10 +12,12 @@ import type { EventListener, EventSource, Unsubscribe } from "@jarvis/project";
  * A re-usable listener registry. Backends compose one of these and delegate
  * their `subscribe` to it, calling `emit` after each successful write.
  *
- * Delivery is synchronous fan-out in registration order. A listener that
- * throws would propagate out of `emit` (and thus out of the mutation that
- * triggered it) — backends call `emit` only after the durable write has
- * succeeded, mirroring Rust's "broadcast after commit" ordering.
+ * Delivery is synchronous fan-out in registration order. Backends call `emit`
+ * only after the durable write has succeeded, mirroring Rust's "broadcast after
+ * commit" ordering; because the mutation is already committed, a listener that
+ * throws must not propagate out of `emit` (which would spuriously reject the
+ * caller) nor starve listeners registered after it — so each delivery is
+ * isolated in try/catch.
  */
 export class Fanout<E> implements EventSource<E> {
   // Snapshot-on-emit so a listener that (un)subscribes during delivery does
@@ -36,7 +38,13 @@ export class Fanout<E> implements EventSource<E> {
   /** Fan `event` out to every currently-registered listener, synchronously. */
   emit(event: E): void {
     for (const listener of [...this.#listeners]) {
-      listener(event);
+      try {
+        listener(event);
+      } catch {
+        // Isolate listener faults; the mutation already committed, so a
+        // throwing subscriber must not reject the caller or starve later
+        // listeners.
+      }
     }
   }
 }

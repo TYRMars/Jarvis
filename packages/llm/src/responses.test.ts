@@ -366,6 +366,32 @@ test("stream: accumulates text deltas, finalises to stop on completed", () => {
   assert.equal((finish.message as AsstMsg).content, "Hello");
 });
 
+test("stream: response.incomplete (max_output_tokens) finalises to length, not stop", () => {
+  const acc = new StreamAccumulator();
+  assert.deepEqual(acc.ingest({ type: "response.output_text.delta", delta: "truncat" }), [
+    { type: "content_delta", content: "truncat" },
+  ]);
+  // Token-capped turn: server sends a distinct `response.incomplete` terminal
+  // event (not `response.completed`) before closing the body.
+  const out = acc.ingest({
+    type: "response.incomplete",
+    response: {
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      usage: { input_tokens: 8, output_tokens: 4 },
+      output: [],
+    },
+  });
+  // Usage on the terminal event must not be lost...
+  assert.equal(out.find((c) => c.type === "usage")?.type, "usage");
+  const finish = out.find((c) => c.type === "finish") as Extract<LlmChunk, { type: "finish" }>;
+  // ...and the truncated turn must finalise as "length" so the agent loop can
+  // continue it, rather than "stop" (a clean completion).
+  assert.equal(finish.finish_reason, "length");
+  assert.equal((finish.message as AsstMsg).content, "truncat");
+  assert.equal(acc.finished, true);
+});
+
 test("stream: function-call round trip → tool_call deltas + parsed args in finish", () => {
   const acc = new StreamAccumulator();
   const added = acc.ingest({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "fc_1", name: "echo", arguments: "" } });

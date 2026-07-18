@@ -64,6 +64,21 @@ export function contract(name: string, make: (dir: string) => Promise<LabelStore
     });
   });
 
+  test(`${name}: a throwing listener neither rejects create nor starves later listeners`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const later: LabelEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom");
+      });
+      store.subscribe((e) => later.push(e));
+      await store.create(label("p1", "Feature"));
+      assert.equal(later.length, 1);
+      assert.equal(later[0]?.type, "created");
+      assert.equal((await store.listForProject("p1")).length, 1);
+    });
+  });
+
   test(`${name}: get walks projects; undefined when absent`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
