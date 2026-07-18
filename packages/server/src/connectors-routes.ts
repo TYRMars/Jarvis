@@ -468,6 +468,10 @@ export function registerConnectorsRoutes(app: FastifyInstance, state: AppState):
 
     // Resolve or create the target Jarvis project.
     let project;
+    // Tracks a project this handler auto-created, so we can roll it back if the
+    // remote pull fails — otherwise a transient pull error leaves an orphan
+    // project, and a retry (finding no binding) creates a second one.
+    let autoCreated = false;
     if (reqProjectId !== undefined) {
       let resolved;
       try {
@@ -493,12 +497,25 @@ export function registerConnectorsRoutes(app: FastifyInstance, state: AppState):
         return internalError(reply, e);
       }
       project = p;
+      autoCreated = true;
     }
 
     const binding = newProjectBinding(cx.connector.id, account.id, project.id, remoteProjectId);
 
     const summary = await pullInto(state, reply, cx, auth, binding, requirements);
-    if (!summary) return reply; // response already sent
+    if (!summary) {
+      // pullInto already sent the error response. Roll back the project we just
+      // auto-created (never a caller-supplied one) so failed imports don't
+      // accumulate orphan projects; best-effort — the response is already out.
+      if (autoCreated) {
+        try {
+          await projects.delete(project.id);
+        } catch {
+          // ignore — nothing more we can surface on an already-sent response
+        }
+      }
+      return reply; // response already sent
+    }
 
     try {
       await cx.projectBindings.upsert(binding);

@@ -106,6 +106,9 @@ export async function* defaultCompleteStream(
   req: ChatRequest,
 ): AsyncGenerator<LlmChunk> {
   const resp = await provider.complete(req);
+  if (resp.usage) {
+    yield { type: "usage", usage: resp.usage };
+  }
   yield {
     type: "finish",
     message: resp.message,

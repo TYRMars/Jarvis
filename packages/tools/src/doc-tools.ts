@@ -465,10 +465,9 @@ export class DocUpsertTool implements Tool {
     if (archived !== undefined) {
       project.archived = archived;
     }
-    touchDocProject(project);
-    await this.#store.upsertProject(project);
-
-    let draft: DocDraft | undefined;
+    // Validate the draft content size *before* persisting the project, so an
+    // oversize body can't leave a phantom (create path) or partially-updated
+    // (update path) doc project committed while the tool reports failure.
     const content = asString(obj["content"]);
     if (content !== undefined) {
       const byteLen = Buffer.byteLength(content, "utf8");
@@ -477,6 +476,13 @@ export class DocUpsertTool implements Tool {
           `doc.upsert: content too large (${byteLen} bytes) — cap is ${MAX_DRAFT_BYTES} bytes`,
         );
       }
+    }
+
+    touchDocProject(project);
+    await this.#store.upsertProject(project);
+
+    let draft: DocDraft | undefined;
+    if (content !== undefined) {
       draft = newDocDraft(project.id, content);
       await this.#store.upsertDraft(draft);
     }

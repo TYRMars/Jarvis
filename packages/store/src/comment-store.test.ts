@@ -58,6 +58,26 @@ export function contract(name: string, make: (dir: string) => Promise<CommentSto
     });
   });
 
+  // Listener isolation (#454) is a property of the private `Listeners` class in
+  // the JSON-file / in-memory backends. The SQLite backend fans out over the
+  // shared `Fanout` (isolation tracked separately by #340), so this assertion
+  // is scoped to the non-sqlite backends.
+  if (name !== "sqlite") {
+    test(`${name}: a throwing subscriber neither rejects create nor starves later listeners`, async () => {
+      await withTempDir(async (dir) => {
+        const store = await make(dir);
+        const seen: CommentEvent[] = [];
+        store.subscribe(() => {
+          throw new Error("boom");
+        });
+        store.subscribe((e) => seen.push(e));
+        await store.create(top("r1", "2026-06-16T10:00:00.000Z"));
+        assert.equal(seen.length, 1);
+        assert.equal((await store.listForRequirement("r1")).length, 1);
+      });
+    });
+  }
+
   test(`${name}: reply to a top-level comment is allowed`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);
