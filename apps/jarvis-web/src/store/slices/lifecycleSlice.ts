@@ -206,6 +206,15 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
         activeRow.workspace_path ??
         (projectId ? s.projectsById[projectId]?.workspaces?.[0]?.path ?? null : null);
       const workspaceChanged = workspacePath !== s.socketWorkspace;
+      // Only tear down the cached workspace info / drafts / diff caches when the
+      // active conversation's workspace actually changed. `setConvoRows` runs on
+      // every `refreshConvoList()` (terminal WS frames, boot, domain frames), so
+      // nulling these unconditionally forced a branch-chip refetch flicker and
+      // clobbered user-edited drafts on every refresh. Keep all workspace-derived
+      // state guarded consistently, matching the diff-cache reset.
+      if (!workspaceChanged) {
+        return { convoRows: rows, convoListLoading: false };
+      }
       return {
         convoRows: rows,
         convoListLoading: false,
@@ -214,9 +223,8 @@ export const createLifecycleSlice: StateCreator<FullState, [], [], LifecycleSlic
         socketWorkspaceInfo: null,
         draftWorkspacePath: workspacePath,
         draftWorkspaceInfo: null,
-        ...(workspaceChanged
-          ? { workspaceDiff: null, workspaceDiffFileCache: {} }
-          : {}),
+        workspaceDiff: null,
+        workspaceDiffFileCache: {},
       };
     }),
   setConvoListLoading: (v) => set({ convoListLoading: v }),
