@@ -89,7 +89,10 @@ export class JsonFileConversationStore extends ConversationStoreBase {
       // skip .tmp files, sibling subdirs (projects/ etc.), non-.json.
       if (!name.endsWith(".json") || name.endsWith(".json.tmp")) continue;
       const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
-      if (!stored) continue; // directory entry or unparseable → skip
+      // Skip directory entries, unparseable files, and any non-conversation
+      // JSON that may share this dir (e.g. a legacy flat workspaces.json, #469):
+      // a real conversation record always carries a `messages` array.
+      if (!stored || !Array.isArray(stored.messages)) continue;
       records.push({
         id: stored.id,
         created_at: stored.created_at,

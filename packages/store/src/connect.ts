@@ -98,8 +98,8 @@ export async function connect(url: string): Promise<ConversationStore> {
  * SAME base dir, namespacing its own subdir (`conversations` flat under the
  * base, `projects/`, `requirements/`, `requirement_runs/`, `activities/`,
  * `comments/`, `labels/`, `docs/`, `project-memories/`, `workflows/` +
- * `workflow_runs/`, plus a flat `workspaces.json` for the recent-folders
- * registry). SQL schemes throw (deferred to P6).
+ * `workflow_runs/`, plus `workspaces/` for the recent-folders registry). SQL
+ * schemes throw (deferred to P6).
  */
 export async function connectAll(url: string): Promise<StoreBundle> {
   const scheme = url.split(":", 1)[0] ?? "";

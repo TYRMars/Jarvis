@@ -24,6 +24,7 @@
 // composition-root concern (the binary canonicalises before calling), so the
 // store keeps `touch(path, name?)` pure — a plain upsert+bump by path string —
 // which lets the memory + SQLite backends work without touching disk.
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { Database as Db } from "better-sqlite3";
 
@@ -128,18 +129,43 @@ export class JsonFileWorkspaceStore implements WorkspaceStore {
   }
 
   /**
-   * Open or create the registry at `<base>/workspaces.json`. A missing or
-   * unparseable file yields an empty registry (the Rust `open` semantics).
+   * Open or create the registry at `<base>/workspaces/workspaces.json`. A
+   * missing or unparseable file yields an empty registry (the Rust `open`
+   * semantics).
+   *
+   * The registry lives in its own `workspaces/` subdir — like every other
+   * domain store (`projects/`, `workflows/`, …) — so it never lands among the
+   * conversation store's flat `<id>.json` rows in `<base>`, where
+   * `JsonFileConversationStore.list` would parse it as a conversation and 500
+   * for the lifetime of the data dir (#469). A registry written by an older
+   * build to the flat `<base>/workspaces.json` is migrated in on first open.
    */
   static async open(base: string): Promise<JsonFileWorkspaceStore> {
-    await ensureDir(base);
-    const filePath = path.join(base, "workspaces.json");
-    const loaded = await readJsonFile<Partial<WorkspacesFile>>(filePath);
+    const dir = path.join(base, "workspaces");
+    await ensureDir(dir);
+    const filePath = path.join(dir, "workspaces.json");
+    let loaded = await readJsonFile<Partial<WorkspacesFile>>(filePath);
+    const legacyPath = path.join(base, "workspaces.json");
+    let migrated = false;
+    if (!loaded) {
+      const legacy = await readJsonFile<Partial<WorkspacesFile>>(legacyPath);
+      if (legacy) {
+        loaded = legacy;
+        migrated = true;
+      }
+    }
     const state: WorkspacesFile = {
       recent: loaded?.recent ?? [],
       by_conversation: loaded?.by_conversation ?? {},
     };
-    return new JsonFileWorkspaceStore(filePath, state);
+    const store = new JsonFileWorkspaceStore(filePath, state);
+    if (migrated) {
+      // Persist to the new subdir path FIRST, then drop the colliding flat
+      // file — so a crash mid-migration never loses the registry (#469).
+      await store.#flush();
+      await rm(legacyPath).catch(() => {});
+    }
+    return store;
   }
 
   async #flush(): Promise<void> {
