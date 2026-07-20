@@ -462,10 +462,15 @@ export class StreamAccumulator {
     this.#finished = true;
 
     const toolCalls: ToolCall[] = [];
-    for (const b of this.#toolCalls) {
-      if (b.id !== undefined && b.name !== undefined) {
+    for (const [index, b] of this.#toolCalls.entries()) {
+      // Skip placeholder slots created to pad `td.index` gaps — a real tool
+      // call always carries a name. OpenAI-compatible backends (Kimi/Ollama)
+      // often stream `{index, function:{name, arguments}}` with no `id`, so
+      // synthesise `call_<index>` when it's missing rather than dropping the
+      // call (mirrors the Google provider's `gem_<index>`).
+      if (b.name !== undefined) {
         try {
-          toolCalls.push(parseToolCall(b.id, b.name, b.arguments));
+          toolCalls.push(parseToolCall(b.id ?? `call_${index}`, b.name, b.arguments));
         } catch {
           // Drop malformed tool calls on the streaming path (Rust `.ok()`).
         }

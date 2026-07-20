@@ -73,6 +73,39 @@ test("accumulator: reassembles a tool call across chunks (args → parsed JSON)"
   assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
 });
 
+test("accumulator: synthesises call_<index> id when the stream omits one (Kimi/Ollama-style)", () => {
+  const acc = new StreamAccumulator();
+  const out = ingestAll(acc, [
+    // No `id` on any delta — OpenAI-compatible backends commonly stream just
+    // `{index, function:{name, arguments}}`.
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "echo", arguments: '{"text":"hi"}' } }] } }] },
+    { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+  ]);
+  const finish = out.at(-1)!;
+  assert.ok(finish.type === "finish");
+  assert.equal(finish.finish_reason, "tool_calls");
+  const m = finish.message as Extract<Message, { role: "assistant" }>;
+  assert.equal(m.tool_calls?.length, 1, "the tool call must survive despite the missing id");
+  assert.equal(m.tool_calls?.[0]?.id, "call_0");
+  assert.equal(m.tool_calls?.[0]?.name, "echo");
+  assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
+});
+
+test("accumulator: still drops placeholder padding slots that never carried a name", () => {
+  const acc = new StreamAccumulator();
+  // Only index 1 is a real call; index 0 is a padding slot with no name.
+  const out = ingestAll(acc, [
+    { choices: [{ delta: { tool_calls: [{ index: 1, function: { name: "echo", arguments: "{}" } }] } }] },
+    { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+  ]);
+  const finish = out.at(-1)!;
+  assert.ok(finish.type === "finish");
+  const m = finish.message as Extract<Message, { role: "assistant" }>;
+  assert.equal(m.tool_calls?.length, 1);
+  assert.equal(m.tool_calls?.[0]?.id, "call_1");
+  assert.equal(m.tool_calls?.[0]?.name, "echo");
+});
+
 test("accumulator: usage chunk surfaces before the held finish", () => {
   const acc = new StreamAccumulator();
   const first = acc.ingest({ choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] } as never);
