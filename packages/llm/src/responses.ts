@@ -70,8 +70,9 @@ function snapshotAuth(auth: ResponsesAuth): BearerSnapshot {
 /**
  * Run a refresh only if the in-memory token is still the one the caller saw —
  * concurrent 401s collapse into one network refresh and stale callers just
- * retry with the already-refreshed token. API-key auth can't refresh, so a 401
- * surfaces verbatim.
+ * retry with the already-refreshed token. API-key auth can't refresh; callers
+ * guard on `auth.kind` so a 401 surfaces verbatim rather than reaching the
+ * `api_key` arm, which throws defensively if ever called.
  */
 async function refreshIfUnchanged(auth: ResponsesAuth, expectedToken: string): Promise<void> {
   switch (auth.kind) {
@@ -259,7 +260,12 @@ export class ResponsesProvider implements LlmProvider {
         if (e instanceof ProviderError) throw e;
         throw new ProviderError(`transport: ${errorText(e)}`);
       }
-      if (resp.status === 401 && !triedRefresh) {
+      // Only OAuth tokens can be refreshed. For api-key auth a 401 is terminal,
+      // so fall through to the `!resp.ok` branch below — that reports the real
+      // status and upstream body (e.g. `{"error":{"message":…}}`) instead of a
+      // fixed "cannot refresh" string, consumes the body so undici releases the
+      // socket, and yields a message the fallback classifier recognises as auth.
+      if (resp.status === 401 && !triedRefresh && this.#cfg.auth.kind === "chatgpt_oauth") {
         triedRefresh = true;
         await refreshIfUnchanged(this.#cfg.auth, snapshot.token);
         continue;
