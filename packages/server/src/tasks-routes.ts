@@ -8,23 +8,22 @@
 // surfaced through their dedicated detail endpoints. The panel is "what's in
 // flight right now", not a history view.
 //
-// DEGRADED SOURCES (deferred): the Rust route ALSO aggregates from
-//   - `state.chat_runs` (the in-process ChatRunRegistry — `chat_run` entries), and
-//   - `state.mcp` (the MCP manager — `mcp_server` entries for stopped/unhealthy
-//      servers).
-// Neither subsystem exists on the Node AppState yet, so this port skips them and
-// aggregates only the sources that ARE present (subagent runs, requirement runs,
-// automations). When those subsystems land on AppState, add their collectors
-// here (and re-enable the `chat_run` branch of `taskMatchesConversation`). With
-// every source absent the result is an empty list (200, never 503).
+// SOURCES: this route aggregates from every subsystem present on AppState —
+//   - `state.chatRuns` (the in-process ChatRunRegistry — `chat_run` entries),
+//   - `state.subagentRuns` (subagent run ledger),
+//   - `state.requirementRuns` (auto-mode + manual requirement runs),
+//   - `state.mcpManager` (the MCP manager — `mcp_server` entries for stopped/
+//      unhealthy servers), and
+//   - `state.automations` (running scheduled tasks).
+// Each source is optional and skipped when absent; with every source absent the
+// result is an empty list (200, never 503).
 import type { FastifyInstance } from "fastify";
 import type { JsonValue } from "@jarvis/core";
 import type { AppState } from "./state.ts";
 
 /**
  * Source discriminator for a {@link TaskEntry}. The serde wire strings match
- * the Rust `TaskKind` (snake_case). `chat_run` / `mcp_server` are part of the
- * wire vocabulary but never produced here yet (deferred — see file header).
+ * the Rust `TaskKind` (snake_case).
  */
 export type TaskKind = "chat_run" | "subagent_run" | "requirement_run" | "mcp_server" | "automation_run";
 
@@ -85,10 +84,10 @@ function truncateTail(text: string): string {
 /**
  * Whether a `TaskEntry` is scoped to the requested conversation id. Mirrors
  * Rust's `task_matches_conversation`:
+ *   - `chat_run` matches by `id` (the run is keyed by conversation id);
  *   - subagent / requirement runs check `detail.conversation_id` when present;
- *   - automation runs never match (not conversation-scoped);
- *   - `chat_run` would match by `id` — deferred (chat runs aren't aggregated
- *     here yet), and `mcp_server` never matches.
+ *   - automation runs and `mcp_server` entries never match (not
+ *     conversation-scoped).
  */
 function taskMatchesConversation(task: TaskEntry, conversationId: string): boolean {
   switch (task.kind) {
@@ -115,7 +114,27 @@ function taskMatchesConversation(task: TaskEntry, conversationId: string): boole
 export async function collectTasks(state: AppState): Promise<TaskEntry[]> {
   const items: TaskEntry[] = [];
 
-  // chat_runs — DEFERRED: no ChatRunRegistry on AppState yet (see file header).
+  // Chat runs — optional in-process registry. `list(true)` already drops
+  // terminal rows; we keep the active-state guard so only running / waiting_*
+  // turns surface (mirrors the Rust collector). `status` is already the wire
+  // string in the Node registry, so no mapping is needed.
+  if (state.chatRuns) {
+    for (const r of state.chatRuns.list(/* activeOnly */ true)) {
+      if (r.status !== "running" && r.status !== "waiting_approval" && r.status !== "waiting_hitl") {
+        continue;
+      }
+      const label = r.current_tool ? `Chat · running ${r.current_tool}` : "Chat turn";
+      items.push({
+        kind: "chat_run",
+        id: r.conversation_id,
+        label,
+        status: r.status,
+        started_at: r.started_at,
+        updated_at: r.updated_at,
+        detail: r as unknown as JsonValue,
+      });
+    }
+  }
 
   // Subagent runs — optional store. The store returns every known run; we
   // surface only still-running rows.
@@ -171,7 +190,27 @@ export async function collectTasks(state: AppState): Promise<TaskEntry[]> {
     }
   }
 
-  // mcp_server — DEFERRED: no MCP manager on AppState yet (see file header).
+  // MCP server health — surface unhealthy / stopped servers as "tasks" so the
+  // operator can spot a wedged tool source. Cleanly-running servers are omitted:
+  // they aren't pending work, they're idle infrastructure. `McpServerInfo` has
+  // no timestamp today, so pin started/updated to now() (freshly-broken servers
+  // sort to the head).
+  if (state.mcpManager) {
+    for (const s of state.mcpManager.list()) {
+      if (s.status === "running") continue;
+      const label = s.status === "stopped" ? `MCP ${s.prefix} · stopped` : `MCP ${s.prefix} · unhealthy`;
+      const now = nowMs();
+      items.push({
+        kind: "mcp_server",
+        id: s.prefix,
+        label,
+        status: s.status,
+        started_at: now,
+        updated_at: now,
+        detail: s as unknown as JsonValue,
+      });
+    }
+  }
 
   // Automations flagged `running`.
   if (state.automations) {

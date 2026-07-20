@@ -20,7 +20,11 @@ import {
   markRunning,
   type AutomationStore,
 } from "@jarvis/automation";
+import { stdioTransport } from "@jarvis/mcp";
+import { ToolRegistry } from "@jarvis/core";
 import { registerTasksRoutes } from "./tasks-routes.ts";
+import { McpManager } from "./mcp-manager.ts";
+import { ChatRunRegistry } from "./chat-runs.ts";
 import type { AppState } from "./state.ts";
 
 function agentUnused(): never {
@@ -29,15 +33,19 @@ function agentUnused(): never {
 
 function makeState(
   opts: {
+    chatRuns?: ChatRunRegistry;
     subagentRuns?: SubAgentRunStore;
     requirementRuns?: RequirementRunStore;
+    mcpManager?: McpManager;
     automations?: AutomationStore;
   } = {},
 ): AppState {
   return {
     createAgent: agentUnused,
+    chatRuns: opts.chatRuns,
     subagentRuns: opts.subagentRuns,
     requirementRuns: opts.requirementRuns,
+    mcpManager: opts.mcpManager,
     automations: opts.automations,
   };
 }
@@ -113,6 +121,77 @@ test("a multibyte subagent task label truncates on a char boundary (no panic)", 
   assert.equal(items.length, 1);
   assert.equal(items[0]!.kind, "subagent_run");
   assert.ok(items[0]!.label.endsWith("…"), `expected ellipsis, got: ${items[0]!.label}`);
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// Chat runs
+// ---------------------------------------------------------------------------
+
+test("an active chat run surfaces as a chat_run task keyed by conversation id", async () => {
+  const chatRuns = new ChatRunRegistry();
+  chatRuns.start("conv-live");
+  chatRuns.event("conv-live", { type: "tool_start", name: "shell.exec" });
+  const app = await buildApp(makeState({ chatRuns }));
+  const res = await app.inject({ method: "GET", url: "/v1/tasks" });
+  assert.equal(res.statusCode, 200);
+  const items = (res.json() as { items: Array<Record<string, unknown>> }).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.kind, "chat_run");
+  assert.equal(items[0]!.id, "conv-live");
+  assert.equal(items[0]!.status, "running");
+  assert.equal(items[0]!.label, "Chat · running shell.exec");
+  await app.close();
+});
+
+test("a chat run with no current tool labels as 'Chat turn'; a finished one does not surface", async () => {
+  const chatRuns = new ChatRunRegistry();
+  chatRuns.start("conv-plain");
+  chatRuns.start("conv-done");
+  chatRuns.finish("conv-done", "completed");
+  const app = await buildApp(makeState({ chatRuns }));
+  const res = await app.inject({ method: "GET", url: "/v1/tasks" });
+  const items = (res.json() as { items: Array<Record<string, unknown>> }).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.id, "conv-plain");
+  assert.equal(items[0]!.label, "Chat turn");
+  await app.close();
+});
+
+test("?conversation filter matches a chat_run by id", async () => {
+  const chatRuns = new ChatRunRegistry();
+  chatRuns.start("conv-keep");
+  chatRuns.start("conv-other");
+  const app = await buildApp(makeState({ chatRuns }));
+  const res = await app.inject({ method: "GET", url: "/v1/tasks?conversation=conv-keep" });
+  const items = (res.json() as { items: Array<{ kind: string; id: string }> }).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.kind, "chat_run");
+  assert.equal(items[0]!.id, "conv-keep");
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// MCP servers (stopped / unhealthy surface; running is idle infra, omitted)
+// ---------------------------------------------------------------------------
+
+test("a stopped MCP server surfaces as an mcp_server task; the filter never matches it", async () => {
+  const mgr = new McpManager(new ToolRegistry());
+  // `enabled:false` records a stopped slot without spawning a child process.
+  await mgr.add({ prefix: "srv", transport: stdioTransport("echo"), enabled: false });
+  const app = await buildApp(makeState({ mcpManager: mgr }));
+
+  const res = await app.inject({ method: "GET", url: "/v1/tasks" });
+  const items = (res.json() as { items: Array<Record<string, unknown>> }).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.kind, "mcp_server");
+  assert.equal(items[0]!.id, "srv");
+  assert.equal(items[0]!.status, "stopped");
+  assert.equal(items[0]!.label, "MCP srv · stopped");
+
+  // mcp_server entries are not conversation-scoped → dropped by the filter.
+  const filtered = await app.inject({ method: "GET", url: "/v1/tasks?conversation=srv" });
+  assert.deepEqual((filtered.json() as { items: unknown[] }).items, []);
   await app.close();
 });
 
