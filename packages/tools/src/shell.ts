@@ -32,6 +32,9 @@ export interface ShellExecConfig {
 /** Accumulator state for one captured stream. */
 interface StreamBuf {
   buf: string;
+  /** UTF-8 byte length of `buf` (the kept prefix). */
+  bufBytes: number;
+  /** UTF-8 byte length of every observed line (including stripped newlines). */
   total: number;
   truncated: boolean;
 }
@@ -108,8 +111,8 @@ export class ShellExecTool implements Tool {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    const stdout: StreamBuf = { buf: "", total: 0, truncated: false };
-    const stderr: StreamBuf = { buf: "", total: 0, truncated: false };
+    const stdout: StreamBuf = { buf: "", bufBytes: 0, total: 0, truncated: false };
+    const stderr: StreamBuf = { buf: "", bufBytes: 0, total: 0, truncated: false };
     this.#accumulate(child.stdout, stdout);
     this.#accumulate(child.stderr, stderr);
 
@@ -171,18 +174,24 @@ export class ShellExecTool implements Tool {
    * (including the per-line `\n` that the line reader strips), and `buf` only
    * appends whole lines while under budget — once it would exceed the cap,
    * `truncated` latches and no further lines are kept.
+   *
+   * Sizes are measured in UTF-8 **bytes** (via {@link Buffer.byteLength}), not
+   * JS string `.length` (UTF-16 code units), so the cap and the reported
+   * "(N bytes)" match the Rust origin for multibyte output.
    */
   #accumulate(stream: NodeJS.ReadableStream | null, out: StreamBuf): void {
     if (!stream) return;
     let pending = "";
     const onLine = (line: string) => {
-      out.total += line.length + 1; // +1 for the stripped newline
+      const lineBytes = Buffer.byteLength(line, "utf8") + 1; // +1 for the stripped newline
+      out.total += lineBytes;
       if (out.truncated) return;
-      if (out.buf.length + line.length + 1 > this.#maxBytes) {
+      if (out.bufBytes + lineBytes > this.#maxBytes) {
         out.truncated = true;
       } else {
         out.buf += line;
         out.buf += "\n";
+        out.bufBytes += lineBytes;
       }
     };
     stream.setEncoding("utf8");

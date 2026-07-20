@@ -128,6 +128,18 @@ test("reports the full observed byte count even after truncation", posix, async 
   assert.ok(out.includes("stdout truncated at 8"), `got: ${out}`);
 });
 
+test("caps and counts multibyte output in UTF-8 bytes, not code units", posix, async () => {
+  const root = await tempRoot();
+  const tool = new ShellExecTool({ root, maxBytes: 8 });
+  // "中" is 3 UTF-8 bytes but a single UTF-16 code unit. Three of them = 9 bytes
+  // (+1 for the stripped newline = 10) → over the 8-byte cap, so truncation must
+  // latch. A `.length`-based cap would see only 3 code units (+1 = 4 ≤ 8) and
+  // wrongly buffer the whole ~9-byte line with no marker.
+  const out = await tool.invoke({ command: "printf '中中中'" });
+  assert.ok(out.includes("--- stdout (10 bytes) ---"), `got: ${out}`);
+  assert.ok(out.includes("stdout truncated at 8"), `got: ${out}`);
+});
+
 test("missing command argument throws", async () => {
   const tool = new ShellExecTool({ root: "/tmp" });
   await assert.rejects(() => tool.invoke({}), /missing `command`/);
