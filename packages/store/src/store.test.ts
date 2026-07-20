@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -126,6 +126,20 @@ test("json-file: ':' id writes a %3A filename on disk", async () => {
     await store.save("__memory__.summary:deadbeef", convo("s"));
     const files = await readdir(dir);
     assert.ok(files.includes("__memory__.summary%3Adeadbeef.json"));
+  });
+});
+
+test("json-file: list skips a non-conversation .json sharing the dir (#469)", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileConversationStore.open(dir);
+    await store.save("c1", convo("hello"));
+    // A legacy flat workspaces.json (no `messages`) parked in the conversation
+    // dir must not crash list — it used to `.length` an undefined field.
+    await writeFile(path.join(dir, "workspaces.json"), JSON.stringify({ recent: [], by_conversation: {} }));
+
+    const rows = await store.list(10);
+    assert.equal(rows.length, 1, "the stray file is skipped, not counted");
+    assert.equal(rows[0]?.id, "c1");
   });
 });
 

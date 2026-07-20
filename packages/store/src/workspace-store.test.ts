@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -134,12 +134,14 @@ test("json-file: persists recent + bindings across reopen", async () => {
   });
 });
 
-test("json-file: writes a single workspaces.json holding both collections", async () => {
+test("json-file: writes a single workspaces.json under the workspaces/ subdir", async () => {
   await withTempDir(async (dir) => {
     const store = await JsonFileWorkspaceStore.open(dir);
     await store.touch("/work/alpha", "Alpha");
     await store.bind("c-1", "/work/alpha");
-    const raw = await readFile(path.join(dir, "workspaces.json"), "utf8");
+    // #469: the registry lives in its own subdir, NOT flat in `dir` where the
+    // conversation store keeps its `<id>.json` rows.
+    const raw = await readFile(path.join(dir, "workspaces", "workspaces.json"), "utf8");
     const parsed = JSON.parse(raw) as {
       recent: { path: string; name: string }[];
       by_conversation: Record<string, string>;
@@ -147,6 +149,8 @@ test("json-file: writes a single workspaces.json holding both collections", asyn
     assert.equal(parsed.recent[0]?.path, "/work/alpha");
     assert.equal(parsed.recent[0]?.name, "Alpha");
     assert.equal(parsed.by_conversation["c-1"], "/work/alpha");
+    // Nothing is written flat into the base dir.
+    await assert.rejects(readFile(path.join(dir, "workspaces.json"), "utf8"));
   });
 });
 
@@ -155,5 +159,23 @@ test("json-file: missing file opens to an empty registry", async () => {
     const store = await JsonFileWorkspaceStore.open(dir);
     assert.deepEqual(await store.listRecent(), []);
     assert.equal(await store.lookup("anything"), undefined);
+  });
+});
+
+test("json-file: migrates a legacy flat workspaces.json and removes it (#469)", async () => {
+  await withTempDir(async (dir) => {
+    // Simulate a registry written by an older build directly into the base dir.
+    await writeFile(
+      path.join(dir, "workspaces.json"),
+      JSON.stringify({ recent: [{ path: "/work/legacy", name: "legacy" }], by_conversation: { "c-1": "/work/legacy" } }),
+    );
+
+    const store = await JsonFileWorkspaceStore.open(dir);
+    assert.deepEqual((await store.listRecent()).map((e) => e.path), ["/work/legacy"], "legacy recent migrated");
+    assert.equal(await store.lookup("c-1"), "/work/legacy", "legacy binding migrated");
+
+    // The colliding flat file is gone; the registry now lives in the subdir.
+    await assert.rejects(readFile(path.join(dir, "workspaces.json"), "utf8"), "flat file removed");
+    await readFile(path.join(dir, "workspaces", "workspaces.json"), "utf8");
   });
 });
