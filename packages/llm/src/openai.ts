@@ -462,13 +462,21 @@ export class StreamAccumulator {
     this.#finished = true;
 
     const toolCalls: ToolCall[] = [];
-    for (const b of this.#toolCalls) {
-      if (b.id !== undefined && b.name !== undefined) {
-        try {
-          toolCalls.push(parseToolCall(b.id, b.name, b.arguments));
-        } catch {
-          // Drop malformed tool calls on the streaming path (Rust `.ok()`).
-        }
+    for (const [index, b] of this.#toolCalls.entries()) {
+      // A slot with no `name` is only a placeholder pushed to pad the array up
+      // to a higher `index`; skip it. A real tool call always carries a name.
+      if (b.name === undefined) continue;
+      // OpenAI-compatible backends (Kimi/Ollama) commonly stream
+      // `{index, function:{name, arguments}}` deltas with no `id`. Synthesise a
+      // stable one from the slot index (cf. the Google provider's `gem_`) so the
+      // call survives instead of being silently dropped — which would otherwise
+      // leave `finish_reason: "tool_calls"` on an empty assistant message and the
+      // tool would never run.
+      const id = b.id ?? `call_${index}`;
+      try {
+        toolCalls.push(parseToolCall(id, b.name, b.arguments));
+      } catch {
+        // Drop malformed tool calls on the streaming path (Rust `.ok()`).
       }
     }
     this.#toolCalls = [];
