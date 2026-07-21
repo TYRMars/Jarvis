@@ -949,10 +949,17 @@ async function gitClone(url: string, branch: string | undefined, dest: string): 
  * a memory tree. `cacheRoot` is the directory under which git includes are
  * cached; local includes ignore it. Throws (user-facing) when the target can't
  * be resolved. Mirrors the Rust `resolve_include`.
+ *
+ * `opts.allowClone` (default `true`) controls whether an uncached git include
+ * may be fetched. The read-only, ungated `memory.include_list` tool passes
+ * `false` so that merely *listing* directives never performs a network
+ * `git clone` or writes to disk — it reports an uncached git include as
+ * unresolved rather than silently egressing to a directive-named host.
  */
 export async function resolveInclude(
   directive: IncludeDirective,
   cacheRoot: string,
+  opts: { allowClone?: boolean } = {},
 ): Promise<string> {
   if (directive.kind === "local_path") {
     return normaliseMemoryDir(expandTilde(directive.path));
@@ -960,8 +967,16 @@ export async function resolveInclude(
   const slug = directiveSlug(directive.url, directive.branch);
   const cacheDir = path.join(cacheRoot, slug);
   if (!(await pathExists(cacheDir))) {
+    if (opts.allowClone === false) {
+      throw new Error(
+        "git include not cached; run memory.include_refresh (or re-add via " +
+          "memory.include_add) to fetch it",
+      );
+    }
     try {
-      await fs.mkdir(cacheRoot, { recursive: true });
+      // 0o700: the fallback cache can live under a shared temp dir (see
+      // includeCacheRoot); keep private include repos out of other users' reach.
+      await fs.mkdir(cacheRoot, { recursive: true, mode: 0o700 });
     } catch (e) {
       throw new Error(`mkdir ${cacheRoot}: ${String(e)}`);
     }
@@ -1007,12 +1022,18 @@ export async function refreshGitCache(
  * tempdir); per the env-free convention we derive it from the configured
  * `userRoot` when present (`<userRoot>/.jarvis/include-cache`), otherwise fall
  * back to a tempdir under `os.tmpdir()`.
+ *
+ * The temp fallback is namespaced by uid so it is not a single predictable
+ * path shared across every local user (which another user could pre-create or
+ * read); combined with the 0o700 mkdir in {@link resolveInclude}, private
+ * include repos cloned here stay out of other users' reach (#473).
  */
-function includeCacheRoot(roots: MemoryRoots): string {
+export function includeCacheRoot(roots: MemoryRoots): string {
   if (roots.userRoot !== undefined) {
     return path.join(roots.userRoot, ".jarvis/include-cache");
   }
-  return path.join(os.tmpdir(), "jarvis-include-cache");
+  const uid = typeof process.getuid === "function" ? process.getuid() : "shared";
+  return path.join(os.tmpdir(), `jarvis-include-cache-${uid}`);
 }
 
 async function readOrEmpty(p: string): Promise<string> {
@@ -1130,7 +1151,10 @@ export class MemoryIncludeListTool implements Tool {
     for (const d of directives) {
       const kind = d.kind === "local_path" ? "local_path" : "git_url";
       try {
-        const p = await resolveInclude(d, cache);
+        // Never clone from the read-only, ungated list tool: uncached git
+        // includes report `resolves:false` instead of triggering a network
+        // fetch + disk write (#474).
+        const p = await resolveInclude(d, cache, { allowClone: false });
         items.push({ target: directiveAsWire(d), kind, resolves: true, path: p });
       } catch (e) {
         items.push({
