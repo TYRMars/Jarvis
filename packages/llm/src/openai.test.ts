@@ -73,6 +73,25 @@ test("accumulator: reassembles a tool call across chunks (args → parsed JSON)"
   assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
 });
 
+test("accumulator: tool call with no streamed id gets a synthesised id (Kimi/Ollama-style)", () => {
+  // OpenAI-compatible backends commonly stream `{index, function:{...}}` with
+  // no `id`. The call must survive finalisation (with a synthesised id) rather
+  // than being dropped while finish_reason stays "tool_calls".
+  const acc = new StreamAccumulator();
+  const out = ingestAll(acc, [
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "echo", arguments: '{"text":"hi"}' } }] } }] },
+    { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+  ]);
+  const finish = out.at(-1)!;
+  assert.ok(finish.type === "finish");
+  assert.equal(finish.finish_reason, "tool_calls");
+  const m = finish.message as Extract<Message, { role: "assistant" }>;
+  assert.equal(m.tool_calls?.length, 1);
+  assert.equal(m.tool_calls?.[0]?.id, "call_0"); // synthesised from the slot index
+  assert.equal(m.tool_calls?.[0]?.name, "echo");
+  assert.deepEqual(m.tool_calls?.[0]?.arguments, { text: "hi" });
+});
+
 test("accumulator: usage chunk surfaces before the held finish", () => {
   const acc = new StreamAccumulator();
   const first = acc.ingest({ choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] } as never);

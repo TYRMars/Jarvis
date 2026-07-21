@@ -483,18 +483,24 @@ test("complete: non-2xx surfaces status + body as ProviderError", async () => {
   await assert.rejects(() => provider.complete(req({ messages: [{ role: "user", content: "hi" }] })), /status 429: nope/);
 });
 
-test("complete: api-key 401 surfaces (refresh not possible)", async () => {
+test("complete: api-key 401 surfaces status + body verbatim (no refresh attempt)", async () => {
   let calls = 0;
   const provider = new ResponsesProvider(
     responsesOpenAiConfig("sk-test", {
       fetchImpl: async () => {
         calls += 1;
-        return new Response("unauthorized", { status: 401 });
+        return new Response('{"error":{"message":"invalid api key"}}', { status: 401 });
       },
     }),
   );
-  await assert.rejects(() => provider.complete(req({ messages: [{ role: "user", content: "hi" }] })), /API-key auth cannot refresh/);
-  // Refresh attempted once (the loop tries refreshIfUnchanged, which throws).
+  // api-key auth can't refresh, so a 401 falls through to the !resp.ok branch:
+  // the real status and upstream body reach the operator instead of a fixed
+  // "cannot refresh" string.
+  await assert.rejects(
+    () => provider.complete(req({ messages: [{ role: "user", content: "hi" }] })),
+    /status 401: .*invalid api key/,
+  );
+  // No refresh loop for api-key auth — the request is made exactly once.
   assert.equal(calls, 1);
 });
 

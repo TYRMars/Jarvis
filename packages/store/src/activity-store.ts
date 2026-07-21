@@ -49,8 +49,16 @@ class Listeners<E> {
 
   emit(event: E): void {
     // Iterate a snapshot so a listener that unsubscribes during delivery
-    // doesn't perturb the loop.
-    for (const fn of [...this.#fns]) fn(event);
+    // doesn't perturb the loop. Isolate each listener so a throwing subscriber
+    // (e.g. a WS bridge on a closed socket) neither rejects the already-
+    // committed write nor starves listeners registered after it.
+    for (const fn of [...this.#fns]) {
+      try {
+        fn(event);
+      } catch {
+        // Swallow listener faults; the store mutation already succeeded.
+      }
+    }
   }
 }
 
