@@ -28,6 +28,7 @@ import {
   MemoryWriteTool,
   addIncludeLine,
   directiveAsWire,
+  includeCacheRoot,
   parseIncludeDirectives,
   parseIncludeTarget,
   readIndex,
@@ -466,6 +467,58 @@ test("include_list reports resolution per entry", async () => {
   assert.equal(items[0]!.resolves, true);
   assert.equal(items[1]!.resolves, false);
   assert.ok(items[1]!.error!.includes("not found"));
+});
+
+test("resolveInclude does not clone an uncached git include when allowClone is false (#474)", async () => {
+  const cache = await mkTmp();
+  const before = await fs.readdir(cache);
+  await assert.rejects(
+    () =>
+      resolveInclude({ kind: "git_url", url: "https://example.invalid/repo.git" }, cache, {
+        allowClone: false,
+      }),
+    /not cached/,
+  );
+  // No disk mutation: the read path must not have written under the cache dir.
+  assert.deepEqual(await fs.readdir(cache), before);
+});
+
+test("include_list reports an uncached git include as unresolved without cloning (#474)", async () => {
+  const workspace = await mkTmp();
+  // userRoot present => a deterministic, inspectable cache root under the home tree.
+  const user = await mkTmp();
+  const mem = path.join(workspace, MEMORY_DIR);
+  await fs.mkdir(mem, { recursive: true });
+  await fs.writeFile(
+    path.join(mem, "MEMORY.md"),
+    "<!-- jarvis-include: git+https://example.invalid/repo.git -->\n",
+  );
+  const out = await new MemoryIncludeListTool(dualRoots(workspace, user)).invoke({});
+  const parsed = JSON.parse(out);
+  const items = parsed.items as Array<{ kind: string; resolves: boolean; error?: string }>;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.kind, "git_url");
+  assert.equal(items[0]!.resolves, false);
+  assert.ok(items[0]!.error!.includes("not cached"));
+  // The read-only list tool must not have created/populated the include cache.
+  await assert.rejects(() => fs.access(path.join(user, ".jarvis", "include-cache")));
+});
+
+test("includeCacheRoot temp fallback is uid-namespaced, not a shared predictable path (#473)", () => {
+  const root = includeCacheRoot({ workspaceRoot: "/ws" }); // no userRoot => temp fallback
+  assert.ok(root.startsWith(os.tmpdir()), `expected a tmpdir path, got ${root}`);
+  const base = path.basename(root);
+  // Must NOT be the bare shared path any local user could pre-create or read.
+  assert.notEqual(base, "jarvis-include-cache");
+  assert.ok(base.startsWith("jarvis-include-cache-"), `expected uid suffix, got ${base}`);
+  if (typeof process.getuid === "function") {
+    assert.equal(base, `jarvis-include-cache-${process.getuid()}`);
+  }
+  // With a userRoot, the cache stays under the user's own private home tree.
+  assert.equal(
+    includeCacheRoot({ workspaceRoot: "/ws", userRoot: "/home/u" }),
+    path.join("/home/u", ".jarvis/include-cache"),
+  );
 });
 
 test("include_remove strips a directive", async () => {
