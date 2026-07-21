@@ -212,7 +212,11 @@ function mergeIndexLine(existing: string | undefined, slug: string, summary: str
   const out: string[] = [];
   let replaced = false;
   for (const line of lines) {
-    if (line.includes(needle)) {
+    // Anchor to the end of the line: `](<slug>.md)` is always the terminal
+    // token of an index line, so an unanchored substring test would also match
+    // a *different* entry whose free-form summary happens to embed
+    // `](<slug>.md)` as markdown link text — clobbering an unrelated line.
+    if (line.trimEnd().endsWith(needle)) {
       out.push(newLine);
       replaced = true;
     } else {
@@ -239,7 +243,10 @@ function mergeIndexLine(existing: string | undefined, slug: string, summary: str
 function removeIndexLine(existing: string, slug: string): { body: string; removed: boolean } {
   const needle = `](${slug}.md)`;
   const all = splitLines(existing);
-  const kept = all.filter((line) => !line.includes(needle));
+  // Anchor to the end of the line (see `mergeIndexLine`): an unanchored
+  // substring test would drop unrelated entries whose summary embeds
+  // `](<slug>.md)` as markdown link text.
+  const kept = all.filter((line) => !line.trimEnd().endsWith(needle));
   const removed = kept.length < all.length;
   let joined = kept.join("\n");
   if (joined.length > 0 && !joined.endsWith("\n")) {
