@@ -238,11 +238,14 @@ export function Composer({ slashCommands, pickedRouting, metaChildren }: Props) 
               }
             }
             // Tab (no modifiers) cycles the permission mode, but only
-            // when the slash palette is closed so it doesn't steal the
-            // palette's accept-selection Tab above. Shift/Alt/Ctrl/Meta
-            // Tab is left alone (browser focus traversal).
+            // when the textarea is empty and the slash palette is closed
+            // so it doesn't steal the palette's accept-selection Tab
+            // above, hijack an indent mid-typing, or trap keyboard focus
+            // in the composer. Shift/Alt/Ctrl/Meta Tab is left alone
+            // (browser focus traversal).
             if (
               e.key === "Tab" &&
+              value.length === 0 &&
               !slashOpen &&
               !e.shiftKey &&
               !e.altKey &&

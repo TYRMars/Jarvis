@@ -3,6 +3,7 @@
 // composer footer with model menu + usage badge.
 
 import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import { Banner } from "./Banner";
 import { ChatHeader } from "./ChatHeader";
 import { FallbackBanner } from "./FallbackBanner";
@@ -29,6 +30,7 @@ import { useAppStore } from "../store/appStore";
 import { t } from "../utils/i18n";
 
 export function AppChatPane() {
+  const navigate = useNavigate();
   const pendingAsk = useAppStore((s) => {
     for (let i = s.hitls.length - 1; i >= 0; i--) {
       if (s.hitls[i].status === "pending") return s.hitls[i].request.id;
@@ -98,7 +100,7 @@ export function AppChatPane() {
                   <ModeBadge />
                   <PermissionModeChip />
                   <EffortLevelSelector />
-                  <ComposerToolButton label={t("chatCoreOpenDocs")} onClick={() => { window.location.href = "/docs"; }}>
+                  <ComposerToolButton label={t("chatCoreOpenDocs")} onClick={() => navigate("/docs")}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <path d="M8 6h8" />
                       <path d="M8 10h8" />
