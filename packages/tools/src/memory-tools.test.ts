@@ -136,6 +136,34 @@ test("delete removes body and index line", async () => {
   assert.ok(!(await pathExists(path.join(root, MEMORY_DIR, "a.md"))));
 });
 
+test("write does not clobber an entry whose summary embeds another slug's .md link", async () => {
+  const root = await mkTmp();
+  const tool = new MemoryWriteTool(wsRoots(root));
+  // `links` summary embeds `](guide.md)` as markdown link text.
+  await tool.invoke({ slug: "links", summary: "see [the guide](guide.md) for details", content: "." });
+  await tool.invoke({ slug: "guide", summary: "Y", content: "." });
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  const linksLines = index.split("\n").filter((l) => l.trimEnd().endsWith("](links.md)"));
+  assert.equal(linksLines.length, 1, `links line lost: ${JSON.stringify(index)}`);
+  assert.ok(linksLines[0]!.includes("see [the guide](guide.md) for details"));
+  const guideLines = index.split("\n").filter((l) => l.trimEnd().endsWith("](guide.md)"));
+  assert.equal(guideLines.length, 1, `guide line missing: ${JSON.stringify(index)}`);
+});
+
+test("delete does not remove an entry whose summary embeds the target's .md link", async () => {
+  const root = await mkTmp();
+  const tool = new MemoryWriteTool(wsRoots(root));
+  await tool.invoke({ slug: "links", summary: "see [the guide](guide.md) for details", content: "." });
+  await tool.invoke({ slug: "guide", summary: "Y", content: "." });
+  await new MemoryDeleteTool(wsRoots(root)).invoke({ slug: "guide" });
+  const index = await readIndex(root);
+  assert.ok(index !== undefined);
+  // The unrelated `links` entry survives; only `guide` is gone.
+  assert.ok(index.split("\n").some((l) => l.trimEnd().endsWith("](links.md)")), `links dropped: ${JSON.stringify(index)}`);
+  assert.ok(!index.split("\n").some((l) => l.trimEnd().endsWith("](guide.md)")), `guide kept: ${JSON.stringify(index)}`);
+});
+
 test("delete last entry clears index file", async () => {
   const root = await mkTmp();
   await new MemoryWriteTool(wsRoots(root)).invoke({ slug: "a", summary: "A", content: "." });
