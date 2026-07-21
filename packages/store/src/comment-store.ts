@@ -44,7 +44,16 @@ class Listeners<E> {
   }
 
   emit(event: E): void {
-    for (const fn of [...this.#fns]) fn(event);
+    // Snapshot so an unsubscribe during delivery doesn't perturb the loop, and
+    // isolate each listener so a throwing subscriber neither rejects the
+    // already-committed write nor starves later listeners.
+    for (const fn of [...this.#fns]) {
+      try {
+        fn(event);
+      } catch {
+        // Swallow listener faults; the store mutation already succeeded.
+      }
+    }
   }
 }
 

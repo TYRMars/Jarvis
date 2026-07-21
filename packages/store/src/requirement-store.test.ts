@@ -122,6 +122,22 @@ export function contract(name: string, make: (dir: string) => Promise<Backend>):
     });
   });
 
+  test(`${name}: a throwing listener is isolated — upsert still resolves and later listeners run`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: RequirementEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom"); // e.g. a WS bridge that fails to serialise
+      });
+      store.subscribe((ev) => seen.push(ev));
+      // The row is durably written before fan-out (Fanout.emit), so a throwing
+      // subscriber must neither reject upsert nor starve the listener after it.
+      await store.upsert(requirement("p1", "x"));
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0]?.type, "upserted");
+    });
+  });
+
   test(`${name}: upserted broadcast carries the WIRE shape (no skip/default fields)`, async () => {
     await withTempDir(async (dir) => {
       const store = await make(dir);

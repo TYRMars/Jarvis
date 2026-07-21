@@ -259,7 +259,11 @@ export class ResponsesProvider implements LlmProvider {
         if (e instanceof ProviderError) throw e;
         throw new ProviderError(`transport: ${errorText(e)}`);
       }
-      if (resp.status === 401 && !triedRefresh) {
+      // Only OAuth auth can refresh. For api-key auth a 401 must fall through
+      // to the `!resp.ok` branch so the real status and upstream error body
+      // (revoked key, wrong project/org, disabled account) surface verbatim —
+      // and so the response body is consumed rather than left pinning a socket.
+      if (resp.status === 401 && !triedRefresh && this.#cfg.auth.kind === "chatgpt_oauth") {
         triedRefresh = true;
         await refreshIfUnchanged(this.#cfg.auth, snapshot.token);
         continue;

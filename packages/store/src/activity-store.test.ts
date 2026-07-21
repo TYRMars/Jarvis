@@ -68,6 +68,22 @@ export function contract(name: string, make: (dir: string) => Promise<ActivitySt
       assert.equal(seen.length, 1);
     });
   });
+
+  test(`${name}: a throwing listener is isolated — append still resolves and later listeners run`, async () => {
+    await withTempDir(async (dir) => {
+      const store = await make(dir);
+      const seen: ActivityEvent[] = [];
+      store.subscribe(() => {
+        throw new Error("boom"); // e.g. a WS bridge on a closed socket
+      });
+      store.subscribe((e) => seen.push(e));
+      // The row is already durably written before fan-out, so a throwing
+      // subscriber must neither reject append nor starve the listener after it.
+      await store.append(act("r1", "2026-06-16T10:00:00.000Z"));
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0]?.type, "appended");
+    });
+  });
 }
 
 contract("json-file", (dir) => JsonFileActivityStore.open(dir));

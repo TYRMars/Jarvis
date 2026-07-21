@@ -462,15 +462,22 @@ export class StreamAccumulator {
     this.#finished = true;
 
     const toolCalls: ToolCall[] = [];
-    for (const b of this.#toolCalls) {
-      if (b.id !== undefined && b.name !== undefined) {
+    this.#toolCalls.forEach((b, index) => {
+      // A real tool call always carries a name; placeholder slots (created to
+      // pad `td.index` gaps) have neither name nor id — skip those. OpenAI-
+      // compatible backends (Kimi / Ollama) commonly stream
+      // `{index, function:{name, arguments}}` with NO `id`; synthesise one
+      // (like the Google provider's `gem_<index>`) so the call isn't dropped
+      // while `finish_reason` still says `tool_calls`, which would end the turn
+      // with an empty assistant message and never run the tool.
+      if (b.name !== undefined) {
         try {
-          toolCalls.push(parseToolCall(b.id, b.name, b.arguments));
+          toolCalls.push(parseToolCall(b.id ?? `call_${index}`, b.name, b.arguments));
         } catch {
           // Drop malformed tool calls on the streaming path (Rust `.ok()`).
         }
       }
-    }
+    });
     this.#toolCalls = [];
 
     const finishReason = mapFinishReason(this.#finishReason, toolCalls);
