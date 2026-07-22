@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { newConversation, userMessage, type Conversation } from "@jarvis/core";
-import { JsonFileConversationStore, encodeId } from "./json-file.ts";
+import { readFile } from "node:fs/promises";
+import { JsonFileConversationStore, atomicWrite, encodeId } from "./json-file.ts";
 import { MemoryConversationStore } from "./memory.ts";
 import { connect } from "./connect.ts";
 import { StoreError, type ConversationStore } from "./types.ts";
@@ -126,6 +127,31 @@ test("json-file: ':' id writes a %3A filename on disk", async () => {
     await store.save("__memory__.summary:deadbeef", convo("s"));
     const files = await readdir(dir);
     assert.ok(files.includes("__memory__.summary%3Adeadbeef.json"));
+  });
+});
+
+// ---------- atomicWrite concurrency (#502) ----------
+
+test("atomicWrite: concurrent writes to one target don't ENOENT — last-writer-wins", async () => {
+  await withTempDir(async (dir) => {
+    const target = path.join(dir, "row.json");
+    // With a shared `${target}.tmp` this deterministically ENOENTs on rename;
+    // a per-write staging name makes both settle and one of them wins.
+    const results = await Promise.allSettled([
+      atomicWrite(target, "a".repeat(4000)),
+      atomicWrite(target, "b".repeat(10)),
+      atomicWrite(target, "c".repeat(4000)),
+    ]);
+    for (const r of results) assert.equal(r.status, "fulfilled");
+    // The surviving file is one of the writes, intact (never a torn mix).
+    const contents = await readFile(target, "utf8");
+    assert.ok(
+      contents === "a".repeat(4000) || contents === "b".repeat(10) || contents === "c".repeat(4000),
+      "surviving file must be exactly one writer's full payload",
+    );
+    // No staging litter left behind.
+    const leftover = (await readdir(dir)).filter((n) => n.endsWith(".tmp"));
+    assert.deepEqual(leftover, []);
   });
 });
 
