@@ -280,6 +280,88 @@ test("runStream: plan/progress emitted during invoke surface between tool_start 
   assert.ok(progress > start && progress < end, "tool_progress lands between tool_start and tool_end");
 });
 
+// --- #494: finish_reason "length" carrying tool_calls ----------------------
+
+/** finish_reason "length" WITH a well-formed tool_calls array (the #494 shape). */
+function lengthWithToolCall(id: string, name: string, args: JsonValue): ChatResponse {
+  return { message: { role: "assistant", tool_calls: [{ id, name, arguments: args }] }, finish_reason: "length" };
+}
+
+test("run: length_limited turn carrying tool_calls dispatches them, then ends (#494)", async () => {
+  // A single turn: output cap hit ("length") but the model emitted a valid
+  // tool call. It must be answered so the persisted history is a valid shape.
+  const provider = new ScriptedProvider([lengthWithToolCall("c1", "echo", { text: "hi" })]);
+  const tool = new EchoTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+  const conv: Conversation = { messages: [userMessage("go")] };
+
+  const outcome = await agent.run(conv);
+
+  assert.deepEqual(outcome, { kind: "length_limited", iterations: 1 });
+  assert.equal(tool.calls, 1); // the call was dispatched despite finish_reason "length"
+  // Critical: the conversation ends with the tool reply, NOT a dangling tool_calls
+  // assistant message that both OpenAI and Anthropic 400 on the next turn.
+  assert.equal(conv.messages.at(-1)?.role, "tool");
+  assert.equal((conv.messages.at(-1) as { content: string }).content, "echo: hi");
+});
+
+test("runStream: length_limited turn with tool_calls answers them before done (#494)", async () => {
+  const provider = new ScriptedProvider([lengthWithToolCall("c1", "echo", { text: "hi" })]);
+  const tool = new EchoTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+
+  const done = events.find((e) => e.type === "done") as Extract<AgentEvent, { type: "done" }>;
+  assert.ok(done, "run terminates with a done event");
+  assert.equal(done.outcome.kind, "length_limited");
+  assert.equal(tool.calls, 1);
+  assert.ok(events.some((e) => e.type === "tool_end" && e.name === "echo"));
+  // The saved conversation ends with the tool reply — a valid, resumable shape.
+  assert.equal(done.conversation.messages.at(-1)?.role, "tool");
+});
+
+// --- #495: usage attributed to the model that produced the tokens -----------
+
+test("runStream: usage prefers chunk.model over the configured model (#495)", async () => {
+  // A routing provider stamps the routed tier target onto the usage chunk; the
+  // loop must surface that, not the pre-routing config.model.
+  const provider: LlmProvider = {
+    async complete() {
+      return stopResponse("done");
+    },
+    async *completeStream() {
+      yield { type: "usage", usage: { prompt_tokens: 40000, completion_tokens: 6000 }, model: "claude-opus-4" };
+      yield { type: "finish", message: assistantText("done"), finish_reason: "stop" };
+    },
+  };
+  const agent = new Agent(provider, defaultAgentConfig("gpt-4o-mini"));
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+  const usage = events.find((e) => e.type === "usage") as Extract<AgentEvent, { type: "usage" }>;
+  assert.ok(usage, "a usage event is emitted");
+  assert.equal(usage.model, "claude-opus-4"); // routed model, not "gpt-4o-mini"
+  assert.equal(usage.prompt_tokens, 40000);
+});
+
+test("runStream: usage falls back to config.model when the chunk omits it (#495)", async () => {
+  const provider: LlmProvider = {
+    async complete() {
+      return stopResponse("done");
+    },
+    async *completeStream() {
+      yield { type: "usage", usage: { prompt_tokens: 10 } };
+      yield { type: "finish", message: assistantText("done"), finish_reason: "stop" };
+    },
+  };
+  const agent = new Agent(provider, defaultAgentConfig("gpt-4o-mini"));
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+  const usage = events.find((e) => e.type === "usage") as Extract<AgentEvent, { type: "usage" }>;
+  assert.ok(usage);
+  assert.equal(usage.model, "gpt-4o-mini");
+});
+
 test("runStream: deny emits approval_request → approval_decision → denied tool_end", async () => {
   const provider = new ScriptedProvider([toolCallResponse("c1", "fs.write", {}), stopResponse("ok")]);
   const tool = new GatedTool();

@@ -149,22 +149,29 @@ export class RoutingProvider implements LlmProvider {
     const routed = this.#rewrite(req, name, model);
     const inner = await provider.completeStream(routed);
     // Mirror the blocking path: re-stamp the terminal Finish's response_id with
-    // the routed provider so chaining stays correct.
-    return restampStream(inner, name);
+    // the routed provider so chaining stays correct, and tag usage chunks with
+    // the routed model so token accounting is attributed correctly (#495).
+    return restampStream(inner, name, model);
   }
 }
 
 /**
- * Re-stamp the terminal `finish` chunk's `response_id` with the routed
- * provider name, forwarding every other chunk untouched.
+ * Re-stamp the terminal `finish` chunk's `response_id` with the routed provider
+ * name and tag `usage` chunks with the routed `model`, forwarding every other
+ * chunk untouched. The downstream provider never knows the tier target, so
+ * without this the agent loop stamps usage with the stale pre-routing model and
+ * the UsagePanel prices it against the wrong model (#495).
  */
 async function* restampStream(
   inner: AsyncIterable<LlmChunk>,
   name: string,
+  model: string,
 ): AsyncGenerator<LlmChunk> {
   for await (const chunk of inner) {
     if (chunk.type === "finish" && chunk.response_id != null) {
       yield { ...chunk, response_id: stampResponseId(name, chunk.response_id) };
+    } else if (chunk.type === "usage") {
+      yield { ...chunk, model };
     } else {
       yield chunk;
     }

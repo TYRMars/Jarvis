@@ -363,3 +363,34 @@ test("completeStream rewrites the model, delegates, and re-stamps the finish id"
   // Finish id re-stamped with the routed provider.
   assert.equal(last.response_id, stampResponseId("anthropic", "resp_xyz"));
 });
+
+/** Emits a usage chunk (no model) then a finish, to test usage re-stamping. */
+class UsageProvider implements LlmProvider {
+  complete(): Promise<ChatResponse> {
+    return Promise.resolve({ message: assistantText("done"), finish_reason: "stop" });
+  }
+  completeStream(): AsyncIterable<LlmChunk> {
+    return (async function* (): AsyncGenerator<LlmChunk> {
+      yield { type: "usage", usage: { prompt_tokens: 40000, completion_tokens: 6000 } };
+      yield { type: "finish", message: assistantText("done"), finish_reason: "stop" };
+    })();
+  }
+}
+
+test("completeStream tags the usage chunk with the routed model (#495)", async () => {
+  const map = new Map<string, LlmProvider>([["anthropic", new UsageProvider()]]);
+  const cfg = new RouterConfig(modelRef("openai", "gpt-4o-mini")).withTier(
+    "complex",
+    modelRef("anthropic", "claude-opus"),
+  );
+  const rp = new RoutingProvider(new RecordingProvider("fb"), map, cfg, new FixedClassifier("complex"));
+
+  const stream = await rp.completeStream({ model: "gpt-4o-mini", messages: [] });
+  let usage: LlmChunk | undefined;
+  for await (const c of stream) if (c.type === "usage") usage = c;
+
+  assert.ok(usage && usage.type === "usage");
+  // The downstream provider left model unset; the router stamps the tier target.
+  assert.equal(usage.model, "claude-opus");
+  assert.equal(usage.usage.prompt_tokens, 40000);
+});

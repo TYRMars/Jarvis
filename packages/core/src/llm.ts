@@ -77,6 +77,11 @@ export interface ChatResponse {
  * One piece of a streamed response. Providers emit `content_delta` per token,
  * optionally `tool_call_delta` for argument assembly, may emit one `usage`,
  * and finally exactly one `finish` carrying the reconstructed message.
+ *
+ * The `usage` chunk's optional `model` names the model that actually produced
+ * the tokens. Plain providers leave it unset (the caller falls back to the
+ * request model); a routing provider sets it to the routed tier target so token
+ * usage is attributed to the model that really ran, not the pre-routing one.
  */
 export type LlmChunk =
   | { type: "content_delta"; content: string }
@@ -87,7 +92,7 @@ export type LlmChunk =
       name?: string;
       arguments_fragment?: string;
     }
-  | { type: "usage"; usage: Usage }
+  | { type: "usage"; usage: Usage; model?: string }
   | { type: "finish"; message: Message; finish_reason: FinishReason; response_id?: string | null };
 
 export interface LlmProvider {
