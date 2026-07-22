@@ -89,16 +89,27 @@ export class JsonFileConversationStore extends ConversationStoreBase {
     for (const name of names) {
       // skip .tmp files, sibling subdirs (projects/ etc.), non-.json.
       if (!name.endsWith(".json") || name.endsWith(".json.tmp")) continue;
-      const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
-      if (!stored) continue; // directory entry or unparseable → skip
-      records.push({
-        id: stored.id,
-        created_at: stored.created_at,
-        updated_at: stored.updated_at,
-        message_count: stored.messages.length,
-        project_id: stored.project_id ?? null,
-        lifecycle: stored.lifecycle ?? "active",
-      });
+      try {
+        const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
+        if (!stored) continue; // directory entry or unparseable → skip
+        // Shape-guard before dereferencing: a well-formed JSON object of the
+        // wrong shape (e.g. workspaces.json / a foreign row / a truncated but
+        // parseable write) parses fine but has no `messages` array. Skip it
+        // rather than letting `stored.messages.length` throw and 500 the whole
+        // listing. Matches activity-store / observability's per-file tolerance.
+        if (typeof stored.id !== "string" || !Array.isArray(stored.messages)) continue;
+        records.push({
+          id: stored.id,
+          created_at: stored.created_at,
+          updated_at: stored.updated_at,
+          message_count: stored.messages.length,
+          project_id: stored.project_id ?? null,
+          lifecycle: stored.lifecycle ?? "active",
+        });
+      } catch {
+        // One bad entry must not kill the listing.
+        continue;
+      }
     }
     // Newest first by updated_at (RFC-3339 strings sort lexicographically).
     records.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));

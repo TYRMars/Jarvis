@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -126,6 +126,28 @@ test("json-file: ':' id writes a %3A filename on disk", async () => {
     await store.save("__memory__.summary:deadbeef", convo("s"));
     const files = await readdir(dir);
     assert.ok(files.includes("__memory__.summary%3Adeadbeef.json"));
+  });
+});
+
+// Regression for #501: a foreign-but-well-formed .json in the base dir (e.g.
+// workspaces.json flushed there) has no `messages` array. list() must skip it,
+// not throw a TypeError that permanently 500s GET /v1/conversations.
+test("json-file: list skips foreign/malformed .json without throwing", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileConversationStore.open(dir);
+    await store.save("real-convo", convo("hi"));
+    // Mimic JsonFileWorkspaceStore flushing its registry into the same dir.
+    await writeFile(path.join(dir, "workspaces.json"), JSON.stringify({ recent: [], by_conversation: {} }));
+    // A row that parses but is the wrong shape / truncated.
+    await writeFile(path.join(dir, "junk.json"), JSON.stringify({ id: "junk", created_at: "x" }));
+    // Not even an object.
+    await writeFile(path.join(dir, "array.json"), JSON.stringify([1, 2, 3]));
+
+    const rows = await store.list(50);
+    assert.deepEqual(
+      rows.map((r) => r.id),
+      ["real-convo"],
+    );
   });
 });
 
