@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -126,6 +126,36 @@ test("json-file: ':' id writes a %3A filename on disk", async () => {
     await store.save("__memory__.summary:deadbeef", convo("s"));
     const files = await readdir(dir);
     assert.ok(files.includes("__memory__.summary%3Adeadbeef.json"));
+  });
+});
+
+// #501: a foreign-but-well-formed JSON file in the base dir (e.g. workspaces.json
+// flushed there) must not throw and permanently break the whole listing.
+test("json-file: list survives a foreign JSON file of the wrong shape", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileConversationStore.open(dir);
+    await store.save("real-convo", convo("hi"));
+    // No `messages` array — the old code did `stored.messages.length` and threw.
+    await writeFile(path.join(dir, "workspaces.json"), JSON.stringify({ recent: [], by_conversation: {} }));
+    const rows = await store.list(50);
+    assert.deepEqual(rows.map((r) => r.id), ["real-convo"]);
+  });
+});
+
+// #502: concurrent writes to the same id must not deterministically ENOENT on
+// rename (shared `.tmp`); last-writer-wins, both settle, neither is dropped.
+test("json-file: concurrent saves to one id don't drop a write via a shared tmp", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileConversationStore.open(dir);
+    await Promise.all([
+      store.save("c1", convo("a".repeat(4000))),
+      store.save("c1", convo("b")),
+    ]);
+    // Both resolved without ENOENT; the row is present and readable.
+    assert.equal((await store.load("c1"))?.messages.length, 1);
+    // No staging litter left behind.
+    const leftover = (await readdir(dir)).filter((n) => n.endsWith(".tmp"));
+    assert.deepEqual(leftover, []);
   });
 });
 
