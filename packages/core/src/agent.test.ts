@@ -22,6 +22,11 @@ function stopResponse(text: string): ChatResponse {
   return { message: assistantText(text), finish_reason: "stop" };
 }
 
+/** A truncated turn that still carries a complete tool call (finish_reason "length"). */
+function lengthLimitedToolCall(id: string, name: string, args: JsonValue): ChatResponse {
+  return { message: { role: "assistant", tool_calls: [{ id, name, arguments: args }] }, finish_reason: "length" };
+}
+
 /** Replays a fixed script of responses, one per LLM call. */
 class ScriptedProvider implements LlmProvider {
   #responses: ChatResponse[];
@@ -222,6 +227,33 @@ test("run: throws MaxIterationsError when the loop never terminates", async () =
   await assert.rejects(() => agent.run({ messages: [userMessage("go")] }), MaxIterationsError);
 });
 
+test("run: finish_reason length WITH tool_calls dispatches them (no orphaned call persisted)", async () => {
+  // Regression for #494: a truncated turn that still emits a complete tool call
+  // must dispatch it and append the matching role:"tool" reply, otherwise the
+  // saved conversation ends with an assistant tool_calls that both OpenAI and
+  // Anthropic hard-reject, bricking the conversation on the next turn/resume.
+  const provider = new ScriptedProvider([lengthLimitedToolCall("c1", "echo", { text: "hi" }), stopResponse("done")]);
+  const tool = new EchoTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+  const conv: Conversation = { messages: [userMessage("hello")] };
+
+  await agent.run(conv);
+
+  assert.equal(tool.calls, 1); // the tool ran despite finish_reason "length"
+  assert.equal(conv.messages.length, 4); // user, assistant(toolcall), tool, assistant(done)
+  assert.equal(conv.messages[2]?.role, "tool");
+  assert.equal((conv.messages[2] as { content: string }).content, "echo: hi");
+  // No assistant tool_calls left without a following tool reply.
+  const dangling = conv.messages.some(
+    (m, i) =>
+      m.role === "assistant" &&
+      Array.isArray((m as { tool_calls?: unknown[] }).tool_calls) &&
+      ((m as { tool_calls: unknown[] }).tool_calls?.length ?? 0) > 0 &&
+      conv.messages[i + 1]?.role !== "tool",
+  );
+  assert.equal(dangling, false);
+});
+
 // --- streaming run ---------------------------------------------------------
 
 test("runStream: exactly one terminal `done` carrying the full conversation", async () => {
@@ -242,6 +274,31 @@ test("runStream: exactly one terminal `done` carrying the full conversation", as
   assert.ok(events.some((e) => e.type === "tool_start" && e.name === "echo"));
   assert.equal((events.find((e) => e.type === "tool_end") as { content: string }).content, "echo: hi");
   assert.ok(events.some((e) => e.type === "delta" && e.content === "final"));
+});
+
+test("runStream: finish_reason length WITH tool_calls dispatches them (no orphaned call persisted)", async () => {
+  // Regression for #494, streaming twin.
+  const provider = new ScriptedProvider([lengthLimitedToolCall("c1", "echo", { text: "hi" }), stopResponse("final")]);
+  const tool = new EchoTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("hello")] }));
+
+  assert.equal(tool.calls, 1);
+  assert.ok(events.some((e) => e.type === "tool_start" && e.name === "echo"));
+  assert.equal((events.find((e) => e.type === "tool_end") as { content: string }).content, "echo: hi");
+
+  const done = events.at(-1) as Extract<AgentEvent, { type: "done" }>;
+  assert.equal(done.type, "done");
+  const msgs = done.conversation.messages;
+  const dangling = msgs.some(
+    (m, i) =>
+      m.role === "assistant" &&
+      Array.isArray((m as { tool_calls?: unknown[] }).tool_calls) &&
+      ((m as { tool_calls: unknown[] }).tool_calls?.length ?? 0) > 0 &&
+      msgs[i + 1]?.role !== "tool",
+  );
+  assert.equal(dangling, false);
 });
 
 test("runStream: a stream without a Finish chunk yields one error", async () => {

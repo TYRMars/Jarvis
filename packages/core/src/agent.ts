@@ -109,7 +109,7 @@ export class Agent {
       }
 
       const message = resp.message;
-      if (isToolCallTurn(message, resp.finish_reason)) {
+      if (isToolCallTurn(message)) {
         for (const call of message.tool_calls) {
           const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
           const output = await runOne(this.config.tools, call, approval?.[1]);
@@ -184,7 +184,7 @@ export class Agent {
       yield { type: "assistant_message", message: finish.message, finish_reason: finish.finish_reason };
 
       const message = finish.message;
-      if (isToolCallTurn(message, finish.finish_reason)) {
+      if (isToolCallTurn(message)) {
         for (const call of message.tool_calls) {
           // Resolve the approval decision, emitting the request BEFORE awaiting
           // the approver so an interactive transport can respond in time.
@@ -267,10 +267,22 @@ export class Agent {
 
 type ToolCallMessage = Extract<Message, { role: "assistant" }> & { tool_calls: ToolCall[] };
 
-function isToolCallTurn(message: Message, finishReason: FinishReason): message is ToolCallMessage {
+/**
+ * Whether the assistant message carries tool calls that must be dispatched.
+ *
+ * Deliberately independent of `finish_reason`: a provider can report
+ * `finish_reason: "length"` *and* a non-empty, well-formed `tool_calls` array
+ * (OpenAI truncating after complete calls; Anthropic `max_tokens` with parsed
+ * `tool_use` blocks). Gating dispatch on `finish_reason === "tool_calls"` would
+ * push such a message into the conversation with zero matching `role:"tool"`
+ * replies, a shape both providers hard-reject on the next request — bricking the
+ * persisted conversation permanently. So whenever tool calls are present we
+ * dispatch and continue the loop; the length-limited outcome is only surfaced
+ * for a turn that has *no* tool calls to answer.
+ */
+function isToolCallTurn(message: Message): message is ToolCallMessage {
   return (
     message.role === "assistant" &&
-    finishReason === "tool_calls" &&
     Array.isArray(message.tool_calls) &&
     message.tool_calls.length > 0
   );
