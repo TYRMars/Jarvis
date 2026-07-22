@@ -7,6 +7,7 @@
 // `__memory__.summary:<hash>` summary-cache namespace (containing `:`) is
 // Windows-safe. Timestamps live in the file body (RFC-3339), not from mtime.
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Conversation, Message } from "@jarvis/core";
 import {
@@ -87,9 +88,17 @@ export class JsonFileConversationStore extends ConversationStoreBase {
     const records: ConversationRecord[] = [];
     for (const name of names) {
       // skip .tmp files, sibling subdirs (projects/ etc.), non-.json.
-      if (!name.endsWith(".json") || name.endsWith(".json.tmp")) continue;
-      const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
-      if (!stored) continue; // directory entry or unparseable → skip
+      if (!name.endsWith(".json") || name.endsWith(".tmp")) continue;
+      let stored: OnDiskConversation | undefined;
+      try {
+        stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
+      } catch {
+        continue; // transient read error on one file → drop it, keep the listing alive
+      }
+      // Skip foreign-but-parseable JSON (e.g. workspaces.json flushed into the
+      // same dir, or a `..`-escaped requirement row) rather than dereferencing a
+      // missing `messages`, which would TypeError out of the whole endpoint.
+      if (!stored || typeof stored.id !== "string" || !Array.isArray(stored.messages)) continue;
       records.push({
         id: stored.id,
         created_at: stored.created_at,
@@ -141,11 +150,22 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write to a staging file then rename onto the target, so a crash mid-write
+ * leaves the old file intact. The staging name is unique per write
+ * (`<path>.<pid>.<uuid>.tmp`) so two concurrent writers of the same id don't
+ * clobber each other's tmp and lose the rename race (last-writer-wins instead
+ * of a deterministic ENOENT). A failed write cleans up its own tmp.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, contents, { mode: 0o600 });
+    await rename(tmp, filePath);
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 /**
@@ -167,4 +187,22 @@ export function encodeId(id: string): string {
     out += safe ? String.fromCharCode(b) : `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
   }
   return out;
+}
+
+/**
+ * Encode an id for use as a *directory* component of a store partition.
+ *
+ * `encodeId` leaves `.` in its safe set, so `encodeId("..") === ".."` and
+ * `encodeId(".") === "."`. As a filename that's harmless (the `.json` suffix
+ * neutralises it), but joined as a directory component it escapes the partition
+ * — a `project_id` of `..` lands rows in the parent store's directory. Reject
+ * those (and the empty id, which `path.join`s back to the partition root) so a
+ * caller-supplied id can never traverse out of its bucket.
+ */
+export function encodeDirComponent(id: string): string {
+  const enc = encodeId(id);
+  if (enc === "" || enc === "." || enc === "..") {
+    throw new StoreError(`unsafe id for storage partition: ${JSON.stringify(id)}`);
+  }
+  return enc;
 }
