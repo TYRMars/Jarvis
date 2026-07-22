@@ -1,10 +1,21 @@
 // The TodoStore trait. Ported from crates/harness-core/src/store.rs
 // (`#[async_trait] trait TodoStore`).
 //
-// The store is the *only* fanout point: `subscribe()` registers a listener that
-// receives a `TodoEvent` for every successful mutation, regardless of whether
-// the mutator was a `todo.*` tool call or a REST request. WS sessions filter by
-// `todoEventWorkspace()` against their pinned root.
+// The store is *designed* to be the only fanout point: `subscribe()` registers
+// a listener that receives a `TodoEvent` for every successful mutation,
+// regardless of whether the mutator was a `todo.*` tool call or a REST request,
+// so a WS session could filter by `todoEventWorkspace()` against its pinned root
+// and forward `todo_*` frames to open boards.
+//
+// ASPIRATIONAL / NOT YET WIRED (#507): nothing in the running server registers
+// such a listener — `subscribe()` has no non-test caller, so `emit()` fans out
+// to an empty set and `todo_upserted` / `todo_deleted` frames are never sent.
+// The SPA's frame handlers (apps/jarvis-web/src/services/todos.ts) and the unit
+// tests exercise the *contract*, not a live end-to-end path; open boards go
+// stale until a refetch/navigation. Wiring the `/v1/chat/ws` bridge (subscribe
+// here + forward filtered frames, with an unsubscribe on socket close) is a
+// deferred, design-level task — see the issue for scope. Treat this fanout as a
+// ready seam, not a live feature, until that lands.
 //
 // All methods are workspace-scoped at the *row* level; there is no "global"
 // listing (`get` is the exception — id is globally unique and the row carries

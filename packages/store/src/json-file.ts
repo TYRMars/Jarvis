@@ -7,6 +7,7 @@
 // `__memory__.summary:<hash>` summary-cache namespace (containing `:`) is
 // Windows-safe. Timestamps live in the file body (RFC-3339), not from mtime.
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Conversation, Message } from "@jarvis/core";
 import {
@@ -141,11 +142,28 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write to a unique staging file then rename onto the target, so a crash
+ * mid-write leaves the old file intact.
+ *
+ * The staging name is unique per write (`<path>.<pid>.<uuid>.tmp`), never a
+ * fixed `<path>.tmp` shared by every writer of the target. With a shared tmp,
+ * two concurrent writers of one id race: writer B rewrites A's staging file and
+ * whoever renames first consumes it, so the loser's `rename` finds nothing and
+ * rejects with `ENOENT` — its write is silently dropped (#502). A per-write
+ * suffix makes the outcome plain last-writer-wins. The staging file is removed
+ * on failure so a crashed write leaves no litter behind. All `list()` scanners
+ * gate on `endsWith(".json")`, so these `.tmp` files are skipped.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, contents, { mode: 0o600 });
+    await rename(tmp, filePath);
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 /**
