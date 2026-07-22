@@ -20,7 +20,7 @@ import type {
   EventListener,
   Unsubscribe,
 } from "@jarvis/project";
-import { atomicWrite, encodeId, ensureDir } from "./json-file.ts";
+import { atomicWrite, encodeId, encodeSegment, ensureDir } from "./json-file.ts";
 
 /** Newest-installed-first soft cap shared by both backends (matches Rust). */
 const LIST_CAP = 500;
@@ -84,7 +84,7 @@ export class JsonFileActivityStore implements ActivityStore {
   }
 
   #requirementDir(requirementId: string): string {
-    return path.join(this.#base, "activities", encodeId(requirementId));
+    return path.join(this.#base, "activities", encodeSegment(requirementId));
   }
 
   #pathFor(requirementId: string, id: string): string {

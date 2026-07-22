@@ -23,6 +23,7 @@ import {
   type Conversation,
   type Message,
 } from "@jarvis/core";
+import { defaultMetadata, type ConversationMetadata } from "@jarvis/store";
 import { streamSse } from "./sse.ts";
 import type { AppState } from "./state.ts";
 
@@ -120,6 +121,11 @@ interface WsFrame {
 function handleWsConnection(socket: WsSocket, state: AppState): void {
   let conv: Conversation = newConversation();
   let persistedId: string | undefined;
+  // Metadata (project_id / lifecycle) for the active persisted conversation.
+  // Tracked across the socket so a turn-completion save preserves it instead
+  // of overwriting the row with defaults — `store.save()` hard-codes
+  // `defaultMetadata()`, which would erase project_id and un-archive the row.
+  let meta: ConversationMetadata = defaultMetadata();
   let turnRunning = false;
   // tool_call_id → the ChannelApprover responder awaiting a decision.
   const pending = new Map<string, (d: ApprovalDecision) => void>();
@@ -166,7 +172,7 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
           conv = ev.conversation;
           if (persistedId && state.store) {
             try {
-              await state.store.save(persistedId, ev.conversation);
+              await state.store.saveEnvelope(persistedId, ev.conversation, meta);
             } catch (e) {
               send({ type: "error", message: `save failed: ${errorText(e)}` });
             }
@@ -220,6 +226,7 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         if (!guardIdle()) return;
         conv = newConversation();
         persistedId = undefined;
+        meta = defaultMetadata();
         send({ type: "reset_ok" });
         return;
       }
@@ -233,12 +240,13 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
           send({ type: "error", message: "`resume` frame requires id" });
           return;
         }
-        const loaded = await state.store.load(msg.id);
+        const loaded = await state.store.loadEnvelope(msg.id);
         if (!loaded) {
           send({ type: "error", message: "conversation not found" });
           return;
         }
-        conv = loaded;
+        conv = loaded[0];
+        meta = loaded[1];
         persistedId = msg.id;
         send({ type: "resumed", id: msg.id });
         return;
@@ -248,9 +256,10 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         const id = typeof msg.id === "string" && msg.id ? msg.id : randomUUID();
         conv = newConversation();
         persistedId = id;
+        meta = defaultMetadata();
         if (state.store) {
           try {
-            await state.store.save(id, conv);
+            await state.store.saveEnvelope(id, conv, meta);
           } catch (e) {
             send({ type: "error", message: `save failed: ${errorText(e)}` });
           }
