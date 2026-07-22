@@ -22,6 +22,15 @@ function stopResponse(text: string): ChatResponse {
   return { message: assistantText(text), finish_reason: "stop" };
 }
 
+/**
+ * An assistant turn carrying well-formed tool calls that a provider tagged
+ * `finish_reason: "length"` (output-token cap hit mid-turn). Both OpenAI and
+ * Anthropic can emit this shape.
+ */
+function toolCallLengthResponse(id: string, name: string, args: JsonValue): ChatResponse {
+  return { message: { role: "assistant", tool_calls: [{ id, name, arguments: args }] }, finish_reason: "length" };
+}
+
 /** Replays a fixed script of responses, one per LLM call. */
 class ScriptedProvider implements LlmProvider {
   #responses: ChatResponse[];
@@ -206,6 +215,25 @@ test("run: no approver runs the gated tool unconditionally (historical default)"
   assert.equal(tool.calls, 1);
 });
 
+test("run: length-limited turn with tool_calls dispatches them, then ends without dangling calls", async () => {
+  // Regression for #494: a turn tagged finish_reason "length" that still
+  // carries tool_calls must dispatch them (so the persisted history never ends
+  // with unanswered tool_calls) AND still terminate as length_limited.
+  const provider = new ScriptedProvider([toolCallLengthResponse("c1", "echo", { text: "hi" })]);
+  const tool = new EchoTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+  const conv: Conversation = { messages: [userMessage("go")] };
+
+  const outcome = await agent.run(conv);
+
+  assert.deepEqual(outcome, { kind: "length_limited", iterations: 1 });
+  assert.equal(tool.calls, 1); // dispatched despite finish_reason "length"
+  // History ends with the tool reply, not a dangling assistant(tool_calls).
+  assert.equal(conv.messages.length, 3); // user, assistant(tool_calls), tool
+  assert.equal(conv.messages.at(-1)?.role, "tool");
+  assert.equal((conv.messages.at(-1) as { content: string }).content, "echo: hi");
+});
+
 test("run: throws MaxIterationsError when the loop never terminates", async () => {
   const provider: LlmProvider = {
     async complete() {
@@ -242,6 +270,27 @@ test("runStream: exactly one terminal `done` carrying the full conversation", as
   assert.ok(events.some((e) => e.type === "tool_start" && e.name === "echo"));
   assert.equal((events.find((e) => e.type === "tool_end") as { content: string }).content, "echo: hi");
   assert.ok(events.some((e) => e.type === "delta" && e.content === "final"));
+});
+
+test("runStream: length-limited turn with tool_calls dispatches, then done{length_limited} with no dangling calls", async () => {
+  // Regression for #494 (streaming twin): finish_reason "length" carrying
+  // tool_calls must dispatch (tool_start/tool_end + a role:"tool" reply) and
+  // terminate as length_limited, so the saved conversation is a valid shape.
+  const provider = new ScriptedProvider([toolCallLengthResponse("c1", "echo", { text: "hi" })]);
+  const tool = new EchoTool();
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools: new ToolRegistry().register(tool) });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+
+  const terminals = events.filter((e) => e.type === "done" || e.type === "error");
+  assert.equal(terminals.length, 1);
+  assert.equal(events.at(-1)?.type, "done");
+  const done = terminals[0] as Extract<AgentEvent, { type: "done" }>;
+  assert.equal(done.outcome.kind, "length_limited");
+  assert.equal(tool.calls, 1);
+  assert.ok(events.some((e) => e.type === "tool_end" && e.name === "echo"));
+  // Saved conversation ends with the tool reply, not a dangling assistant turn.
+  assert.equal(done.conversation.messages.at(-1)?.role, "tool");
 });
 
 test("runStream: a stream without a Finish chunk yields one error", async () => {

@@ -374,18 +374,27 @@ export class PluginManager {
     }
     const manifest: PluginManifest = parsePluginManifest(text);
 
-    // Skills: re-load each one and insert.
+    // Skills: re-load each one and insert. Per-skill failures are swallowed so
+    // the rest come up — a single unreadable / unparseable SKILL.md must not
+    // abort the whole plugin's reattach (which would also skip the MCP loop
+    // below, silently killing every server this plugin owns). Mirrors
+    // `SkillCatalog.scanRoot` and the MCP loop's own best-effort handling; like
+    // the rest of this package family it keeps no logger, so the skip is silent.
     for (const rel of manifest.skills) {
-      const abs = path.join(entry.install_dir, rel);
-      const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
-      const raw = await readFile(skillMd, "utf8");
-      const parsed = parseSkill(raw);
-      this.#skills.insert({
-        manifest: parsed.manifest,
-        body: parsed.body,
-        path: skillMd,
-        source: "plugin",
-      });
+      try {
+        const abs = path.join(entry.install_dir, rel);
+        const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
+        const raw = await readFile(skillMd, "utf8");
+        const parsed = parseSkill(raw);
+        this.#skills.insert({
+          manifest: parsed.manifest,
+          body: parsed.body,
+          path: skillMd,
+          source: "plugin",
+        });
+      } catch {
+        // Bad frontmatter / unreadable file → skip this skill, keep going.
+      }
     }
 
     // MCP: re-add each server. Failures are swallowed so the rest come up.
