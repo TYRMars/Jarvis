@@ -8,6 +8,7 @@
 // protocol is the documented baseline: user / reset / resume / new /
 // approve / deny (the Rust handler has since grown many more frames).
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import {
   ChannelApprover,
@@ -23,6 +24,8 @@ import {
   type Conversation,
   type Message,
 } from "@jarvis/core";
+import { todoEventWorkspace, type TodoEvent } from "@jarvis/todo";
+import type { RequirementEvent } from "@jarvis/project";
 import { streamSse } from "./sse.ts";
 import type { AppState } from "./state.ts";
 
@@ -109,6 +112,74 @@ interface WsSocket {
   readonly OPEN: number;
 }
 
+/**
+ * Stable key for a workspace path (resolve symlinks + normalise). Mirrors
+ * `todos-routes.ts::canonicalizeWorkspace` so the socket's pinned-root filter
+ * compares against the same canonical form the stores persist.
+ */
+function canonicalizeWorkspace(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Wire the store-side fanout to a WebSocket. The `@jarvis/todo` and
+ * `@jarvis/project` stores are `EventSource`s: every successful mutation
+ * (from a `todo.*` / `requirement.*` tool call OR a REST request) fans out a
+ * `TodoEvent` / `RequirementEvent` to their subscribers. Without this bridge
+ * the fanout has zero subscribers, so the SPA's `todo_upserted` /
+ * `todo_deleted` / `requirement_upserted` / `requirement_deleted` frame
+ * handlers never fire and open boards silently go stale (#507).
+ *
+ * TODO events are filtered to the socket's pinned workspace (when the server
+ * has one) — mirroring the Rust WS handler's `todoEventWorkspace()` filter —
+ * so a mutation in one workspace never leaks into another's rail. Requirement
+ * events are project-scoped (the SPA reconciles by `project_id`), so they are
+ * forwarded unfiltered.
+ *
+ * Returns an unsubscribe that detaches every listener; the caller invokes it
+ * on socket close so a closed socket leaves no dangling listener behind.
+ */
+function bridgeDomainEvents(state: AppState, send: (obj: unknown) => void): () => void {
+  const unsubscribes: Array<() => void> = [];
+
+  if (state.todos) {
+    const pinnedRoot = state.workspaceRoot ? canonicalizeWorkspace(state.workspaceRoot) : undefined;
+    unsubscribes.push(
+      state.todos.subscribe((ev: TodoEvent) => {
+        if (pinnedRoot !== undefined && todoEventWorkspace(ev) !== pinnedRoot) return;
+        if (ev.type === "upserted") {
+          const { type: _type, ...todo } = ev;
+          send({ type: "todo_upserted", todo });
+        } else {
+          send({ type: "todo_deleted", id: ev.id, workspace: ev.workspace });
+        }
+      }),
+    );
+  }
+
+  if (state.requirements) {
+    unsubscribes.push(
+      state.requirements.subscribe((ev: RequirementEvent) => {
+        if (ev.type === "upserted") {
+          const { type: _type, ...requirement } = ev;
+          send({ type: "requirement_upserted", requirement });
+        } else {
+          send({ type: "requirement_deleted", id: ev.id, project_id: ev.project_id });
+        }
+      }),
+    );
+  }
+
+  return () => {
+    for (const unsub of unsubscribes) unsub();
+    unsubscribes.length = 0;
+  };
+}
+
 interface WsFrame {
   type?: string;
   content?: unknown;
@@ -127,6 +198,11 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   const send = (obj: unknown): void => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
   };
+
+  // Subscribe this socket to the store-side fanout so REST/tool mutations to
+  // the TODO board and Requirement kanban reach the SPA as live frames (#507).
+  const unbridge = bridgeDomainEvents(state, send);
+  socket.on("close", () => unbridge());
 
   // One approver for the socket's lifetime: each gated tool call registers
   // its responder under the tool_call_id; an approve/deny frame resolves it.

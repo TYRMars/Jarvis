@@ -17,8 +17,11 @@
 //
 // The per-turn mutation budget (`countMutation` from @jarvis/todo) is consumed
 // by `add` / `update` and once per id in `delete`, so a single big `ids` array
-// can't sneak past the cap that sequential calls would hit. Outside a
-// `withTurnBudget` scope the count is a free pass (REST handlers, tests).
+// can't sneak past the cap that sequential calls would hit — *when* a budget
+// scope is installed. Today none is: no production layer wraps an agent turn in
+// `withTurnBudget`, so these `countMutation()` calls take the free-pass branch
+// and the cap is dormant (see @jarvis/todo's todo.ts STATUS note, #505). Outside
+// a scope the count is a free pass (production, REST handlers, tests).
 //
 // Tools are registered conditionally — `registerTodoTools(registry, { todos,
 // workspace })` enables them; without a store, the family is simply not

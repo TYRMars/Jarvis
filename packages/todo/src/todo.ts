@@ -156,20 +156,38 @@ export function todoEventWorkspace(ev: TodoEvent): string {
 // The `todo.add` / `todo.update` / `todo.delete` tools each affect one (or, for
 // delete, up to 50) row, but a model can call them many times in a single turn.
 // We don't want a runaway loop to fan out hundreds of mutations and fill the
-// backlog with junk. The agent loop scopes a `withTurnBudget` frame around each
-// turn; mutation tools call `countMutation` before they touch the store, and
-// the call throws cleanly once the cap is hit. The model sees the error and can
-// recover (apologise, ask the user, stop spamming).
+// backlog with junk. The intended guard: a turn owner scopes a `withTurnBudget`
+// frame around each agent turn; mutation tools call `countMutation` before they
+// touch the store, and the call throws cleanly once the cap is hit so the model
+// sees the error and can recover (apologise, ask the user, stop spamming).
 //
-// Outside a budget scope (tests, REST handlers, code paths that drive tools
-// directly) the call is a free pass — we don't want to punish out-of-band
-// callers, and REST handlers already gate by HTTP shape. Implemented with
-// AsyncLocalStorage in place of Rust's tokio `task_local`.
+// STATUS — DEFERRED (#505): this budget is a working *mechanism* but has **no
+// production call site**. `withTurnBudget` is installed only by this package's
+// and `@jarvis/tools`' tests; no layer wraps a real agent turn in it, so in
+// production `countMutation()` always takes its `counter === undefined` free
+// pass and `MAX_MUTATIONS_PER_TURN` never fires. The scope cannot be installed
+// in `@jarvis/core` (it owns `Agent.run` / `runStream` but must not depend on
+// `@jarvis/todo`); wiring it means wrapping the turn-execution regions in the
+// layers that already depend on `@jarvis/todo` — every `agent.run` /
+// `agent.runStream` call site in `@jarvis/server` (chat + conversations +
+// automation), and, if the guard should extend beyond the HTTP server, in
+// `@jarvis/subagents` and the CLI too. That is a cross-cutting change (which
+// agent contexts get a throwing cap is a policy call), so it is intentionally
+// left unwired here. Until it lands, treat this as documentation of intent, not
+// live protection.
+//
+// Outside a budget scope (today: everywhere in production, plus tests and REST
+// handlers that drive tools directly) the call is a free pass — we don't want
+// to punish out-of-band callers, and REST handlers already gate by HTTP shape.
+// Implemented with AsyncLocalStorage in place of Rust's tokio `task_local`.
 
 /**
  * Hard cap on `todo.*` mutations within a single agent turn. Generous enough
  * for real refactors (mark a dozen items completed, add a half-dozen
  * follow-ups) but small enough to stop a runaway loop early.
+ *
+ * Dormant in production until a turn owner installs a {@link withTurnBudget}
+ * scope around each agent turn — see the module-level STATUS note (#505).
  */
 export const MAX_MUTATIONS_PER_TURN = 50;
 
@@ -180,6 +198,10 @@ const turnBudget = new AsyncLocalStorage<{ count: number }>();
 /**
  * Run `fn` with a fresh mutation counter installed. Each call allocates its own
  * counter so siblings don't bleed across turns. Mirrors `with_turn_budget`.
+ *
+ * NOTE (#505): no production caller wraps an agent turn in this yet, so the cap
+ * is currently exercised only by tests. See the module-level STATUS note for
+ * where a real turn owner would install it.
  */
 export function withTurnBudget<T>(fn: () => Promise<T>): Promise<T> {
   return turnBudget.run({ count: 0 }, fn);
@@ -187,9 +209,11 @@ export function withTurnBudget<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Increment the in-flight turn's mutation counter; throws once the cap is
- * exceeded. A no-op (no throw) when no budget is installed (out-of-band callers
- * — REST handlers, tests). The thrown message is intentionally model-readable
- * so the agent's recovery prose stays useful. Mirrors `count_mutation`.
+ * exceeded. A no-op (no throw) when no budget is installed. Because no
+ * production caller installs a scope yet (#505), that free-pass branch is the
+ * only one taken outside tests today. The thrown message is intentionally
+ * model-readable so the agent's recovery prose stays useful. Mirrors
+ * `count_mutation`.
  */
 export function countMutation(): void {
   const counter = turnBudget.getStore();
