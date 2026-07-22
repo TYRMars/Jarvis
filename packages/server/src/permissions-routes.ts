@@ -385,6 +385,16 @@ export const OUT_OF_BOUNDS = "out of bounds";
 export class MemoryPermissionStore implements PermissionStore {
   #table: PermissionTable = emptyTable();
 
+  /**
+   * The current session default mode, read synchronously. This is the single
+   * source of truth a {@link RuleApprover}'s {@link ModeHandle} delegates to,
+   * so a `PUT /v1/permissions/mode` that calls {@link setDefaultMode} takes
+   * effect for the next gated tool call without any extra plumbing.
+   */
+  currentMode(): PermissionMode {
+    return this.#table.default_mode;
+  }
+
   snapshot(): Promise<PermissionTable> {
     // Deep-ish clone so callers can't mutate our buckets.
     return Promise.resolve({
@@ -490,19 +500,14 @@ export class RuleApprover implements Approver {
 }
 
 // ---------------------------------------------------------------------------
-// State seam. The committed AppState does not yet carry `permissionStore`
-// (and this port must not edit state.ts), so the routes read it off a
-// structural widening. The composition root sets it; the Assemble step folds
-// the field into AppState proper.
+// State seam. `permissionStore` now lives on {@link AppState} proper (folded in
+// by the composition root, which seeds it from `JARVIS_PERMISSION_MODE` and
+// wraps every `createAgent` approver in a {@link RuleApprover} around it), so
+// these routes read it directly. Absent → every permission route 503s.
 // ---------------------------------------------------------------------------
 
-interface PermissionRoutesState extends AppState {
-  /** Permission rule store. Absent → every permission route 503s. */
-  permissionStore?: PermissionStore;
-}
-
 /** Return the store, or send a 503 and return undefined. */
-function requireStore(state: PermissionRoutesState, reply: FastifyReply): PermissionStore | undefined {
+function requireStore(state: AppState, reply: FastifyReply): PermissionStore | undefined {
   if (!state.permissionStore) {
     reply.code(503).send({ error: "permission store not configured" });
     return undefined;
@@ -520,7 +525,7 @@ function internalError(reply: FastifyReply, e: unknown): FastifyReply {
 // ---------------------------------------------------------------------------
 
 export function registerPermissionsRoutes(app: FastifyInstance, state: AppState): void {
-  const s = state as PermissionRoutesState;
+  const s = state;
 
   // ------------------- GET /v1/permissions -------------------
   app.get("/v1/permissions", async (_req, reply) => {

@@ -4,6 +4,7 @@
 import type { Agent, Approver, LlmProvider, ToolRegistry } from "@jarvis/core";
 import type { ChatRunRegistry } from "./chat-runs.ts";
 import type { McpManager } from "./mcp-manager.ts";
+import type { PermissionStore } from "./permissions-routes.ts";
 import type { RoutePolicyStore } from "./route-policy.ts";
 import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
 import type {
@@ -134,6 +135,15 @@ export interface AppState {
    * when absent.
    */
   routePolicy?: RoutePolicyStore;
+  /**
+   * Permission rule store backing the `/v1/permissions*` routes AND the
+   * approval gate. The composition root seeds it from `JARVIS_PERMISSION_MODE`
+   * and wraps every `createAgent` approver in a `RuleApprover` around it, so
+   * the mode is load-bearing on every agent path (not just the WS transport).
+   * Absent → the permission routes 503 and `createAgent` gates via whatever
+   * approver the caller passes (unconditional when none).
+   */
+  permissionStore?: PermissionStore;
   /** Optional conversation persistence. Routes 503 when absent. */
   store?: ConversationStore;
 
