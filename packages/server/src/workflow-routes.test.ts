@@ -145,6 +145,69 @@ test("create rejects a blank prompt nested inside a group", async () => {
   }
 });
 
+// ---------- #506: unknown / malformed step kinds are a 400, not a 500 ----------
+
+test("create rejects an unknown step kind with a 400 (not a 500)", async () => {
+  const app = await build(makeState());
+  try {
+    const res = await createWorkflow(app, {
+      name: "x",
+      steps: [{ name: "s", kind: { type: "bogus" } }],
+    });
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.json().error, "step 's' has an unknown kind 'bogus'");
+  } finally {
+    await app.close();
+  }
+});
+
+test("create rejects a container kind missing its steps array with a 400", async () => {
+  const app = await build(makeState());
+  try {
+    const res = await createWorkflow(app, {
+      name: "y",
+      steps: [{ name: "s", kind: { type: "phase", title: "t" } }],
+    });
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.json().error, "step 's' of kind 'phase' must carry a 'steps' array");
+  } finally {
+    await app.close();
+  }
+});
+
+test("create rejects nesting deeper than the cap with a 400 (no stack overflow)", async () => {
+  const app = await build(makeState());
+  try {
+    // Build a pipeline nested well past MAX_WORKFLOW_STEP_DEPTH (64).
+    let kind: Record<string, unknown> = { type: "agent", prompt: "leaf" };
+    for (let i = 0; i < 200; i++) {
+      kind = { type: "pipeline", steps: [{ name: `p${i}`, kind }] };
+    }
+    const res = await createWorkflow(app, { name: "deep", steps: [{ name: "root", kind }] });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().error, /maximum depth/);
+  } finally {
+    await app.close();
+  }
+});
+
+test("update rejects an unknown step kind with a 400", async () => {
+  const app = await build(makeState());
+  try {
+    const created = await createWorkflow(app, { name: "u", steps: [agentStep("a", "go")] });
+    const id = created.json().id;
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/workflows/${id}`,
+      payload: { steps: [{ name: "s", kind: { type: "nope" } }] },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.json().error, "step 's' has an unknown kind 'nope'");
+  } finally {
+    await app.close();
+  }
+});
+
 // ---------- get / update / delete ----------
 
 test("get 404s an unknown id; get returns the definition", async () => {

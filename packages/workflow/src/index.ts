@@ -13,6 +13,7 @@ export {
   newWorkflowDefinition,
   touchDefinition,
   agentStepCount,
+  MAX_WORKFLOW_STEP_DEPTH,
 } from "./definition.ts";
 export {
   type WorkflowRun,

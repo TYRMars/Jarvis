@@ -72,14 +72,28 @@ export function touchDefinition(def: WorkflowDefinition): void {
 }
 
 /**
+ * Maximum step-nesting depth. Container kinds (`pipeline`/`phase`/`parallel`)
+ * nest recursively; the walkers here (and the REST-boundary `validateStepKinds`)
+ * cap depth at this so an attacker-controlled deeply-nested tree from
+ * `POST /v1/workflows` can't blow the stack with a `RangeError`.
+ */
+export const MAX_WORKFLOW_STEP_DEPTH = 64;
+
+/**
  * Depth-first count of every leaf `agent` step. Used by REST validation to
  * reject empty recipes. Mirrors `WorkflowDefinition::agent_step_count`.
+ *
+ * Defensive: the input can be unvalidated JSON from the wire, so a container
+ * kind with a missing/non-array `steps` counts as zero leaves (the caller's
+ * `validateStepKinds` reports the real 400) rather than throwing a 500, and
+ * recursion is depth-capped.
  */
 export function agentStepCount(def: WorkflowDefinition): number {
-  return walkAgentSteps(def.steps);
+  return walkAgentSteps(def.steps, 0);
 }
 
-function walkAgentSteps(steps: WorkflowStep[]): number {
+function walkAgentSteps(steps: WorkflowStep[], depth: number): number {
+  if (!Array.isArray(steps) || depth > MAX_WORKFLOW_STEP_DEPTH) return 0;
   let total = 0;
   for (const step of steps) {
     const kind = step.kind;
@@ -87,7 +101,7 @@ function walkAgentSteps(steps: WorkflowStep[]): number {
       total += 1;
     } else {
       // pipeline / phase / parallel all carry nested `steps`.
-      total += walkAgentSteps(kind.steps);
+      total += walkAgentSteps((kind as { steps?: WorkflowStep[] }).steps ?? [], depth + 1);
     }
   }
   return total;
