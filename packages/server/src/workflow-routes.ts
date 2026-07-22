@@ -27,6 +27,7 @@ import { errorText } from "@jarvis/core";
 import {
   agentStepCount,
   finishWorkflowRun,
+  MAX_WORKFLOW_STEP_DEPTH,
   newWorkflowDefinition,
   newWorkflowStep,
   touchDefinition,
@@ -81,6 +82,35 @@ function cleanOpt(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+const CONTAINER_STEP_KINDS = new Set(["pipeline", "phase", "parallel"]);
+
+/**
+ * Validate the *shape* of an unvalidated step tree from the wire before it is
+ * normalized or walked. `normalizeSteps` and `agentStepCount` trust the
+ * TypeScript union — a typo'd `kind.type` or a container kind missing its
+ * `steps` array would otherwise surface as an opaque 500 (`steps is not
+ * iterable` / `Cannot read properties of undefined`) instead of an actionable
+ * 400. Also caps nesting depth so an attacker-controlled deeply-nested tree on
+ * this unauthenticated surface can't blow the stack. Throws {@link WorkflowError}
+ * (→ 400) with the offending step's name.
+ */
+function validateStepKinds(steps: unknown, depth = 0): void {
+  if (depth > MAX_WORKFLOW_STEP_DEPTH) throw WorkflowError.tooDeep(MAX_WORKFLOW_STEP_DEPTH);
+  if (!Array.isArray(steps)) return;
+  for (const step of steps as WorkflowStep[]) {
+    const kind = step?.kind;
+    const type = (kind as { type?: unknown } | undefined)?.type;
+    if (type === "agent") continue;
+    if (typeof type === "string" && CONTAINER_STEP_KINDS.has(type)) {
+      const nested = (kind as { steps?: unknown }).steps;
+      if (!Array.isArray(nested)) throw WorkflowError.missingSteps(step?.name ?? "", type);
+      validateStepKinds(nested, depth + 1);
+    } else {
+      throw WorkflowError.invalidKind(step?.name ?? "", type);
+    }
+  }
 }
 
 /**
@@ -153,8 +183,10 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
     const def = newWorkflowDefinition(name.trim());
     def.description = cleanOpt(body.description);
     def.project_id = cleanOpt(body.project_id);
-    def.steps = normalizeSteps(body.steps ?? []);
+    const rawSteps = body.steps ?? [];
     try {
+      validateStepKinds(rawSteps);
+      def.steps = normalizeSteps(rawSteps);
       validateSteps(def);
     } catch (e) {
       if (e instanceof WorkflowError) return reply.code(400).send({ error: e.message });
@@ -208,10 +240,11 @@ export function registerWorkflowRoutes(app: FastifyInstance, state: AppState): v
     if (body.project_id !== undefined) {
       def.project_id = cleanOpt(body.project_id);
     }
-    if (body.steps !== undefined) {
-      def.steps = normalizeSteps(body.steps);
-    }
     try {
+      if (body.steps !== undefined) {
+        validateStepKinds(body.steps);
+        def.steps = normalizeSteps(body.steps);
+      }
       validateSteps(def);
     } catch (e) {
       if (e instanceof WorkflowError) return reply.code(400).send({ error: e.message });

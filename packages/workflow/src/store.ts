@@ -50,9 +50,12 @@ export interface WorkflowStore {
  */
 export class WorkflowError extends Error {
   /** Discriminant mirroring the Rust enum variant. */
-  readonly kind: "empty" | "empty_prompt";
+  readonly kind: "empty" | "empty_prompt" | "invalid_kind" | "missing_steps" | "too_deep";
 
-  private constructor(kind: "empty" | "empty_prompt", message: string) {
+  private constructor(
+    kind: "empty" | "empty_prompt" | "invalid_kind" | "missing_steps" | "too_deep",
+    message: string,
+  ) {
     super(message);
     this.name = "WorkflowError";
     this.kind = kind;
@@ -66,5 +69,26 @@ export class WorkflowError extends Error {
   /** A step carried an empty prompt (`name` is the offending step's name). */
   static emptyPrompt(name: string): WorkflowError {
     return new WorkflowError("empty_prompt", `agent step '${name}' has an empty prompt`);
+  }
+
+  /** A step's `kind.type` was outside the known set (client typo). */
+  static invalidKind(name: string, type: unknown): WorkflowError {
+    return new WorkflowError(
+      "invalid_kind",
+      `step '${name}' has an unknown kind '${String(type)}'`,
+    );
+  }
+
+  /** A container step (`pipeline`/`phase`/`parallel`) was missing its `steps` array. */
+  static missingSteps(name: string, type: string): WorkflowError {
+    return new WorkflowError(
+      "missing_steps",
+      `step '${name}' of kind '${type}' must carry a 'steps' array`,
+    );
+  }
+
+  /** Step nesting exceeded the allowed depth (guards unbounded recursion). */
+  static tooDeep(max: number): WorkflowError {
+    return new WorkflowError("too_deep", `workflow step nesting exceeds the maximum depth of ${max}`);
   }
 }

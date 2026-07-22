@@ -88,6 +88,26 @@ test("agentStepCount walks nested groups", () => {
   assert.equal(agentStepCount(sampleDefinition()), 4);
 });
 
+test("agentStepCount is crash-proof on unvalidated wire input", () => {
+  // Unvalidated JSON from POST /v1/workflows: a container kind missing its
+  // `steps` array, and an unknown kind. Must count 0 leaves, never throw a 500.
+  const def = newWorkflowDefinition("bad");
+  def.steps = [
+    { id: "1", name: "s", kind: { type: "phase", title: "t" } as unknown as WorkflowStepKind },
+    { id: "2", name: "u", kind: { type: "bogus" } as unknown as WorkflowStepKind },
+  ];
+  assert.equal(agentStepCount(def), 0);
+
+  // Pathologically deep nesting is depth-capped rather than blowing the stack.
+  let kind: WorkflowStepKind = { type: "agent", prompt: "leaf" };
+  for (let i = 0; i < 5000; i++) {
+    kind = { type: "pipeline", steps: [{ id: String(i), name: `p${i}`, kind }] };
+  }
+  const deep = newWorkflowDefinition("deep");
+  deep.steps = [{ id: "root", name: "root", kind }];
+  assert.doesNotThrow(() => agentStepCount(deep));
+});
+
 test("step kind is tagged on type, optionals skipped when absent", () => {
   const kind: WorkflowStepKind = { type: "agent", prompt: "do it" };
   const v = JSON.parse(JSON.stringify(kind)) as Record<string, unknown>;

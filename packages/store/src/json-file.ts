@@ -7,6 +7,7 @@
 // `__memory__.summary:<hash>` summary-cache namespace (containing `:`) is
 // Windows-safe. Timestamps live in the file body (RFC-3339), not from mtime.
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Conversation, Message } from "@jarvis/core";
 import {
@@ -141,11 +142,26 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write to a per-write staging file then rename onto the target, so a crash
+ * mid-write leaves the old file intact.
+ *
+ * The staging name is unique per writer (`pid` + a random UUID) — a fixed
+ * `<path>.tmp` shared by every writer of one id means concurrent writers
+ * clobber each other's tmp and the loser's `rename` fails with `ENOENT`,
+ * silently dropping that write. With a unique tmp the outcome is honest
+ * last-writer-wins. The tmp is removed on failure so a rejected write leaves
+ * no litter; on success the `rename` has already consumed it.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, contents, { mode: 0o600 });
+    await rename(tmp, filePath);
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 /**
@@ -167,4 +183,22 @@ export function encodeId(id: string): string {
     out += safe ? String.fromCharCode(b) : `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
   }
   return out;
+}
+
+/**
+ * Like {@link encodeId}, but safe to use as a *directory component*.
+ *
+ * `encodeId` leaves `.` unescaped (it's a valid filename byte), so
+ * `encodeId("..") === ".."` and `encodeId(".") === "."`. At filename call
+ * sites the `.json` suffix neutralises those, but stores that join an id as a
+ * *partition directory* (`<root>/<encodeId(projectId)>/…`) would let a
+ * caller-supplied id of `.`/`..` escape the partition — writing rows into a
+ * sibling store's directory. Percent-encode the dots in exactly those two
+ * reserved segments. Every other id is returned unchanged: only an all-dots
+ * segment traverses, so UUIDs, `__memory__.summary:` keys, and ids that merely
+ * *contain* dots (e.g. `a..b`, `...`) are untouched.
+ */
+export function encodeIdSegment(id: string): string {
+  const encoded = encodeId(id);
+  return encoded === "." || encoded === ".." ? encoded.replace(/\./g, "%2E") : encoded;
 }
