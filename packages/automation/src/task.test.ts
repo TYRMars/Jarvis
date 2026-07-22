@@ -228,7 +228,7 @@ test("markFinished records failure with error and bumps run_count", () => {
   assert.equal(task.run_count, 2);
 });
 
-test("recomputeNextRun reseeds from schedule as if never run", () => {
+test("recomputeNextRun reseeds an interval schedule for a never-run task", () => {
   const task = newAutomationTask(
     { title: "t", prompt: "p", schedule: scheduleInterval(60) },
     "2026-01-01T00:00:00.000Z",
@@ -238,6 +238,25 @@ test("recomputeNextRun reseeds from schedule as if never run", () => {
   // updated_at is normalised to the canonical millis+Z wire form (mirrors Rust's
   // to_rfc3339), NOT stored verbatim — so a `…00Z` input becomes `…00.000Z`.
   assert.equal(task.updated_at, "2026-01-01T00:05:00.000Z");
+});
+
+test("recomputeNextRun keeps a completed `once` schedule completed", () => {
+  // Regression for the re-arm bug: PATCHing a finished one-shot's schedule
+  // (e.g. a UI echoing the unchanged object back on save) must not resurrect it.
+  const task = newAutomationTask(
+    { title: "backup", prompt: "run backup", schedule: scheduleOnce("2026-01-01T01:00:00Z") },
+    "2026-01-01T00:00:00.000Z",
+  );
+  // Simulate the one-and-only run.
+  markRunning(task, "2026-01-01T01:00:00Z");
+  markFinished(task, "2026-01-01T01:00:05Z");
+  assert.equal(task.next_run_at, undefined); // cleared by markRunning, never re-set
+  assert.equal(task.run_count, 1);
+
+  // A later edit that re-sends the same schedule must leave it done, not due.
+  recomputeNextRun(task, "2026-01-01T02:00:00Z");
+  assert.equal(task.next_run_at, undefined);
+  assert.equal(isDueAt(task, "2026-01-01T02:00:00Z"), false);
 });
 
 test("timestamp writes are normalised to canonical millis+Z (Rust to_rfc3339)", () => {

@@ -198,12 +198,20 @@ export function markFinished(task: AutomationTask, now: string, error?: string):
 }
 
 /**
- * Recompute `next_run_at` from the schedule as if the task had never run
- * (`previous = undefined`). Used after editing a task's schedule. Bumps
- * `updated_at`.
+ * Recompute `next_run_at` from the schedule, anchored at the task's own last
+ * run. Used after editing a task's schedule. Bumps `updated_at`.
+ *
+ * Anchoring on `last_run_at` (rather than `undefined`) is what keeps a
+ * completed `once` schedule completed: `last_run_at` is the only "already
+ * fired" signal a `once` has, so re-seeding with `undefined` would resurrect a
+ * finished one-shot — writing its now-past `run_at` back into `next_run_at` and
+ * making the runtime re-execute the prompt on the next tick. For a task that
+ * has never run, `last_run_at` is `undefined`, so interval re-anchoring is
+ * unchanged; for an interval task that has run, ticks are skipped forward past
+ * `now` as usual.
  */
 export function recomputeNextRun(task: AutomationTask, now: string): void {
-  setNextRunAt(task, scheduleNextAfter(task.schedule, undefined, now));
+  setNextRunAt(task, scheduleNextAfter(task.schedule, task.last_run_at, now));
   task.updated_at = normalizeStamp(now);
 }
 
