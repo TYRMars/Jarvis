@@ -105,6 +105,16 @@ export interface InstalledPlugin {
   skill_names: string[];
   /** MCP prefixes the plugin owns, so uninstall can drop them. */
   mcp_prefixes: string[];
+  /**
+   * Runtime health flag set by {@link PluginManager.reattachInstalled} when a
+   * restart could only *partially* re-attach the plugin (a bad SKILL.md, an MCP
+   * server that failed to connect, an unreadable manifest). Absent / `false` =
+   * fully healthy. Recomputed on every reattach; surfaced via `GET /v1/plugins`
+   * so a degraded plugin stops reporting as fully installed.
+   */
+  degraded?: boolean;
+  /** Human-readable detail for {@link degraded} — the collected reattach failures. */
+  last_error?: string;
 }
 
 /**
@@ -359,7 +369,17 @@ export class PluginManager {
     return this.#runExclusive(async () => {
       const entries = [...this.#ledger.values()];
       for (const entry of entries) {
-        await this.#reattachOne(entry).catch(() => {});
+        try {
+          await this.#reattachOne(entry);
+        } catch (e) {
+          // The manifest itself was unreadable/unparseable → nothing about this
+          // plugin could reattach. Record it on the ledger entry so
+          // `GET /v1/plugins` surfaces the degradation instead of reporting the
+          // plugin as fully healthy (the failure used to vanish into a bare
+          // `.catch(() => {})`). Other plugins still come up.
+          entry.degraded = true;
+          entry.last_error = errText(e);
+        }
       }
     });
   }
@@ -374,24 +394,51 @@ export class PluginManager {
     }
     const manifest: PluginManifest = parsePluginManifest(text);
 
-    // Skills: re-load each one and insert.
+    // Collected per-item failures. Reattach is best-effort: one bad SKILL.md or
+    // one unreachable MCP server must not abort the rest of the plugin. We skip
+    // the failing item, keep going, and record the failures on the ledger entry
+    // (matching `SkillCatalog.scanRoot` and the MCP loop's own best-effort intent).
+    const failures: string[] = [];
+
+    // Skills: re-load each one and insert. A read/parse failure on any single
+    // skill is recorded and skipped so it can neither abort the sibling skills
+    // nor the MCP servers below it.
     for (const rel of manifest.skills) {
-      const abs = path.join(entry.install_dir, rel);
-      const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
-      const raw = await readFile(skillMd, "utf8");
-      const parsed = parseSkill(raw);
-      this.#skills.insert({
-        manifest: parsed.manifest,
-        body: parsed.body,
-        path: skillMd,
-        source: "plugin",
-      });
+      try {
+        const abs = path.join(entry.install_dir, rel);
+        const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
+        const raw = await readFile(skillMd, "utf8");
+        const parsed = parseSkill(raw);
+        this.#skills.insert({
+          manifest: parsed.manifest,
+          body: parsed.body,
+          path: skillMd,
+          source: "plugin",
+        });
+      } catch (e) {
+        failures.push(`skill \`${rel}\`: ${errText(e)}`);
+      }
     }
 
-    // MCP: re-add each server. Failures are swallowed so the rest come up.
+    // MCP: re-add each server. Failures are recorded (not silently swallowed) so
+    // the rest come up and the degradation is still visible.
     for (const [prefix, cfg] of Object.entries(manifest.mcp_servers)) {
       const cloned: McpClientConfig = { ...cfg, prefix };
-      await this.#mcp.add(cloned).catch(() => {});
+      try {
+        await this.#mcp.add(cloned);
+      } catch (e) {
+        failures.push(`mcp \`${prefix}\`: ${errText(e)}`);
+      }
+    }
+
+    // Recompute health from this attempt: clear any stale degradation on a clean
+    // pass, otherwise flag it with the collected detail.
+    if (failures.length > 0) {
+      entry.degraded = true;
+      entry.last_error = failures.join("; ");
+    } else {
+      delete entry.degraded;
+      delete entry.last_error;
     }
   }
 
