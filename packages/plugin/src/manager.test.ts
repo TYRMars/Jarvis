@@ -325,6 +325,113 @@ test("reattachInstalled re-registers skills and mcp from the ledger", async (t) 
   assert.ok(mcp.slots.has("gh"));
 });
 
+test("reattach isolates a broken skill: sibling skill + mcp still come up, plugin marked degraded", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{
+      "name": "demo", "version": "0.1.0", "description": "x",
+      "skills": ["skills/a", "skills/b"],
+      "mcp_servers": { "gh": { "transport": { "type": "stdio", "command": "uvx" } } }
+    }`,
+  );
+  await writeSkill(path.join(pluginSrc, "skills"), "a", "name: a\ndescription: y\n", "A body.");
+  await writeSkill(path.join(pluginSrc, "skills"), "b", "name: b\ndescription: y\n", "B body.");
+
+  const installRoot = path.join(staging, "plugins");
+  await (await PluginManager.open(installRoot, SkillCatalog.empty(), new FakeMcp())).installFromPath(pluginSrc);
+
+  // Corrupt the *installed* copy of skill `a` so its reattach read throws,
+  // exactly like an operator introducing a bad SKILL.md between restarts.
+  await rm(path.join(installRoot, "demo", "skills", "a", "SKILL.md"), { force: true });
+
+  // Fresh process: empty catalog + mcp, only the ledger persists.
+  const cat = SkillCatalog.empty();
+  const mcp = new FakeMcp();
+  const mgr = await PluginManager.open(installRoot, cat, mcp);
+  await mgr.reattachInstalled();
+
+  // The broken skill is skipped, but the sibling skill and the MCP server —
+  // which used to be silently killed by the first skill's throw — both come up.
+  assert.equal(cat.get("a"), undefined);
+  assert.ok(cat.get("b"), "sibling skill must still reattach");
+  assert.ok(mcp.slots.has("gh"), "mcp server must still reattach after a bad skill");
+
+  // And the degradation is surfaced (not swallowed) on the ledger entry.
+  const listed = await mgr.list();
+  assert.equal(listed[0]?.degraded, true);
+  assert.match(listed[0]?.last_error ?? "", /skills\/a/);
+});
+
+test("reattach records a failed mcp server as degraded without aborting", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{
+      "name": "demo", "version": "0.1.0", "description": "x",
+      "skills": ["skills/a"],
+      "mcp_servers": { "gh": { "transport": { "type": "stdio", "command": "uvx" } } }
+    }`,
+  );
+  await writeSkill(path.join(pluginSrc, "skills"), "a", "name: a\ndescription: y\n", "A body.");
+
+  const installRoot = path.join(staging, "plugins");
+  await (await PluginManager.open(installRoot, SkillCatalog.empty(), new FakeMcp())).installFromPath(pluginSrc);
+
+  const cat = SkillCatalog.empty();
+  const mcp = new FakeMcp();
+  mcp.failAddPrefix = "gh"; // the MCP server can't connect on this boot.
+  const mgr = await PluginManager.open(installRoot, cat, mcp);
+  await mgr.reattachInstalled();
+
+  // Skill still registers; the failed MCP server surfaces as degraded.
+  assert.ok(cat.get("a"));
+  const listed = await mgr.list();
+  assert.equal(listed[0]?.degraded, true);
+  assert.match(listed[0]?.last_error ?? "", /mcp `gh`/);
+});
+
+test("reattach clears a stale degraded flag once the plugin is healthy again", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{
+      "name": "demo", "version": "0.1.0", "description": "x",
+      "skills": ["skills/a"]
+    }`,
+  );
+  await writeSkill(path.join(pluginSrc, "skills"), "a", "name: a\ndescription: y\n", "A body.");
+
+  const installRoot = path.join(staging, "plugins");
+  await (await PluginManager.open(installRoot, SkillCatalog.empty(), new FakeMcp())).installFromPath(pluginSrc);
+
+  const skillMd = path.join(installRoot, "demo", "skills", "a", "SKILL.md");
+  const saved = await readFile(skillMd, "utf8");
+
+  // First boot: skill is broken → degraded.
+  await rm(skillMd, { force: true });
+  const mgr = await PluginManager.open(installRoot, SkillCatalog.empty(), new FakeMcp());
+  await mgr.reattachInstalled();
+  assert.equal((await mgr.list())[0]?.degraded, true);
+
+  // Operator restores the skill; a subsequent reattach clears the flag.
+  await mkdir(path.dirname(skillMd), { recursive: true });
+  await writeFile(skillMd, saved);
+  await mgr.reattachInstalled();
+  const healed = (await mgr.list())[0];
+  assert.equal(healed?.degraded, undefined);
+  assert.equal(healed?.last_error, undefined);
+});
+
 test("install rejects a directory without plugin.json", async (t) => {
   const staging = await makeTmp();
   t.after(() => rm(staging, { recursive: true, force: true }));

@@ -15,6 +15,10 @@ export interface InstalledPlugin {
   installed_at: string;
   skill_names: string[];
   mcp_prefixes: string[];
+  /** Set when a restart could only partially re-attach the plugin. Absent = healthy. */
+  degraded?: boolean;
+  /** Human-readable detail for a `degraded` plugin (the collected reattach failures). */
+  last_error?: string;
 }
 
 export interface PluginInstallReport {
