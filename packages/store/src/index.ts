@@ -8,7 +8,7 @@ export {
   StoreError,
   defaultMetadata,
 } from "./types.ts";
-export { JsonFileConversationStore, encodeId, atomicWrite, ensureDir } from "./json-file.ts";
+export { JsonFileConversationStore, encodeId, encodeDirComponent, atomicWrite, ensureDir } from "./json-file.ts";
 export { MemoryConversationStore } from "./memory.ts";
 export { connect, connectAll, makeMemoryStores, type StoreBundle } from "./connect.ts";
 

@@ -160,3 +160,14 @@ test("RequirementStore trait surface compiles for both backends", async () => {
   await mem.upsert(r);
   assert.equal((await mem.get(r.id))?.title, "trait");
 });
+
+// #499: a project_id of `..` must not escape the requirements partition into
+// the sibling conversation store's directory. The dir-component guard rejects
+// it at write time instead of silently corrupting a neighbour.
+test("json-file: refuses a partition-escaping project_id", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileRequirementStore.open(dir);
+    await assert.rejects(() => store.upsert(newRequirement("..", "escaped")));
+    await assert.rejects(() => store.list(".."));
+  });
+});
