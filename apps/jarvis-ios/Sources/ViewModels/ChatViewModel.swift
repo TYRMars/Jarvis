@@ -495,8 +495,17 @@ final class ChatViewModel {
         case .done:
             finishTurn(error: nil)
 
-        case .error(let message):
-            finishTurn(error: message)
+        case .error(let message, let fatal):
+            if fatal {
+                // The turn genuinely ended — tear down run state.
+                finishTurn(error: message)
+            } else {
+                // Advisory, non-terminal diagnostic (e.g. "no pending
+                // approval" / "turn in progress"). Surface it, but leave
+                // `isStreaming` and any pending approval intact so a run
+                // that's still going server-side isn't torn down (#498).
+                items.append(TranscriptItem(kind: .error(message)))
+            }
 
         case .resumed(_, _, let live):
             if live {

@@ -32,7 +32,12 @@ enum ServerEvent {
     /// user accepts (`accept_plan`) or refines (`refine_plan`).
     case planProposed(plan: String)
     case done
-    case error(message: String)
+    /// A diagnostic from the server. `fatal` distinguishes a terminal error
+    /// (the turn ended — tear down run state) from an advisory one (turn in
+    /// progress / no pending approval / unknown frame), which leaves the
+    /// in-flight run intact. The server omits the flag on advisory frames, so
+    /// an unknown/missing value decodes as non-fatal (#498).
+    case error(message: String, fatal: Bool)
 
     // --- permission / routing frames ---
     /// Current per-socket permission mode. Sent on connect and after
@@ -185,7 +190,9 @@ enum ServerEvent {
             return .done
 
         case "error":
-            return .error(message: obj["message"]?.stringValue ?? "unknown error")
+            return .error(
+                message: obj["message"]?.stringValue ?? "unknown error",
+                fatal: obj["fatal"]?.boolValue ?? false)
 
         case "started":
             return .started(id: obj["id"]?.stringValue ?? "")
