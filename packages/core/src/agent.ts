@@ -109,11 +109,17 @@ export class Agent {
       }
 
       const message = resp.message;
-      if (isToolCallTurn(message, resp.finish_reason)) {
+      if (hasPendingToolCalls(message)) {
         for (const call of message.tool_calls) {
           const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
           const output = await runOne(this.config.tools, call, approval?.[1]);
           conversation.messages.push(toolResult(call.id, output));
+        }
+        // A truncated turn (finish_reason "length") whose tool calls we just
+        // answered still ends the run — but only after the tool replies are
+        // appended, so the persisted history is a valid shape (#494).
+        if (resp.finish_reason === "length") {
+          return [{ kind: "length_limited", iterations: iter }, totalUsage];
         }
         continue;
       }
@@ -155,7 +161,10 @@ export class Agent {
           if (chunk.type === "content_delta") {
             yield { type: "delta", content: chunk.content };
           } else if (chunk.type === "usage") {
-            yield { type: "usage", model: this.config.model, ...chunk.usage };
+            // Prefer the model the provider says produced these tokens (a
+            // routing provider stamps the routed tier target); fall back to the
+            // configured model for plain providers that don't set it (#495).
+            yield { type: "usage", model: chunk.model ?? this.config.model, ...chunk.usage };
           } else if (chunk.type === "finish") {
             finish = {
               message: chunk.message,
@@ -184,7 +193,7 @@ export class Agent {
       yield { type: "assistant_message", message: finish.message, finish_reason: finish.finish_reason };
 
       const message = finish.message;
-      if (isToolCallTurn(message, finish.finish_reason)) {
+      if (hasPendingToolCalls(message)) {
         for (const call of message.tool_calls) {
           // Resolve the approval decision, emitting the request BEFORE awaiting
           // the approver so an interactive transport can respond in time.
@@ -223,6 +232,13 @@ export class Agent {
 
           yield { type: "tool_end", id: call.id, name: call.name, content };
           conversation.messages.push(toolResult(call.id, content));
+        }
+        // A truncated turn whose tool calls we just answered ends the run here,
+        // after the tool replies are appended so the saved conversation is a
+        // valid shape both providers accept on the next turn (#494).
+        if (finish.finish_reason === "length") {
+          yield { type: "done", outcome: { kind: "length_limited", iterations: iter }, conversation };
+          return;
         }
         continue;
       }
@@ -267,10 +283,17 @@ export class Agent {
 
 type ToolCallMessage = Extract<Message, { role: "assistant" }> & { tool_calls: ToolCall[] };
 
-function isToolCallTurn(message: Message, finishReason: FinishReason): message is ToolCallMessage {
+/**
+ * True when the assistant message carries tool calls that must be dispatched,
+ * *independent of finish_reason*. Providers can report `finish_reason:"length"`
+ * (output-cap hit) alongside a non-empty, well-formed `tool_calls` array; those
+ * calls still have to be answered, otherwise the persisted conversation ends
+ * with unanswered `tool_calls` and every later turn/resume 400s permanently
+ * (#494). The caller decides loop termination separately from dispatch.
+ */
+function hasPendingToolCalls(message: Message): message is ToolCallMessage {
   return (
     message.role === "assistant" &&
-    finishReason === "tool_calls" &&
     Array.isArray(message.tool_calls) &&
     message.tool_calls.length > 0
   );

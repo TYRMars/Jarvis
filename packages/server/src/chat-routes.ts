@@ -161,7 +161,17 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         if (raced.done) break;
         const ev = raced.value;
         if (runId && state.chatRuns) state.chatRuns.event(runId, ev);
-        send(ev);
+        // An agent-emitted `error` event is terminal — runStream yields nothing
+        // after it, so the turn is over. Tag it `fatal` to distinguish it from
+        // the advisory `error` frames the transport emits (turn in progress /
+        // no pending approval / unknown frame), which do NOT end the run. A
+        // client keys its turn teardown off `fatal` so an advisory diagnostic
+        // never tears down `isStreaming` / a pending approval mid-run (#498).
+        if (ev.type === "error") {
+          send({ type: "error", message: ev.message, fatal: true });
+        } else {
+          send(ev);
+        }
         if (ev.type === "done") {
           conv = ev.conversation;
           if (persistedId && state.store) {
@@ -180,8 +190,10 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         state.chatRuns.finish(runId, "completed");
       }
     } catch (e) {
+      // The loop threw — the turn genuinely ended. `fatal` so the client tears
+      // down its run state (contrast the advisory transport errors below) (#498).
       const message = errorText(e);
-      send({ type: "error", message });
+      send({ type: "error", message, fatal: true });
       if (runId && state.chatRuns) state.chatRuns.finish(runId, "failed", message);
     } finally {
       turnRunning = false;
@@ -189,6 +201,10 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
     }
   };
 
+  // Advisory error frames below (turn in progress / bad frame / no pending
+  // approval / unknown frame) omit `fatal`, which clients read as "not
+  // terminal": surface the diagnostic but leave any in-flight run untouched.
+  // Only the two terminal `fatal: true` errors in runTurn end the turn (#498).
   const guardIdle = (): boolean => {
     if (turnRunning) {
       send({ type: "error", message: "turn in progress" });

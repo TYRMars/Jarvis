@@ -148,7 +148,8 @@ check("assistant_message", { if case .assistantMessage(let msg)? = decodeEvent(#
 check("started", { if case .started(let id)? = decodeEvent(#"{"type":"started","id":"c1"}"#) { return id == "c1" }; return false }())
 check("resumed", { if case .resumed(_, let n, let live)? = decodeEvent(#"{"type":"resumed","id":"c1","message_count":3,"live":true}"#) { return n == 3 && live }; return false }())
 check("done", { if case .done? = decodeEvent(#"{"type":"done"}"#) { return true }; return false }())
-check("error", { if case .error(let m)? = decodeEvent(#"{"type":"error","message":"boom"}"#) { return m == "boom" }; return false }())
+check("error (advisory: fatal defaults false)", { if case .error(let m, let fatal)? = decodeEvent(#"{"type":"error","message":"boom"}"#) { return m == "boom" && !fatal }; return false }())
+check("error (fatal flag honoured)", { if case .error(_, let fatal)? = decodeEvent(#"{"type":"error","message":"loop threw","fatal":true}"#) { return fatal }; return false }())
 check("seq high-water mark is surfaced", ServerEvent.decode(#"{"type":"delta","content":"x","seq":42}"#)?.seq == 42)
 check("unknown frame degrades to .ignored (forward-compat)", { if case .ignored(let t)? = decodeEvent(#"{"type":"brand_new_frame"}"#) { return t == "brand_new_frame" }; return false }())
 
