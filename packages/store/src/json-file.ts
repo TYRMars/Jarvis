@@ -6,6 +6,7 @@
 // aren't `[A-Za-z0-9._-]` are percent-encoded for the filename so the
 // `__memory__.summary:<hash>` summary-cache namespace (containing `:`) is
 // Windows-safe. Timestamps live in the file body (RFC-3339), not from mtime.
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Conversation, Message } from "@jarvis/core";
@@ -141,11 +142,28 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write to a per-write staging file then rename, so a crash mid-write leaves
+ * the old file intact (last-write-wins).
+ *
+ * The staging name is unique per writer (`pid` + a random UUID) rather than a
+ * fixed `<path>.tmp`. A shared tmp means two concurrent writers of the same
+ * target scribble over each other's staging file: whoever renames first
+ * consumes it, and the loser's `rename` hits `ENOENT` and drops its write
+ * silently. A unique tmp makes each writer's rename independent, so the last
+ * rename to land wins cleanly instead of erroring. The tmp is removed in a
+ * `finally` so a failed write (or a lost rename race) leaves no litter behind.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, contents, { mode: 0o600 });
+    await rename(tmp, filePath);
+  } finally {
+    // rename() consumes tmp on success; this only fires on a failed write or
+    // rename, where a leftover staging file would otherwise accumulate.
+    await rm(tmp, { force: true });
+  }
 }
 
 /**
