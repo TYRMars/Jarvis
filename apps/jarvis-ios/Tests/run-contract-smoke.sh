@@ -20,12 +20,15 @@ if ! command -v swiftc >/dev/null 2>&1; then
   exit 127
 fi
 
-# Foundation-only client sources under test. ChatSocket/Views/ViewModels pull in
-# Combine/SwiftUI/Observation, so they are intentionally excluded.
+# Foundation-only client sources under test. Views/ViewModels pull in
+# SwiftUI/Observation, so they are intentionally excluded. ChatSocket is
+# Foundation-only (import Foundation), so it IS compiled here — that guards its
+# `ClientFrame` vocabulary against the server's accepted WS frames (see #492).
 sources=(
   "$ios"/Sources/Models/*.swift
   "$ios/Sources/Networking/ServerConfig.swift"
   "$ios/Sources/Networking/JarvisAPI.swift"
+  "$ios/Sources/Networking/ChatSocket.swift"
   "$here/ContractSmoke/main.swift"
 )
 

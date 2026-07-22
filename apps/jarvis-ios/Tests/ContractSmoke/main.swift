@@ -146,11 +146,48 @@ check("plan_update item", { if case .planUpdate(let items)? = decodeEvent(#"{"ty
 check("approval_request", { if case .approvalRequest(let id, _, _)? = decodeEvent(#"{"type":"approval_request","id":"a1","name":"shell.exec","arguments":{"cmd":"ls"}}"#) { return id == "a1" }; return false }())
 check("assistant_message", { if case .assistantMessage(let msg)? = decodeEvent(#"{"type":"assistant_message","message":{"role":"assistant","content":"hi"}}"#) { if case .assistant(let c, _) = msg { return c == "hi" } }; return false }())
 check("started", { if case .started(let id)? = decodeEvent(#"{"type":"started","id":"c1"}"#) { return id == "c1" }; return false }())
+// The Node server acks a `new` frame with `session` (the Rust server used
+// `started`); both must decode to `.started` so the new-conversation handshake
+// isn't mistaken for an unknown frame. See #492.
+check("session (new-conversation ack) decodes to .started", { if case .started(let id)? = decodeEvent(#"{"type":"session","id":"c1"}"#) { return id == "c1" }; return false }())
 check("resumed", { if case .resumed(_, let n, let live)? = decodeEvent(#"{"type":"resumed","id":"c1","message_count":3,"live":true}"#) { return n == 3 && live }; return false }())
 check("done", { if case .done? = decodeEvent(#"{"type":"done"}"#) { return true }; return false }())
 check("error", { if case .error(let m)? = decodeEvent(#"{"type":"error","message":"boom"}"#) { return m == "boom" }; return false }())
 check("seq high-water mark is surfaced", ServerEvent.decode(#"{"type":"delta","content":"x","seq":42}"#)?.seq == 42)
 check("unknown frame degrades to .ignored (forward-compat)", { if case .ignored(let t)? = decodeEvent(#"{"type":"brand_new_frame"}"#) { return t == "brand_new_frame" }; return false }())
+
+// MARK: - WS /v1/chat/ws  client frame vocabulary (must match chat-routes.ts switch)
+
+// The Node `/v1/chat/ws` handler (packages/server/src/chat-routes.ts) switches on
+// exactly this set; any other frame is answered `unknown frame type: …` and
+// dropped. The Rust-only `start_turn` frame (which carried the first user
+// message) was removed in P8, so the first turn now goes out as the
+// `new`/`resume` handshake followed by `user`. This guards that every frame the
+// app can hand the socket is one the server understands. See #492.
+print("\nWS client frames the app emits are all understood by the Node server:")
+let serverAcceptedFrameTypes: Set<String> = ["user", "reset", "resume", "new", "approve", "deny"]
+
+func frameType(_ frame: ClientFrame) -> String? {
+    guard let raw = try? frame.encoded(),
+          let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any]
+    else { return nil }
+    return obj["type"] as? String
+}
+
+check("`new` handshake frame emits type=new", frameType(.new(id: "c1")) == "new")
+check("`resume` handshake frame emits type=resume", frameType(.resume(id: "c1", afterSeq: 7)) == "resume")
+check("`user` turn frame emits type=user", frameType(.user(content: "hi")) == "user")
+let emittedFrames: [(label: String, frame: ClientFrame)] = [
+    ("new", .new(id: "c1")),
+    ("resume", .resume(id: "c1", afterSeq: nil)),
+    ("user", .user(content: "hi")),
+    ("approve", .approve(toolCallId: "t1")),
+    ("deny", .deny(toolCallId: "t1", reason: "no")),
+]
+for entry in emittedFrames {
+    check("first-turn/approval frame `\(entry.label)` is in the server's accepted set",
+          frameType(entry.frame).map(serverAcceptedFrameTypes.contains) == true)
+}
 
 // MARK: - optional live mode
 

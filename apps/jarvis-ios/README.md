@@ -80,14 +80,15 @@ http/ws;正式分发前应收紧 ATS 并改用 TLS。
 | `Sources/Models/PlanItem.swift` | `harness-core::plan::PlanItem`(`plan_update` 全量快照) |
 | `Sources/Models/SubagentFrame.swift` | `harness-core::subagent::SubAgentFrame`(`sub_agent_event`,`kind` 标签) |
 | `Sources/Models/ProviderInfo.swift` | `harness-server::ProviderInfo`(`GET /v1/providers`) |
-| `Sources/Networking/ChatSocket.swift` | `harness-server` 的 `WsClientMessage`:`start_turn` / `user` / `resume` / `approve` / `deny` / `interrupt` / `configure` / `set_mode` / `accept_plan` / `refine_plan` |
+| `Sources/Networking/ChatSocket.swift` | Node `/v1/chat/ws` 接受的帧:`new` / `resume` / `user` / `approve` / `deny`(`reset` 亦支持)。`approve`/`deny` 之外的帧须在 `packages/server/src/chat-routes.ts` 的 switch 中,`Tests/ContractSmoke` 会对此做契约断言 |
 | `Sources/Networking/JarvisAPI.swift` | `/v1/conversations` CRUD + `/v1/providers` + `/health` |
 
-会话流程:新会话首条消息发 `start_turn {mode:"new", id:<uuid>, content}`(服务端
-据此建持久化会话);打开旧会话先用 REST 拉历史,socket 一连上即发
-`resume {id, after_seq}` 进入持久化模式(若该会话有进行中的 run,服务端回
-`resumed {live:true}` 并补放漏掉的事件),此后统一用 `user` 帧。
-未识别的服务端帧一律降级为 `ignored`,服务端加新事件不会导致客户端崩溃。
+会话流程:新会话首条消息先发 `new {id:<uuid>}` 建持久化会话(服务端回
+`session {id}`),紧接着发 `user {content}` 跑首轮 —— 同一 socket 上帧有序,服务端
+先处理握手再跑首轮(P8 移除了 Rust 时代的 `start_turn` 原子帧,见 #492)。打开旧
+会话先用 REST 拉历史,socket 一连上即发 `resume {id, after_seq}` 进入持久化模式
+(若该会话有进行中的 run,服务端回 `resumed {live:true}` 并补放漏掉的事件),此后
+统一用 `user` 帧。未识别的服务端帧一律降级为 `ignored`,服务端加新事件不会导致客户端崩溃。
 
 断线重连:socket 掉线后指数退避(0.5s 起、上限 10s)自动重连,App 回前台立即
 重连;重连后凭客户端维护的 `seq` 高水位发 `resume { after_seq }` 只补放漏掉的

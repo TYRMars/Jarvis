@@ -187,7 +187,10 @@ enum ServerEvent {
         case "error":
             return .error(message: obj["message"]?.stringValue ?? "unknown error")
 
-        case "started":
+        // `session` is the Node server's ack for a `new` frame (the
+        // Rust server used `started`); both establish the persisted
+        // conversation id, so they decode to the same case. See #492.
+        case "session", "started":
             return .started(id: obj["id"]?.stringValue ?? "")
 
         case "resumed":
