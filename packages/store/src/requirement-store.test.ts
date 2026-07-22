@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -152,6 +152,19 @@ export function contract(name: string, make: (dir: string) => Promise<Backend>):
 
 contract("json-file", (dir) => JsonFileRequirementStore.open(dir));
 contract("memory", () => Promise.resolve(new MemoryRequirementStore()));
+
+// #499: a `project_id` of `..` must not escape the requirements/ partition and
+// write rows into the sibling conversation dir (the store base).
+test("json-file: refuses a `..` project_id partition escape", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileRequirementStore.open(dir);
+    await assert.rejects(() => store.upsert(requirement("..", "escaped")));
+    await assert.rejects(() => store.list(".."));
+    // Nothing leaked into the base dir; only the requirements/ subdir exists.
+    const base = (await readdir(dir)).filter((n) => n.endsWith(".json"));
+    assert.deepEqual(base, []);
+  });
+});
 
 // A RequirementStore is usable through the bare trait surface.
 test("RequirementStore trait surface compiles for both backends", async () => {

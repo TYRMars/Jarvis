@@ -7,6 +7,7 @@
 // `__memory__.summary:<hash>` summary-cache namespace (containing `:`) is
 // Windows-safe. Timestamps live in the file body (RFC-3339), not from mtime.
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Conversation, Message } from "@jarvis/core";
 import {
@@ -88,16 +89,23 @@ export class JsonFileConversationStore extends ConversationStoreBase {
     for (const name of names) {
       // skip .tmp files, sibling subdirs (projects/ etc.), non-.json.
       if (!name.endsWith(".json") || name.endsWith(".json.tmp")) continue;
-      const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
-      if (!stored) continue; // directory entry or unparseable → skip
-      records.push({
-        id: stored.id,
-        created_at: stored.created_at,
-        updated_at: stored.updated_at,
-        message_count: stored.messages.length,
-        project_id: stored.project_id ?? null,
-        lifecycle: stored.lifecycle ?? "active",
-      });
+      try {
+        const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
+        // Skip directory entries, unparseable content, and foreign-but-well-formed
+        // JSON of the wrong shape (e.g. workspaces.json flushed into this dir) —
+        // one such file must not throw and permanently 500 GET /v1/conversations (#501).
+        if (!stored || !Array.isArray(stored.messages)) continue;
+        records.push({
+          id: stored.id,
+          created_at: stored.created_at,
+          updated_at: stored.updated_at,
+          message_count: stored.messages.length,
+          project_id: stored.project_id ?? null,
+          lifecycle: stored.lifecycle ?? "active",
+        });
+      } catch {
+        continue; // one bad entry is dropped, never kills the whole listing
+      }
     }
     // Newest first by updated_at (RFC-3339 strings sort lexicographically).
     records.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
@@ -141,11 +149,47 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write to a per-writer staging file then rename onto the target, so a crash
+ * mid-write leaves the old file intact.
+ *
+ * The staging name is unique per call (`<path>.<pid>.<uuid>.tmp`) rather than a
+ * shared `<path>.tmp`: two concurrent writers of the same target must not share
+ * one staging file, or writer B truncates A's tmp and whoever renames second
+ * finds nothing and rejects with ENOENT — silently dropping a write (#502).
+ * A unique tmp makes the semantics honest last-writer-wins. It still ends in
+ * `.tmp` (not `.json`), so every directory-scanning `list()` keeps skipping it.
+ * A failed write/rename is cleaned up in `finally` so it doesn't leave litter.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, contents, { mode: 0o600 });
+    await rename(tmp, filePath);
+  } finally {
+    // No-op after a successful rename (tmp is gone); removes litter otherwise.
+    await rm(tmp, { force: true });
+  }
+}
+
+/**
+ * Encode an id that will be used as a *directory* component (a storage
+ * partition), not a filename.
+ *
+ * `encodeId` treats `.` as a safe byte, so `encodeId(".") === "."` and
+ * `encodeId("..") === ".."`. Appended with a `.json` suffix that's harmless,
+ * but joined as a bare path segment `..` escapes the partition — e.g. a
+ * requirement `project_id` of `..` resolves to the sibling conversation dir and
+ * corrupts it, permanently 500-ing GET /v1/conversations (#499). Reject the
+ * traversal segments (and empty) explicitly; every other id encodes exactly as
+ * `encodeId`, so on-disk layout is unchanged for real ids.
+ */
+export function encodePartition(id: string): string {
+  const encoded = encodeId(id);
+  if (encoded === "" || encoded === "." || encoded === "..") {
+    throw new StoreError(`invalid id for a storage partition: ${JSON.stringify(id)}`);
+  }
+  return encoded;
 }
 
 /**

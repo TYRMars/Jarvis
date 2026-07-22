@@ -174,3 +174,12 @@ export function contract(name: string, make: (dir: string) => Promise<CommentSto
 
 contract("json-file", (dir) => JsonFileCommentStore.open(dir));
 contract("memory", () => Promise.resolve(new MemoryCommentStore()));
+
+// #499: a `requirement_id` of `..` must not escape the comments/ partition.
+test("json-file: refuses a `..` requirement_id partition escape", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileCommentStore.open(dir);
+    await assert.rejects(() => store.create(top("..", "2026-06-16T10:00:00.000Z")));
+    await assert.rejects(() => store.listForRequirement(".."));
+  });
+});
