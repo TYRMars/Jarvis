@@ -25,7 +25,7 @@ import type {
   LabelStore,
   Unsubscribe,
 } from "@jarvis/project";
-import { atomicWrite, encodeId, ensureDir } from "./json-file.ts";
+import { atomicWrite, encodeId, encodeIdSegment, ensureDir } from "./json-file.ts";
 
 // ---------- shared listener fan-out ----------
 
@@ -90,7 +90,7 @@ export class JsonFileLabelStore implements LabelStore {
   }
 
   #projectDir(projectId: string): string {
-    return path.join(this.#labelsRoot(), encodeId(projectId));
+    return path.join(this.#labelsRoot(), encodeIdSegment(projectId));
   }
 
   #pathFor(projectId: string, id: string): string {

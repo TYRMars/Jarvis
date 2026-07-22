@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { newConversation, userMessage, type Conversation } from "@jarvis/core";
-import { JsonFileConversationStore, encodeId } from "./json-file.ts";
+import { newRequirement } from "@jarvis/project";
+import { JsonFileConversationStore, atomicWrite, encodeId, encodeIdSegment } from "./json-file.ts";
+import { JsonFileRequirementStore } from "./requirement-store.ts";
 import { MemoryConversationStore } from "./memory.ts";
 import { connect } from "./connect.ts";
 import { StoreError, type ConversationStore } from "./types.ts";
@@ -126,6 +128,61 @@ test("json-file: ':' id writes a %3A filename on disk", async () => {
     await store.save("__memory__.summary:deadbeef", convo("s"));
     const files = await readdir(dir);
     assert.ok(files.includes("__memory__.summary%3Adeadbeef.json"));
+  });
+});
+
+// ---------- #499: partition-directory traversal ----------
+
+test("encodeIdSegment neutralises '.' and '..' but leaves other ids intact", () => {
+  assert.equal(encodeIdSegment(".."), "%2E%2E");
+  assert.equal(encodeIdSegment("."), "%2E");
+  // only an all-dots segment traverses — everything else is unchanged
+  assert.equal(encodeIdSegment("a..b"), "a..b");
+  assert.equal(encodeIdSegment("..."), "...");
+  assert.equal(encodeIdSegment("p-1"), "p-1");
+  assert.equal(encodeIdSegment("__memory__.summary:abc"), "__memory__.summary%3Aabc");
+});
+
+test("requirement store: project_id '..' cannot escape into the sibling conversation dir", async () => {
+  await withTempDir(async (base) => {
+    // Both stores hang off one base dir, exactly as connect.ts wires them.
+    const convos = await JsonFileConversationStore.open(base);
+    await convos.save("real-convo", convo("keep me"));
+    const reqs = await JsonFileRequirementStore.open(base); // <base>/requirements
+
+    await reqs.upsert(newRequirement("..", "escaped"));
+
+    // The requirement must stay in its partition, not leak into <base> where
+    // the conversation store keeps its flat .json files.
+    const baseJson = (await readdir(base)).filter((f) => f.endsWith(".json"));
+    assert.deepEqual(baseJson, ["real-convo.json"]);
+
+    // The conversation listing used to 500 permanently once a non-conversation
+    // row landed in <base>; it must still parse cleanly.
+    assert.ok((await convos.list(10)).some((r) => r.id === "real-convo"));
+
+    // The requirement is still retrievable from its (encoded) partition.
+    assert.ok((await reqs.list("..")).some((r) => r.title === "escaped"));
+  });
+});
+
+// ---------- #502: concurrent atomicWrite must not lose a write to ENOENT ----------
+
+test("atomicWrite: concurrent writes to one path never ENOENT and leave no tmp litter", async () => {
+  await withTempDir(async (dir) => {
+    const target = path.join(dir, "row.json");
+    for (let round = 0; round < 20; round++) {
+      // A fixed shared `.tmp` made the losing rename ENOENT here (30/30 before).
+      await Promise.all([
+        atomicWrite(target, JSON.stringify({ n: "a".repeat(3000) })),
+        atomicWrite(target, JSON.stringify({ n: "b" })),
+      ]);
+      const parsed = JSON.parse(await readFile(target, "utf8")) as { n: string };
+      // Honest last-writer-wins: the survivor is one of the two payloads.
+      assert.ok(parsed.n === "b" || parsed.n.length === 3000);
+    }
+    const leftover = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
+    assert.deepEqual(leftover, []);
   });
 });
 
