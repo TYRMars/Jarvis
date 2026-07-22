@@ -172,8 +172,30 @@ export class ServerManager {
   // -------------------------------------------------------------------------
 
   private async startEmbedded(workspace: string | null): Promise<void> {
+    const ws = workspace ?? this.defaultWorkspace();
+
+    // Idempotency guard: a successful embedded start must NOT be silently
+    // replaced by a second one. On macOS the app stays resident after the last
+    // window closes (`window-all-closed` doesn't quit on darwin), so clicking
+    // the dock icon re-enters createWindow() -> ensureServer() -> startEmbedded()
+    // with the server still running. Without this check we would build a second
+    // Fastify server + AppState + MCP children on a fresh ephemeral port and
+    // overwrite `this.app` / `this.mcpClients`, orphaning the first set (its
+    // listener, MCP child processes, and store handles) until Cmd-Q — which only
+    // ever reaps the newest generation (#493). `restart()` already calls stop()
+    // before reaching here, so this never blocks an intentional re-pin.
+    if (this.app !== null && this.kind === "embedded") {
+      if (ws === this.workspace) {
+        this.logs.push(`Embedded Jarvis server already running at ${this.apiOrigin}; reusing`);
+        return;
+      }
+      // Workspace changed out from under a running server: tear the old one down
+      // first (its handles would otherwise leak), then start fresh below.
+      this.logs.push(`Workspace changed (${this.workspace} -> ${ws}); restarting embedded server`);
+      await this.stop();
+    }
+
     try {
-      const ws = workspace ?? this.defaultWorkspace();
       await this.recordWorkspace(ws);
 
       const port = await pickPort();
