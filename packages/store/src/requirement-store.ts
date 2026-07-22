@@ -35,7 +35,7 @@ import {
   requirementDeletedEvent,
   requirementUpsertedEvent,
 } from "@jarvis/project";
-import { atomicWrite, encodeId, ensureDir } from "./json-file.ts";
+import { atomicWrite, encodeId, encodePartition, ensureDir } from "./json-file.ts";
 import { byDescString, isNotFound, listSubdirs, readJsonDir, readJsonFile } from "./fs-util.ts";
 import { Fanout } from "./event-source.ts";
 
@@ -70,7 +70,9 @@ export class JsonFileRequirementStore implements RequirementStore {
   }
 
   #projectDir(projectId: string): string {
-    return path.join(this.#root, encodeId(projectId));
+    // encodePartition (not encodeId): a bare `..` component would escape into
+    // the sibling conversation dir and corrupt it (#499).
+    return path.join(this.#root, encodePartition(projectId));
   }
 
   #pathFor(projectId: string, id: string): string {

@@ -173,6 +173,26 @@ export async function atomicWrite(filePath: string, contents: string): Promise<v
 }
 
 /**
+ * Encode an id that will be used as a *directory* component (a storage
+ * partition), not a filename.
+ *
+ * `encodeId` treats `.` as a safe byte, so `encodeId(".") === "."` and
+ * `encodeId("..") === ".."`. Appended with a `.json` suffix that's harmless,
+ * but joined as a bare path segment `..` escapes the partition — e.g. a
+ * requirement `project_id` of `..` resolves to the sibling conversation dir and
+ * corrupts it, permanently 500-ing GET /v1/conversations (#499). Reject the
+ * traversal segments (and empty) explicitly; every other id encodes exactly as
+ * `encodeId`, so on-disk layout is unchanged for real ids.
+ */
+export function encodePartition(id: string): string {
+  const encoded = encodeId(id);
+  if (encoded === "" || encoded === "." || encoded === "..") {
+    throw new StoreError(`invalid id for a storage partition: ${JSON.stringify(id)}`);
+  }
+  return encoded;
+}
+
+/**
  * Percent-encode any byte not in `[A-Za-z0-9._-]`. UUIDs pass through; `:`
  * (from the `__memory__.summary:` namespace) becomes `%3A`. Mirrors Rust's
  * `encode_id` byte-for-byte (uppercase 2-digit hex).

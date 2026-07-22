@@ -23,7 +23,7 @@ import type {
   EventListener,
   Unsubscribe,
 } from "@jarvis/project";
-import { atomicWrite, encodeId, ensureDir } from "./json-file.ts";
+import { atomicWrite, encodeId, encodePartition, ensureDir } from "./json-file.ts";
 
 const LIST_CAP = 500;
 
@@ -92,7 +92,9 @@ export class JsonFileCommentStore implements CommentStore {
   }
 
   #requirementDir(requirementId: string): string {
-    return path.join(this.#base, "comments", encodeId(requirementId));
+    // encodePartition (not encodeId): a bare `..` component would escape the
+    // comments/ partition into a sibling store's dir (#499).
+    return path.join(this.#base, "comments", encodePartition(requirementId));
   }
 
   #pathFor(requirementId: string, id: string): string {
