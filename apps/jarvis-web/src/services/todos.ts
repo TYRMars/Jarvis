@@ -5,11 +5,19 @@
 // server has no TODO store wired up — callers should treat that as
 // "feature unavailable" and hide the panel rather than show an error.
 //
-// Live updates flow through the WS chat socket: `frames.ts` matches
-// `todo_upserted` and `todo_deleted` frames and forwards into the
-// store actions. REST mutations broadcast through the same store-side
-// fanout so a UI-driven add immediately reaches every connected
-// socket (including the initiator).
+// Live updates are DESIGNED to flow through the WS chat socket:
+// `frames.ts` matches `todo_upserted` / `todo_deleted` frames and
+// forwards them into the store actions, and REST mutations would
+// broadcast through the same store-side fanout so a UI-driven add
+// reaches every connected socket (including the initiator).
+//
+// ASPIRATIONAL / NOT YET WIRED (#507): the server does not yet
+// register a fanout listener on the `/v1/chat/ws` socket, so these
+// frames are never sent. The handlers below (and their unit tests)
+// exercise the contract, not a live path — a UI-driven add stays put
+// until a manual refetch/navigation. Keep the handlers ready, but do
+// not rely on live cross-tab (or same-tab reconciliation) updates
+// until the server-side bridge lands.
 
 import { apiUrl } from "./api";
 import { showError } from "./status";

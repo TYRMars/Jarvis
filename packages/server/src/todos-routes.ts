@@ -13,10 +13,14 @@
 //                                       (body: any subset of {title, status, priority, notes})
 //   DELETE /v1/todos/:id              — remove
 //
-// The WS bridge (when wired) filters TodoEvents by the socket's pinned
-// workspace and forwards as todo_upserted / todo_deleted frames. Both REST and
-// tool mutations go through the store's subscribe() fanout, so a single
-// mutation reaches every connected client without duplicate emits.
+// NOTE (#507): the WS bridge is NOT wired yet. It is *designed* so that, once
+// wired, it would filter TodoEvents by the socket's pinned workspace and forward
+// them as todo_upserted / todo_deleted frames — with both REST and tool
+// mutations flowing through the store's subscribe() fanout, so a single mutation
+// reaches every connected client without duplicate emits. As of today nothing
+// subscribes to the fanout (see @jarvis/todo store.ts), so these frames are
+// never emitted and REST mutations do not reach open boards live. Do not assume
+// live updates here until the /v1/chat/ws bridge lands.
 import { realpathSync } from "node:fs";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { errorText } from "@jarvis/core";

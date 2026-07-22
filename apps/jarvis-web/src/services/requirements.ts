@@ -15,10 +15,15 @@
 // - Mutations (`createRequirement` / `updateRequirement` /
 //   `linkRequirementConversation`) **optimistically** update the cache
 //   so the kanban moves immediately, then fire-and-forget the matching
-//   REST call. The server's authoritative response arrives via the
-//   `requirement_upserted` / `requirement_deleted` WS frames (handled
-//   in `frames.ts` → `applyRequirementUpserted` / `_Deleted` below) and
-//   reconciles the cache.
+//   REST call. The server's authoritative response is DESIGNED to arrive
+//   via the `requirement_upserted` / `requirement_deleted` WS frames
+//   (handled in `frames.ts` → `applyRequirementUpserted` / `_Deleted`
+//   below) and reconcile the cache. ASPIRATIONAL / NOT YET WIRED (#507):
+//   the server registers no fanout listener on the WS socket, so those
+//   frames are never emitted today — the optimistic cache stands in for
+//   server truth until a refetch. The handlers exist for when the bridge
+//   is wired; do not rely on live reconciliation (or cross-tab updates)
+//   until then.
 // - Subscribers (`subscribeRequirements`) get called whenever the
 //   cache changes; React components bump a version counter to
 //   re-render.
