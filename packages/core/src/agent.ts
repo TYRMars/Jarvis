@@ -109,11 +109,18 @@ export class Agent {
       }
 
       const message = resp.message;
-      if (isToolCallTurn(message, resp.finish_reason)) {
+      if (messageHasToolCalls(message)) {
         for (const call of message.tool_calls) {
           const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
           const output = await runOne(this.config.tools, call, approval?.[1]);
           conversation.messages.push(toolResult(call.id, output));
+        }
+        // A truncated turn (finish_reason "length") still ends the loop — but
+        // only now that its tool calls are answered, so the persisted history
+        // never ends with unanswered tool_calls. Any other finish_reason loops
+        // so the model can react to the results.
+        if (resp.finish_reason === "length") {
+          return [{ kind: "length_limited", iterations: iter }, totalUsage];
         }
         continue;
       }
@@ -184,7 +191,7 @@ export class Agent {
       yield { type: "assistant_message", message: finish.message, finish_reason: finish.finish_reason };
 
       const message = finish.message;
-      if (isToolCallTurn(message, finish.finish_reason)) {
+      if (messageHasToolCalls(message)) {
         for (const call of message.tool_calls) {
           // Resolve the approval decision, emitting the request BEFORE awaiting
           // the approver so an interactive transport can respond in time.
@@ -223,6 +230,14 @@ export class Agent {
 
           yield { type: "tool_end", id: call.id, name: call.name, content };
           conversation.messages.push(toolResult(call.id, content));
+        }
+        // A truncated turn (finish_reason "length") still ends the loop — but
+        // only now that its tool calls are answered, so the persisted history
+        // never ends with unanswered tool_calls. Any other finish_reason loops
+        // so the model can react to the results.
+        if (finish.finish_reason === "length") {
+          yield { type: "done", outcome: { kind: "length_limited", iterations: iter }, conversation };
+          return;
         }
         continue;
       }
@@ -267,10 +282,20 @@ export class Agent {
 
 type ToolCallMessage = Extract<Message, { role: "assistant" }> & { tool_calls: ToolCall[] };
 
-function isToolCallTurn(message: Message, finishReason: FinishReason): message is ToolCallMessage {
+// Whether the assistant turn carries tool calls that MUST be dispatched.
+// Deliberately independent of `finish_reason`: a provider can report
+// `finish_reason: "length"` (OpenAI) / `stop_reason: "max_tokens"` (Anthropic)
+// alongside a non-empty, well-formed `tool_calls` array when the model hits the
+// output-token cap mid-turn. Gating dispatch on `finish_reason === "tool_calls"`
+// let that turn skip dispatch while the message was still pushed into the
+// canonical Conversation — persisting an assistant message with `tool_calls`
+// and no matching `role:"tool"` replies, a shape both OpenAI and Anthropic
+// reject with a 400 on every later turn/resume. The caller decides termination
+// separately (a truncated turn still ends the loop, but only after its calls
+// are answered).
+function messageHasToolCalls(message: Message): message is ToolCallMessage {
   return (
     message.role === "assistant" &&
-    finishReason === "tool_calls" &&
     Array.isArray(message.tool_calls) &&
     message.tool_calls.length > 0
   );
