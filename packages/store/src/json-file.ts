@@ -7,6 +7,7 @@
 // `__memory__.summary:<hash>` summary-cache namespace (containing `:`) is
 // Windows-safe. Timestamps live in the file body (RFC-3339), not from mtime.
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Conversation, Message } from "@jarvis/core";
 import {
@@ -86,10 +87,19 @@ export class JsonFileConversationStore extends ConversationStoreBase {
 
     const records: ConversationRecord[] = [];
     for (const name of names) {
-      // skip .tmp files, sibling subdirs (projects/ etc.), non-.json.
-      if (!name.endsWith(".json") || name.endsWith(".json.tmp")) continue;
-      const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
-      if (!stored) continue; // directory entry or unparseable → skip
+      // skip .tmp staging files, sibling subdirs (projects/ etc.), non-.json.
+      if (!name.endsWith(".json") || name.endsWith(".tmp")) continue;
+      let stored: OnDiskConversation | undefined;
+      try {
+        stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
+      } catch {
+        continue; // unreadable entry — drop it rather than kill the listing
+      }
+      // A foreign-but-parseable JSON in the base dir (workspaces.json, a
+      // requirement row that escaped its partition, a truncated write) has no
+      // `messages` array. Skip it instead of dereferencing `.length` and
+      // throwing a TypeError that permanently 500s GET /v1/conversations.
+      if (!stored || !Array.isArray(stored.messages)) continue;
       records.push({
         id: stored.id,
         created_at: stored.created_at,
@@ -141,11 +151,24 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Write to `<path>.tmp` then rename, so a crash mid-write leaves the old file intact. */
+/**
+ * Write to a per-write staging file then rename onto the target, so a crash
+ * mid-write leaves the old file intact. The staging name is unique per writer
+ * (`<path>.<pid>.<uuid>.tmp`) — a fixed `<path>.tmp` shared by concurrent
+ * writers of the same id lets one truncate another's buffer and makes the
+ * loser's `rename` fail with ENOENT (silently dropping a turn). With a unique
+ * name each write is self-contained and last-rename-wins is the real semantics.
+ */
 export async function atomicWrite(filePath: string, contents: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, contents, { mode: 0o600 });
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, contents, { mode: 0o600 });
+    await rename(tmp, filePath);
+  } catch (e) {
+    // A successful rename consumes `tmp`; only a failure can leave litter.
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 /**
@@ -167,4 +190,18 @@ export function encodeId(id: string): string {
     out += safe ? String.fromCharCode(b) : `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
   }
   return out;
+}
+
+/**
+ * Like `encodeId`, but for a caller-supplied value used as a *directory
+ * component* (a store partition) rather than a filename. `encodeId` keeps `.`
+ * in its safe set, so `encodeId("..") === ".."` — harmless as a filename (the
+ * `.json` suffix neutralises it) but a partition escape when joined as a path
+ * segment: `path.join(root, "..")` climbs out of the partition and into a
+ * sibling store's directory. Neutralise any all-dots segment (`.`, `..`) so a
+ * caller-supplied id can never traverse out of its partition.
+ */
+export function encodeSegment(id: string): string {
+  const encoded = encodeId(id);
+  return /^\.+$/.test(encoded) ? encoded.replace(/\./g, "%2E") : encoded;
 }

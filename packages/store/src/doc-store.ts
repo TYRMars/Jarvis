@@ -23,7 +23,7 @@ import {
   type EventListener,
   type Unsubscribe,
 } from "@jarvis/project";
-import { atomicWrite, encodeId, ensureDir } from "./json-file.ts";
+import { atomicWrite, encodeId, encodeSegment, ensureDir } from "./json-file.ts";
 
 /** Soft cap on the number of DocProjects returned by `listProjects`. */
 const PROJECT_LIST_CAP = 500;
@@ -111,7 +111,7 @@ export class JsonFileDocStore implements DocStore {
   }
 
   #draftsDir(projectId: string): string {
-    return path.join(this.#base, "docs", "drafts", encodeId(projectId));
+    return path.join(this.#base, "docs", "drafts", encodeSegment(projectId));
   }
 
   #projectPath(id: string): string {

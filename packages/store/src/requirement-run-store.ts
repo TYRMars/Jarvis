@@ -29,7 +29,7 @@ import type {
   EventListener,
 } from "@jarvis/project";
 import { requirementRunStatusIsTerminal } from "@jarvis/project";
-import { atomicWrite, encodeId, ensureDir } from "./json-file.ts";
+import { atomicWrite, encodeId, encodeSegment, ensureDir } from "./json-file.ts";
 import { byDescString, listSubdirs, readJsonDir, readJsonFile } from "./fs-util.ts";
 import { Fanout } from "./event-source.ts";
 
@@ -82,7 +82,7 @@ export class JsonFileRequirementRunStore implements RequirementRunStore {
   }
 
   #requirementDir(requirementId: string): string {
-    return path.join(this.#root, encodeId(requirementId));
+    return path.join(this.#root, encodeSegment(requirementId));
   }
 
   #pathFor(requirementId: string, id: string): string {

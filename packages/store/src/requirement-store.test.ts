@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -152,6 +152,24 @@ export function contract(name: string, make: (dir: string) => Promise<Backend>):
 
 contract("json-file", (dir) => JsonFileRequirementStore.open(dir));
 contract("memory", () => Promise.resolve(new MemoryRequirementStore()));
+
+// #499: a `project_id` of `..` must not escape the `requirements/` partition
+// into the sibling conversation dir. `encodeSegment` neutralises the traversal,
+// so the row lands under `requirements/%2E%2E/` and the base dir stays clean.
+test("json-file: project_id `..` stays inside the requirements partition", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileRequirementStore.open(dir);
+    const r = requirement("..", "escaped");
+    await store.upsert(r);
+    const baseEntries = await readdir(dir);
+    // Nothing but the `requirements/` partition dir landed in the base — the
+    // row did NOT climb out into where conversation `.json` files live.
+    assert.deepEqual(baseEntries, ["requirements"]);
+    // The row is correctly partitioned: retrievable by project and by id.
+    assert.deepEqual((await store.list("..")).map((x) => x.title), ["escaped"]);
+    assert.equal((await store.get(r.id))?.title, "escaped");
+  });
+});
 
 // A RequirementStore is usable through the bare trait surface.
 test("RequirementStore trait surface compiles for both backends", async () => {

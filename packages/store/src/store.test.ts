@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { newConversation, userMessage, type Conversation } from "@jarvis/core";
-import { JsonFileConversationStore, encodeId } from "./json-file.ts";
+import { JsonFileConversationStore, encodeId, encodeSegment } from "./json-file.ts";
 import { MemoryConversationStore } from "./memory.ts";
 import { connect } from "./connect.ts";
 import { StoreError, type ConversationStore } from "./types.ts";
@@ -127,6 +127,47 @@ test("json-file: ':' id writes a %3A filename on disk", async () => {
     const files = await readdir(dir);
     assert.ok(files.includes("__memory__.summary%3Adeadbeef.json"));
   });
+});
+
+// #502: concurrent writes to one id must not deterministically lose a turn.
+// A fixed `<path>.tmp` shared by both writers makes the loser's rename ENOENT;
+// a per-write staging name makes it last-writer-wins with no error.
+test("json-file: concurrent saves of one id don't ENOENT (unique staging)", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileConversationStore.open(dir);
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, i) => store.save("c1", convo(`v${i}`))),
+    );
+    assert.ok(
+      results.every((r) => r.status === "fulfilled"),
+      `all writes should resolve, got ${JSON.stringify(results.map((r) => r.status))}`,
+    );
+    // The row survives and no `.tmp` litter is left behind.
+    assert.equal((await store.load("c1"))?.messages.length, 1);
+    const files = await readdir(dir);
+    assert.ok(!files.some((f) => f.endsWith(".tmp")), `no tmp litter, got ${files.join(", ")}`);
+  });
+});
+
+// #501: a foreign-but-parseable .json in the base dir must not 500 list().
+test("json-file: list skips a foreign JSON without a messages array", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileConversationStore.open(dir);
+    await store.save("real", convo("hi"));
+    // Mimic JsonFileWorkspaceStore flushing workspaces.json into the base dir.
+    await writeFile(path.join(dir, "workspaces.json"), JSON.stringify({ recent: [], by_conversation: {} }));
+    const rows = await store.list(50); // must not throw
+    assert.deepEqual(rows.map((r) => r.id), ["real"]);
+  });
+});
+
+// #499: `encodeSegment` neutralises a `.`/`..` partition-traversal component.
+test("encodeSegment neutralises `.`/`..`, leaves normal ids intact", () => {
+  assert.equal(encodeSegment(".."), "%2E%2E");
+  assert.equal(encodeSegment("."), "%2E");
+  // Non-pure-dot ids are unchanged (a leading-dot name is a valid dir, not a climb).
+  assert.equal(encodeSegment("proj-42"), "proj-42");
+  assert.equal(encodeSegment("..foo"), "..foo");
 });
 
 // ---------- connect ----------
