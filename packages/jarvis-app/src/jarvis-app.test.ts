@@ -7,8 +7,11 @@
 //     /v1/chat/completions to prove the whole wiring boots and serves.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import type { ChatRequest, ChatResponse, LlmChunk, LlmProvider } from "@jarvis/core";
+import type { ChatRequest, ChatResponse, JsonValue, LlmChunk, LlmProvider, Message } from "@jarvis/core";
 import { assistantText, defaultCompleteStream } from "@jarvis/core";
 import { makeMemoryStores } from "@jarvis/store";
 import { buildServer } from "@jarvis/server";
@@ -131,6 +134,120 @@ test("buildAppState + buildServer boots and serves health + a chat completion", 
     assert.equal(body.message.content, "hello from the stub");
     assert.equal(body.iterations, 1);
     assert.equal(stub.calls, 1);
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * A stub that asks to run a gated tool on its first turn, then stops. Lets us
+ * drive one gated tool call through the real composition-root agent to observe
+ * whether the approval gate fired.
+ */
+class ToolCallProvider implements LlmProvider {
+  calls = 0;
+  readonly toolName: string;
+  readonly args: JsonValue;
+  constructor(toolName: string, args: JsonValue) {
+    this.toolName = toolName;
+    this.args = args;
+  }
+  complete(_req: ChatRequest): Promise<ChatResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return Promise.resolve({
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call-1", name: this.toolName, arguments: this.args }],
+        },
+        finish_reason: "tool_calls",
+      });
+    }
+    return Promise.resolve({ message: assistantText("done"), finish_reason: "stop" });
+  }
+  completeStream(req: ChatRequest): AsyncIterable<LlmChunk> {
+    return defaultCompleteStream(this, req);
+  }
+}
+
+/** The synthetic `tool` message the agent writes after a gated call resolves. */
+function toolResult(history: Message[]): Message | undefined {
+  return history.find((m) => m.role === "tool");
+}
+
+test("regression #491: JARVIS_PERMISSION_MODE gates non-WS paths (ask ⇒ deny)", async () => {
+  // shell.exec is approval-gated. Under the default `ask` mode on the blocking
+  // (non-interactive, no-approver) endpoint, it must be DENIED — not run
+  // unconditionally, which was the security bug.
+  const root = await mkdtemp(path.join(tmpdir(), "jarvis-perm-"));
+  const config = loadConfig({
+    JARVIS_PROVIDER: "openai",
+    OPENAI_API_KEY: "sk-test-not-real",
+    JARVIS_ADDR: "127.0.0.1:0",
+    JARVIS_FS_ROOT: root,
+    JARVIS_ENABLE_SHELL_EXEC: "1",
+  });
+  assert.equal(config.permissionMode, "ask");
+  const stub = new ToolCallProvider("shell.exec", { command: "echo jarvis-should-not-run" });
+  const { state } = await buildAppState(config, {
+    provider: stub,
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  const app = await buildServer(state);
+  try {
+    const chat = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: { messages: [{ role: "user", content: "run it" }] },
+    });
+    assert.equal(chat.statusCode, 200);
+    const body = chat.json() as { history: Message[] };
+    const tr = toolResult(body.history);
+    assert.ok(tr && tr.role === "tool", "a tool result should be recorded");
+    // The gate fired: the tool never executed; the model saw a denial instead.
+    assert.match(tr.content, /^tool denied:/);
+    assert.doesNotMatch(tr.content, /jarvis-should-not-run/);
+
+    // The /v1/permissions surface is now live (was permanently 503).
+    const perms = await app.inject({ method: "GET", url: "/v1/permissions" });
+    assert.equal(perms.statusCode, 200);
+    assert.equal((perms.json() as { default_mode: string }).default_mode, "ask");
+  } finally {
+    await app.close();
+  }
+});
+
+test("regression #491: auto mode lets the gated tool run on non-WS paths", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "jarvis-perm-"));
+  const config = loadConfig({
+    JARVIS_PROVIDER: "openai",
+    OPENAI_API_KEY: "sk-test-not-real",
+    JARVIS_ADDR: "127.0.0.1:0",
+    JARVIS_FS_ROOT: root,
+    JARVIS_ENABLE_SHELL_EXEC: "1",
+    JARVIS_PERMISSION_MODE: "auto",
+  });
+  assert.equal(config.permissionMode, "auto");
+  const stub = new ToolCallProvider("shell.exec", { command: "echo jarvis-allow-ok" });
+  const { state } = await buildAppState(config, {
+    provider: stub,
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  const app = await buildServer(state);
+  try {
+    const chat = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: { messages: [{ role: "user", content: "run it" }] },
+    });
+    assert.equal(chat.statusCode, 200);
+    const tr = toolResult((chat.json() as { history: Message[] }).history);
+    assert.ok(tr && tr.role === "tool");
+    assert.doesNotMatch(tr.content, /^tool denied:/);
+    assert.match(tr.content, /jarvis-allow-ok/);
   } finally {
     await app.close();
   }

@@ -17,12 +17,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider, type Memory } from "@jarvis/core";
+import { Agent, AlwaysDeny, ToolRegistry, type AgentConfig, type Approver, type LlmProvider, type Memory } from "@jarvis/core";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
-import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
+import { ChatRunRegistry, MemoryPermissionStore, RoutePolicyStore, RuleApprover, isRouteSlot, parseModelTarget } from "@jarvis/server";
+import type { AppState, ModeHandle, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
   DocStore,
@@ -290,6 +290,19 @@ export async function buildAppState(
   }
   const memory = buildMemory(config, provider, summaryStore, routePolicy);
 
+  // Permission gate. `JARVIS_PERMISSION_MODE` was previously display-only: every
+  // non-WS `createAgent()` ran with no approver, and @jarvis/core's contract for
+  // an absent approver is "gated tools run unconditionally" — so approval-gated
+  // shell.exec / fs.write executed with no gate at all under `ask`. We now seed a
+  // MemoryPermissionStore with the configured mode and wrap EVERY approver in a
+  // RuleApprover around it, making the mode load-bearing on all paths (and giving
+  // the /v1/permissions* routes a live store instead of a permanent 503).
+  const permissionStore = new MemoryPermissionStore();
+  await permissionStore.setDefaultMode("session", config.permissionMode);
+  // The RuleApprover reads the active mode synchronously from the store, so a
+  // `PUT /v1/permissions/mode` takes effect on the next gated tool call.
+  const modeHandle: ModeHandle = { get: () => permissionStore.currentMode() };
+
   const createAgent = (approver?: Approver): Agent => {
     const agentConfig: AgentConfig = {
       model: config.model,
@@ -300,7 +313,12 @@ export async function buildAppState(
       maxIterations: 80,
       refreshSystemPromptOnResume: true,
     };
-    if (approver !== undefined) agentConfig.approver = approver;
+    // Consult the rule table + mode first; fall through to the caller's approver
+    // when the mode/rules say "ask". The WS transport passes a ChannelApprover
+    // (prompt the socket); every non-interactive path passes none, so we deny —
+    // matching the CLI pipe-mode precedent (`ask` with no human ⇒ deny, which
+    // surfaces "tool denied: …" so the model adapts). `auto`/`bypass` allow.
+    agentConfig.approver = new RuleApprover(permissionStore, approver ?? new AlwaysDeny(), modeHandle);
     if (memory !== undefined) agentConfig.memory = memory;
     return new Agent(provider, agentConfig);
   };
@@ -339,6 +357,8 @@ export async function buildAppState(
     mcpManager: toolBundle.mcpManager,
     // Operator route policy backing /v1/routing (shared with the summariser).
     routePolicy,
+    // Permission rule store backing /v1/permissions* + the approval gate above.
+    permissionStore,
     store: stores.conversations,
     projects: stores.projects,
     requirements: stores.requirements,
