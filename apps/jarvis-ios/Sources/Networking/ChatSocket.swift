@@ -4,8 +4,12 @@ import Foundation
 /// `WsClientMessage` enum in `harness-server/src/routes.rs`
 /// (`#[serde(tag = "type", rename_all = "snake_case")]`).
 enum ClientFrame {
-    /// Atomic "prepare persisted conversation + run first user turn".
-    case startTurn(mode: String, id: String, content: String)
+    /// Prepare a fresh persisted conversation. The server registers the
+    /// id, persists an empty conversation, and acks `session`. The first
+    /// `user` frame follows on the same socket (frames are ordered, so
+    /// the server sees the handshake before the turn). Replaces the
+    /// Rust-only `start_turn` frame removed in P8. See #492.
+    case new(id: String)
     /// Append a user turn to the socket's current conversation.
     case user(content: String)
     /// Load a persisted conversation and enter persisted mode.
@@ -27,12 +31,10 @@ enum ClientFrame {
 
     var jsonObject: [String: JSONValue] {
         switch self {
-        case .startTurn(let mode, let id, let content):
+        case .new(let id):
             return [
-                "type": .string("start_turn"),
-                "mode": .string(mode),
+                "type": .string("new"),
                 "id": .string(id),
-                "content": .string(content),
             ]
         case .user(let content):
             return ["type": .string("user"), "content": .string(content)]

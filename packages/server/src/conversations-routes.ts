@@ -53,6 +53,38 @@ function clampLimit(raw: unknown): number {
   return Math.min(n, 500);
 }
 
+/**
+ * Fetch newest-first records satisfying `keep`, capped at `limit`.
+ *
+ * The store applies its own LIMIT before returning and deliberately keeps
+ * internal `__memory__` rows in that window — a round-trip guaranteed by the
+ * store contract (`store.test.ts`). Filtering the excluded rows (internal ids
+ * plus any lifecycle facet) *after* the store's slice would let them consume
+ * slots in the limit window: `SummarizingMemory` writes one `__memory__.summary`
+ * row per compaction, each stamped newer than any idle conversation and
+ * unbounded in count, so a full window of them makes `GET /v1/conversations`
+ * under-return — or return `[]` while conversations still exist — and archived
+ * rows get crowded out of the newest-N window entirely. So we over-fetch and
+ * filter *before* slicing, growing the scan window until we have `limit` keepers
+ * or the store is exhausted (it returns a page shorter than we asked for). See
+ * #470.
+ */
+async function listFiltered(
+  fetchPage: (scan: number) => Promise<ConversationRecord[]>,
+  keep: (r: ConversationRecord) => boolean,
+  limit: number,
+): Promise<ConversationRecord[]> {
+  let scan = Math.max(limit, 1);
+  for (;;) {
+    const page = await fetchPage(scan);
+    const kept = page.filter(keep);
+    // Enough keepers, or the store returned fewer rows than requested (there are
+    // no more to scan) — either way stop and take the newest `limit`.
+    if (kept.length >= limit || page.length < scan) return kept.slice(0, limit);
+    scan *= 4;
+  }
+}
+
 function finalMessage(conv: Conversation): Message {
   for (let i = conv.messages.length - 1; i >= 0; i--) {
     const m = conv.messages[i];
@@ -173,16 +205,19 @@ export function registerConversationsRoutes(app: FastifyInstance, state: AppStat
     }
 
     try {
+      // Internal `__memory__` rows and lifecycle-excluded rows must be dropped
+      // *before* the limit slice (see `listFiltered`), not after.
+      const keep = (r: ConversationRecord): boolean =>
+        !isInternalId(r.id) && (lifecycleFilter === undefined || r.lifecycle === lifecycleFilter);
+
       let rows: ConversationRecord[];
       if (q.project_id !== undefined && q.project_id !== "") {
         const project = await lookupProject(state.projects, q.project_id);
         if (!project) return reply.code(404).send({ error: "project not found" });
-        rows = await store.listByProject(project.id, limit);
+        rows = await listFiltered((scan) => store.listByProject(project.id, scan), keep, limit);
       } else {
-        rows = await store.list(limit);
+        rows = await listFiltered((scan) => store.list(scan), keep, limit);
       }
-      rows = rows.filter((r) => !isInternalId(r.id));
-      if (lifecycleFilter) rows = rows.filter((r) => r.lifecycle === lifecycleFilter);
 
       const reqMap = await collectConversationRequirements(state.requirements, rows);
 

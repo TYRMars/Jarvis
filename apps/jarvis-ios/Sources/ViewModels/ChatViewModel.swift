@@ -108,16 +108,16 @@ final class ChatViewModel {
     }
 
     /// Persisted conversation id. Set up front when opening an
-    /// existing conversation; assigned by the first `start_turn` for
-    /// a new one.
+    /// existing conversation; minted and sent as a `new` handshake on
+    /// the first turn of a new one.
     private(set) var conversationId: String?
 
     private let api = JarvisAPI()
     private let socket = ChatSocket()
     /// True until the socket has entered persisted mode — decides
-    /// between `start_turn` and a plain `user` frame. Existing
-    /// conversations flip it when the eager `resume` is sent on
-    /// connect; new ones after their first `start_turn`.
+    /// whether the next turn needs the `new`/`resume` handshake before
+    /// its `user` frame. Existing conversations flip it when the eager
+    /// `resume` is sent on connect; new ones after their first handshake.
     private var needsStartTurn = true
     /// Index into `items` of the assistant bubble currently being
     /// streamed into, if any.
@@ -194,18 +194,23 @@ final class ChatViewModel {
         Task {
             do {
                 if needsStartTurn {
-                    let mode: String
-                    let id: String
+                    // The Node `/v1/chat/ws` server has no atomic `start_turn`
+                    // frame — that was a Rust-only frame removed in P8, and the
+                    // server now answers it `unknown frame type: start_turn`,
+                    // dropping the first message. Establish the persisted
+                    // conversation first (`new` for a fresh id, `resume` for an
+                    // existing one), then send the user turn. WS frames are
+                    // ordered on one socket, so the server processes the
+                    // handshake before the turn. See #492.
                     if let existing = conversationId {
-                        mode = "resume"
-                        id = existing
+                        try await socket.send(.resume(id: existing, afterSeq: lastSeq))
                     } else {
-                        mode = "new"
-                        id = UUID().uuidString
+                        let id = UUID().uuidString
                         conversationId = id
+                        try await socket.send(.new(id: id))
                     }
-                    try await socket.send(.startTurn(mode: mode, id: id, content: text))
                     needsStartTurn = false
+                    try await socket.send(.user(content: text))
                 } else {
                     try await socket.send(.user(content: text))
                 }
