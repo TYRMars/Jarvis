@@ -15,7 +15,9 @@ import {
   type Tool,
   type ToolCall,
 } from "@jarvis/core";
-import { MemoryConversationStore } from "@jarvis/store";
+import { MemoryConversationStore, MemoryRequirementStore } from "@jarvis/store";
+import { MemoryTodoStore, newTodoItem } from "@jarvis/todo";
+import { newRequirement } from "@jarvis/project";
 import { buildServer, serve } from "./server.ts";
 import type { AppState } from "./state.ts";
 
@@ -353,6 +355,87 @@ test("WS: new allocates a session id; reset acks; resume loads from store", asyn
     client.send({ type: "resume", id: "does-not-exist" });
     const err = await client.waitFor((f) => f.type === "error" && /not found/.test(f.message as string));
     assert.ok(err);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+// ---------- store fanout → WS domain frames (#507) ----------
+
+/** AppState that additionally wires a todo + requirement store. */
+function makeStoreState(opts: { todos: MemoryTodoStore; requirements: MemoryRequirementStore; root?: string }): AppState {
+  return {
+    ...makeState([{ content: "unused" }]),
+    todos: opts.todos,
+    requirements: opts.requirements,
+    workspaceRoot: opts.root,
+  };
+}
+
+test("WS: todo store mutations fan out as todo_upserted / todo_deleted frames", async () => {
+  const todos = new MemoryTodoStore();
+  const requirements = new MemoryRequirementStore();
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeStoreState({ todos, requirements }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    const item = newTodoItem("/some/ws", "wire the bridge");
+    await todos.upsert(item);
+    const up = await client.waitFor((f) => f.type === "todo_upserted");
+    assert.equal((up.todo as { id: string }).id, item.id);
+    assert.equal((up.todo as { title: string }).title, "wire the bridge");
+    // The store event envelope's `type: "upserted"` must not leak onto the frame's todo.
+    assert.equal((up.todo as { type?: string }).type, undefined);
+
+    await todos.delete(item.id);
+    const del = await client.waitFor((f) => f.type === "todo_deleted");
+    assert.equal(del.id as string, item.id);
+    assert.equal(del.workspace as string, "/some/ws");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: todo frames are filtered to the socket's pinned workspace", async () => {
+  const todos = new MemoryTodoStore();
+  const requirements = new MemoryRequirementStore();
+  // A non-existent root canonicalizes to itself, so the filter compares literally.
+  const root = "/tmp/ws-fanout-pinned-root";
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeStoreState({ todos, requirements, root }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    // A mutation in a DIFFERENT workspace must not reach this socket...
+    await todos.upsert(newTodoItem("/other/ws", "elsewhere"));
+    // ...but one in the pinned root must. Sending the in-root one second and
+    // asserting it arrives proves the out-of-root one was dropped (frames are
+    // delivered in order over a single socket).
+    const inRoot = newTodoItem(root, "here");
+    await todos.upsert(inRoot);
+    const up = await client.waitFor((f) => f.type === "todo_upserted");
+    assert.equal((up.todo as { id: string }).id, inRoot.id);
+    assert.ok(!client.frames.some((f) => f.type === "todo_upserted" && (f.todo as { title: string }).title === "elsewhere"));
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: requirement store mutations fan out as requirement_upserted frames", async () => {
+  const todos = new MemoryTodoStore();
+  const requirements = new MemoryRequirementStore();
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeStoreState({ todos, requirements }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    const req = newRequirement("proj-1", "surface the frame");
+    await requirements.upsert(req);
+    const up = await client.waitFor((f) => f.type === "requirement_upserted");
+    assert.equal((up.requirement as { id: string }).id, req.id);
+    assert.equal((up.requirement as { project_id: string }).project_id, "proj-1");
+    assert.equal((up.requirement as { type?: string }).type, undefined);
   } finally {
     client.close();
     await app.close();
