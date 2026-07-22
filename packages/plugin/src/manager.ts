@@ -105,6 +105,19 @@ export interface InstalledPlugin {
   skill_names: string[];
   /** MCP prefixes the plugin owns, so uninstall can drop them. */
   mcp_prefixes: string[];
+  /**
+   * True when the last {@link PluginManager.reattachInstalled} could not fully
+   * restore this plugin (a bad `SKILL.md`, an unreadable `plugin.json`, or a
+   * failed MCP add). Set/cleared at reattach time so `GET /v1/plugins` stops
+   * reporting a half-attached plugin as fully healthy. Absent = healthy.
+   */
+  degraded?: boolean;
+  /**
+   * Human-readable summary of what went wrong during the last reattach, present
+   * only when {@link degraded} is true. Semicolon-joined per-skill / per-MCP
+   * failures, or the whole-plugin error (e.g. a corrupt manifest).
+   */
+  last_error?: string;
 }
 
 /**
@@ -359,12 +372,27 @@ export class PluginManager {
     return this.#runExclusive(async () => {
       const entries = [...this.#ledger.values()];
       for (const entry of entries) {
-        await this.#reattachOne(entry).catch(() => {});
+        try {
+          await this.#reattachOne(entry);
+        } catch (e) {
+          // Whole-plugin failure that even the per-skill / per-MCP guards
+          // inside #reattachOne can't localise — an unreadable or unparseable
+          // `plugin.json`. Record it on the ledger entry so `GET /v1/plugins`
+          // surfaces the degradation instead of reporting the plugin as
+          // healthy (its skills / MCP servers are all absent from live state).
+          entry.degraded = true;
+          entry.last_error = errText(e);
+        }
       }
     });
   }
 
   async #reattachOne(entry: InstalledPlugin): Promise<void> {
+    // A clean reattach makes the plugin healthy again — clear any stale marker
+    // from a previous run (e.g. the operator fixed the broken SKILL.md).
+    entry.degraded = false;
+    delete entry.last_error;
+
     const manifestPath = path.join(entry.install_dir, "plugin.json");
     let text: string;
     try {
@@ -374,24 +402,45 @@ export class PluginManager {
     }
     const manifest: PluginManifest = parsePluginManifest(text);
 
-    // Skills: re-load each one and insert.
+    // Accumulate localised failures so a single bad skill / MCP server can't
+    // abort the rest of the plugin, yet the degradation is still reported.
+    const failures: string[] = [];
+
+    // Skills: re-load each one and insert. A per-skill guard (matching
+    // `SkillCatalog.scanRoot` and the MCP loop below) keeps one unreadable /
+    // unparseable `SKILL.md` from aborting the plugin's sibling skills AND its
+    // MCP servers, which used to vanish silently.
     for (const rel of manifest.skills) {
-      const abs = path.join(entry.install_dir, rel);
-      const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
-      const raw = await readFile(skillMd, "utf8");
-      const parsed = parseSkill(raw);
-      this.#skills.insert({
-        manifest: parsed.manifest,
-        body: parsed.body,
-        path: skillMd,
-        source: "plugin",
-      });
+      try {
+        const abs = path.join(entry.install_dir, rel);
+        const skillMd = (await isDir(abs)) ? path.join(abs, "SKILL.md") : abs;
+        const raw = await readFile(skillMd, "utf8");
+        const parsed = parseSkill(raw);
+        this.#skills.insert({
+          manifest: parsed.manifest,
+          body: parsed.body,
+          path: skillMd,
+          source: "plugin",
+        });
+      } catch (e) {
+        failures.push(`skill ${rel}: ${errText(e)}`);
+      }
     }
 
-    // MCP: re-add each server. Failures are swallowed so the rest come up.
+    // MCP: re-add each server. Failures are best-effort (so the rest come up)
+    // but now recorded rather than silently swallowed.
     for (const [prefix, cfg] of Object.entries(manifest.mcp_servers)) {
       const cloned: McpClientConfig = { ...cfg, prefix };
-      await this.#mcp.add(cloned).catch(() => {});
+      try {
+        await this.#mcp.add(cloned);
+      } catch (e) {
+        failures.push(`mcp ${prefix}: ${errText(e)}`);
+      }
+    }
+
+    if (failures.length > 0) {
+      entry.degraded = true;
+      entry.last_error = failures.join("; ");
     }
   }
 

@@ -155,7 +155,11 @@ export class Agent {
           if (chunk.type === "content_delta") {
             yield { type: "delta", content: chunk.content };
           } else if (chunk.type === "usage") {
-            yield { type: "usage", model: this.config.model, ...chunk.usage };
+            // Prefer the model the request actually ran on (set by wrappers that
+            // rewrite the model mid-flight, e.g. RoutingProvider) so usage is
+            // attributed and priced against the right model — falling back to
+            // the static request model for plain providers.
+            yield { type: "usage", model: chunk.model ?? this.config.model, ...chunk.usage };
           } else if (chunk.type === "finish") {
             finish = {
               message: chunk.message,

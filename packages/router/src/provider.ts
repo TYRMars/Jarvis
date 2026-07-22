@@ -137,11 +137,15 @@ export class RoutingProvider implements LlmProvider {
     const { provider, name, model } = await this.#decide(req);
     const routed = this.#rewrite(req, name, model);
     const resp = await provider.complete(routed);
+    // Attribute usage to the model that actually ran (unless the downstream
+    // already reported one), so cost estimates aren't priced against the
+    // pre-routing model.
+    const withModel = resp.model != null ? resp : { ...resp, model };
     // Stamp the id we hand back so the next turn can detect a switch.
-    if (resp.response_id != null) {
-      return { ...resp, response_id: stampResponseId(name, resp.response_id) };
+    if (withModel.response_id != null) {
+      return { ...withModel, response_id: stampResponseId(name, withModel.response_id) };
     }
-    return resp;
+    return withModel;
   }
 
   async completeStream(req: ChatRequest): Promise<AsyncIterable<LlmChunk>> {
@@ -149,22 +153,27 @@ export class RoutingProvider implements LlmProvider {
     const routed = this.#rewrite(req, name, model);
     const inner = await provider.completeStream(routed);
     // Mirror the blocking path: re-stamp the terminal Finish's response_id with
-    // the routed provider so chaining stays correct.
-    return restampStream(inner, name);
+    // the routed provider so chaining stays correct, and tag the usage chunk
+    // with the routed model so token usage is attributed to the model that ran.
+    return restampStream(inner, name, model);
   }
 }
 
 /**
  * Re-stamp the terminal `finish` chunk's `response_id` with the routed
- * provider name, forwarding every other chunk untouched.
+ * provider name, tag the `usage` chunk with the routed `model` (unless the
+ * downstream already set one), and forward every other chunk untouched.
  */
 async function* restampStream(
   inner: AsyncIterable<LlmChunk>,
   name: string,
+  model: string,
 ): AsyncGenerator<LlmChunk> {
   for await (const chunk of inner) {
     if (chunk.type === "finish" && chunk.response_id != null) {
       yield { ...chunk, response_id: stampResponseId(name, chunk.response_id) };
+    } else if (chunk.type === "usage" && chunk.model == null) {
+      yield { ...chunk, model };
     } else {
       yield chunk;
     }

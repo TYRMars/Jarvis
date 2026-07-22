@@ -260,6 +260,88 @@ test("classification reads the last USER message, ignoring a trailing tool resul
   assert.equal(anthropic.lastModel, "claude-opus");
 });
 
+// ---------- RoutingProvider: usage model attribution (#495) ----------
+
+/** A provider whose stream emits a `usage` chunk, to exercise model tagging. */
+class UsageProvider implements LlmProvider {
+  readonly tag: string;
+  constructor(tag: string) {
+    this.tag = tag;
+  }
+  complete(req: ChatRequest): Promise<ChatResponse> {
+    return Promise.resolve({
+      message: assistantText(`${this.tag}:${req.model}`),
+      finish_reason: "stop",
+      usage: { prompt_tokens: 40000, completion_tokens: 6000 },
+    });
+  }
+  completeStream(req: ChatRequest): AsyncIterable<LlmChunk> {
+    const tag = this.tag;
+    const model = req.model;
+    return (async function* (): AsyncGenerator<LlmChunk> {
+      yield { type: "usage", usage: { prompt_tokens: 40000, completion_tokens: 6000 } };
+      yield { type: "finish", message: assistantText(`${tag}:${model}`), finish_reason: "stop" };
+    })();
+  }
+}
+
+test("streamed usage chunk is tagged with the routed model, not the request model (#495)", async () => {
+  const anthropic = new UsageProvider("anthropic");
+  const map = new Map<string, LlmProvider>([["anthropic", anthropic]]);
+  const cfg = new RouterConfig(modelRef("openai", "gpt-4o-mini")).withTier(
+    "complex",
+    modelRef("anthropic", "claude-opus-4"),
+  );
+  const rp = new RoutingProvider(new RecordingProvider("fb"), map, cfg, new FixedClassifier("complex"));
+
+  const stream = await rp.completeStream({ model: "gpt-4o-mini", messages: [] });
+  const usage = [];
+  for await (const chunk of stream) if (chunk.type === "usage") usage.push(chunk);
+  assert.equal(usage.length, 1);
+  // The tokens ran on Opus after routing — usage must carry that, so the web
+  // UsagePanel doesn't price 46k Opus tokens at gpt-4o-mini rates.
+  assert.equal(usage[0]?.model, "claude-opus-4");
+});
+
+test("blocking complete stamps the routed model onto the response (#495)", async () => {
+  const anthropic = new UsageProvider("anthropic");
+  const map = new Map<string, LlmProvider>([["anthropic", anthropic]]);
+  const cfg = new RouterConfig(modelRef("openai", "gpt-4o-mini")).withTier(
+    "complex",
+    modelRef("anthropic", "claude-opus-4"),
+  );
+  const rp = new RoutingProvider(new RecordingProvider("fb"), map, cfg, new FixedClassifier("complex"));
+
+  const resp = await rp.complete({ model: "gpt-4o-mini", messages: [] });
+  assert.equal(resp.model, "claude-opus-4");
+});
+
+test("router does not overwrite a model a downstream already reported on usage", async () => {
+  // A downstream that pre-sets usage.model must be respected (?? semantics).
+  const inner: LlmProvider = {
+    complete: (_req) =>
+      Promise.resolve({ message: assistantText("x"), finish_reason: "stop", model: "explicit-model" }),
+    completeStream: (_req) =>
+      (async function* (): AsyncGenerator<LlmChunk> {
+        yield { type: "usage", usage: { prompt_tokens: 1 }, model: "explicit-model" };
+        yield { type: "finish", message: assistantText("x"), finish_reason: "stop" };
+      })(),
+  };
+  const map = new Map<string, LlmProvider>([["anthropic", inner]]);
+  const cfg = new RouterConfig(modelRef("openai", "gpt-4o-mini")).withTier(
+    "complex",
+    modelRef("anthropic", "claude-opus-4"),
+  );
+  const rp = new RoutingProvider(new RecordingProvider("fb"), map, cfg, new FixedClassifier("complex"));
+
+  const resp = await rp.complete({ model: "gpt-4o-mini", messages: [] });
+  assert.equal(resp.model, "explicit-model");
+  const stream = await rp.completeStream({ model: "gpt-4o-mini", messages: [] });
+  for await (const chunk of stream) {
+    if (chunk.type === "usage") assert.equal(chunk.model, "explicit-model");
+  }
+});
+
 // ---------- RoutingProvider: chain-handle reconciliation ----------
 
 test("same provider preserves + unstamps the chain handle, re-stamps the reply", async () => {
