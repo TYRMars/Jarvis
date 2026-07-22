@@ -8,9 +8,12 @@ import {
   MemoryRequirementRunStore,
   MemoryActivityStore,
   MemoryWorkspaceStore,
+  ConversationStoreBase,
+  type ConversationMetadata,
+  type ConversationRecord,
 } from "@jarvis/store";
 import { newProject, newRequirement } from "@jarvis/project";
-import { userMessage } from "@jarvis/core";
+import { userMessage, type Conversation } from "@jarvis/core";
 import { registerConversationsRoutes } from "./conversations-routes.ts";
 import type { AppState } from "./state.ts";
 
@@ -196,6 +199,77 @@ test("list lifecycle filter: valid filters, unknown → 400", async () => {
     (await app.inject({ method: "GET", url: "/v1/conversations?lifecycle=bogus" })).statusCode,
     400,
   );
+  await app.close();
+});
+
+// ---------- #470: filter-before-slice (over-fetch) ------------------------
+
+// A ConversationStore with a deterministic, strictly-increasing clock so a
+// test can control newest-first ordering exactly (the Memory/JSON stores stamp
+// `Date.now()`, which ties within a test's sub-millisecond save loop).
+class ClockedStore extends ConversationStoreBase {
+  #rows = new Map<string, { created_at: string; updated_at: string; conv: Conversation; meta: ConversationMetadata }>();
+  #seq = 0;
+  saveEnvelope(id: string, conversation: Conversation, metadata: ConversationMetadata): Promise<void> {
+    const ts = new Date((this.#seq += 1) * 1000).toISOString();
+    const created = this.#rows.get(id)?.created_at ?? ts;
+    this.#rows.set(id, {
+      created_at: created,
+      updated_at: ts,
+      conv: { messages: [...conversation.messages] },
+      meta: { project_id: metadata.project_id ?? null, lifecycle: metadata.lifecycle },
+    });
+    return Promise.resolve();
+  }
+  loadEnvelope(id: string): Promise<[Conversation, ConversationMetadata] | undefined> {
+    const r = this.#rows.get(id);
+    return Promise.resolve(r ? [{ messages: [...r.conv.messages] }, { ...r.meta }] : undefined);
+  }
+  list(limit: number): Promise<ConversationRecord[]> {
+    const recs: ConversationRecord[] = [...this.#rows].map(([id, r]) => ({
+      id,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      message_count: r.conv.messages.length,
+      project_id: r.meta.project_id ?? null,
+      lifecycle: r.meta.lifecycle,
+    }));
+    recs.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
+    return Promise.resolve(recs.slice(0, limit));
+  }
+  delete(id: string): Promise<boolean> {
+    return Promise.resolve(this.#rows.delete(id));
+  }
+}
+
+test("list: unbounded newer internal `__memory__` rows don't crowd real conversations out of the window (#470)", async () => {
+  const store = new ClockedStore();
+  const app = await buildApp({ createAgent: agentUnused, store });
+  // One real conversation, then many *newer* internal summary rows — more than
+  // the default limit, so a filter-after-slice window would be all-internal.
+  await store.save("real-conv", { messages: [userMessage("keep me")] });
+  for (let i = 0; i < 60; i++) {
+    await store.save(`__memory__.summary:${i}`, { messages: [userMessage("synthetic")] });
+  }
+
+  const rows = (await app.inject({ method: "GET", url: "/v1/conversations" })).json() as EnrichedRow[];
+  // Pre-fix: [] (the newest 50 were all internal, filtered away). Post-fix: the
+  // real row surfaces via over-fetch.
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.id, "real-conv");
+  await app.close();
+});
+
+test("list ?lifecycle=archived: an archived row crowded out of the newest-N window still surfaces (#470)", async () => {
+  const store = new ClockedStore();
+  const app = await buildApp({ createAgent: agentUnused, store });
+  await store.saveEnvelope("old-archived", { messages: [userMessage("archived one")] }, { lifecycle: "archived" });
+  for (let i = 0; i < 60; i++) {
+    await store.saveEnvelope(`active-${i}`, { messages: [userMessage("active")] }, { lifecycle: "active" });
+  }
+
+  const rows = (await app.inject({ method: "GET", url: "/v1/conversations?lifecycle=archived" })).json() as EnrichedRow[];
+  assert.deepEqual(rows.map((r) => r.id), ["old-archived"]);
   await app.close();
 });
 
