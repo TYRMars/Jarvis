@@ -61,6 +61,47 @@ test("embeds @jarvis/server in-process and serves over loopback", async () => {
   }
 });
 
+test("ensureServer is idempotent — a second embedded start reuses the running server (#493)", async () => {
+  const prefsDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-prefs-"));
+  const dbDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-db-"));
+  const manager = new ServerManager({
+    logs: new LogBuffer(),
+    prefsDir,
+    webDist: "",
+    env: {
+      OPENAI_API_KEY: "test-dummy-key",
+      JARVIS_PROVIDER: "openai",
+      JARVIS_DB_URL: `json://${dbDir}`,
+    },
+  });
+
+  try {
+    await manager.init();
+    await manager.ensureServer({ forceEmbedded: true });
+    const first = await manager.status();
+    assert.equal(first.server_kind, "embedded", first.last_error ?? "expected embedded");
+    const firstOrigin = first.api_origin;
+
+    // Simulate a macOS dock re-activate: createWindow() -> ensureServer() while
+    // the embedded server is still running. It must NOT spin up a second server
+    // on a new ephemeral port — the origin (and thus the underlying listener +
+    // MCP children) must be unchanged.
+    await manager.ensureServer({ forceEmbedded: true });
+    const second = await manager.status();
+    assert.equal(second.server_kind, "embedded");
+    assert.equal(second.server_running, true);
+    assert.equal(second.api_origin, firstOrigin, "expected the same origin (no second server)");
+
+    // The single server is still healthy on that one origin.
+    const health = await fetch(`${second.api_origin}/health`);
+    assert.equal(health.status, 200);
+  } finally {
+    await manager.stop();
+    await rm(prefsDir, { recursive: true, force: true });
+    await rm(dbDir, { recursive: true, force: true });
+  }
+});
+
 test("startup failure (missing credential) is captured, not thrown", async () => {
   const prefsDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-prefs-"));
   const dbDir = await mkdtemp(path.join(tmpdir(), "jarvis-desktop-db-"));
