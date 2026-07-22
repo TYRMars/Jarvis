@@ -71,6 +71,14 @@ export interface ChatResponse {
   finish_reason: FinishReason;
   response_id?: string | null;
   usage?: Usage;
+  /**
+   * Concrete model that produced `usage`, when it differs from the request's
+   * `model`. Set by wrappers that rewrite the model mid-flight (e.g.
+   * `RoutingProvider`) so usage is attributed to the model that actually ran,
+   * not the pre-routing name. Absent for plain providers — callers fall back to
+   * the request model.
+   */
+  model?: string;
 }
 
 /**
@@ -87,7 +95,7 @@ export type LlmChunk =
       name?: string;
       arguments_fragment?: string;
     }
-  | { type: "usage"; usage: Usage }
+  | { type: "usage"; usage: Usage; model?: string }
   | { type: "finish"; message: Message; finish_reason: FinishReason; response_id?: string | null };
 
 export interface LlmProvider {
