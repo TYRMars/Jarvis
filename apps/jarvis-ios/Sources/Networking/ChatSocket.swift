@@ -88,6 +88,14 @@ enum ClientFrame {
 /// `resume { after_seq }` cursor and the replay-gap check both see
 /// the same serially-processed value, with no race against frames
 /// the socket has received but the consumer hasn't handled yet.
+///
+/// `ChatSocket` is `@MainActor`-isolated: its `task`/`continuation` stores are
+/// mutated by `ChatViewModel` (already `@MainActor`) *and* by the `receive`
+/// completion handler, which fires on URLSession's delegate queue. Pinning all
+/// state to the main actor — and hopping the delegate-queue callbacks back onto
+/// it — is what keeps those two producers from racing (#497). It rippled to no
+/// call sites: every caller lives on the main actor already.
+@MainActor
 final class ChatSocket {
     typealias Frame = (event: ServerEvent, seq: UInt64?)
 
@@ -107,8 +115,12 @@ final class ChatSocket {
 
         let stream = AsyncStream<Frame> { continuation in
             self.continuation = continuation
-            continuation.onTermination = { [weak self] _ in
-                self?.task?.cancel(with: .normalClosure, reason: nil)
+            continuation.onTermination = { _ in
+                // Fires on an arbitrary queue when the consumer drops the
+                // stream. `URLSessionTask.cancel` is thread-safe; cancel the
+                // captured task directly so we never touch main-actor state
+                // off the main actor.
+                task.cancel(with: .normalClosure, reason: nil)
             }
         }
         task.resume()
@@ -132,19 +144,32 @@ final class ChatSocket {
     // MARK: private
 
     private func receiveLoop(on task: URLSessionWebSocketTask) {
+        // `receive`'s completion handler fires on URLSession's delegate queue —
+        // off the main actor. Hop back before touching `task`/`continuation` so
+        // every access to them stays main-actor isolated. Without the hop the
+        // delegate queue and the main actor raced on these stores (#497):
+        // unbalanced ARC release → EXC_BAD_ACCESS, or `continuation` nil'd by a
+        // concurrent `disconnect()` between the load and `finish()` here, which
+        // strands the stream open and leaks the consumer forever.
+        //
+        // Ordering is preserved: the next `receive` is only re-armed from inside
+        // this main-actor hop (via `receiveLoop`), so frames are handled one at
+        // a time, never overlapping.
         task.receive { [weak self] result in
-            guard let self, self.task === task else { return }
-            switch result {
-            case .success(let message):
-                if case .string(let text) = message,
-                   let (event, seq) = ServerEvent.decode(text) {
-                    self.continuation?.yield((event, seq))
+            Task { @MainActor in
+                guard let self, self.task === task else { return }
+                switch result {
+                case .success(let message):
+                    if case .string(let text) = message,
+                       let (event, seq) = ServerEvent.decode(text) {
+                        self.continuation?.yield((event, seq))
+                    }
+                    self.receiveLoop(on: task)
+                case .failure:
+                    self.continuation?.finish()
+                    self.continuation = nil
+                    self.task = nil
                 }
-                self.receiveLoop(on: task)
-            case .failure:
-                self.continuation?.finish()
-                self.continuation = nil
-                self.task = nil
             }
         }
     }
