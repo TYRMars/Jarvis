@@ -325,6 +325,44 @@ test("reattachInstalled re-registers skills and mcp from the ledger", async (t) 
   assert.ok(mcp.slots.has("gh"));
 });
 
+test("reattachInstalled tolerates one bad SKILL.md — sibling skills and mcp still come up", async (t) => {
+  const staging = await makeTmp();
+  t.after(() => rm(staging, { recursive: true, force: true }));
+
+  const pluginSrc = path.join(staging, "src");
+  await writePlugin(
+    pluginSrc,
+    `{
+      "name": "demo", "version": "0.1.0", "description": "x",
+      "skills": ["skills/a", "skills/b"],
+      "mcp_servers": { "gh": { "transport": { "type": "stdio", "command": "uvx" } } }
+    }`,
+  );
+  await writeSkill(path.join(pluginSrc, "skills"), "a", "name: a\ndescription: y\n", "Body.");
+  await writeSkill(path.join(pluginSrc, "skills"), "b", "name: b\ndescription: y\n", "Body.");
+
+  const installRoot = path.join(staging, "plugins");
+  await (await PluginManager.open(installRoot, SkillCatalog.empty(), new FakeMcp())).installFromPath(pluginSrc);
+
+  // Operator corrupts skill "a"'s frontmatter after install (unknown variant).
+  await writeFile(
+    path.join(installRoot, "demo", "skills", "a", "SKILL.md"),
+    "---\nname: a\ndescription: y\nactivation: allways\n---\nBody.",
+  );
+
+  // Fresh process: only the ledger persists.
+  const cat = SkillCatalog.empty();
+  const mcp = new FakeMcp();
+  const mgr = await PluginManager.open(installRoot, cat, mcp);
+
+  await mgr.reattachInstalled();
+  // Bad skill "a" is skipped, but sibling "b" and the "gh" MCP server survive —
+  // before the per-skill guard, "a" throwing aborted both.
+  assert.equal(cat.get("a"), undefined, "corrupt skill skipped");
+  assert.ok(cat.get("b"), "sibling skill still registered");
+  assert.ok(mcp.slots.has("gh"), "mcp server still connected");
+});
+
 test("install rejects a directory without plugin.json", async (t) => {
   const staging = await makeTmp();
   t.after(() => rm(staging, { recursive: true, force: true }));
