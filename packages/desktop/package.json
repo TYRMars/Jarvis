@@ -22,6 +22,7 @@
     "node-pty": "^1.0.0"
   },
   "devDependencies": {
+    "@jarvis/ddns": "workspace:*",
     "@jarvis/jarvis-app": "workspace:*",
     "@jarvis/server": "workspace:*",
     "@types/better-sqlite3": "^7.6.11",

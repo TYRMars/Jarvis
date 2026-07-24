@@ -632,6 +632,12 @@ export const messages: Record<Lang, Record<string, MessageValue>> = {
     settingsRemoteAuthOn: "token required (good for external access)",
     settingsRemoteAuthOff: "none — loopback/LAN only",
     settingsRemoteLan: "LAN addresses",
+    settingsRemoteLanToggle: "Expose on LAN",
+    settingsRemoteLanToggleHint:
+      "Bind the embedded server to 0.0.0.0 with a generated access token so phones on this network can pair. The app reloads when toggled.",
+    settingsRemoteLanRestarting: "Restarting…",
+    settingsRemoteLanOn: "on — LAN + token",
+    settingsRemoteLanOff: "off — this Mac only",
     settingsRemoteExternal: "External hostname",
     settingsRemotePairingLoopback:
       "Open this page on the host machine (loopback) to reveal the pairing QR + token.",
@@ -3447,6 +3453,12 @@ Expected workflow:
     settingsRemoteAuthOn: "需要令牌(适合外网访问)",
     settingsRemoteAuthOff: "无 —— 仅本机/局域网",
     settingsRemoteLan: "局域网地址",
+    settingsRemoteLanToggle: "暴露到局域网",
+    settingsRemoteLanToggleHint:
+      "内嵌服务器改绑 0.0.0.0 并自动生成访问令牌,同网手机即可扫码配对。切换后应用会重新加载。",
+    settingsRemoteLanRestarting: "重启中…",
+    settingsRemoteLanOn: "开 —— 局域网 + 令牌",
+    settingsRemoteLanOff: "关 —— 仅本机",
     settingsRemoteExternal: "外网域名",
     settingsRemotePairingLoopback: "请在主机本地(loopback)打开此页面以显示配对二维码与令牌。",
     settingsRemoteScan: "在手机 App 中:设置 → 扫码配对。",

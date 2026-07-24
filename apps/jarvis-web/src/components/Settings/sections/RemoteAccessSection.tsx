@@ -10,6 +10,11 @@ import { QRCodeSVG } from "qrcode.react";
 import { Section, Row } from "./Section";
 import { t } from "../../../utils/i18n";
 import { apiUrl } from "../../../services/api";
+import {
+  fetchDesktopStatus,
+  setDesktopLanExposure,
+  supportsLanExposure,
+} from "../../../services/desktop";
 
 function tx(key: string, fallback: string): string {
   const v = t(key);
@@ -41,6 +46,9 @@ export function RemoteAccessSection({ embedded }: { embedded?: boolean } = {}) {
   const [error, setError] = useState<string | null>(null);
   const [pairingBlocked, setPairingBlocked] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  // Desktop (Electron) shell only: the embedded server's LAN-exposure toggle.
+  const [lanExposure, setLanExposure] = useState<boolean | null>(null);
+  const [lanBusy, setLanBusy] = useState(false);
 
   async function reload(): Promise<void> {
     setError(null);
@@ -67,7 +75,24 @@ export function RemoteAccessSection({ embedded }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     void reload();
+    if (supportsLanExposure()) {
+      void fetchDesktopStatus().then((s) => {
+        if (s) setLanExposure(s.lan_exposure === true);
+      });
+    }
   }, []);
+
+  const toggleLan = async (enabled: boolean): Promise<void> => {
+    setLanBusy(true);
+    setLanExposure(enabled); // optimistic; the window reloads on success anyway
+    try {
+      const s = await setDesktopLanExposure(enabled);
+      if (s) setLanExposure(s.lan_exposure === true);
+      await reload();
+    } finally {
+      setLanBusy(false);
+    }
+  };
 
   const copy = (text: string): void => {
     void navigator.clipboard?.writeText(text);
@@ -85,6 +110,32 @@ export function RemoteAccessSection({ embedded }: { embedded?: boolean } = {}) {
       embedded={embedded}
     >
       {error && <p className="settings-warning">{error}</p>}
+
+      {lanExposure !== null && (
+        <Row
+          label={tx("settingsRemoteLanToggle", "Expose on LAN")}
+          hint={tx(
+            "settingsRemoteLanToggleHint",
+            "Bind the embedded server to 0.0.0.0 with a generated access token so phones on this network can pair. The app reloads when toggled.",
+          )}
+        >
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={lanExposure}
+              disabled={lanBusy}
+              onChange={(e) => void toggleLan(e.target.checked)}
+            />
+            <span>
+              {lanBusy
+                ? tx("settingsRemoteLanRestarting", "Restarting…")
+                : lanExposure
+                  ? tx("settingsRemoteLanOn", "on — LAN + token")
+                  : tx("settingsRemoteLanOff", "off — this Mac only")}
+            </span>
+          </label>
+        </Row>
+      )}
 
       {info && (
         <>

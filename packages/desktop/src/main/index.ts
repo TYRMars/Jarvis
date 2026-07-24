@@ -133,6 +133,18 @@ function registerIpc(): void {
     return status;
   });
 
+  ipcMain.handle(IPC.setLanExposure, async (event, enabled: unknown) => {
+    if (manager === null) return stoppedStatus();
+    const status = await manager.setLanExposure(enabled === true);
+    // The embedded server restarted (its port may have changed) — re-navigate
+    // the calling window to the fresh origin after the reply is sent.
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win !== null && status.server_running) {
+      setTimeout(() => void navigateToServer(win, status), 0);
+    }
+    return status;
+  });
+
   ipcMain.handle(IPC.selectWorkspace, async (): Promise<string | null> => {
     const result = await dialog.showOpenDialog({
       title: "Select Jarvis workspace",
@@ -172,6 +184,7 @@ function stoppedStatus() {
     workspace: null,
     logs: logs.tail(120),
     last_error: "desktop not initialised",
+    lan_exposure: false,
   };
 }
 

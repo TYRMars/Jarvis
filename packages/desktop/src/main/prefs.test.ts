@@ -42,3 +42,31 @@ test("non-string workspace is ignored", async () => {
     assert.deepEqual(await loadPrefs(dir), {});
   });
 });
+
+test("round-trips the LAN exposure fields", async () => {
+  await withTempDir(async (dir) => {
+    await savePrefs(dir, {
+      workspace: "/tmp/work",
+      lanExposure: true,
+      lanPort: 7001,
+      accessToken: "tok-abc",
+    });
+    const loaded = await loadPrefs(dir);
+    assert.deepEqual(loaded, {
+      workspace: "/tmp/work",
+      lanExposure: true,
+      lanPort: 7001,
+      accessToken: "tok-abc",
+    });
+  });
+});
+
+test("invalid LAN fields are ignored", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      path.join(dir, "prefs.json"),
+      JSON.stringify({ lanExposure: "yes", lanPort: 99999, accessToken: "" }),
+    );
+    assert.deepEqual(await loadPrefs(dir), {});
+  });
+});

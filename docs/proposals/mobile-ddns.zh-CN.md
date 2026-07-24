@@ -1,6 +1,6 @@
 # 移动端连接 + 本机对外 DDNS(Remote Access)
 
-**Status:** Implemented (P1 — 服务端基座 + iOS 客户端补齐 + Web 配对页);桌面壳「暴露到局域网」开关为待办。
+**Status:** Implemented (P1 — 服务端基座 + iOS 客户端补齐 + Web 配对页 + 桌面壳「暴露到局域网」开关)。
 
 > 分支:`feat/mobile-ios-ddns`。本提案落地了「移动端连接电脑上的 service」+「本机对外
 > DDNS 配置能力」两件事。
@@ -77,7 +77,11 @@ DDNS 的*编辑*放在手机端(按需求)。
 
 ## 待办
 
-- **桌面壳「暴露到局域网」开关**:`packages/desktop` 内嵌 server 当前强制 loopback;
-  需加 `prefs` 字段 + IPC 以绑 `0.0.0.0` 并注入令牌(本环境无法构建 Electron,留作跟进)。
+- ~~**桌面壳「暴露到局域网」开关**~~:已实现——`packages/desktop` 设置页(远程访问)
+  的开关经 `setLanExposure` IPC 重启内嵌 server:绑 `0.0.0.0`、优先稳定端口
+  (`prefs.lanPort`,默认 7001,被占则退化临时端口)、自动生成并以 0600 持久化
+  访问令牌注入 `JARVIS_ACCESS_TOKEN`,同时启动 Bonjour 广播(serve 子命令在
+  main.ts 里做的事,内嵌路径在 server-manager 里补上);窗口始终走 loopback,
+  配对二维码页因此可解锁。
 - iOS 自动重连时在 WS `resume` 上补带令牌(已带 header,逻辑上已覆盖,待真机回归)。
 - DDNS provider 的更细错误分类 / 多记录(AAAA)同步。

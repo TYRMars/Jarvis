@@ -9,20 +9,29 @@
 import net from "node:net";
 
 /** Bind an ephemeral port on `host` and return it (the listener is closed). */
-export function pickPort(host = "127.0.0.1"): Promise<number> {
+export function pickPort(host = "127.0.0.1", preferred?: number): Promise<number> {
   return new Promise<number>((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.once("error", reject);
-    srv.listen(0, host, () => {
-      const addr = srv.address();
-      const port = addr !== null && typeof addr === "object" ? addr.port : 0;
-      srv.close((err) => {
-        if (err) reject(err);
-        else if (port > 0) resolve(port);
-        else reject(new Error("could not determine an ephemeral port"));
+    const tryBind = (candidate: number, fallback: boolean): void => {
+      const srv = net.createServer();
+      srv.unref();
+      srv.once("error", (err) => {
+        // A busy/blocked preferred port falls back to an ephemeral one — the
+        // caller reads the actual port from the resolved value either way.
+        if (fallback) tryBind(0, false);
+        else reject(err);
       });
-    });
+      srv.listen(candidate, host, () => {
+        const addr = srv.address();
+        const port = addr !== null && typeof addr === "object" ? addr.port : 0;
+        srv.close((err) => {
+          if (err) reject(err);
+          else if (port > 0) resolve(port);
+          else reject(new Error("could not determine an ephemeral port"));
+        });
+      });
+    };
+    if (preferred !== undefined && preferred > 0) tryBind(preferred, true);
+    else tryBind(0, false);
   });
 }
 

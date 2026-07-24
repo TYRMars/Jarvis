@@ -17,6 +17,7 @@ export const IPC = {
   openPath: "jarvis-desktop:open-path",
   revealPath: "jarvis-desktop:reveal-path",
   logs: "jarvis-desktop:logs",
+  setLanExposure: "jarvis-desktop:set-lan-exposure",
 } as const;
 
 /** How the desktop is currently sourcing its backend. */
@@ -36,6 +37,8 @@ export interface DesktopStatus {
   logs: string[];
   /** Last start/restart failure, if any. */
   last_error: string | null;
+  /** Whether the embedded server is exposed on the LAN (0.0.0.0 + token). */
+  lan_exposure: boolean;
 }
 
 /** Result of an `openPath` / `revealPath` call. */
@@ -61,4 +64,10 @@ export interface JarvisDesktopBridge {
   revealPath(path: string): Promise<OpenResult>;
   /** Tail of the desktop/server log buffer. */
   logs(limit?: number): Promise<string[]>;
+  /**
+   * Toggle LAN exposure: persists the preference and restarts the embedded
+   * server bound to 0.0.0.0 with a (generated, persisted) access token — or
+   * back to loopback-only. The window re-navigates to the new origin.
+   */
+  setLanExposure(enabled: boolean): Promise<DesktopStatus>;
 }
