@@ -17,6 +17,7 @@ import {
   type ToolCall,
 } from "@jarvis/core";
 import { MemoryConversationStore } from "@jarvis/store";
+import { ChatRunRegistry } from "./chat-runs.ts";
 import { buildServer, serve } from "./server.ts";
 import type { AppState } from "./state.ts";
 
@@ -86,13 +87,27 @@ const askTool: Tool = {
   },
 };
 
-function makeState(turns: ScriptTurn[], opts: { store?: MemoryConversationStore; tools?: ToolRegistry } = {}): AppState {
+function makeState(
+  turns: ScriptTurn[],
+  opts: {
+    store?: MemoryConversationStore;
+    tools?: ToolRegistry;
+    chatRuns?: ChatRunRegistry;
+    /** Captures the model each createAgent call resolved (configure tests). */
+    modelSpy?: string[];
+  } = {},
+): AppState {
   const provider = new ScriptedProvider(turns);
   const tools = opts.tools ?? new ToolRegistry();
   return {
     store: opts.store,
-    createAgent: (approver, human) =>
-      new Agent(provider, { ...defaultAgentConfig("test-model"), tools, maxIterations: 5, approver, human }),
+    chatRuns: opts.chatRuns,
+    providerCatalog: { default: "scripted", providers: [] },
+    createAgent: (approver, human, agentOpts) => {
+      const model = agentOpts?.model ?? "test-model";
+      opts.modelSpy?.push(model);
+      return new Agent(provider, { ...defaultAgentConfig(model), tools, maxIterations: 5, approver, human });
+    },
   };
 }
 
@@ -411,6 +426,196 @@ test("WS: new allocates a session id; reset acks; resume loads from store", asyn
 
     client.send({ type: "resume", id: "does-not-exist" });
     const err = await client.waitFor((f) => f.type === "error" && /not found/.test(f.message as string));
+    assert.ok(err);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+// ---------- WS session protocol (start_turn / seq replay / interrupt / configure) ----------
+
+test("WS: start_turn new — started, seq-stamped events, persisted conversation", async () => {
+  const store = new MemoryConversationStore();
+  const chatRuns = new ChatRunRegistry();
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "hello there" }], { store, chatRuns }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "start_turn", mode: "new", id: "conv-st", content: "hi" });
+    const started = await client.waitFor((f) => f.type === "started");
+    assert.equal(started.id as string, "conv-st");
+
+    const done = await client.waitFor((f) => f.type === "done");
+    // Tracked events carry the registry's monotonic seq stamp.
+    assert.equal(typeof done.seq, "number");
+    const deltas = client.frames.filter((f) => f.type === "delta");
+    assert.ok(deltas.length > 0 && deltas.every((f) => typeof f.seq === "number"));
+
+    const savedConv = await store.load("conv-st");
+    assert.equal(savedConv?.messages.length, 2); // user + assistant
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: resume with after_seq replays the tail between reconnects", async () => {
+  const store = new MemoryConversationStore();
+  const chatRuns = new ChatRunRegistry();
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "first answer" }], { store, chatRuns }));
+  const { port } = app.server.address() as { port: number };
+  const a = await openWs(port);
+  let b: WsHarness | undefined;
+  try {
+    a.send({ type: "start_turn", mode: "new", id: "conv-replay", content: "hi" });
+    const done = await a.waitFor((f) => f.type === "done");
+    const lastSeq = done.seq as number;
+
+    // A second socket resumes from seq 0 → full tail replay of the turn.
+    b = await openWs(port);
+    b.send({ type: "resume", id: "conv-replay", after_seq: 0 });
+    const resumed = await b.waitFor((f) => f.type === "resumed");
+    assert.equal(resumed.live, false);
+    assert.equal(resumed.message_count, 2);
+    const start = await b.waitFor((f) => f.type === "tail_replay_start");
+    assert.equal(start.first_seq, 1);
+    await b.waitFor((f) => f.type === "tail_replay_done");
+    const replayedDone = b.frames.find((f) => f.type === "done");
+    assert.equal(replayedDone?.seq, lastSeq);
+  } finally {
+    a.close();
+    b?.close();
+    await app.close();
+  }
+});
+
+test("WS: mid-run reconnect adopts the pending approval and finishes on the new socket", async () => {
+  const store = new MemoryConversationStore();
+  const chatRuns = new ChatRunRegistry();
+  const tools = new ToolRegistry().register(dangerTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "tc9", name: "danger.run", arguments: {} }] }, { content: "finished" }], {
+      store,
+      chatRuns,
+      tools,
+    }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const a = await openWs(port);
+  let b: WsHarness | undefined;
+  try {
+    a.send({ type: "start_turn", mode: "new", id: "conv-adopt", content: "go" });
+    const req = await a.waitFor((f) => f.type === "approval_request");
+    const cursor = req.seq as number;
+    a.close(); // phone lost the network mid-approval
+
+    b = await openWs(port);
+    b.send({ type: "resume", id: "conv-adopt", after_seq: cursor });
+    const resumed = await b.waitFor((f) => f.type === "resumed");
+    assert.equal(resumed.live, true);
+    // The blocking approval is re-prompted on the new socket…
+    const pending = await b.waitFor((f) => f.type === "approval_pending");
+    assert.equal(pending.id as string, "tc9");
+    // …and answerable from it; the turn then completes on this socket.
+    b.send({ type: "approve", tool_call_id: "tc9" });
+    const toolEnd = await b.waitFor((f) => f.type === "tool_end");
+    assert.equal(toolEnd.content as string, "ran");
+    await b.waitFor((f) => f.type === "done");
+  } finally {
+    a.close();
+    b?.close();
+    await app.close();
+  }
+});
+
+test("WS: mid-run reconnect re-prompts a pending hitl_request, answerable from the new socket", async () => {
+  const store = new MemoryConversationStore();
+  const chatRuns = new ChatRunRegistry();
+  const tools = new ToolRegistry().register(askTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "tc-ask", name: "ask.text", arguments: {} }] }, { content: "thanks" }], {
+      store,
+      chatRuns,
+      tools,
+    }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const a = await openWs(port);
+  let b: WsHarness | undefined;
+  try {
+    a.send({ type: "start_turn", mode: "new", id: "conv-hitl", content: "go" });
+    const req = await a.waitFor((f) => f.type === "hitl_request");
+    const cursor = req.seq as number;
+    a.close();
+
+    b = await openWs(port);
+    b.send({ type: "resume", id: "conv-hitl", after_seq: cursor });
+    const reprompt = await b.waitFor((f) => f.type === "hitl_request");
+    assert.equal((reprompt.request as { id: string }).id, "q1");
+    b.send({ type: "hitl_response", request_id: "q1", status: "submitted", payload: "ada" });
+    const toolEnd = await b.waitFor((f) => f.type === "tool_end");
+    assert.equal(toolEnd.content as string, "hi ada [submitted]");
+    await b.waitFor((f) => f.type === "done");
+  } finally {
+    a.close();
+    b?.close();
+    await app.close();
+  }
+});
+
+test("WS: interrupt cancels the parked turn and emits interrupted", async () => {
+  const store = new MemoryConversationStore();
+  const chatRuns = new ChatRunRegistry();
+  const tools = new ToolRegistry().register(dangerTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "tc-int", name: "danger.run", arguments: {} }] }, { content: "never" }], {
+      store,
+      chatRuns,
+      tools,
+    }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "start_turn", mode: "new", id: "conv-int", content: "go" });
+    await client.waitFor((f) => f.type === "approval_request");
+    client.send({ type: "interrupt" });
+    await client.waitFor((f) => f.type === "interrupted");
+    await client.waitFor((f) => f.type === "cancelled");
+    const rec = chatRuns.list(false).find((r) => r.conversation_id === "conv-int");
+    assert.equal(rec?.status, "cancelled");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: configure sets a sticky per-socket model; provider switching is rejected", async () => {
+  const store = new MemoryConversationStore();
+  const chatRuns = new ChatRunRegistry();
+  const modelSpy: string[] = [];
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ content: "one" }, { content: "two" }], { store, chatRuns, modelSpy }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "configure", model: "fancy-model" });
+    const configured = await client.waitFor((f) => f.type === "configured");
+    assert.equal(configured.model, "fancy-model");
+    assert.equal(configured.provider, "scripted");
+
+    client.send({ type: "start_turn", mode: "new", id: "conv-cfg", content: "hi" });
+    await client.waitFor((f) => f.type === "done");
+    assert.deepEqual(modelSpy, ["fancy-model"]);
+
+    client.send({ type: "configure", provider: "other-provider" });
+    const err = await client.waitFor((f) => f.type === "error" && /provider switching/.test(f.message as string));
     assert.ok(err);
   } finally {
     client.close();

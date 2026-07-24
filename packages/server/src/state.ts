@@ -112,9 +112,11 @@ export interface AppState {
    * Build an Agent for one request. The optional `approver` is the per-socket
    * gate the WebSocket transport supplies (mirrors Rust `state.build_agent`);
    * the optional `human` is the per-socket HITL responder for `ask.*` tools.
-   * The blocking / SSE chat routes call this with neither.
+   * The blocking / SSE chat routes call this with neither. `opts.model`
+   * overrides the configured model for this agent (the WS `configure` frame's
+   * per-socket sticky model) — same provider, different model id.
    */
-  createAgent(approver?: Approver, human?: HumanLayer): Agent;
+  createAgent(approver?: Approver, human?: HumanLayer, opts?: { model?: string }): Agent;
   /**
    * The shared tool registry that `createAgent` builds agents from. Surfaced
    * here so `GET /v1/tools` can list the catalog (including muted tools) and

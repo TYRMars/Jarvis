@@ -350,9 +350,9 @@ export async function buildAppState(
   }
   const memory = buildMemory(config, provider, summaryStore, routePolicy);
 
-  const createAgent = (approver?: Approver, human?: HumanLayer): Agent => {
+  const createAgent = (approver?: Approver, human?: HumanLayer, opts?: { model?: string }): Agent => {
     const agentConfig: AgentConfig = {
-      model: config.model,
+      model: opts?.model ?? config.model,
       systemPrompt,
       // The registry is shared (read-only at request time); the per-socket
       // approver / human responder live on AgentConfig, not the registry, so

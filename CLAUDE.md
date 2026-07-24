@@ -328,14 +328,23 @@ clients never parse SPA HTML as JSON). The web client is baked in from `apps/jar
 **Chat surfaces:**
 - `POST /v1/chat/completions` — blocking → `{message, iterations, history}`.
 - `POST /v1/chat/completions/stream` — SSE, each `data:` is one JSON `AgentEvent`.
-- `GET /v1/chat/ws` — multi-turn WebSocket. Frames in: `user` / `reset` / `resume{id}` /
-  `new{id?}` / `approve{tool_call_id}` / `deny{tool_call_id,reason?}`. Each socket gets its own
-  `ChannelApprover` wired into a per-socket `Agent`; pending approvals drain in the handler's
-  `tokio::select!` loop, which maps `tool_call_id → oneshot::Sender<ApprovalDecision>`. The agent
-  yields `ApprovalRequest` **before** awaiting so the client can decide in time. Guards: new
-  `user`/`reset`/`resume`/`new` while a turn runs → `error: turn in progress`; unknown approval id
-  → `error: no pending approval`. In persisted mode the WS saves `Done.conversation` under the
-  active id; `reset` clears both in-memory state and the persisted flag.
+- `GET /v1/chat/ws` — multi-turn WebSocket. Frames in: `user` / `reset` / `resume{id,after_seq?}` /
+  `new{id?}` / `start_turn{mode:"new"|"resume",id?,content,after_seq?}` / `approve{tool_call_id}` /
+  `deny{tool_call_id,reason?}` / `interrupt` / `configure{model?,provider?}` /
+  `hitl_response{request_id,status,payload,reason?}`. Persisted conversations are tracked by the
+  `ChatRunRegistry`: every event gets a **per-conversation monotonic `seq`** stamp and is fanned
+  out to all subscribed sockets (so a phone that reconnects mid-run keeps receiving the live
+  turn), `resume{after_seq}` replays the missed tail wrapped in `tail_replay_start{first_seq}` /
+  `tail_replay_done` (registry with no record + cursor > 0 → `resume_error{evicted}` → client
+  full-reloads via REST), and pending approvals / HITL requests are **adoptable across sockets**
+  (re-prompted as `approval_pending` / re-sent `hitl_request` on resume, answerable from the new
+  socket). `interrupt` aborts the tracked turn (works cross-socket); `configure` sets a sticky
+  per-socket model (same provider only — provider switching is rejected). Guards: new
+  `user`/`start_turn`/`new` while a turn runs (locally or live in the registry) → `error: turn in
+  progress`; unknown approval id → `error: no pending approval`. In persisted mode the WS saves
+  `Done.conversation` under the active id; `reset` clears state + unsubscribes. Plan-mode frames
+  (`set_mode`/`accept_plan`/`refine_plan`) are **not implemented** (no mode state machine in
+  `@jarvis/core` yet) — both the web and iOS clients already speak them, dormant.
 
 **Persisted conversations CRUD** (503 when no `ConversationStore`): `POST /v1/conversations`
 (`{system?,id?}` → 201 `{id}`), `GET /v1/conversations?limit=N`, `GET`/`DELETE /v1/conversations/:id`,

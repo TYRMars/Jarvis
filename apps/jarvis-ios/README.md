@@ -61,8 +61,9 @@ JARVIS_SMOKE_BASE_URL=http://localhost:7001 ./Tests/run-contract-smoke.sh   # + 
 ```
 
 离线模式用「黄金样本」校验 iOS Codable 模型能否解出服务端 `/v1` 线格式(会话列表/
-详情/providers/WS `AgentEvent` 帧),黄金样本对齐 **Rust `harness-server` 的契约**
-(权威基线)。CI 见 `.github/workflows/ios-contract.yml`。
+详情/providers/WS `AgentEvent` 帧/HITL/DDNS),黄金样本对齐 **Node `@jarvis/server`
+的契约**(Rust 退役后的权威基线;`packages/server/src/server.test.ts` 的 WS 协议
+测试与这些金样互为镜像)。CI 见 `.github/workflows/ios-contract.yml`。
 
 > 迁移期发现:Node 服务端 `GET /v1/conversations` 曾把数组包进 `{conversations:[…]}`
 > (已在本次随 P7.10 修回裸数组,补 `conversations-routes.test.ts` 锁定);另
@@ -81,7 +82,8 @@ http/ws;正式分发前应收紧 ATS 并改用 TLS。
 | `Sources/Models/PlanItem.swift` | `harness-core::plan::PlanItem`(`plan_update` 全量快照) |
 | `Sources/Models/SubagentFrame.swift` | `harness-core::subagent::SubAgentFrame`(`sub_agent_event`,`kind` 标签) |
 | `Sources/Models/ProviderInfo.swift` | `harness-server::ProviderInfo`(`GET /v1/providers`) |
-| `Sources/Networking/ChatSocket.swift` | `harness-server` 的 `WsClientMessage`:`start_turn` / `user` / `resume` / `approve` / `deny` / `interrupt` / `configure` / `set_mode` / `accept_plan` / `refine_plan` |
+| `Sources/Networking/ChatSocket.swift` | Node `packages/server/src/chat-routes.ts` 的 WS 帧:`start_turn` / `user` / `resume {after_seq}` / `approve` / `deny` / `interrupt` / `configure` / `hitl_response`(`set_mode` / `accept_plan` / `refine_plan` 已在客户端实现,待服务端 Plan Mode 落地) |
+| `Sources/Models/Hitl.swift` + `Views/HitlCardView.swift` | `@jarvis/core` `HitlRequest`(`hitl_request` 事件 → 问答卡,回 `hitl_response`) |
 | `Sources/Networking/JarvisAPI.swift` | `/v1/conversations` CRUD + `/v1/providers` + `/health` |
 
 会话流程:新会话首条消息发 `start_turn {mode:"new", id:<uuid>, content}`(服务端
@@ -145,9 +147,11 @@ Tests/                   # run-contract-smoke.sh + ContractSmoke(swiftc,无需 X
 
 ## 已知边界
 
-- 未渲染的事件:`plan_proposed` / `mode_changed`(Plan Mode 的 accept/refine 流程)、
-  `hitl_request`(`ask.*` 工具)、`workspace_changed`、`skill_activated` 等暂被
-  忽略;Plan Mode 下的会话在 iOS 端无法接受计划。
-- 单 socket 单会话:未实现 `configure`(切模型/provider)、`fork`(编辑重跑)、
-  `set_workspace`。
+- **Plan Mode 等待服务端**:客户端已实现 `set_mode` / `accept_plan` / `refine_plan`
+  发送与 `plan_proposed` / `permission_mode` 渲染,但 Node 服务端尚未实现 Plan Mode
+  (`@jarvis/core` 无模式状态机)——这些帧现阶段会收到 `unknown frame type` 错误,
+  模式菜单暂为前瞻功能。web SPA 同样受限。
+- `configure` 仅支持**同 provider 切模型**;切 provider 需要服务端第二 provider
+  运行时(暂拒绝)。`fork`(编辑重跑)、`set_workspace` 未实现。
+- `workspace_changed`、`skill_activated` 等事件暂被忽略(降级为 `ignored`)。
 - 工程文件:`JarvisiOS.xcodeproj` 与 `Generated/` 为生成产物,建议加入 `.gitignore`。

@@ -151,6 +151,29 @@ check("done", { if case .done? = decodeEvent(#"{"type":"done"}"#) { return true 
 check("error", { if case .error(let m)? = decodeEvent(#"{"type":"error","message":"boom"}"#) { return m == "boom" }; return false }())
 check("seq high-water mark is surfaced", ServerEvent.decode(#"{"type":"delta","content":"x","seq":42}"#)?.seq == 42)
 check("unknown frame degrades to .ignored (forward-compat)", { if case .ignored(let t)? = decodeEvent(#"{"type":"brand_new_frame"}"#) { return t == "brand_new_frame" }; return false }())
+check("hitl_request (input kind)", {
+    if case .hitlRequest(let r)? = decodeEvent(#"{"type":"hitl_request","request":{"id":"q1","transport":"text","kind":"input","title":"Your name?","body":"Please answer.","default_value":"ada"}}"#) {
+        return r.id == "q1" && r.kind == "input" && r.title == "Your name?" && r.defaultValue == "ada"
+    }
+    return false
+}())
+check("hitl_request (choice options)", {
+    if case .hitlRequest(let r)? = decodeEvent(#"{"type":"hitl_request","request":{"id":"q2","transport":"text","kind":"choice","title":"Pick","options":[{"value":"a","label":"Option A"},{"value":"b","label":"Option B"}]}}"#) {
+        return r.options.count == 2 && r.options.first?.value == "a" && r.options.first?.label == "Option A"
+    }
+    return false
+}())
+check("hitl_response event resolves by request_id", {
+    if case .hitlResolved(let id)? = decodeEvent(#"{"type":"hitl_response","response":{"request_id":"q1","status":"submitted","payload":"ada","reason":null}}"#) { return id == "q1" }
+    return false
+}())
+checkNoThrow("hitl_response client frame is flat + snake_case") {
+    let frame = ClientFrame.hitlResponse(requestId: "q1", status: "submitted",
+                                         payload: .string("ada"), reason: nil)
+    let obj = try JSONSerialization.jsonObject(with: data(try frame.encoded())) as? [String: Any]
+    guard obj?["type"] as? String == "hitl_response", obj?["request_id"] as? String == "q1",
+          obj?["status"] as? String == "submitted", obj?["payload"] as? String == "ada" else { throw Err("frame keys") }
+}
 
 // MARK: - remote access + DDNS (token, /v1/remote/info, /v1/ddns/*)
 

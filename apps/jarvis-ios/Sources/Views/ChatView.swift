@@ -29,6 +29,14 @@ struct ChatView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 6)
             }
+            if let hitl = model.pendingHitl {
+                Divider()
+                HitlCardView(request: hitl) { payload, status in
+                    model.resolveHitl(payload: payload, status: status)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+            }
             if !model.plan.isEmpty {
                 Divider()
                 PlanCardView(items: model.plan)
