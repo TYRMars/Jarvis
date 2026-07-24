@@ -23,6 +23,12 @@ enum ServerConfig {
     static let plistKey = "JarvisServerURL"
     static let fallback = "http://localhost:7001"
 
+    // Bearer token for servers that require auth (non-loopback / DDNS-exposed).
+    // Same precedence chain as the URL; empty → nil (no Authorization header).
+    static let tokenDefaultsKey = "serverToken"
+    static let tokenEnvKey = "JARVIS_ACCESS_TOKEN"
+    static let tokenPlistKey = "JarvisAccessToken"
+
     /// Pure resolver (unit-testable): first non-empty candidate wins, with one
     /// trailing slash trimmed so path concatenation stays clean; else `fallback`.
     static func resolve(userDefault: String?, env: String?, plist: String?) -> String {
@@ -33,6 +39,23 @@ enum ServerConfig {
             return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
         }
         return fallback
+    }
+
+    /// Pure token resolver: first non-empty candidate wins; else nil.
+    static func resolveToken(userDefault: String?, env: String?, plist: String?) -> String? {
+        for candidate in [userDefault, env, plist] {
+            guard let raw = candidate else { continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    static var token: String? {
+        resolveToken(
+            userDefault: UserDefaults.standard.string(forKey: tokenDefaultsKey),
+            env: ProcessInfo.processInfo.environment[tokenEnvKey],
+            plist: Bundle.main.object(forInfoDictionaryKey: tokenPlistKey) as? String)
     }
 
     static var baseURLString: String {

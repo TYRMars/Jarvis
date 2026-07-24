@@ -33,6 +33,7 @@ import type { AutomationStore } from "@jarvis/automation";
 import type { EvalStore, ObservabilityStore } from "@jarvis/observability";
 import type { MemorySyncBackend } from "@jarvis/tools";
 import type { SubAgentRegistry, SubAgentRunStore } from "@jarvis/subagents";
+import type { DdnsRuntime } from "@jarvis/ddns";
 import type {
   ConnectorAccountStore,
   ProjectBindingStore,
@@ -262,6 +263,24 @@ export interface AppState {
    * (never 503; an empty list is a valid "no providers" answer).
    */
   providerCatalog?: ProviderCatalog;
+
+  /**
+   * Bearer token required of NON-loopback callers (mobile clients). When set,
+   * the `requireAuth` onRequest hook 401s any `/v1` request whose remote address
+   * isn't loopback unless it presents `Authorization: Bearer <token>` (or
+   * `?token=` on the WS upgrade). Absent → no auth (today's loopback/LAN
+   * behaviour). MUST be set before exposing the server externally (DDNS).
+   */
+  accessToken?: string;
+
+  /**
+   * DDNS / remote-access runtime backing `/v1/ddns/*` + the external block of
+   * `/v1/remote/info`. Absent → those DDNS routes 503 ("DDNS not enabled").
+   */
+  ddnsRuntime?: DdnsRuntime;
+
+  /** Friendly device name for `GET /v1/remote/info` (defaults to the hostname). */
+  deviceName?: string;
 }
 
 /**

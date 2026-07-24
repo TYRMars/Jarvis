@@ -12,6 +12,7 @@ import * as os from "node:os";
 import { ProfileRegistry, canonicalKind } from "@jarvis/llm";
 import { memorySyncBackendFromWire, type MemorySyncBackend } from "@jarvis/tools";
 import type { McpClientConfig } from "@jarvis/mcp";
+import type { DdnsConfigInput, DdnsProviderKind } from "@jarvis/shared-types";
 
 /** Provider kinds the binary knows how to construct. */
 export type ProviderKind =
@@ -163,6 +164,27 @@ export interface JarvisConfig {
   workMode: WorkMode;
   workTickSeconds: number;
   workMaxConcurrent: number;
+
+  // ---- Remote access (native mobile client + DDNS) ----
+  /**
+   * Bearer token required of NON-loopback callers (`JARVIS_ACCESS_TOKEN`). When
+   * unset, the server stays unauthenticated (today's behaviour) — safe only on
+   * loopback / a trusted LAN. MUST be set before exposing the server externally
+   * (DDNS / 0.0.0.0 bind): the auth hook then 401s remote requests without it.
+   */
+  accessToken?: string;
+  /** Advertise `_jarvis._tcp` over mDNS for zero-config LAN discovery
+   * (`JARVIS_MDNS`). Off by default so a plain `serve` never starts a multicast
+   * responder unasked. */
+  mdns: boolean;
+  /** Friendly device name surfaced by `GET /v1/remote/info` (the iOS connect
+   * screen). `JARVIS_DEVICE_NAME`, defaults to the OS hostname. */
+  deviceName: string;
+  /** Create the DdnsRuntime (so `/v1/ddns/*` work) — set by `JARVIS_DDNS_ENABLE`
+   * or implied by a `JARVIS_DDNS_PROVIDER` seed. */
+  ddnsEnabled: boolean;
+  /** Optional initial DDNS config seeded from env (the iOS app PUTs the rest). */
+  ddnsSeed?: DdnsConfigInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +280,59 @@ function parseMemoryMode(v: string | undefined): MemoryMode {
 
 function parseWorkMode(v: string | undefined): WorkMode {
   return (v ?? "").trim().toLowerCase() === "auto" ? "auto" : "off";
+}
+
+const DDNS_PROVIDERS: readonly DdnsProviderKind[] = [
+  "cloudflare",
+  "duckdns",
+  "dyndns2",
+  "aliyun",
+  "dnspod",
+];
+
+function parseDdnsProvider(v: string | undefined): DdnsProviderKind | undefined {
+  const s = (v ?? "").trim().toLowerCase();
+  return (DDNS_PROVIDERS as readonly string[]).includes(s) ? (s as DdnsProviderKind) : undefined;
+}
+
+/**
+ * Parse the `JARVIS_DDNS_*` env into an enable flag + optional seed config. The
+ * runtime is created whenever `JARVIS_DDNS_ENABLE` is truthy OR a valid
+ * `JARVIS_DDNS_PROVIDER` is present; the seed (provider + hostname) is applied
+ * only on first run when no persisted config exists. Credentials come as a JSON
+ * object in `JARVIS_DDNS_CREDENTIALS` (kept off the flat env surface so secrets
+ * aren't sprinkled across a dozen vars).
+ */
+function parseDdnsEnv(env: Env, defaultPort: number): { enabled: boolean; seed?: DdnsConfigInput } {
+  const provider = parseDdnsProvider(firstNonEmpty(env, "JARVIS_DDNS_PROVIDER"));
+  const enabled = truthy(env.JARVIS_DDNS_ENABLE) || provider !== undefined;
+  if (!enabled) return { enabled: false };
+  const hostname = firstNonEmpty(env, "JARVIS_DDNS_HOSTNAME");
+  if (provider === undefined || hostname === undefined) return { enabled: true };
+
+  let credentials: Record<string, string> = {};
+  const raw = firstNonEmpty(env, "JARVIS_DDNS_CREDENTIALS");
+  if (raw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        credentials = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+        );
+      }
+    } catch {
+      // Malformed JSON → no seed credentials (the iOS app can PUT them later).
+    }
+  }
+  const seed: DdnsConfigInput = {
+    provider,
+    hostname,
+    port: parseIntOr(firstNonEmpty(env, "JARVIS_DDNS_PORT"), defaultPort),
+    interval_seconds: parseIntOr(firstNonEmpty(env, "JARVIS_DDNS_INTERVAL"), 300),
+    upnp_enabled: truthy(env.JARVIS_DDNS_UPNP),
+    credentials,
+  };
+  return { enabled: true, seed };
 }
 
 /**
@@ -384,6 +459,9 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
   const mcpServers = parseMcpServers(env.JARVIS_MCP_SERVERS);
   if (composioMcp !== undefined) mcpServers.push(composioMcp);
 
+  const addr = firstNonEmpty(env, "JARVIS_ADDR") ?? "0.0.0.0:7001";
+  const ddnsEnv = parseDdnsEnv(env, parseAddr(addr).port);
+
   return {
     provider,
     model,
@@ -404,7 +482,7 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     codexAccountId: firstNonEmpty(env, "CODEX_ACCOUNT_ID"),
     codexHome: firstNonEmpty(env, "CODEX_HOME"),
 
-    addr: firstNonEmpty(env, "JARVIS_ADDR") ?? "0.0.0.0:7001",
+    addr,
     fsRoot: firstNonEmpty(env, "JARVIS_FS_ROOT") ?? ".",
     webDistDir: firstNonEmpty(env, "JARVIS_WEB_DIST"),
     includeProjectContext: !truthy(env.JARVIS_NO_PROJECT_CONTEXT),
@@ -430,7 +508,22 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     workMode: parseWorkMode(env.JARVIS_WORK_MODE),
     workTickSeconds: parseIntOr(env.JARVIS_WORK_TICK_SECONDS, 30),
     workMaxConcurrent: parseIntOr(env.JARVIS_WORK_MAX_CONCURRENT, 2),
+
+    accessToken: firstNonEmpty(env, "JARVIS_ACCESS_TOKEN"),
+    mdns: truthy(env.JARVIS_MDNS),
+    deviceName: firstNonEmpty(env, "JARVIS_DEVICE_NAME") ?? safeHostname(),
+    ddnsEnabled: ddnsEnv.enabled,
+    ...(ddnsEnv.seed !== undefined ? { ddnsSeed: ddnsEnv.seed } : {}),
   };
+}
+
+/** OS hostname, or a stable fallback when it can't be read. */
+function safeHostname(): string {
+  try {
+    return os.hostname() || "jarvis";
+  } catch {
+    return "jarvis";
+  }
 }
 
 /**

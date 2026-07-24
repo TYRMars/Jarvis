@@ -26,6 +26,7 @@ import { serveRegistryStdio } from "@jarvis/mcp";
 import { serve } from "@jarvis/server";
 import { ToolRegistry } from "@jarvis/core";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
+import { MdnsAdvertiser } from "@jarvis/ddns";
 
 import { loadConfig, parseAddr, type JarvisConfig } from "./config.ts";
 import { buildProvider } from "./provider.ts";
@@ -148,24 +149,50 @@ export async function runServe(config: JarvisConfig): Promise<void> {
   // Register the OTel TracerProvider first (no-op unless enabled) so the agent
   // loop's jarvis.agent.run / gen_ai.tool.call spans are live. Flush on exit.
   const otel = startOtel();
-  if (otel) {
-    process.stderr.write("[jarvis] OpenTelemetry tracing enabled\n");
-    const stop = (): void => {
-      void otel.shutdown().finally(() => process.exit(0));
-    };
-    process.once("SIGTERM", stop);
-    process.once("SIGINT", stop);
-  }
+  if (otel) process.stderr.write("[jarvis] OpenTelemetry tracing enabled\n");
 
   const provider = await buildProvider(config);
   const stores = await openStores(config);
-  const { state, systemPrompt } = await buildAppState(config, { provider, stores });
+  const { state, systemPrompt, ddnsRuntime } = await buildAppState(config, { provider, stores });
   const { host, port } = parseAddr(config.addr);
+
+  // Remote-access posture warning: binding beyond loopback with no token leaves
+  // every /v1 route open to the LAN/internet. Surface it loudly (don't refuse —
+  // a trusted LAN behind a firewall is a legitimate setup).
+  if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost" && config.accessToken === undefined) {
+    process.stderr.write(
+      `[jarvis] WARNING: listening on ${host} with no JARVIS_ACCESS_TOKEN — the API is unauthenticated ` +
+        "for every reachable client. Set JARVIS_ACCESS_TOKEN before exposing this server externally (DDNS).\n",
+    );
+  }
+
+  // Optional mDNS advertisement for zero-config LAN discovery by the mobile app.
+  let mdns: MdnsAdvertiser | undefined;
+  if (config.mdns) {
+    mdns = new MdnsAdvertiser();
+    await mdns.start({
+      name: config.deviceName,
+      port,
+      txt: { version: state.serverInfo?.version ?? "0.0.0", auth: config.accessToken !== undefined ? "1" : "0" },
+      logger: (m) => process.stderr.write(`${m}\n`),
+    });
+  }
+
+  // Unified shutdown: stop the DDNS poll + mDNS, flush OTel, then exit.
+  const shutdown = (): void => {
+    ddnsRuntime?.stop();
+    mdns?.stop();
+    if (otel) void otel.shutdown().finally(() => process.exit(0));
+    else process.exit(0);
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
 
   process.stderr.write(
     `[jarvis] serve: provider=${config.provider} model=${config.model} ` +
       `addr=${config.addr} fsRoot=${config.fsRoot} coding=${codingMode(config)} ` +
-      `promptBytes=${systemPrompt.length}\n`,
+      `auth=${config.accessToken !== undefined ? "token" : "none"} ddns=${config.ddnsEnabled ? "on" : "off"} ` +
+      `mdns=${config.mdns ? "on" : "off"} promptBytes=${systemPrompt.length}\n`,
   );
   await serve({ host, port }, state);
   process.stderr.write(`[jarvis] listening on http://${host}:${port}\n`);

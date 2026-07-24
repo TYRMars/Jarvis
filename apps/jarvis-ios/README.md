@@ -106,18 +106,42 @@ deny 的原因会作为 `tool denied: <reason>` 回馈给模型。
 `sub_agent_event` 渲染为原地更新的子代理卡片(状态/任务/输出尾部/工具计数);
 `memory_compacted`(非 no_op)与 `provider_fallback` 渲染为居中提示行。
 
+## 远程访问:鉴权 / 配对 / DDNS
+
+详见 `docs/proposals/mobile-ddns.zh-CN.md`。
+
+- **访问令牌**:服务器设了 `JARVIS_ACCESS_TOKEN` 后,非 loopback 请求必须带
+  `Authorization: Bearer`。设置页填「访问令牌」(或扫码自动带入),`JarvisAPI` /
+  `ChatSocket` 会自动附加;loopback 服务器留空即免鉴权。
+- **扫码配对**:设置页「扫码配对」用相机扫电脑「远程访问」页生成的二维码
+  (`jarvis://pair?origin=…&token=…&name=…`),自动填入地址+令牌;同样的链接被点击/
+  AirDrop 时经 `onOpenURL` 深链处理。
+- **局域网发现**:设置页经 Bonjour 浏览 `_jarvis._tcp`(电脑端设 `JARVIS_MDNS=1` 广播),
+  列出同网服务器作为提示。
+- **远程访问 / DDNS**:设置 → 「远程访问 / DDNS」配置本机的动态 DNS——选服务商
+  (Cloudflare / DuckDNS / 通用 dyndns2 / 阿里云 / DNSPod)、填域名 + 凭据 + UPnP 开关,
+  写入 `/v1/ddns/config` 并立即更新;状态区显示公网 IP、上次结果、UPnP 映射、可达性。
+  之后用 DDNS 域名 + 令牌即可在外网连回。
+
 ## 目录结构
 
 ```
-project.yml              # XcodeGen 工程描述
+project.yml              # XcodeGen 工程描述(含相机/Bonjour 用途串 + jarvis:// scheme)
 Sources/
-  JarvisApp.swift        # @main 入口
+  JarvisApp.swift        # @main 入口(+ jarvis:// 深链)
   Models/                # JSONValue / ChatMessage / Conversation / ServerEvent
-                         #   / PlanItem / SubagentFrame
-  Networking/            # ServerConfig / JarvisAPI(REST) / ChatSocket(WS)
+                         #   / PlanItem / SubagentFrame / Ddns / Pairing
+  Networking/            # ServerConfig(URL+令牌)/ JarvisAPI(REST,含 /v1/ddns/*)
+                         #   / ChatSocket(WS,带令牌)/ Discovery(Bonjour)
   ViewModels/            # ChatViewModel / ConversationListViewModel(@Observable)
   Views/                 # 会话列表 / 聊天 / 审批弹窗 / 设置 / 计划卡片 / 子代理卡片
+                         #   / QRScannerView(扫码)/ DDNSView(远程访问配置)
+Tests/                   # run-contract-smoke.sh + ContractSmoke(swiftc,无需 Xcode)
 ```
+
+> `Sources/Models/*` + `Networking/{ServerConfig,JarvisAPI}` 是 Foundation-only,由
+> `Tests/run-contract-smoke.sh` 用 `swiftc` 直接编译并跑金样断言(含 DDNS / RemoteInfo /
+> Pairing / 令牌解析),无需完整 Xcode。
 
 ## 已知边界
 

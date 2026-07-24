@@ -39,6 +39,7 @@ import {
   KeyRound,
   ListChecks,
   MemoryStick,
+  Network,
   Palette,
   Route,
   Settings as SettingsIcon,
@@ -75,6 +76,7 @@ import { MemorySection } from "./sections/MemorySection";
 import { WorkflowsSection } from "./sections/WorkflowsSection";
 import { ProjectsSettingsSection } from "./sections/ProjectsSettingsSection";
 import { LabelsSettingsSection } from "./sections/LabelsSettingsSection";
+import { RemoteAccessSection } from "./sections/RemoteAccessSection";
 import { SoulSection } from "./sections/SoulSection";
 import { t } from "../../utils/i18n";
 
@@ -194,6 +196,12 @@ const NAV_GROUPS: NavGroup[] = [
         icon: Tags,
         labelKey: "settingsNavLabels",
         fallback: "Labels",
+      },
+      {
+        id: "remote-access",
+        icon: Network,
+        labelKey: "settingsNavRemoteAccess",
+        fallback: "Remote Access",
       },
       {
         id: "system",
@@ -632,6 +640,8 @@ function renderSection(parsed: ParsedHash, setTab: (tab: string) => void) {
       return <ProjectsSettingsSection />;
     case "labels":
       return <LabelsSettingsSection />;
+    case "remote-access":
+      return <RemoteAccessSection />;
     case "system":
       return (
         <SystemSection

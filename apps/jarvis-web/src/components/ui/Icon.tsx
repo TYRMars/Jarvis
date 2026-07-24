@@ -57,6 +57,7 @@ export {
   MemoryStick,
   MessageSquareMore,
   Mic,
+  Network,
   PanelLeft,
   PanelLeftOpen,
   PanelRight,

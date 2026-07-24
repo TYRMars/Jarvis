@@ -17,6 +17,7 @@
 // store(s) are supplied (mirrors the Rust "registered when their stores are
 // present").
 import type { ToolRegistry } from "@jarvis/core";
+import type { DdnsRuntime } from "@jarvis/ddns";
 import type { MemoryStore as LearningMemoryStore } from "@jarvis/learning";
 import type { ActivityStore, DocStore, ProjectStore, RequirementStore } from "@jarvis/project";
 import type { TodoStore } from "@jarvis/todo";
@@ -33,6 +34,7 @@ import { GitDiffTool, GitLogTool, GitShowTool, GitStatusTool } from "./git.ts";
 import { CodeGrepTool } from "./grep.ts";
 import { HttpFetchTool, HTTP_DEFAULT_MAX_BYTES } from "./http.ts";
 import { FsPatchTool } from "./patch.ts";
+import { registerDdnsTools } from "./ddns.ts";
 import { registerDocTools } from "./doc-tools.ts";
 import { registerLearningMemoryTools } from "./learning-memory-tools.ts";
 import { registerMemoryTools } from "./memory-tools.ts";
@@ -193,6 +195,13 @@ export interface BuiltinsConfig {
    * `fsRoot` when a call omits an explicit `workspace` override.
    */
   todos?: TodoStore;
+  /**
+   * DDNS / remote-access runtime (from `@jarvis/ddns`). When present the
+   * `ddns.{status,update,configure}` family is registered; `update`/`configure`
+   * are approval-gated (they mutate external network state / persist secrets).
+   * Absent → the family is off.
+   */
+  ddns?: DdnsRuntime;
 }
 
 /**
@@ -310,5 +319,11 @@ export function registerBuiltins(registry: ToolRegistry, config: BuiltinsConfig 
   // explicit `workspace` override.
   if (config.todos !== undefined) {
     registerTodoTools(registry, { todos: config.todos, workspace: root });
+  }
+
+  // DDNS / remote-access family: registered when a DdnsRuntime is supplied
+  // (JARVIS_DDNS_ENABLE). `ddns.update` / `ddns.configure` are approval-gated.
+  if (config.ddns !== undefined) {
+    registerDdnsTools(registry, config.ddns);
   }
 }

@@ -102,7 +102,13 @@ final class ChatSocket {
         guard let url = ServerConfig.chatSocketURL else {
             throw APIError.badURL
         }
-        let task = URLSession.shared.webSocketTask(with: url)
+        // Bearer token on the upgrade request for DDNS-exposed servers (native
+        // URLSessionWebSocketTask forwards request headers); loopback stays open.
+        var request = URLRequest(url: url)
+        if let token = ServerConfig.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let task = URLSession.shared.webSocketTask(with: request)
         self.task = task
 
         let stream = AsyncStream<Frame> { continuation in

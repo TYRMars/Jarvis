@@ -221,3 +221,102 @@ export interface WorkflowRun {
   /** RFC-3339 timestamp of completion. Absent while in flight. */
   finished_at?: string;
 }
+
+// ==========================================================================
+// Remote access + DDNS
+// ==========================================================================
+//
+// Wire shapes for the native mobile client: connect to the home server over
+// LAN / external origin, and configure the machine's dynamic-DNS so it stays
+// reachable from outside. Back `/v1/ddns/*` + `/v1/remote/info`. The iOS app's
+// Codable models mirror these EXACTLY (snake_case, optionality).
+
+/** Pluggable DDNS backend. */
+export type DdnsProviderKind = "cloudflare" | "duckdns" | "dyndns2" | "aliyun" | "dnspod";
+
+/**
+ * `PUT /v1/ddns/config` body — the full config INCLUDING secrets. Credentials
+ * are flat string keys; the expected keys per provider:
+ *  - `cloudflare`: `api_token` (+ optional `zone_id` / `zone`)
+ *  - `duckdns`:    `token`
+ *  - `dyndns2`:    `username`, `password` (+ optional `server`)
+ *  - `aliyun`:     `access_key_id`, `access_key_secret` (+ optional `domain`)
+ *  - `dnspod`:     `id`, `token` (+ optional `domain`)
+ */
+export interface DdnsConfigInput {
+  provider: DdnsProviderKind;
+  /** Fully-qualified hostname to keep pointed at this machine (e.g. `home.example.com`, `foo.duckdns.org`). */
+  hostname: string;
+  /** Public service port to advertise / map (the port the server listens on). */
+  port: number;
+  /** DNS record type. Default `"A"` (IPv4). */
+  record_type?: "A" | "AAAA";
+  /** Re-check / re-update cadence in seconds. Default 300. */
+  interval_seconds?: number;
+  /** Attempt UPnP/NAT-PMP automatic port-forwarding. Default false. */
+  upnp_enabled?: boolean;
+  /** Provider credentials as flat string keys (see interface doc). */
+  credentials: Record<string, string>;
+}
+
+/** `GET /v1/ddns/config` — SCRUBBED view (never returns secret values). */
+export interface DdnsConfigView {
+  provider: DdnsProviderKind;
+  hostname: string;
+  port: number;
+  record_type: "A" | "AAAA";
+  interval_seconds: number;
+  upnp_enabled: boolean;
+  /** Which credential keys are set (names only — never values). */
+  credential_keys: string[];
+}
+
+/** UPnP/NAT port-mapping state. */
+export interface DdnsUpnpStatus {
+  /** Whether a mapping is currently believed active. */
+  mapped: boolean;
+  external_port?: number;
+  internal_port?: number;
+  /** Gateway-reported external IP, if discovered. */
+  gateway_external_ip?: string;
+  /** Human-readable detail / failure reason (the manual-forward hint on failure). */
+  message?: string;
+}
+
+/** `GET /v1/ddns/status` — live runtime snapshot. */
+export interface DdnsStatus {
+  enabled: boolean;
+  configured: boolean;
+  provider?: DdnsProviderKind;
+  hostname?: string;
+  /** Last detected public IPv4. */
+  public_ip?: string;
+  /** RFC-3339 timestamp of the last successful provider update. */
+  last_update?: string;
+  /** Outcome of the most recent update attempt. */
+  last_result?: { ok: boolean; message: string };
+  /** UPnP mapping state (absent when upnp disabled). */
+  upnp?: DdnsUpnpStatus;
+  /** Whether the external origin answered a reachability probe (`null` = unknown / not probed). */
+  reachable?: boolean | null;
+  /** This machine's LAN IPv4 addresses (for the connect screen). */
+  lan_addrs: string[];
+}
+
+/** `GET /v1/remote/info` — what the native client shows on connect. */
+export interface RemoteInfo {
+  device_name: string;
+  /** This machine's LAN IPv4 addresses. */
+  lan_addrs: string[];
+  /** Server listen port. */
+  port: number;
+  external: {
+    hostname?: string;
+    public_ip?: string;
+    reachable?: boolean | null;
+  };
+  /** Whether non-loopback callers must present a bearer token. */
+  requires_auth: boolean;
+  /** Server version string. */
+  version?: string;
+}

@@ -69,6 +69,12 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
 
+  packages/ddns:
+    dependencies:
+      '@jarvis/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+
   packages/desktop:
     dependencies:
       better-sqlite3:
@@ -108,6 +114,9 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+      '@jarvis/ddns':
+        specifier: workspace:*
+        version: link:../ddns
       '@jarvis/learning':
         specifier: workspace:*
         version: link:../learning
@@ -135,6 +144,9 @@ importers:
       '@jarvis/server':
         specifier: workspace:*
         version: link:../server
+      '@jarvis/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
       '@jarvis/skill':
         specifier: workspace:*
         version: link:../skill
@@ -287,6 +299,9 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+      '@jarvis/ddns':
+        specifier: workspace:*
+        version: link:../ddns
       '@jarvis/learning':
         specifier: workspace:*
         version: link:../learning
@@ -302,6 +317,9 @@ importers:
       '@jarvis/project':
         specifier: workspace:*
         version: link:../project
+      '@jarvis/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
       '@jarvis/skill':
         specifier: workspace:*
         version: link:../skill
@@ -390,6 +408,9 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+      '@jarvis/ddns':
+        specifier: workspace:*
+        version: link:../ddns
       '@jarvis/learning':
         specifier: workspace:*
         version: link:../learning

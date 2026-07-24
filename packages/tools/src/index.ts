@@ -87,6 +87,16 @@ export {
 } from "./doc-tools.ts";
 export type { DocToolStores } from "./doc-tools.ts";
 
+// DDNS / remote-access tools (`ddns.{status,update,configure}`). Registered
+// conditionally by `registerBuiltins` when a `DdnsRuntime` is supplied;
+// `update` / `configure` are approval-gated.
+export {
+  DdnsStatusTool,
+  DdnsUpdateTool,
+  DdnsConfigureTool,
+  registerDdnsTools,
+} from "./ddns.ts";
+
 // Store-backed row-based long-term Memory tools (`learning.memory.{list,add,
 // update,delete}`). Registered conditionally by `registerBuiltins` when the
 // `learningMemory` MemoryStore is supplied; `learning.memory.delete` is

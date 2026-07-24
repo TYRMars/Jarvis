@@ -36,6 +36,17 @@ targets:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: >-
           Jarvis connects to your Jarvis server on the local network.
+        # Bonjour browsing for zero-config discovery of the home server.
+        NSBonjourServices:
+          - _jarvis._tcp
+        # Camera, for scanning the pairing QR on the computer's Remote Access screen.
+        NSCameraUsageDescription: >-
+          Scan the pairing QR shown on your computer to connect to your Jarvis server.
+        # Custom URL scheme so a scanned/tapped `jarvis://pair?...` link opens the app.
+        CFBundleURLTypes:
+          - CFBundleURLName: ai.jarvis.pair
+            CFBundleURLSchemes:
+              - jarvis
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.jarvis.ios

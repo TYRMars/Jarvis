@@ -15,9 +15,11 @@
 // the workspace project context (AGENTS.md / CLAUDE.md / AGENT.md, priority
 // order, 8 KiB cap) is appended unless disabled.
 import { readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { Agent, ToolRegistry, type AgentConfig, type Approver, type HumanLayer, type LlmProvider, type Memory } from "@jarvis/core";
+import { DdnsRuntime } from "@jarvis/ddns";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import { lookupCapability, canonicalKind } from "@jarvis/llm";
@@ -110,6 +112,23 @@ export interface AppStateBundle {
   subagents: SubAgentRegistry;
   /** The resolved system prompt (surfaced for `status` / logging). */
   systemPrompt: string;
+  /**
+   * DDNS runtime (when `JARVIS_DDNS_ENABLE`). Already started; the caller owns
+   * its lifetime — call `.stop()` on shutdown/restart. Absent otherwise.
+   */
+  ddnsRuntime?: DdnsRuntime;
+}
+
+/** Persisted DDNS config path under the user data dir, or undefined (no home). */
+function ddnsConfigPath(): string | undefined {
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    return undefined;
+  }
+  if (home === "" || home === undefined) return undefined;
+  return path.join(home, ".local", "share", "jarvis", "ddns.json");
 }
 
 // ---------------------------------------------------------------------------
@@ -294,9 +313,26 @@ export async function buildAppState(
     return new Agent(provider, innerCfg);
   };
 
+  // DDNS / remote-access runtime (JARVIS_DDNS_ENABLE). Created here so it can be
+  // shared into both the tool registry (the `ddns.*` family) and AppState (the
+  // `/v1/ddns/*` routes). Started immediately; the caller stops it on shutdown.
+  let ddnsRuntime: DdnsRuntime | undefined;
+  if (config.ddnsEnabled) {
+    const configPath = ddnsConfigPath();
+    ddnsRuntime = await DdnsRuntime.create({
+      ...(configPath !== undefined ? { configPath } : {}),
+      ...(config.ddnsSeed !== undefined ? { seed: config.ddnsSeed } : {}),
+      logger: (m) => process.stderr.write(`${m}\n`),
+    });
+    ddnsRuntime.start();
+  }
+
   // Build the canonical tool registry (with the subagent adapters wired via the
   // inner factory) + connect the external MCP servers.
-  const toolBundle = await buildToolRegistry(config, toolStores, { createAgent: makeInnerAgent });
+  const toolBundle = await buildToolRegistry(config, toolStores, {
+    createAgent: makeInnerAgent,
+    ...(ddnsRuntime !== undefined ? { ddns: ddnsRuntime } : {}),
+  });
 
   // Cross-process summary cache tier: the persistent conversation store doubles
   // as the SummaryStore (rows under `__memory__.summary:<hash>`, filtered out of
@@ -379,6 +415,9 @@ export async function buildAppState(
     subagents: toolBundle.subagents,
     workspaceRoot: config.fsRoot,
     providerCatalog: buildProviderCatalog(config),
+    deviceName: config.deviceName,
+    ...(config.accessToken !== undefined ? { accessToken: config.accessToken } : {}),
+    ...(ddnsRuntime !== undefined ? { ddnsRuntime } : {}),
     ...(config.webDistDir !== undefined ? { webDistDir: config.webDistDir } : {}),
     ...(deps.learningMemory !== undefined ? { learningMemory: deps.learningMemory } : {}),
     // Memory tree roots + sync backend backing /v1/memory/sync* + /includes*.
@@ -400,5 +439,6 @@ export async function buildAppState(
     mcpClients: toolBundle.mcpClients,
     subagents: toolBundle.subagents,
     systemPrompt,
+    ...(ddnsRuntime !== undefined ? { ddnsRuntime } : {}),
   };
 }

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@jarvis/core": "workspace:*",
+    "@jarvis/ddns": "workspace:*",
     "@jarvis/learning": "workspace:*",
     "@jarvis/project": "workspace:*",
     "@jarvis/todo": "workspace:*",

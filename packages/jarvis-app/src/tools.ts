@@ -31,6 +31,7 @@ import {
   type MemoryToolsConfig,
 } from "@jarvis/tools";
 import type { McpClient } from "@jarvis/mcp";
+import type { DdnsRuntime } from "@jarvis/ddns";
 import { LspManager } from "@jarvis/lsp";
 import { McpManager } from "@jarvis/server";
 import {
@@ -71,6 +72,12 @@ export interface BuildToolsDeps {
    * registered — the `subagent.*` tools simply won't appear.
    */
   createAgent?: CreateAgent;
+  /**
+   * DDNS / remote-access runtime. When supplied, the `ddns.*` tool family is
+   * registered (gated inside `registerBuiltins`). Built by `state.ts` from
+   * `JARVIS_DDNS_ENABLE`; absent → the family is off.
+   */
+  ddns?: DdnsRuntime;
 }
 
 /**
@@ -107,6 +114,7 @@ export async function buildToolRegistry(
   if (stores.projects !== undefined) builtins.projects = stores.projects;
   if (stores.docs !== undefined) builtins.docs = stores.docs;
   if (stores.learningMemory !== undefined) builtins.learningMemory = stores.learningMemory;
+  if (deps.ddns !== undefined) builtins.ddns = deps.ddns;
 
   // LSP-backed post-edit diagnostics: only meaningful when a write primitive is
   // enabled (otherwise no edits to diagnose). Language servers are spawned on
