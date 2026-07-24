@@ -70,8 +70,9 @@ JARVIS_SMOKE_BASE_URL=http://localhost:7001 ./Tests/run-contract-smoke.sh   # + 
 > `GET /v1/providers`(只读目录)Node 端尚未实现(仅 `POST` + `GET /:name`),
 > 会话列表也缺 `title`/`source` 富化——留待 P8.1「Node 独立成服务」补齐。
 
-开发期 Info.plist 设置了 `NSAllowsArbitraryLoads` 以允许局域网明文
-http/ws;正式分发前应收紧 ATS 并改用 TLS。
+ATS 已按商店口径收紧:仅 `NSAllowsLocalNetworking`(局域网明文 http/ws 可用),
+**外网(DDNS)访问必须 https**——给服务器加一层 TLS 反代(如 Caddy/nginx),或开发期
+临时在 `project.yml` 加回 `NSAllowsArbitraryLoads: true`(提审前务必移除)。
 
 ## 与服务端协议的对应关系
 
@@ -124,6 +125,30 @@ deny 的原因会作为 `tool denied: <reason>` 回馈给模型。
   (Cloudflare / DuckDNS / 通用 dyndns2 / 阿里云 / DNSPod)、填域名 + 凭据 + UPnP 开关,
   写入 `/v1/ddns/config` 并立即更新;状态区显示公网 IP、上次结果、UPnP 映射、可达性。
   之后用 DDNS 域名 + 令牌即可在外网连回。
+
+## 发布到 App Store
+
+工程侧已备齐:App 图标(`Assets.xcassets/AppIcon`,1024 无透明通道)、隐私清单
+(`PrivacyInfo.xcprivacy`:无追踪、无数据收集、UserDefaults 声明 CA92.1)、出口合规
+(`ITSAppUsesNonExemptEncryption: false`,标准 TLS 豁免)、收紧的 ATS(见上)、
+版本号(`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`,在 `project.yml`)。
+
+在装有完整 Xcode 的机器上:
+
+1. **前置**:加入 Apple Developer Program;在 App Store Connect → Identifiers 注册
+   你自己的 bundle id,并把 `project.yml` 的 `PRODUCT_BUNDLE_IDENTIFIER` 改成它,
+   `settings.base` 加 `DEVELOPMENT_TEAM: <你的TeamID>`。
+2. `xcodegen generate && open JarvisiOS.xcodeproj`。
+3. 版本:每次提审前在 `project.yml` 递增 `MARKETING_VERSION`(用户可见)与
+   `CURRENT_PROJECT_VERSION`(构建号,同版本内每次上传都要 +1),重新 generate。
+4. **Archive**:目标选 `Any iOS Device (arm64)` → Product → Archive → Organizer →
+   Distribute App → App Store Connect。出口合规问题已由 plist 键回答,不会再弹。
+5. **App Store Connect**:新建 App(绑定 bundle id)→ 填元数据/截图(6.7" 与 6.5"
+   两组必需)→ 隐私问卷选「不收集数据」(与 PrivacyInfo 一致)→ 先发 TestFlight
+   内测,再提交审核。
+6. **审核注意**:这是一个连接**用户自有服务器**的客户端,审核可能要求可用的演示
+   环境——在 App Review 备注里提供一个公网 https 测试服务器地址 + 访问令牌
+   (扫码配对链接同样可填),说明 App 本身不含服务端、无账号体系。
 
 ## 目录结构
 
