@@ -142,7 +142,7 @@ and served by the Node server via `JARVIS_WEB_DIST`.
 
 **Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_HTTP_ALLOW_PRIVATE` (P8.6 SSRF guard is **on by default** — `http.fetch` blocks loopback/private/link-local/metadata hosts + non-http(s) schemes; set this to allow `localhost` dev servers), `JARVIS_ENABLE_LSP` (off by default; when set **and** a write primitive is enabled, `fs.{write,edit,patch}` append an LSP `<diagnostics>` block for the files they wrote — the agent's edit→verify loop via `@jarvis/lsp`. Language servers are PATH-probed (`typescript-language-server`/`pyright-langserver`/`gopls`/`rust-analyzer`); absent servers no-op, none are auto-downloaded), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`). Composio-managed MCP can be enabled with either `JARVIS_COMPOSIO_MCP_URL` or `JARVIS_COMPOSIO_MCP_SERVER_ID` + `JARVIS_COMPOSIO_USER_ID`; `COMPOSIO_API_KEY` / `JARVIS_COMPOSIO_API_KEY` is forwarded as `x-api-key`, with optional `JARVIS_COMPOSIO_PREFIX`, `JARVIS_COMPOSIO_ALLOW_TOOLS`, `JARVIS_COMPOSIO_DENY_TOOLS`.
 
-**Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`). `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
+**Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`) — the mode a fresh chat socket starts in, and the fall-through decision for gated tools. Persisted rules live in a three-scope `FilePermissionStore`: session (in-memory) + `<workspace>/.jarvis/permissions.json` (project, committed) + `~/.config/jarvis/permissions.json` (user, `0600`); `default_mode` resolves user > project > env. `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
 
 **Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`), `JARVIS_MEMORY_MAX_ITEMS` (long-term Memory store retention cap; default `5000`, `0`/`off`/`unlimited` disables pruning; pinned rows are never pruned).
 
@@ -342,9 +342,20 @@ clients never parse SPA HTML as JSON). The web client is baked in from `apps/jar
   per-socket model (same provider only — provider switching is rejected). Guards: new
   `user`/`start_turn`/`new` while a turn runs (locally or live in the registry) → `error: turn in
   progress`; unknown approval id → `error: no pending approval`. In persisted mode the WS saves
-  `Done.conversation` under the active id; `reset` clears state + unsubscribes. Plan-mode frames
-  (`set_mode`/`accept_plan`/`refine_plan`) are **not implemented** (no mode state machine in
-  `@jarvis/core` yet) — both the web and iOS clients already speak them, dormant.
+  `Done.conversation` under the active id; `reset` clears state + unsubscribes.
+- **Permission modes + Plan Mode over the WS.** Each socket carries a `PermissionMode`
+  (`AppState.defaultPermissionMode` ← `JARVIS_PERMISSION_MODE`, announced as
+  `permission_mode{mode,via:"connect"}` on connect, changed by `set_mode{mode}`). A
+  `RuleApprover` (rule table from `AppState.permissionStore`, then the mode default) sits in
+  front of the per-socket `ChannelApprover`, so only an `ask` outcome ever prompts — the agent
+  loop consults the new optional `Approver.willPrompt` and **skips** `approval_request` for
+  auto-decided calls (`approval_decision` is still emitted for audit). In `plan` mode the turn's
+  agent gets `AgentConfig.toolFilter` = read-category only, so write/exec/network tools never
+  enter the LLM catalogue *and* can't be dispatched if the model guesses a name; the terminal
+  `exit_plan` tool ends the turn and yields `plan_proposed{plan}` +
+  `done{outcome:{kind:"terminal_tool"}}`. `accept_plan{post_mode}` switches mode (never back into
+  `plan`) and pushes the accepted plan as a synthetic user brief; `refine_plan{feedback}` stays in
+  Plan Mode and re-runs.
 
 **Persisted conversations CRUD** (503 when no `ConversationStore`): `POST /v1/conversations`
 (`{system?,id?}` → 201 `{id}`), `GET /v1/conversations?limit=N`, `GET`/`DELETE /v1/conversations/:id`,

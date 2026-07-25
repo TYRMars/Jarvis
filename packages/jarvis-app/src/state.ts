@@ -24,7 +24,13 @@ import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import { lookupCapability, canonicalKind } from "@jarvis/llm";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
+import {
+  ChatRunRegistry,
+  FilePermissionStore,
+  RoutePolicyStore,
+  isRouteSlot,
+  parseModelTarget,
+} from "@jarvis/server";
 import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
@@ -117,6 +123,22 @@ export interface AppStateBundle {
    * its lifetime — call `.stop()` on shutdown/restart. Absent otherwise.
    */
   ddnsRuntime?: DdnsRuntime;
+}
+
+/**
+ * User-scope permission rules: `~/.config/jarvis/permissions.json` (the path
+ * the permission-modes proposal specifies). Undefined when there is no
+ * resolvable home, which simply disables the user scope.
+ */
+function userPermissionsPath(): string | undefined {
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    return undefined;
+  }
+  if (!home) return undefined;
+  return path.join(home, ".config", "jarvis", "permissions.json");
 }
 
 /** Persisted DDNS config path under the user data dir, or undefined (no home). */
@@ -342,6 +364,15 @@ export async function buildAppState(
 
   // Operator route policy: seed from JARVIS_ROUTE_* then share the mutable store
   // between the /v1/routing CRUD and the SummarizingMemory resolver.
+  // Permission rules: session in-memory, project committed under the
+  // workspace, user per-machine. `JARVIS_PERMISSION_MODE` seeds the session
+  // default; either file may pin a stronger one (user > project > session).
+  const permissionStore = new FilePermissionStore({
+    projectPath: path.join(config.fsRoot, ".jarvis", "permissions.json"),
+    defaultMode: config.permissionMode,
+    ...(userPermissionsPath() !== undefined ? { userPath: userPermissionsPath() as string } : {}),
+  });
+
   const routePolicy = new RoutePolicyStore();
   for (const [slot, raw] of Object.entries(config.routeSlots)) {
     if (!isRouteSlot(slot)) continue;
@@ -397,6 +428,12 @@ export async function buildAppState(
     tools: toolBundle.registry,
     // In-process chat-run registry for the turn-status badge / Stop button.
     chatRuns: new ChatRunRegistry(),
+    // Permission rule table (session in-memory + project/user JSON files) and
+    // the mode fresh chat sockets start in. Wiring these is what makes
+    // JARVIS_PERMISSION_MODE actually govern approvals and /v1/permissions
+    // answer instead of 503.
+    permissionStore,
+    defaultPermissionMode: config.permissionMode,
     // MCP server manager backing /v1/mcp/servers* (shares the tool registry).
     mcpManager: toolBundle.mcpManager,
     // Operator route policy backing /v1/routing (shared with the summariser).

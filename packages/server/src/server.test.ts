@@ -18,6 +18,7 @@ import {
 } from "@jarvis/core";
 import { MemoryConversationStore } from "@jarvis/store";
 import { ChatRunRegistry } from "./chat-runs.ts";
+import { MemoryPermissionStore, type PermissionMode, type PermissionStore } from "./permissions-routes.ts";
 import { buildServer, serve } from "./server.ts";
 import type { AppState } from "./state.ts";
 
@@ -95,6 +96,10 @@ function makeState(
     chatRuns?: ChatRunRegistry;
     /** Captures the model each createAgent call resolved (configure tests). */
     modelSpy?: string[];
+    /** Captures whether each turn got a Plan-Mode tool filter. */
+    filterSpy?: boolean[];
+    defaultPermissionMode?: PermissionMode;
+    permissionStore?: PermissionStore;
   } = {},
 ): AppState {
   const provider = new ScriptedProvider(turns);
@@ -103,10 +108,15 @@ function makeState(
     store: opts.store,
     chatRuns: opts.chatRuns,
     providerCatalog: { default: "scripted", providers: [] },
+    defaultPermissionMode: opts.defaultPermissionMode,
+    permissionStore: opts.permissionStore,
     createAgent: (approver, human, agentOpts) => {
       const model = agentOpts?.model ?? "test-model";
       opts.modelSpy?.push(model);
-      return new Agent(provider, { ...defaultAgentConfig(model), tools, maxIterations: 5, approver, human });
+      opts.filterSpy?.push(agentOpts?.toolFilter !== undefined);
+      const config = { ...defaultAgentConfig(model), tools, maxIterations: 5, approver, human };
+      if (agentOpts?.toolFilter) config.toolFilter = agentOpts.toolFilter;
+      return new Agent(provider, config);
     },
   };
 }
@@ -620,5 +630,193 @@ test("WS: configure sets a sticky per-socket model; provider switching is reject
   } finally {
     client.close();
     await app.close();
+  }
+});
+
+// ---------- WS Plan Mode (set_mode / plan_proposed / accept_plan / refine_plan) ----------
+
+/** Stands in for @jarvis/tools' ExitPlanTool (server must not depend on it). */
+const exitPlanTool: Tool = {
+  name: "exit_plan",
+  description: "submit a plan",
+  parameters: { type: "object" },
+  category: "read",
+  isTerminal: true,
+  invoke: (args) =>
+    Promise.resolve(
+      typeof (args as { plan?: unknown })?.plan === "string" ? ((args as { plan: string }).plan) : "",
+    ),
+};
+
+test("WS: announces the permission mode on connect and honours set_mode", async () => {
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ content: "ok" }], { defaultPermissionMode: "accept-edits" }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    const hello = await client.waitFor((f) => f.type === "permission_mode");
+    assert.equal(hello.mode, "accept-edits");
+    assert.equal(hello.via, "connect");
+
+    client.send({ type: "set_mode", mode: "plan" });
+    const changed = await client.waitFor((f) => f.type === "permission_mode" && f.via === "user");
+    assert.equal(changed.mode, "plan");
+
+    client.send({ type: "set_mode", mode: "nonsense" });
+    const err = await client.waitFor((f) => f.type === "error" && /mode must be one of/.test(f.message as string));
+    assert.ok(err);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: plan mode filters the tool catalogue and exit_plan proposes a plan", async () => {
+  const filterSpy: boolean[] = [];
+  const tools = new ToolRegistry().register(exitPlanTool).register(dangerTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "p1", name: "exit_plan", arguments: { plan: "1. look\n2. leap" } }] }], {
+      tools,
+      filterSpy,
+      defaultPermissionMode: "plan",
+    }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "user", content: "how would you do it?" });
+    const proposed = await client.waitFor((f) => f.type === "plan_proposed");
+    assert.equal(proposed.plan, "1. look\n2. leap");
+    await client.waitFor((f) => f.type === "done");
+    assert.deepEqual(filterSpy, [true], "the plan-mode turn got a tool filter");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: accept_plan leaves plan mode, briefs the model with the plan, and runs", async () => {
+  const filterSpy: boolean[] = [];
+  const tools = new ToolRegistry().register(exitPlanTool);
+  const store = new MemoryConversationStore();
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState(
+      [
+        { toolCalls: [{ id: "p1", name: "exit_plan", arguments: { plan: "delete nothing" } }] },
+        { content: "executed" },
+      ],
+      { tools, filterSpy, store, defaultPermissionMode: "plan" },
+    ),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "start_turn", mode: "new", id: "conv-plan", content: "how?" });
+    await client.waitFor((f) => f.type === "plan_proposed");
+    await client.waitFor((f) => f.type === "done");
+
+    client.send({ type: "accept_plan", post_mode: "accept-edits" });
+    const modeFrame = await client.waitFor((f) => f.type === "permission_mode" && f.via === "accept_plan");
+    assert.equal(modeFrame.mode, "accept-edits");
+    await client.waitFor((f) => f.type === "done" && (f.outcome as { kind: string }).kind === "stopped");
+
+    // Execution turn ran WITHOUT the plan filter, and the accepted plan was
+    // handed to the model as a synthetic user turn.
+    assert.deepEqual(filterSpy, [true, false]);
+    const saved = await store.load("conv-plan");
+    const briefs = (saved?.messages ?? []).filter(
+      (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("delete nothing"),
+    );
+    assert.equal(briefs.length, 1, "the accepted plan is quoted back to the model");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: refine_plan stays in plan mode and re-runs with the feedback", async () => {
+  const filterSpy: boolean[] = [];
+  const tools = new ToolRegistry().register(exitPlanTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState(
+      [
+        { toolCalls: [{ id: "p1", name: "exit_plan", arguments: { plan: "v1" } }] },
+        { toolCalls: [{ id: "p2", name: "exit_plan", arguments: { plan: "v2 (shorter)" } }] },
+      ],
+      { tools, filterSpy, defaultPermissionMode: "plan" },
+    ),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "user", content: "how?" });
+    const first = await client.waitFor((f) => f.type === "plan_proposed");
+    assert.equal(first.plan, "v1");
+    await client.waitFor((f) => f.type === "done");
+
+    client.send({ type: "refine_plan", feedback: "make it shorter" });
+    const second = await client.waitFor((f) => f.type === "plan_proposed" && f.plan === "v2 (shorter)");
+    assert.ok(second);
+    assert.deepEqual(filterSpy, [true, true], "refinement stays filtered");
+
+    client.send({ type: "refine_plan", feedback: "   " });
+    const err = await client.waitFor((f) => f.type === "error" && /requires feedback/.test(f.message as string));
+    assert.ok(err);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: auto mode approves gated tools without prompting; a deny rule blocks them", async () => {
+  const tools = new ToolRegistry().register(dangerTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "t1", name: "danger.run", arguments: {} }] }, { content: "done" }], {
+      tools,
+      defaultPermissionMode: "auto",
+    }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "user", content: "go" });
+    const end = await client.waitFor((f) => f.type === "tool_end");
+    assert.equal(end.content, "ran");
+    assert.equal(
+      client.frames.some((f) => f.type === "approval_request"),
+      false,
+      "auto mode must not prompt",
+    );
+  } finally {
+    client.close();
+    await app.close();
+  }
+
+  // Same setup, but a deny rule in the store overrides the permissive mode.
+  const permissionStore: PermissionStore = new MemoryPermissionStore();
+  await permissionStore.appendRule("session", "deny", { tool: "danger.run" });
+  const app2 = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "t2", name: "danger.run", arguments: {} }] }, { content: "done" }], {
+      tools: new ToolRegistry().register(dangerTool),
+      defaultPermissionMode: "auto",
+      permissionStore,
+    }),
+  );
+  const { port: port2 } = app2.server.address() as { port: number };
+  const client2 = await openWs(port2);
+  try {
+    client2.send({ type: "user", content: "go" });
+    const end = await client2.waitFor((f) => f.type === "tool_end");
+    assert.match(end.content as string, /tool denied/);
+  } finally {
+    client2.close();
+    await app2.close();
   }
 });

@@ -172,10 +172,11 @@ Tests/                   # run-contract-smoke.sh + ContractSmoke(swiftc,无需 X
 
 ## 已知边界
 
-- **Plan Mode 等待服务端**:客户端已实现 `set_mode` / `accept_plan` / `refine_plan`
-  发送与 `plan_proposed` / `permission_mode` 渲染,但 Node 服务端尚未实现 Plan Mode
-  (`@jarvis/core` 无模式状态机)——这些帧现阶段会收到 `unknown frame type` 错误,
-  模式菜单暂为前瞻功能。web SPA 同样受限。
+- ~~Plan Mode 等待服务端~~:**已打通**。Node 服务端实现了每 socket 的权限模式
+  (连接即发 `permission_mode`)、Plan Mode 的结构性工具过滤(只暴露 read 类工具 +
+  `exit_plan`)、`exit_plan` 终止本轮并发 `plan_proposed`,以及
+  `accept_plan {post_mode}`(切模式 + 把计划作为执行简报回灌)/`refine_plan {feedback}`
+  (留在 Plan Mode 重规划)。iOS 的模式菜单与计划卡片现在是实际可用功能。
 - `configure` 仅支持**同 provider 切模型**;切 provider 需要服务端第二 provider
   运行时(暂拒绝)。`fork`(编辑重跑)、`set_workspace` 未实现。
 - `workspace_changed`、`skill_activated` 等事件暂被忽略(降级为 `ignored`)。

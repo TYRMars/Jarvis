@@ -157,6 +157,7 @@ export {
   modeDefault,
   registerPermissionsRoutes,
 } from "./permissions-routes.ts";
+export { FilePermissionStore, type FilePermissionStoreOptions } from "./permission-store-file.ts";
 export { registerPluginsRoutes } from "./plugins-routes.ts";
 export { registerAgentProfilesRoutes } from "./agent-profiles-routes.ts";
 export { registerTodosRoutes } from "./todos-routes.ts";

@@ -27,6 +27,16 @@ import {
   type HumanLayer,
   type Message,
 } from "@jarvis/core";
+import type { Tool } from "@jarvis/core";
+import { toolCategory } from "@jarvis/core";
+import {
+  MemoryPermissionStore,
+  RuleApprover,
+  parsePermissionMode,
+  type ModeHandle,
+  type PermissionMode,
+  type PermissionStore,
+} from "./permissions-routes.ts";
 import { streamSse } from "./sse.ts";
 import type { AppState } from "./state.ts";
 
@@ -130,10 +140,36 @@ interface WsFrame {
   // `configure` (per-socket sticky model override).
   model?: unknown;
   provider?: unknown;
+  // Plan Mode: `accept_plan` / `refine_plan`.
+  post_mode?: unknown;
+  feedback?: unknown;
 }
 
 // Statuses the operator can return for a HITL request (mirrors core HitlStatus).
 const HITL_STATUSES = new Set(["approved", "denied", "submitted", "cancelled", "expired"]);
+
+/**
+ * Rule table used when the deployment wired no PermissionStore. Empty, so
+ * `evaluateTable` always falls through to the mode default — i.e. the modes
+ * work on their own and only persisted *rules* need a real store.
+ */
+const EMPTY_PERMISSION_STORE: PermissionStore = new MemoryPermissionStore();
+
+/**
+ * Plan Mode's structural tool gate: only read-category tools reach the model.
+ * `exit_plan` declares itself `read` precisely so it survives this filter and
+ * gives the agent a way out of the mode.
+ */
+function planModeToolFilter(tool: Tool): boolean {
+  return toolCategory(tool) === "read";
+}
+
+/** The synthetic user turn that carries an accepted plan into execution. */
+function acceptedPlanMessage(plan: string): string {
+  return plan.trim().length > 0
+    ? `I approved your plan. Execute it now, step by step:\n\n${plan}`
+    : "I approved your plan. Execute it now, step by step.";
+}
 
 function handleWsConnection(socket: WsSocket, state: AppState): void {
   let conv: Conversation = newConversation();
@@ -142,6 +178,14 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   // Per-socket sticky model override (the `configure` frame). Applied to every
   // subsequent turn on this socket; same provider, different model id.
   let modelOverride: string | undefined;
+  // Per-socket permission mode (the `set_mode` / `accept_plan` frames). Seeded
+  // from the deployment default; drives the RuleApprover's fall-through
+  // decision live, and Plan Mode's tool filter at the start of each turn.
+  let mode: PermissionMode = state.defaultPermissionMode ?? "ask";
+  const modeHandle: ModeHandle = { get: () => mode };
+  // The most recent plan the agent proposed via `exit_plan`, so `accept_plan`
+  // can hand it back to the model as the execution brief.
+  let proposedPlan = "";
   // Live-event subscription for the attached persisted conversation, so a
   // socket that resumed mid-run receives events from a turn another (possibly
   // dead) socket started. Undefined when unattached/untracked.
@@ -177,7 +221,7 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   // responder under the tool_call_id; an approve/deny frame resolves it. On
   // tracked conversations the responder goes into the shared registry so it
   // survives this socket (a resumed socket re-prompts + answers it).
-  const approver: Approver = new ChannelApprover((p) => {
+  const prompting: Approver = new ChannelApprover((p) => {
     if (tracked()) {
       state.chatRuns?.registerApproval(persistedId as string, {
         tool_call_id: p.request.tool_call_id,
@@ -189,6 +233,16 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
       pending.set(p.request.tool_call_id, p.respond);
     }
   });
+
+  // The mode + rule engine sits IN FRONT of the prompting approver: deny/allow
+  // rules and the mode default resolve without a round-trip, and only an "ask"
+  // outcome reaches the socket. With no store wired the table is empty, so this
+  // is exactly the historical prompt-every-time behaviour under mode "ask".
+  const approver: Approver = new RuleApprover(
+    state.permissionStore ?? EMPTY_PERMISSION_STORE,
+    prompting,
+    modeHandle,
+  );
 
   // One HITL responder for the socket's lifetime: each `ask.*` request
   // registers its responder under the request id; a `hitl_response` frame
@@ -218,7 +272,13 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
           else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
         })
       : undefined;
-    const agent = state.createAgent(approver, human, modelOverride ? { model: modelOverride } : undefined);
+    // Plan Mode's filter is captured per turn: a mid-turn `set_mode` changes
+    // approvals live (the RuleApprover reads modeHandle) but can't re-shape a
+    // catalogue the model has already been given.
+    const agentOpts: { model?: string; toolFilter?: (tool: Tool) => boolean } = {};
+    if (modelOverride !== undefined) agentOpts.model = modelOverride;
+    if (mode === "plan") agentOpts.toolFilter = planModeToolFilter;
+    const agent = state.createAgent(approver, human, agentOpts);
     let cancelled = false;
     // Tracked runs deliver events via the registry fan-out (this socket is a
     // subscriber like any other, and every frame carries its seq stamp);
@@ -237,6 +297,8 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         }
         if (raced.done) break;
         const ev = raced.value;
+        // Remember the plan so `accept_plan` can brief the execution turn.
+        if (ev.type === "plan_proposed") proposedPlan = ev.plan;
         emit(ev);
         if (ev.type === "done") {
           conv = ev.conversation;
@@ -435,6 +497,44 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         send({ type: "error", message: "no turn in progress" });
         return;
       }
+      case "set_mode": {
+        const next = typeof msg.mode === "string" ? parsePermissionMode(msg.mode) : undefined;
+        if (!next) {
+          send({ type: "error", message: "mode must be one of ask|accept-edits|plan|auto|bypass" });
+          return;
+        }
+        mode = next;
+        send({ type: "permission_mode", mode, via: "user" });
+        return;
+      }
+      case "accept_plan": {
+        if (!guardIdle()) return;
+        // post_mode is where the session lands for execution. Defaulting to
+        // `ask` keeps the safe posture when a client omits it; staying in
+        // `plan` would filter away the very tools the plan needs.
+        const parsed = typeof msg.post_mode === "string" ? parsePermissionMode(msg.post_mode) : undefined;
+        const next: PermissionMode = parsed === undefined || parsed === "plan" ? "ask" : parsed;
+        mode = next;
+        send({ type: "permission_mode", mode, via: "accept_plan" });
+        const plan = proposedPlan;
+        proposedPlan = "";
+        conv.messages.push(userMessage(acceptedPlanMessage(plan)));
+        void runTurn();
+        return;
+      }
+      case "refine_plan": {
+        if (!guardIdle()) return;
+        const feedback = typeof msg.feedback === "string" ? msg.feedback.trim() : "";
+        if (feedback.length === 0) {
+          send({ type: "error", message: "`refine_plan` frame requires feedback" });
+          return;
+        }
+        // Stays in Plan Mode: the model revises and calls `exit_plan` again.
+        proposedPlan = "";
+        conv.messages.push(userMessage(`Revise the plan: ${feedback}`));
+        void runTurn();
+        return;
+      }
       case "configure": {
         // Per-socket sticky model. Provider switching needs a second provider
         // runtime — reject anything but the active provider for now.
@@ -538,6 +638,10 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         send({ type: "error", message: `unknown frame type: ${String(msg.type)}` });
     }
   };
+
+  // Announce the starting mode so the client's badge is right before the
+  // first turn (the client has no other way to learn the deployment default).
+  send({ type: "permission_mode", mode, via: "connect" });
 
   socket.on("message", (data) => {
     void onFrame(data.toString());

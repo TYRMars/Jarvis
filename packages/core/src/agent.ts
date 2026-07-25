@@ -59,6 +59,16 @@ export interface AgentConfig {
    * `expired` and the tool returns without a human round-trip.
    */
   human?: HumanLayer;
+  /**
+   * Structural tool gate (Plan Mode). When set, only tools it accepts are
+   * advertised to the LLM *and* dispatchable — a filtered-out tool the model
+   * calls anyway comes back as a tool error instead of running.
+   *
+   * This is deliberately structural rather than policed: in Plan Mode the
+   * write/exec/network tools never enter the catalogue, so a well-aligned
+   * model doesn't waste turns proposing calls that would only be denied.
+   */
+  toolFilter?: (tool: Tool) => boolean;
   /** Replace a stale leading System message on resume. Default: true. */
   refreshSystemPromptOnResume: boolean;
 }
@@ -75,7 +85,9 @@ export function defaultAgentConfig(model: string): AgentConfig {
 /** What ended a run. */
 export type RunOutcome =
   | { kind: "stopped"; iterations: number }
-  | { kind: "length_limited"; iterations: number };
+  | { kind: "length_limited"; iterations: number }
+  /** A terminal tool (`exit_plan`) ended the turn before the model was done. */
+  | { kind: "terminal_tool"; iterations: number; tool: string };
 
 /** An event emitted during runStream. Transports serialise these directly. */
 export type AgentEvent =
@@ -89,6 +101,12 @@ export type AgentEvent =
   | { type: "tool_progress"; id: string; name: string; stream: string; chunk: string }
   | { type: "tool_end"; id: string; name: string; content: string }
   | { type: "plan_update"; items: PlanItem[] }
+  /**
+   * A terminal tool (today only `exit_plan`) ended the turn and handed its
+   * output to the operator. In Plan Mode this is the drafted plan; the
+   * transport surfaces an accept / refine card.
+   */
+  | { type: "plan_proposed"; plan: string }
   | ({ type: "usage"; model: string } & Usage)
   | { type: "done"; outcome: RunOutcome; conversation: Conversation }
   | { type: "error"; message: string };
@@ -132,10 +150,25 @@ export class Agent {
 
           const message = resp.message;
           if (isToolCallTurn(message, resp.finish_reason)) {
+            let terminal: string | undefined;
             for (const call of message.tool_calls) {
               const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
-              const output = await runOne(this.config.tools, call, approval?.[1]);
+              const output = await runOne(
+                this.config.tools,
+                call,
+                approval?.[1],
+                undefined,
+                this.config.toolFilter,
+              );
               conversation.messages.push(toolResult(call.id, output));
+              if (endsTurn(this.config.tools, call, output)) {
+                terminal = call.name;
+                break; // skip the rest of the batch
+              }
+            }
+            if (terminal !== undefined) {
+              endAgentSpan(span, { iterations: iter });
+              return [{ kind: "terminal_tool", iterations: iter, tool: terminal }, totalUsage];
             }
             continue;
           }
@@ -220,6 +253,7 @@ export class Agent {
 
         const message = finish.message;
         if (isToolCallTurn(message, finish.finish_reason)) {
+          let terminal: { name: string; output: string } | undefined;
           for (const call of message.tool_calls) {
             // Resolve the approval decision, emitting the request BEFORE awaiting
             // the approver so an interactive transport can respond in time.
@@ -232,7 +266,19 @@ export class Agent {
                 arguments: call.arguments,
                 category: toolCategory(tool),
               };
-              yield { type: "approval_request", id: call.id, name: call.name, arguments: call.arguments };
+              // Only announce a pending approval when a human will actually be
+              // asked — an auto-resolving policy would otherwise make every
+              // client flash a prompt it answers immediately. The decision
+              // event below is emitted either way (audit trail).
+              let willPrompt = true;
+              try {
+                willPrompt = (await this.config.approver.willPrompt?.(request)) ?? true;
+              } catch {
+                willPrompt = true;
+              }
+              if (willPrompt) {
+                yield { type: "approval_request", id: call.id, name: call.name, arguments: call.arguments };
+              }
               try {
                 decision = await this.config.approver.approve(request);
               } catch (e) {
@@ -262,7 +308,9 @@ export class Agent {
             };
             const dispatch = (): Promise<string> =>
               withPlan(planSink, () =>
-                withProgress(progressSink, () => runOne(this.config.tools, call, decision, span)),
+                withProgress(progressSink, () =>
+                  runOne(this.config.tools, call, decision, span, this.config.toolFilter),
+                ),
               );
             const invoked = (human ? withHitl(hitlSink, dispatch) : dispatch()).finally(() => queue.close());
 
@@ -271,6 +319,23 @@ export class Agent {
 
             yield { type: "tool_end", id: call.id, name: call.name, content };
             conversation.messages.push(toolResult(call.id, content));
+
+            // A terminal tool (today only `exit_plan`) ends the turn right
+            // here: the rest of the batch is skipped and its output is handed
+            // to the operator as the proposed plan.
+            if (endsTurn(this.config.tools, call, content)) {
+              terminal = { name: call.name, output: content };
+              break;
+            }
+          }
+          if (terminal !== undefined) {
+            yield { type: "plan_proposed", plan: terminal.output };
+            yield {
+              type: "done",
+              outcome: { kind: "terminal_tool", iterations: iter, tool: terminal.name },
+              conversation,
+            };
+            return;
           }
           continue;
         }
@@ -307,7 +372,8 @@ export class Agent {
     }
 
     const req: ChatRequest = { model: this.config.model, messages };
-    const tools = this.config.tools.specs();
+    const filter = this.config.toolFilter;
+    const tools = filter ? this.config.tools.specsFiltered(filter) : this.config.tools.specs();
     if (tools.length > 0) req.tools = tools;
     if (this.config.temperature !== undefined) req.temperature = this.config.temperature;
     if (conv.last_response_id != null) req.previous_response_id = conv.last_response_id;
@@ -390,12 +456,19 @@ async function runOne(
   call: ToolCall,
   decision: ApprovalDecision | undefined,
   parentSpan?: Span,
+  toolFilter?: (tool: Tool) => boolean,
 ): Promise<string> {
   if (decision && decision.decision === "deny") {
     return `tool denied: ${decision.reason ?? "no reason given"}`;
   }
   const tool: Tool | undefined = tools.resolve(call.name);
   if (!tool) return `tool error: tool not found: ${call.name}`;
+  // A filtered-out tool was never advertised; a model that calls it anyway
+  // gets an error, not an invocation (Plan Mode must not be bypassable by
+  // guessing tool names).
+  if (toolFilter && !toolFilter(tool)) {
+    return `tool error: tool not available in the current mode: ${call.name}`;
+  }
   try {
     // The `gen_ai.tool.call` span wraps the raw invoke so a throwing tool is
     // recorded on the span even though we format the failure as text below.
@@ -403,6 +476,20 @@ async function runOne(
   } catch (e) {
     return `tool error: ${errorText(e)}`;
   }
+}
+
+/**
+ * Whether this completed call should end the turn: the tool is marked
+ * `isTerminal` AND it actually ran. A denied or failed call must not end the
+ * turn — the model needs the chance to react to the refusal, exactly as with
+ * any other gated tool. `runOne` reports both failure modes as text, and the
+ * `tool denied:` / `tool error:` prefixes are the codebase-wide convention for
+ * recognising them (the web and iOS transcripts key off the same strings).
+ */
+function endsTurn(tools: ToolRegistry, call: ToolCall, output: string): boolean {
+  const tool = tools.resolve(call.name);
+  if (!tool?.isTerminal) return false;
+  return !output.startsWith("tool denied:") && !output.startsWith("tool error:");
 }
 
 /**

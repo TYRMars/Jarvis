@@ -7,6 +7,22 @@ now reachable from the UI with a confirm-dialog gate; the boot-time
 `--dangerously-skip-permissions` flag is reserved for unattended
 / CI use.
 
+**Node port (2026-07-25):** re-landed on the Node runtime, which had
+carried only the engine (`permissions-routes.ts`) with nothing wired.
+Now live: `AgentConfig.toolFilter` + `Tool.isTerminal` +
+`AgentEvent.plan_proposed` in `@jarvis/core`; the `set_mode` /
+`accept_plan` / `refine_plan` frames and per-socket `RuleApprover` in
+`packages/server/src/chat-routes.ts`; `FilePermissionStore`
+(session/project/user) wired from the composition root, so
+`JARVIS_PERMISSION_MODE` finally governs approvals and
+`/v1/permissions` stops 503-ing. One deliberate divergence from the
+Rust cut: `Approver.willPrompt` lets the loop **skip**
+`approval_request` for auto-decided calls, so `auto` mode no longer
+flashes an approval prompt on the mobile clients (the
+`approval_decision` audit event is still emitted). Not ported:
+`approval_decision.source` plumbing through the core event, and the
+`permission_rules_changed` broadcast.
+
 **Touches:** `harness-core` (new `permission` module + `Tool::category`
 / `is_terminal` / `summary_for_audit` + `RuleApprover` +
 `AgentEvent::PlanProposed`), `harness-store` (`JsonFilePermissionStore`),
