@@ -658,7 +658,9 @@ test("WS: announces the permission mode on connect and honours set_mode", async 
   try {
     const hello = await client.waitFor((f) => f.type === "permission_mode");
     assert.equal(hello.mode, "accept-edits");
-    assert.equal(hello.via, "connect");
+    // The starting state is announced WITHOUT `via` — it is not a change, and
+    // a `via` would make the clients surface a "mode switched" notice.
+    assert.equal(hello.via, undefined);
 
     client.send({ type: "set_mode", mode: "plan" });
     const changed = await client.waitFor((f) => f.type === "permission_mode" && f.via === "user");
@@ -720,7 +722,7 @@ test("WS: accept_plan leaves plan mode, briefs the model with the plan, and runs
     await client.waitFor((f) => f.type === "done");
 
     client.send({ type: "accept_plan", post_mode: "accept-edits" });
-    const modeFrame = await client.waitFor((f) => f.type === "permission_mode" && f.via === "accept_plan");
+    const modeFrame = await client.waitFor((f) => f.type === "permission_mode" && f.via === "user");
     assert.equal(modeFrame.mode, "accept-edits");
     await client.waitFor((f) => f.type === "done" && (f.outcome as { kind: string }).kind === "stopped");
 
@@ -818,5 +820,25 @@ test("WS: auto mode approves gated tools without prompting; a deny rule blocks t
   } finally {
     client2.close();
     await app2.close();
+  }
+});
+
+test("WS: a default_mode persisted in the store wins over the env seed", async () => {
+  const permissionStore = new MemoryPermissionStore();
+  await permissionStore.setDefaultMode("user", "auto");
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    // env said "ask"; the persisted table says "auto" — the store is
+    // authoritative, otherwise persisting a mode would change nothing.
+    makeState([{ content: "ok" }], { defaultPermissionMode: "ask", permissionStore }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    const hello = await client.waitFor((f) => f.type === "permission_mode");
+    assert.equal(hello.mode, "auto");
+  } finally {
+    client.close();
+    await app.close();
   }
 });

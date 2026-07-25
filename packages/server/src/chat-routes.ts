@@ -178,9 +178,10 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
   // Per-socket sticky model override (the `configure` frame). Applied to every
   // subsequent turn on this socket; same provider, different model id.
   let modelOverride: string | undefined;
-  // Per-socket permission mode (the `set_mode` / `accept_plan` frames). Seeded
-  // from the deployment default; drives the RuleApprover's fall-through
-  // decision live, and Plan Mode's tool filter at the start of each turn.
+  // Per-socket permission mode (the `set_mode` / `accept_plan` frames). Drives
+  // the RuleApprover's fall-through decision live, and Plan Mode's tool filter
+  // at the start of each turn. Seeded below from the store's persisted
+  // `default_mode` (user > project > the env-seeded session default).
   let mode: PermissionMode = state.defaultPermissionMode ?? "ask";
   const modeHandle: ModeHandle = { get: () => mode };
   // The most recent plan the agent proposed via `exit_plan`, so `accept_plan`
@@ -515,7 +516,9 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
         const parsed = typeof msg.post_mode === "string" ? parsePermissionMode(msg.post_mode) : undefined;
         const next: PermissionMode = parsed === undefined || parsed === "plan" ? "ask" : parsed;
         mode = next;
-        send({ type: "permission_mode", mode, via: "accept_plan" });
+        // Operator-initiated (they picked post_mode when accepting), so the
+        // clients keep it silent — same as an explicit `set_mode`.
+        send({ type: "permission_mode", mode, via: "user" });
         const plan = proposedPlan;
         proposedPlan = "";
         conv.messages.push(userMessage(acceptedPlanMessage(plan)));
@@ -639,9 +642,25 @@ function handleWsConnection(socket: WsSocket, state: AppState): void {
     }
   };
 
-  // Announce the starting mode so the client's badge is right before the
-  // first turn (the client has no other way to learn the deployment default).
-  send({ type: "permission_mode", mode, via: "connect" });
+  // Resolve + announce the starting mode so the client's badge is right before
+  // the first turn (the client has no other way to learn it). The STORE is
+  // authoritative: a `default_mode` pinned in the user or project file must
+  // govern, otherwise persisting one would change nothing. `JARVIS_PERMISSION_MODE`
+  // reaches this through the store, as the session-scope seed.
+  void (async () => {
+    if (state.permissionStore) {
+      try {
+        mode = (await state.permissionStore.snapshot()).default_mode;
+      } catch {
+        /* keep the env default when the table can't be read */
+      }
+    }
+    // No `via`: this is the starting state, not a change. Both clients treat
+    // a `via`-carrying frame as an out-of-band switch worth surfacing (the web
+    // pops a toast, iOS appends a transcript line) — `via: "tool"` is reserved
+    // for a future agent-initiated `enter_plan_mode`.
+    send({ type: "permission_mode", mode });
+  })();
 
   socket.on("message", (data) => {
     void onFrame(data.toString());

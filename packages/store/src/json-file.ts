@@ -66,7 +66,7 @@ export class JsonFileConversationStore extends ConversationStoreBase {
 
   async loadEnvelope(id: string): Promise<[Conversation, ConversationMetadata] | undefined> {
     const stored = await readJsonFile<OnDiskConversation>(this.#pathFor(id));
-    if (!stored) return undefined;
+    if (!isConversationFile(stored)) return undefined;
     const conv: Conversation = { messages: stored.messages };
     const meta: ConversationMetadata = {
       project_id: stored.project_id ?? null,
@@ -89,7 +89,11 @@ export class JsonFileConversationStore extends ConversationStoreBase {
       // skip .tmp files, sibling subdirs (projects/ etc.), non-.json.
       if (!name.endsWith(".json") || name.endsWith(".json.tmp")) continue;
       const stored = await readJsonFile<OnDiskConversation>(path.join(this.#dir, name));
-      if (!stored) continue; // directory entry or unparseable → skip
+      // Skip anything that isn't a conversation: a directory entry, an
+      // unparseable file, OR a sibling store's file that happens to live here
+      // and parse fine (`channel_instances.json` is a JSON array). One such
+      // neighbour must not take down the whole list.
+      if (!isConversationFile(stored)) continue;
       records.push({
         id: stored.id,
         created_at: stored.created_at,
@@ -116,6 +120,17 @@ export class JsonFileConversationStore extends ConversationStoreBase {
 }
 
 // ---------- helpers ----------
+
+/**
+ * Structural check that a parsed file really is a stored conversation. The
+ * store directory is shared with other JSON-file stores, so "parsed OK" is not
+ * enough — only the `messages` array makes it ours.
+ */
+function isConversationFile(v: unknown): v is OnDiskConversation {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const rec = v as Partial<OnDiskConversation>;
+  return typeof rec.id === "string" && Array.isArray(rec.messages);
+}
 
 function isNotFound(e: unknown): boolean {
   return typeof e === "object" && e !== null && (e as { code?: string }).code === "ENOENT";
