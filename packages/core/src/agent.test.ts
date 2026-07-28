@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 
 import { Agent, defaultAgentConfig, ensureSystemPrompt, type AgentEvent } from "./agent.ts";
 import { ToolRegistry, type Tool } from "./tool.ts";
-import { AlwaysApprove, AlwaysDeny } from "./approval.ts";
+import { AlwaysApprove, AlwaysDeny, ChannelApprover } from "./approval.ts";
 import { assistantText, systemMessage, userMessage } from "./message.ts";
 import { lastAssistantText, type Conversation } from "./conversation.ts";
 import type { ChatRequest, ChatResponse, LlmChunk, LlmProvider } from "./llm.ts";
 import { emitPlan } from "./plan.ts";
 import { emitProgress } from "./progress.ts";
+import { ChannelHuman, requestHuman, type HitlResponse, type PendingHitl } from "./hitl.ts";
 import { MaxIterationsError } from "./error.ts";
 import type { JsonValue } from "./json.ts";
 
@@ -93,6 +94,18 @@ class PlanningTool implements Tool {
     emitPlan([{ id: "a", title: "Step A", status: "in_progress" }]);
     emitProgress("log", "working");
     return "plan set";
+  }
+}
+
+/** Tool that surfaces a HITL question and returns the operator's answer. */
+class AskingTool implements Tool {
+  readonly name = "ask.text";
+  readonly description = "asks the operator a question";
+  readonly parameters = { type: "object" };
+  readonly category = "read" as const;
+  async invoke(): Promise<string> {
+    const r = await requestHuman({ id: "h1", transport: "text", kind: "input", title: "Name?" });
+    return `answer: ${String(r.payload)} (${r.status})`;
   }
 }
 
@@ -280,24 +293,204 @@ test("runStream: plan/progress emitted during invoke surface between tool_start 
   assert.ok(progress > start && progress < end, "tool_progress lands between tool_start and tool_end");
 });
 
-test("runStream: deny emits approval_request → approval_decision → denied tool_end", async () => {
+test("runStream: an auto-deciding approver skips the prompt but still emits the decision", async () => {
   const provider = new ScriptedProvider([toolCallResponse("c1", "fs.write", {}), stopResponse("ok")]);
   const tool = new GatedTool();
   const agent = new Agent(provider, {
     ...defaultAgentConfig("m"),
     tools: new ToolRegistry().register(tool),
+    // AlwaysDeny answers from policy, never from a human (willPrompt: false).
     approver: new AlwaysDeny(),
+  });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+  const types = events.map((e) => e.type);
+  const dec = types.indexOf("approval_decision");
+  const start = types.indexOf("tool_start");
+  const end = types.indexOf("tool_end");
+
+  assert.equal(types.includes("approval_request"), false, "no prompt for a policy decision");
+  assert.ok(dec >= 0, "the decision is still recorded for the audit trail");
+  assert.ok(start > dec && end > start, "tool_start/tool_end wrap the call even on deny");
+  assert.equal(tool.calls, 0);
+  assert.equal((events.find((e) => e.type === "tool_end") as { content: string }).content, "tool denied: default deny policy");
+});
+
+test("runStream: a prompting approver emits approval_request → approval_decision, in order", async () => {
+  const provider = new ScriptedProvider([toolCallResponse("c1", "fs.write", {}), stopResponse("ok")]);
+  const tool = new GatedTool();
+  // ChannelApprover blocks on a transport, so the request MUST be emitted
+  // before the await — otherwise the operator can never see what to decide.
+  const approver = new ChannelApprover((p) => p.respond({ decision: "deny", reason: "nope" }));
+  const agent = new Agent(provider, {
+    ...defaultAgentConfig("m"),
+    tools: new ToolRegistry().register(tool),
+    approver,
   });
 
   const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
   const types = events.map((e) => e.type);
   const req = types.indexOf("approval_request");
   const dec = types.indexOf("approval_decision");
+  assert.ok(req >= 0 && dec === req + 1, "request immediately followed by decision");
+  assert.equal((events.find((e) => e.type === "tool_end") as { content: string }).content, "tool denied: nope");
+});
+
+test("runStream: HITL request/response surface between tool_start and tool_end", async () => {
+  const provider = new ScriptedProvider([toolCallResponse("c1", "ask.text", {}), stopResponse("ok")]);
+  const tools = new ToolRegistry().register(new AskingTool());
+  // A HumanLayer that answers immediately so the loop completes.
+  const human = new ChannelHuman((p: PendingHitl) => {
+    p.respond({ request_id: p.request.id, status: "submitted", payload: "Ada" });
+  });
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools, human });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+  const types = events.map((e) => e.type);
   const start = types.indexOf("tool_start");
+  const reqIdx = types.indexOf("hitl_request");
+  const respIdx = types.indexOf("hitl_response");
   const end = types.indexOf("tool_end");
 
-  assert.ok(req >= 0 && dec === req + 1, "request immediately followed by decision");
-  assert.ok(start > dec && end > start, "tool_start/tool_end wrap the call even on deny");
-  assert.equal(tool.calls, 0);
-  assert.equal((events.find((e) => e.type === "tool_end") as { content: string }).content, "tool denied: default deny policy");
+  assert.ok(start >= 0, "tool_start present");
+  assert.ok(reqIdx > start && reqIdx < end, "hitl_request lands between tool_start and tool_end");
+  assert.ok(respIdx > reqIdx && respIdx < end, "hitl_response follows the request before tool_end");
+  const reqEv = events[reqIdx] as { request: { id: string; title: string } };
+  assert.equal(reqEv.request.title, "Name?");
+  const respEv = events[respIdx] as { response: HitlResponse };
+  assert.equal(respEv.response.status, "submitted");
+  assert.equal(respEv.response.payload, "Ada");
+  // The operator's answer reached the tool and the model.
+  assert.equal((events[end] as { content: string }).content, "answer: Ada (submitted)");
+});
+
+test("runStream: no HumanLayer → requestHuman resolves expired, no hitl events", async () => {
+  const provider = new ScriptedProvider([toolCallResponse("c1", "ask.text", {}), stopResponse("ok")]);
+  const tools = new ToolRegistry().register(new AskingTool());
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+  const types = events.map((e) => e.type);
+  assert.equal(types.includes("hitl_request"), false);
+  assert.equal(types.includes("hitl_response"), false);
+  const end = events.find((e) => e.type === "tool_end") as { content: string };
+  assert.equal(end.content, "answer: undefined (expired)");
+});
+
+// --- Plan Mode: toolFilter + terminal tools --------------------------------
+
+/** Stands in for `@jarvis/tools`' ExitPlanTool (core must not depend on it). */
+class TerminalTool implements Tool {
+  readonly name = "exit_plan";
+  readonly description = "submit a plan";
+  readonly parameters = { type: "object", properties: { plan: { type: "string" } } };
+  readonly category = "read" as const;
+  readonly isTerminal = true;
+  async invoke(args: JsonValue): Promise<string> {
+    const plan = args !== null && typeof args === "object" && !Array.isArray(args) ? args["plan"] : undefined;
+    if (typeof plan !== "string") throw new Error("missing plan");
+    return plan;
+  }
+}
+
+class WriteTool implements Tool {
+  readonly name = "fs.write";
+  readonly description = "write a file";
+  readonly parameters = { type: "object" };
+  readonly category = "write" as const;
+  calls = 0;
+  async invoke(): Promise<string> {
+    this.calls++;
+    return "written";
+  }
+}
+
+test("toolFilter hides filtered tools from the LLM catalogue", async () => {
+  const provider = new ScriptedProvider([stopResponse("ok")]);
+  const tools = new ToolRegistry().register(new EchoTool()).register(new WriteTool());
+  const agent = new Agent(provider, {
+    ...defaultAgentConfig("m"),
+    tools,
+    toolFilter: (t) => t.category === "read",
+  });
+
+  await agent.run({ messages: [userMessage("go")] });
+  const advertised = (provider.lastRequest?.tools ?? []).map((s) => s.name);
+  assert.deepEqual(advertised, ["echo"]);
+});
+
+test("toolFilter also blocks dispatch of a tool the model guessed", async () => {
+  const provider = new ScriptedProvider([toolCallResponse("c1", "fs.write", {}), stopResponse("after")]);
+  const write = new WriteTool();
+  const tools = new ToolRegistry().register(write);
+  const agent = new Agent(provider, {
+    ...defaultAgentConfig("m"),
+    tools,
+    toolFilter: (t) => t.category === "read",
+  });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+  const end = events.find((e) => e.type === "tool_end") as { content: string };
+  assert.match(end.content, /not available in the current mode/);
+  assert.equal(write.calls, 0, "the filtered tool must never run");
+});
+
+test("runStream: a terminal tool ends the turn and emits plan_proposed", async () => {
+  const provider = new ScriptedProvider([
+    toolCallResponse("c1", "exit_plan", { plan: "1. read code\n2. patch it" }),
+    stopResponse("never reached"),
+  ]);
+  const tools = new ToolRegistry().register(new TerminalTool());
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("plan it")] }));
+  const proposed = events.find((e) => e.type === "plan_proposed") as { plan: string };
+  assert.equal(proposed.plan, "1. read code\n2. patch it");
+  const done = events.at(-1) as { type: string; outcome: { kind: string; tool?: string } };
+  assert.equal(done.type, "done");
+  assert.equal(done.outcome.kind, "terminal_tool");
+  assert.equal(done.outcome.tool, "exit_plan");
+  // The plan is the LAST event pair — no second LLM round-trip happened.
+  assert.equal(events.filter((e) => e.type === "assistant_message").length, 1);
+});
+
+test("run: a terminal tool short-circuits the blocking loop and skips the rest of the batch", async () => {
+  const write = new WriteTool();
+  const provider = new ScriptedProvider([
+    {
+      message: {
+        role: "assistant",
+        tool_calls: [
+          { id: "c1", name: "exit_plan", arguments: { plan: "the plan" } },
+          { id: "c2", name: "fs.write", arguments: {} },
+        ],
+      },
+      finish_reason: "tool_calls",
+    },
+    stopResponse("never reached"),
+  ]);
+  const tools = new ToolRegistry().register(new TerminalTool()).register(write);
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools });
+
+  const outcome = await agent.run({ messages: [userMessage("plan it")] });
+  assert.equal(outcome.kind, "terminal_tool");
+  assert.equal(write.calls, 0, "calls after the terminal one are skipped");
+});
+
+test("a denied terminal tool does NOT end the turn", async () => {
+  class GatedTerminal extends TerminalTool {
+    readonly requiresApproval = true;
+  }
+  const provider = new ScriptedProvider([
+    toolCallResponse("c1", "exit_plan", { plan: "p" }),
+    stopResponse("model recovered"),
+  ]);
+  const tools = new ToolRegistry().register(new GatedTerminal());
+  const agent = new Agent(provider, { ...defaultAgentConfig("m"), tools, approver: new AlwaysDeny() });
+
+  const events = await collect(agent.runStream({ messages: [userMessage("go")] }));
+  assert.equal(events.some((e) => e.type === "plan_proposed"), false);
+  const done = events.at(-1) as { type: string; outcome: { kind: string } };
+  assert.equal(done.outcome.kind, "stopped");
+  assert.equal(lastAssistantText({ messages: (done as unknown as { conversation: Conversation }).conversation.messages }), "model recovered");
 });

@@ -1,0 +1,20 @@
+{
+  "name": "@jarvis/ddns",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dynamic-DNS + remote-access foundation: pluggable DdnsProvider impls (Cloudflare / DuckDNS / dyndns2 / Aliyun / DNSPod), public+LAN IP discovery, best-effort UPnP IGD port-mapping (zero-dep SSDP+SOAP), and DdnsRuntime (periodic updater + 0600-persisted config). Consumed by @jarvis/tools + @jarvis/server; runtime-independent.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jarvis/shared-types": "workspace:*"
+  },
+  "optionalDependencies": {
+    "bonjour-service": "^1.2.1"
+  }
+}

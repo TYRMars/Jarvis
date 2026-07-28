@@ -12,6 +12,23 @@ import { newConversation, resumeConversation } from "../../services/conversation
 import { EmptyState } from "../shared/EmptyState";
 import { ConvoRow } from "./ConvoRow";
 import type { ConversationRunStatus, ConversationSurfaceSnapshot } from "../../store/types";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  CircleAlert,
+  CirclePlus,
+  Clock,
+  Folder,
+  FolderPlus,
+  Icon,
+  Link2,
+  ListFilter,
+  Pencil,
+  RefreshCw,
+  Star,
+} from "../ui";
 import type {
   ConvoAutoFilter,
   ConvoLayoutMode,
@@ -624,7 +641,7 @@ function ConvoMenuRadio({
       {icon}
       <span>{label}</span>
       <span className="convo-menu-check" aria-hidden="true">
-        {active ? "✓" : ""}
+        {active ? <Icon icon={Check} size={13} strokeWidth={2} /> : null}
       </span>
     </button>
   );
@@ -637,11 +654,7 @@ function ConvoStatus({ kind }: { kind: "" | "disabled" | "empty" }) {
     return (
       <EmptyState
         icon={
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M12 8v4" />
-            <path d="M12 16h.01" />
-          </svg>
+          <Icon icon={CircleAlert} size={24} strokeWidth={1.5} />
         }
         title={t("persistenceDisabled")}
       />
@@ -928,120 +941,57 @@ function uniqueRows(rows: ConvoListRow[]): ConvoListRow[] {
 
 function ChevronIcon({ collapsed }: { collapsed: boolean }) {
   return (
-    <svg
+    <Icon
+      icon={ChevronDown}
       className={collapsed ? "collapsed" : ""}
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m6 9 6 6 6-6" />
-    </svg>
+      size={13}
+      strokeWidth={2}
+    />
   );
 }
 
 function SortIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 7h10" />
-      <path d="M4 12h7" />
-      <path d="M4 17h4" />
-    </svg>
-  );
+  return <Icon icon={ListFilter} size={16} strokeWidth={1.8} />;
 }
 
 function FolderPlusIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-      <path d="M12 11v5" />
-      <path d="M9.5 13.5h5" />
-    </svg>
-  );
+  return <Icon icon={FolderPlus} size={16} strokeWidth={1.8} />;
 }
 
 function ComposeIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-    </svg>
-  );
+  return <Icon icon={Pencil} size={16} strokeWidth={1.8} />;
 }
 
 function FolderIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-    </svg>
-  );
+  return <Icon icon={Folder} size={17} strokeWidth={1.8} />;
 }
 
 function ClockIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" />
-    </svg>
-  );
+  return <Icon icon={Clock} size={17} strokeWidth={1.8} />;
 }
 
 function MoveIcon({ direction }: { direction: "up" | "down" }) {
   return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {direction === "up" ? (
-        <>
-          <path d="M12 19V5" />
-          <path d="m5 12 7-7 7 7" />
-        </>
-      ) : (
-        <>
-          <path d="M12 5v14" />
-          <path d="m19 12-7 7-7-7" />
-        </>
-      )}
-    </svg>
+    <Icon
+      icon={direction === "up" ? ArrowUp : ArrowDown}
+      size={17}
+      strokeWidth={1.8}
+    />
   );
 }
 
 function CreatedIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 8v8" />
-      <path d="M8 12h8" />
-    </svg>
-  );
+  return <Icon icon={CirclePlus} size={17} strokeWidth={1.8} />;
 }
 
 function UpdatedIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M20 12a8 8 0 1 1-2.3-5.7" />
-      <path d="M20 4v6h-6" />
-    </svg>
-  );
+  return <Icon icon={RefreshCw} size={17} strokeWidth={1.8} />;
 }
 
 function AllConversationsIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M7 15a4 4 0 0 1 0-8" />
-      <path d="M17 7a4 4 0 0 1 0 8" />
-      <path d="M7 15h10" />
-    </svg>
-  );
+  return <Icon icon={Link2} size={17} strokeWidth={1.8} />;
 }
 
 function StarIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m12 3 2.7 5.5 6 .9-4.4 4.2 1 6-5.3-2.8-5.3 2.8 1-6-4.4-4.2 6-.9Z" />
-    </svg>
-  );
+  return <Icon icon={Star} size={17} strokeWidth={1.8} />;
 }

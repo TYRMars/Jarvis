@@ -59,6 +59,62 @@ test("loadConfig parses a fixture env without touching process.env", () => {
   assert.equal(config.mcpServers.length, 0);
 });
 
+test("loadConfig parses legacy stdio MCP servers into transport configs", () => {
+  const config = loadConfig({
+    ...FIXTURE_ENV,
+    JARVIS_MCP_SERVERS: "fs=uvx mcp-server-filesystem /tmp,git=uvx mcp-server-git",
+  });
+  assert.equal(config.mcpServers.length, 2);
+  assert.deepEqual(config.mcpServers[0], {
+    prefix: "fs",
+    transport: { type: "stdio", command: "uvx", args: ["mcp-server-filesystem", "/tmp"] },
+  });
+  assert.deepEqual(config.mcpServers[1], {
+    prefix: "git",
+    transport: { type: "stdio", command: "uvx", args: ["mcp-server-git"] },
+  });
+});
+
+test("loadConfig maps Composio env to a streamable HTTP MCP server", () => {
+  const config = loadConfig({
+    ...FIXTURE_ENV,
+    COMPOSIO_API_KEY: "cmp-test",
+    JARVIS_COMPOSIO_MCP_SERVER_ID: "mcp_123",
+    JARVIS_COMPOSIO_USER_ID: "user 123",
+    JARVIS_COMPOSIO_PREFIX: "apps",
+    JARVIS_COMPOSIO_ALLOW_TOOLS: "GMAIL_FETCH_EMAILS, GMAIL_SEND_EMAIL",
+    JARVIS_COMPOSIO_DENY_TOOLS: "GMAIL_DELETE_EMAIL",
+  });
+  assert.equal(config.mcpServers.length, 1);
+  assert.deepEqual(config.mcpServers[0], {
+    prefix: "apps",
+    transport: {
+      type: "streamable-http",
+      url: "https://backend.composio.dev/v3/mcp/mcp_123?user_id=user%20123",
+      headers: { "x-api-key": "cmp-test" },
+    },
+    allowTools: ["GMAIL_FETCH_EMAILS", "GMAIL_SEND_EMAIL"],
+    denyTools: ["GMAIL_DELETE_EMAIL"],
+  });
+});
+
+test("loadConfig accepts a full Composio MCP URL", () => {
+  const config = loadConfig({
+    ...FIXTURE_ENV,
+    JARVIS_COMPOSIO_API_KEY: "cmp-test",
+    JARVIS_COMPOSIO_MCP_URL: "https://backend.composio.dev/v3/mcp/server?user_id=u",
+  });
+  assert.equal(config.mcpServers.length, 1);
+  assert.deepEqual(config.mcpServers[0], {
+    prefix: "composio",
+    transport: {
+      type: "streamable-http",
+      url: "https://backend.composio.dev/v3/mcp/server?user_id=u",
+      headers: { "x-api-key": "cmp-test" },
+    },
+  });
+});
+
 test("loadConfig honors per-provider defaults + base-url + disable flags", () => {
   const config = loadConfig({
     JARVIS_PROVIDER: "kimi",
@@ -152,4 +208,32 @@ test("buildAppState wires the domain stores into AppState", async () => {
   assert.equal(state.workflows, stores.workflows);
   assert.equal(state.workspaceRoot, config.fsRoot);
   assert.ok(state.subagents !== undefined);
+});
+
+test("memoryRuntime: absent by default, wired when JARVIS_ENABLE_MEMORY is set", async () => {
+  const off = await buildAppState(loadConfig(FIXTURE_ENV), {
+    provider: new StubProvider("x"),
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  assert.equal(off.state.memoryRuntime, undefined, "no runtime without JARVIS_ENABLE_MEMORY");
+
+  const config = loadConfig({
+    ...FIXTURE_ENV,
+    JARVIS_ENABLE_MEMORY: "1",
+    JARVIS_MEMORY_SYNC_BACKEND: "git",
+    JARVIS_MEMORY_USER_ROOT: "/tmp/jarvis-user-mem",
+  });
+  assert.equal(config.enableMemory, true);
+  assert.equal(config.memorySyncBackend, "git");
+  const { state } = await buildAppState(config, {
+    provider: new StubProvider("x"),
+    stores: makeMemoryStores(),
+    systemPrompt: "test",
+  });
+  assert.deepEqual(state.memoryRuntime, {
+    workspaceRoot: config.fsRoot,
+    userRoot: "/tmp/jarvis-user-mem",
+    backend: "git",
+  });
 });

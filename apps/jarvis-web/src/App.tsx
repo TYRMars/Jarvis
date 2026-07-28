@@ -6,8 +6,8 @@
 // Routing: react-router-dom (`BrowserRouter`) wraps the tree so the
 // app can host multiple pages at the server root (`/`, `/settings`,
 // `/sessions/:id`) without the URL gaining a `/ui/`
-// prefix. The Rust side serves `index.html` for any extension-less
-// path (see `crates/harness-server/src/ui.rs::spa_fallback`), so
+// prefix. The server serves `index.html` for any extension-less
+// path (see `packages/server/src/ui.ts` spa_fallback), so
 // reloading on `/settings` works like a real route, not just a
 // hash-based shim.
 
@@ -78,7 +78,17 @@ export function App() {
   // jumps you to a conversation.
   useShortcuts({ showHelp: showHelpOverlay });
 
-  const Router = isDesktopRuntime() ? HashRouter : BrowserRouter;
+  const desktopRuntime = isDesktopRuntime();
+  useEffect(() => {
+    document.documentElement.classList.toggle("jarvis-desktop-shell", desktopRuntime);
+    document.body.classList.toggle("jarvis-desktop-shell", desktopRuntime);
+    return () => {
+      document.documentElement.classList.remove("jarvis-desktop-shell");
+      document.body.classList.remove("jarvis-desktop-shell");
+    };
+  }, [desktopRuntime]);
+
+  const Router = desktopRuntime ? HashRouter : BrowserRouter;
 
   return (
     <Router>

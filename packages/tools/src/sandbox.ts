@@ -8,6 +8,9 @@
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 
+/** Max path-component count accepted by {@link resolveUnder} (DoS guard). */
+const MAX_PATH_DEPTH = 256;
+
 /** Sandbox-violation error. Thrown by `resolveUnder` on any escape attempt. */
 export class SandboxError extends Error {
   constructor(message: string) {
@@ -34,7 +37,14 @@ export function resolveUnder(root: string, relPath: string): string {
   }
   // Inspect each lexical component for `..` / root / drive prefixes. Splitting
   // on both separators keeps Windows-style inputs honest on every platform.
-  for (const comp of relPath.split(/[/\\]+/)) {
+  const comps = relPath.split(/[/\\]+/);
+  // Bound the component count: canonicalizeExistingPrefix peels one component
+  // per iteration (one realpath syscall each), so a pathologically deep input
+  // would spray syscalls. Cap it (P8.6 DoS guard).
+  if (comps.length > MAX_PATH_DEPTH) {
+    throw new SandboxError(`path too deep (>${MAX_PATH_DEPTH} components)`);
+  }
+  for (const comp of comps) {
     if (comp === "..") {
       throw new SandboxError("`..` components are not allowed");
     }

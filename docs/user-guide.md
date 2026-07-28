@@ -320,6 +320,9 @@ JARVIS_PROVIDER=codex             JARVIS_MODEL=gpt-5-codex-mini
 | Var | 默认 | 说明 |
 |---|---|---|
 | `JARVIS_MCP_SERVERS` | — | 逗号分隔,格式 `prefix=command arg1 arg2`。例:`fs=uvx mcp-server-filesystem /tmp` |
+| `JARVIS_COMPOSIO_MCP_URL` | — | Composio 生成的完整 MCP URL,会注册为远程 MCP server |
+| `JARVIS_COMPOSIO_MCP_SERVER_ID` + `JARVIS_COMPOSIO_USER_ID` | — | 不直接给 URL 时,Jarvis 用这两个值拼出 Composio MCP URL |
+| `COMPOSIO_API_KEY` / `JARVIS_COMPOSIO_API_KEY` | — | 作为 `x-api-key` header 发给 Composio MCP |
 
 ### 记忆
 
@@ -582,6 +585,18 @@ git=uvx mcp-server-git'
 (具体看那个 MCP server 暴露什么)。
 
 > Jarvis 自己也能反过来当 MCP server 给别人用 —— 见上文 `--mcp-serve`。
+
+Composio 托管的 MCP URL 也可以直接挂上来:
+
+```bash
+COMPOSIO_API_KEY=...
+JARVIS_COMPOSIO_MCP_SERVER_ID=mcp_...
+JARVIS_COMPOSIO_USER_ID=user-123
+# 或者直接给完整 URL:
+# JARVIS_COMPOSIO_MCP_URL='https://backend.composio.dev/v3/mcp/...?...'
+```
+
+默认工具前缀是 `composio.`;需要换前缀时设置 `JARVIS_COMPOSIO_PREFIX`。
 
 ### 用插件一键装一组工具 + skill
 

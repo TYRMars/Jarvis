@@ -44,6 +44,10 @@ export { FsFindTool } from "./fs-find.ts";
 export type { FsFindConfig } from "./fs-find.ts";
 export { FsPatchTool } from "./patch.ts";
 
+// Optional post-write diagnostics hook (LSP edit→verify loop). The composition
+// root supplies an `@jarvis/lsp`-backed implementation via `BuiltinsConfig`.
+export { withDiagnostics, type DiagnosticsHook } from "./diagnostics.ts";
+
 // Shell execution. Opt-in + approval-gated.
 export { ShellExecTool, SHELL_DEFAULT_MAX_BYTES, SHELL_DEFAULT_TIMEOUT_MS } from "./shell.ts";
 export type { ShellExecConfig } from "./shell.ts";
@@ -83,6 +87,16 @@ export {
 } from "./doc-tools.ts";
 export type { DocToolStores } from "./doc-tools.ts";
 
+// DDNS / remote-access tools (`ddns.{status,update,configure}`). Registered
+// conditionally by `registerBuiltins` when a `DdnsRuntime` is supplied;
+// `update` / `configure` are approval-gated.
+export {
+  DdnsStatusTool,
+  DdnsUpdateTool,
+  DdnsConfigureTool,
+  registerDdnsTools,
+} from "./ddns.ts";
+
 // Store-backed row-based long-term Memory tools (`learning.memory.{list,add,
 // update,delete}`). Registered conditionally by `registerBuiltins` when the
 // `learningMemory` MemoryStore is supplied; `learning.memory.delete` is
@@ -112,6 +126,13 @@ export {
   MemoryIncludeListTool,
   MemoryIncludeRemoveTool,
   MemoryIncludeRefreshTool,
+  MemorySyncTool,
+  MemorySyncSetupTool,
+  MemoryICloudSetupTool,
+  MemorySyncStatusTool,
+  memorySyncBackendFromWire,
+  icloudDriveRoot,
+  icloudMemoryRoot,
   registerMemoryTools,
   renderCombinedList,
   readIndex,
@@ -131,7 +152,7 @@ export {
   MAX_INDEX_BYTES,
   MAX_INDEX_LINES,
 } from "./memory-tools.ts";
-export type { MemoryToolsConfig, MemoryScope, IncludeDirective } from "./memory-tools.ts";
+export type { MemoryToolsConfig, MemoryScope, IncludeDirective, MemorySyncBackend } from "./memory-tools.ts";
 
 // Store-backed persistent workspace TODO board tools (`todo.{list,add,update,
 // delete}`). Registered conditionally by `registerBuiltins` when the `todos`

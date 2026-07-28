@@ -1,22 +1,15 @@
-// Model + effort dropdown anchored under the composer. Clicking the
-// trigger opens a panel with two columns: one model per provider
-// (default model bubbled up; default provider tagged), and one
-// effort level per row. Selecting a model dispatches through the
-// bridge so the WS configure frame ships immediately.
+// Model dropdown anchored under the composer. Clicking the trigger
+// opens a panel listing one row per model (default model bubbled up;
+// default provider tagged). Rows show the *model name only* — the
+// provider/vendor is intentionally dropped from the label. Effort /
+// thinking level is a separate control (`EffortLevelSelector`).
+// Selecting a model dispatches through the bridge so the WS configure
+// frame ships immediately.
 
 import { useEffect, useRef } from "react";
-import { useAppStore, type EffortLevel, type ProviderInfo } from "../../store/appStore";
+import { useAppStore, type ProviderInfo } from "../../store/appStore";
 import { t } from "../../utils/i18n";
 import { selectModel } from "../../services/socket";
-import { ContextWindowBadge } from "../ContextWindowBadge";
-
-const EFFORT_OPTIONS: { value: EffortLevel; labelKey: string }[] = [
-  { value: "low", labelKey: "effortLow" },
-  { value: "medium", labelKey: "effortMedium" },
-  { value: "high", labelKey: "effortHigh" },
-  { value: "extra-high", labelKey: "effortExtraHigh" },
-  { value: "max", labelKey: "effortMax" },
-];
 
 /// Friendly name for a model id. Matches the legacy `formatModelLabel`
 /// table so the dropdown reads the same after migration.
@@ -77,7 +70,10 @@ function flattenRoutingOptions(providers: ProviderInfo[]): RoutingOption[] {
         value: `${p.name}|${m}`,
         provider: p.name,
         model: m,
-        label: `${p.name} · ${formatModelLabel(m)}`,
+        // Model name only — vendor is deliberately omitted (the menu
+        // already groups by provider via order, and the design calls
+        // for a clean name-only list).
+        label: formatModelLabel(m),
         isDefault: p.is_default && m === p.default_model,
         badges: badgesForCapability(p, m),
       });
@@ -86,15 +82,9 @@ function flattenRoutingOptions(providers: ProviderInfo[]): RoutingOption[] {
   return out;
 }
 
-function effortLabel(value: EffortLevel): string {
-  const opt = EFFORT_OPTIONS.find((o) => o.value === value) || EFFORT_OPTIONS[1];
-  return t(opt.labelKey);
-}
-
 export function ModelSummary() {
   const providers = useAppStore((s) => s.providers);
   const routing = useAppStore((s) => s.routing);
-  const effort = useAppStore((s) => s.effort);
   let modelLabel = t("serverDefault");
   if (routing) {
     const opt = flattenRoutingOptions(providers).find((o) => o.value === routing);
@@ -104,16 +94,14 @@ export function ModelSummary() {
       modelLabel = formatModelLabel(m || "");
     }
   }
-  return <span id="model-summary">{`${modelLabel} · ${effortLabel(effort)}`}</span>;
+  return <span id="model-summary">{modelLabel}</span>;
 }
 
 export function ModelMenu() {
   const providers = useAppStore((s) => s.providers);
   const routing = useAppStore((s) => s.routing);
-  const effort = useAppStore((s) => s.effort);
   const open = useAppStore((s) => s.modelMenuOpen);
   const setOpen = useAppStore((s) => s.setModelMenuOpen);
-  const setEffort = useAppStore((s) => s.setEffort);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   // Click-outside closes. Bound at the document level because clicks
@@ -158,7 +146,6 @@ export function ModelMenu() {
           <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
-      <ContextWindowBadge />
       <div id="model-menu" className={"model-menu" + (open ? "" : " hidden")} role="menu">
         <div className="model-menu-section">
           <div className="model-menu-heading">
@@ -199,33 +186,6 @@ export function ModelMenu() {
                     ) : null}
                   </span>
                   <span className="model-menu-key">{i ? String(i) : ""}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <div className="model-menu-divider" />
-        <div className="model-menu-section">
-          <div className="model-menu-heading">
-            <span>{t("effort")}</span>
-            <span className="shortcut-set" aria-hidden="true">
-              <kbd>⇧</kbd><kbd>⌘</kbd><kbd>E</kbd>
-            </span>
-          </div>
-          <div id="effort-menu-options" className="model-menu-options">
-            {EFFORT_OPTIONS.map((opt) => {
-              const active = opt.value === effort;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  className={"model-menu-item" + (active ? " active" : "")}
-                  data-value={opt.value}
-                  onClick={() => setEffort(opt.value)}
-                >
-                  <span className="model-menu-check">{active ? "✓" : ""}</span>
-                  <span className="model-menu-label">{t(opt.labelKey)}</span>
-                  <span className="model-menu-key" />
                 </button>
               );
             })}

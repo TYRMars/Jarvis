@@ -19,6 +19,10 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: Assets.xcassets
+      # Privacy manifest — required for App Store submissions (declares the
+      # UserDefaults required-reason API; no tracking, no data collection).
+      - path: PrivacyInfo.xcprivacy
     # Shared scheme so `xcodebuild -scheme Jarvis` works headlessly.
     scheme:
       testTargets: []
@@ -29,15 +33,32 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        # The dev server speaks plain http/ws on the LAN; allow non-TLS
-        # local traffic. Tighten this before any store distribution.
+        # ATS: plain http/ws is allowed only for LOCAL networking (the LAN
+        # dev/home-server case). Remote origins (DDNS) must be https in store
+        # builds — front the server with a TLS proxy (e.g. Caddy) or flip
+        # NSAllowsArbitraryLoads back on temporarily for development only.
         NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
+        # Export compliance: standard TLS only → exempt; answers the App Store
+        # Connect encryption question up front.
+        ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: >-
           Jarvis connects to your Jarvis server on the local network.
+        # Bonjour browsing for zero-config discovery of the home server.
+        NSBonjourServices:
+          - _jarvis._tcp
+        # Camera, for scanning the pairing QR on the computer's Remote Access screen.
+        NSCameraUsageDescription: >-
+          Scan the pairing QR shown on your computer to connect to your Jarvis server.
+        # Custom URL scheme so a scanned/tapped `jarvis://pair?...` link opens the app.
+        CFBundleURLTypes:
+          - CFBundleURLName: ai.jarvis.pair
+            CFBundleURLSchemes:
+              - jarvis
     settings:
       base:
+        # App Store: change to a bundle id registered under YOUR team
+        # (App Store Connect → Identifiers) before archiving.
         PRODUCT_BUNDLE_IDENTIFIER: dev.jarvis.ios
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -45,5 +66,6 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
         GENERATE_INFOPLIST_FILE: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         # Set your team for device builds:  DEVELOPMENT_TEAM: ABCDE12345

@@ -21,6 +21,24 @@ test("pickPort yields distinct ports across calls", async () => {
   assert.equal(new Set(ports).size, ports.length);
 });
 
+test("pickPort honours a free preferred port", async () => {
+  const free = await pickPort();
+  assert.equal(await pickPort("127.0.0.1", free), free);
+});
+
+test("pickPort falls back to ephemeral when the preferred port is busy", async () => {
+  const busy = net.createServer();
+  await new Promise<void>((resolve) => busy.listen(0, "127.0.0.1", resolve));
+  const addr = busy.address();
+  const taken = addr !== null && typeof addr === "object" ? addr.port : 0;
+  try {
+    const picked = await pickPort("127.0.0.1", taken);
+    assert.ok(picked > 0 && picked !== taken, `expected a fallback port, got ${picked}`);
+  } finally {
+    await new Promise<void>((resolve) => busy.close(() => resolve()));
+  }
+});
+
 test("probeHealth is true for a 2xx /health", async () => {
   const server = http.createServer((req, res) => {
     if (req.url === "/health") {

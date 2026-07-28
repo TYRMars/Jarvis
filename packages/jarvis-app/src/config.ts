@@ -8,7 +8,11 @@
 // without mutating the real process.env. Everything here is synchronous,
 // side-effect-free parsing — no store / provider / fs work happens until the
 // provider/tools/state builders consume the returned config.
+import * as os from "node:os";
 import { ProfileRegistry, canonicalKind } from "@jarvis/llm";
+import { memorySyncBackendFromWire, type MemorySyncBackend } from "@jarvis/tools";
+import type { McpClientConfig } from "@jarvis/mcp";
+import type { DdnsConfigInput, DdnsProviderKind } from "@jarvis/shared-types";
 
 /** Provider kinds the binary knows how to construct. */
 export type ProviderKind =
@@ -47,12 +51,8 @@ export type MemoryMode = "window" | "summary";
 /** Auto/Work-mode scheduler toggle. */
 export type WorkMode = "off" | "auto";
 
-/** One MCP server spec parsed from `JARVIS_MCP_SERVERS` (`prefix=command args`). */
-export interface McpServerSpec {
-  prefix: string;
-  command: string;
-  args: string[];
-}
+/** One MCP server spec parsed from env (`JARVIS_MCP_SERVERS`, Composio, etc.). */
+export type McpServerSpec = McpClientConfig;
 
 /** Smart-router tier targets (`<provider>/<model>`), each optional. */
 export interface RouterConfigParsed {
@@ -74,6 +74,9 @@ export interface ToolGating {
   /** `git.*` read group is on unless `JARVIS_DISABLE_GIT_READ` is set. */
   enableGitRead: boolean;
   httpMaxBytes: number;
+  /** Allow `http.fetch` to reach private/loopback hosts (SSRF guard off).
+   * `JARVIS_HTTP_ALLOW_PRIVATE`; default false. */
+  httpAllowPrivateHosts: boolean;
 }
 
 /** The fully-parsed runtime configuration handed to every builder. */
@@ -130,6 +133,26 @@ export interface JarvisConfig {
   /** Summary-mode model override; defaults to the primary model. */
   memoryModel?: string;
 
+  /**
+   * Enable the markdown `memory.*` surface + its `/v1/memory/*` REST routes
+   * (`JARVIS_ENABLE_MEMORY`, off by default). When on, `AppState.memoryRuntime`
+   * is populated so the sync/include routes work instead of 503-ing.
+   */
+  enableMemory: boolean;
+  /**
+   * Enable LSP-backed post-edit diagnostics (`JARVIS_ENABLE_LSP`, off by
+   * default). When on AND a write primitive is enabled, the composition root
+   * spawns language servers on demand and `fs.write` / `fs.edit` / `fs.patch`
+   * append a `<diagnostics>` block for the files they wrote. Servers are
+   * PATH-probed; absent servers no-op.
+   */
+  enableLsp: boolean;
+  /** Parent of the user-scope memory tree (`<root>/.jarvis/memory/`); defaults
+   * to the home dir. `undefined` disables user-scope memory. */
+  memoryUserRoot?: string;
+  /** Memory sync transport (`JARVIS_MEMORY_SYNC_BACKEND`: none/git/icloud). */
+  memorySyncBackend: MemorySyncBackend;
+
   mcpServers: McpServerSpec[];
   router: RouterConfigParsed;
   /**
@@ -141,6 +164,27 @@ export interface JarvisConfig {
   workMode: WorkMode;
   workTickSeconds: number;
   workMaxConcurrent: number;
+
+  // ---- Remote access (native mobile client + DDNS) ----
+  /**
+   * Bearer token required of NON-loopback callers (`JARVIS_ACCESS_TOKEN`). When
+   * unset, the server stays unauthenticated (today's behaviour) — safe only on
+   * loopback / a trusted LAN. MUST be set before exposing the server externally
+   * (DDNS / 0.0.0.0 bind): the auth hook then 401s remote requests without it.
+   */
+  accessToken?: string;
+  /** Advertise `_jarvis._tcp` over mDNS for zero-config LAN discovery
+   * (`JARVIS_MDNS`). Off by default so a plain `serve` never starts a multicast
+   * responder unasked. */
+  mdns: boolean;
+  /** Friendly device name surfaced by `GET /v1/remote/info` (the iOS connect
+   * screen). `JARVIS_DEVICE_NAME`, defaults to the OS hostname. */
+  deviceName: string;
+  /** Create the DdnsRuntime (so `/v1/ddns/*` work) — set by `JARVIS_DDNS_ENABLE`
+   * or implied by a `JARVIS_DDNS_PROVIDER` seed. */
+  ddnsEnabled: boolean;
+  /** Optional initial DDNS config seeded from env (the iOS app PUTs the rest). */
+  ddnsSeed?: DdnsConfigInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +200,16 @@ function truthy(v: string | undefined): boolean {
   return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
 }
 
+/** Home dir, or undefined when unresolvable (→ user-scope memory disabled). */
+function homeDirOrUndefined(): string | undefined {
+  try {
+    const h = os.homedir();
+    return h === "" ? undefined : h;
+  } catch {
+    return undefined;
+  }
+}
+
 /** First non-empty value among the listed env keys, else undefined. */
 function firstNonEmpty(env: Env, ...keys: string[]): string | undefined {
   for (const k of keys) {
@@ -169,6 +223,15 @@ function parseIntOr(v: string | undefined, fallback: number): number {
   if (v === undefined) return fallback;
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function parseCsvList(v: string | undefined): string[] | undefined {
+  if (v === undefined || v.trim() === "") return undefined;
+  const out = v
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+  return out.length > 0 ? out : undefined;
 }
 
 /** Canonicalise the provider name; unknown values fall back to `openai`. */
@@ -219,6 +282,59 @@ function parseWorkMode(v: string | undefined): WorkMode {
   return (v ?? "").trim().toLowerCase() === "auto" ? "auto" : "off";
 }
 
+const DDNS_PROVIDERS: readonly DdnsProviderKind[] = [
+  "cloudflare",
+  "duckdns",
+  "dyndns2",
+  "aliyun",
+  "dnspod",
+];
+
+function parseDdnsProvider(v: string | undefined): DdnsProviderKind | undefined {
+  const s = (v ?? "").trim().toLowerCase();
+  return (DDNS_PROVIDERS as readonly string[]).includes(s) ? (s as DdnsProviderKind) : undefined;
+}
+
+/**
+ * Parse the `JARVIS_DDNS_*` env into an enable flag + optional seed config. The
+ * runtime is created whenever `JARVIS_DDNS_ENABLE` is truthy OR a valid
+ * `JARVIS_DDNS_PROVIDER` is present; the seed (provider + hostname) is applied
+ * only on first run when no persisted config exists. Credentials come as a JSON
+ * object in `JARVIS_DDNS_CREDENTIALS` (kept off the flat env surface so secrets
+ * aren't sprinkled across a dozen vars).
+ */
+function parseDdnsEnv(env: Env, defaultPort: number): { enabled: boolean; seed?: DdnsConfigInput } {
+  const provider = parseDdnsProvider(firstNonEmpty(env, "JARVIS_DDNS_PROVIDER"));
+  const enabled = truthy(env.JARVIS_DDNS_ENABLE) || provider !== undefined;
+  if (!enabled) return { enabled: false };
+  const hostname = firstNonEmpty(env, "JARVIS_DDNS_HOSTNAME");
+  if (provider === undefined || hostname === undefined) return { enabled: true };
+
+  let credentials: Record<string, string> = {};
+  const raw = firstNonEmpty(env, "JARVIS_DDNS_CREDENTIALS");
+  if (raw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        credentials = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+        );
+      }
+    } catch {
+      // Malformed JSON → no seed credentials (the iOS app can PUT them later).
+    }
+  }
+  const seed: DdnsConfigInput = {
+    provider,
+    hostname,
+    port: parseIntOr(firstNonEmpty(env, "JARVIS_DDNS_PORT"), defaultPort),
+    interval_seconds: parseIntOr(firstNonEmpty(env, "JARVIS_DDNS_INTERVAL"), 300),
+    upnp_enabled: truthy(env.JARVIS_DDNS_UPNP),
+    credentials,
+  };
+  return { enabled: true, seed };
+}
+
 /**
  * Parse `JARVIS_MCP_SERVERS` — comma-separated `prefix=command args...`. A
  * malformed entry (no `=`, empty prefix, or empty command) is skipped. The
@@ -239,9 +355,49 @@ export function parseMcpServers(raw: string | undefined): McpServerSpec[] {
     const parts = rest.split(/\s+/);
     const command = parts[0];
     if (command === undefined || command === "") continue;
-    out.push({ prefix, command, args: parts.slice(1) });
+    out.push({ prefix, transport: { type: "stdio", command, args: parts.slice(1) } });
   }
   return out;
+}
+
+/**
+ * Parse Composio's managed MCP endpoint into a normal Jarvis MCP config.
+ *
+ * Supported env shapes:
+ * - `JARVIS_COMPOSIO_MCP_URL` — a full generated Composio MCP URL.
+ * - `JARVIS_COMPOSIO_MCP_SERVER_ID` + `JARVIS_COMPOSIO_USER_ID` — builds
+ *   `https://backend.composio.dev/v3/mcp/<server_id>?user_id=<user_id>`.
+ *
+ * `JARVIS_COMPOSIO_API_KEY` or `COMPOSIO_API_KEY` is sent as the `x-api-key`
+ * header when present, matching Composio's MCP docs. Optional allow/deny lists
+ * use comma-separated remote tool names.
+ */
+export function parseComposioMcpServer(env: Env): McpServerSpec | undefined {
+  const explicitUrl = firstNonEmpty(env, "JARVIS_COMPOSIO_MCP_URL", "COMPOSIO_MCP_URL");
+  const serverId = firstNonEmpty(env, "JARVIS_COMPOSIO_MCP_SERVER_ID", "COMPOSIO_MCP_SERVER_ID");
+  const userId = firstNonEmpty(env, "JARVIS_COMPOSIO_USER_ID", "COMPOSIO_USER_ID");
+  const url =
+    explicitUrl ??
+    (serverId !== undefined && userId !== undefined
+      ? `https://backend.composio.dev/v3/mcp/${encodeURIComponent(serverId)}?user_id=${encodeURIComponent(userId)}`
+      : undefined);
+  if (url === undefined) return undefined;
+
+  const apiKey = firstNonEmpty(env, "JARVIS_COMPOSIO_API_KEY", "COMPOSIO_API_KEY");
+  const headers = apiKey !== undefined ? { "x-api-key": apiKey } : undefined;
+  const cfg: McpServerSpec = {
+    prefix: firstNonEmpty(env, "JARVIS_COMPOSIO_PREFIX") ?? "composio",
+    transport: {
+      type: "streamable-http",
+      url,
+      ...(headers !== undefined ? { headers } : {}),
+    },
+  };
+  const allowTools = parseCsvList(firstNonEmpty(env, "JARVIS_COMPOSIO_ALLOW_TOOLS"));
+  const denyTools = parseCsvList(firstNonEmpty(env, "JARVIS_COMPOSIO_DENY_TOOLS"));
+  if (allowTools !== undefined) cfg.allowTools = allowTools;
+  if (denyTools !== undefined) cfg.denyTools = denyTools;
+  return cfg;
 }
 
 /**
@@ -262,10 +418,20 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     // git.* read group is ON by default; the env var DISABLES it.
     enableGitRead: !truthy(env.JARVIS_DISABLE_GIT_READ),
     httpMaxBytes: parseIntOr(env.JARVIS_HTTP_MAX_BYTES, 256 * 1024),
+    httpAllowPrivateHosts: truthy(env.JARVIS_HTTP_ALLOW_PRIVATE),
   };
 
   const memoryTokensRaw = firstNonEmpty(env, "JARVIS_MEMORY_TOKENS");
   const memoryTokens = memoryTokensRaw === undefined ? undefined : parseIntOr(memoryTokensRaw, 0);
+
+  // Memory `memory.*` surface + sync routes. `userRoot` defaults to the home dir
+  // (so user-scope memory works out of the box); an unparseable backend falls
+  // back to `none` (sync disabled, includes still usable).
+  const enableMemory = truthy(env.JARVIS_ENABLE_MEMORY);
+  const enableLsp = truthy(env.JARVIS_ENABLE_LSP);
+  const memorySyncBackend =
+    memorySyncBackendFromWire(firstNonEmpty(env, "JARVIS_MEMORY_SYNC_BACKEND") ?? "none") ?? "none";
+  const memoryUserRoot = firstNonEmpty(env, "JARVIS_MEMORY_USER_ROOT") ?? homeDirOrUndefined();
 
   const router: RouterConfigParsed = {
     enabled: truthy(env.JARVIS_ROUTER_ENABLED),
@@ -289,6 +455,13 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     if (v) routeSlots[slot] = v;
   }
 
+  const composioMcp = parseComposioMcpServer(env);
+  const mcpServers = parseMcpServers(env.JARVIS_MCP_SERVERS);
+  if (composioMcp !== undefined) mcpServers.push(composioMcp);
+
+  const addr = firstNonEmpty(env, "JARVIS_ADDR") ?? "0.0.0.0:7001";
+  const ddnsEnv = parseDdnsEnv(env, parseAddr(addr).port);
+
   return {
     provider,
     model,
@@ -309,7 +482,7 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     codexAccountId: firstNonEmpty(env, "CODEX_ACCOUNT_ID"),
     codexHome: firstNonEmpty(env, "CODEX_HOME"),
 
-    addr: firstNonEmpty(env, "JARVIS_ADDR") ?? "0.0.0.0:7001",
+    addr,
     fsRoot: firstNonEmpty(env, "JARVIS_FS_ROOT") ?? ".",
     webDistDir: firstNonEmpty(env, "JARVIS_WEB_DIST"),
     includeProjectContext: !truthy(env.JARVIS_NO_PROJECT_CONTEXT),
@@ -325,13 +498,32 @@ export function loadConfig(env: Env = process.env): JarvisConfig {
     memoryTokens,
     memoryMode: parseMemoryMode(env.JARVIS_MEMORY_MODE),
     memoryModel: firstNonEmpty(env, "JARVIS_MEMORY_MODEL"),
+    enableMemory,
+    enableLsp,
+    memorySyncBackend,
+    memoryUserRoot,
 
-    mcpServers: parseMcpServers(env.JARVIS_MCP_SERVERS),
+    mcpServers,
     router,
     workMode: parseWorkMode(env.JARVIS_WORK_MODE),
     workTickSeconds: parseIntOr(env.JARVIS_WORK_TICK_SECONDS, 30),
     workMaxConcurrent: parseIntOr(env.JARVIS_WORK_MAX_CONCURRENT, 2),
+
+    accessToken: firstNonEmpty(env, "JARVIS_ACCESS_TOKEN"),
+    mdns: truthy(env.JARVIS_MDNS),
+    deviceName: firstNonEmpty(env, "JARVIS_DEVICE_NAME") ?? safeHostname(),
+    ddnsEnabled: ddnsEnv.enabled,
+    ...(ddnsEnv.seed !== undefined ? { ddnsSeed: ddnsEnv.seed } : {}),
   };
+}
+
+/** OS hostname, or a stable fallback when it can't be read. */
+function safeHostname(): string {
+  try {
+    return os.hostname() || "jarvis";
+  } catch {
+    return "jarvis";
+  }
 }
 
 /**

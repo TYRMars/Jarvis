@@ -25,6 +25,7 @@ import {
   openStores,
   parseAddr,
 } from "@jarvis/jarvis-app";
+import { MdnsAdvertiser } from "@jarvis/ddns";
 import { serve } from "@jarvis/server";
 
 /** The running server handle (Fastify instance) — derived without a direct
@@ -35,8 +36,12 @@ type ServerHandle = Awaited<ReturnType<typeof serve>>;
  * need no direct `@jarvis/mcp` dependency (it is bundled transitively). */
 type McpClient = Awaited<ReturnType<typeof buildAppState>>["mcpClients"][number];
 
+/** The optional DDNS runtime buildAppState may create (env-seeded). */
+type DdnsRuntimeHandle = Awaited<ReturnType<typeof buildAppState>>["ddnsRuntime"];
+
 import type { DesktopStatus, ServerKind } from "../shared/ipc.ts";
 import { LogBuffer } from "./logs.ts";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -55,6 +60,8 @@ export interface ServerManagerDeps {
   webDist: string;
   /** Base environment to derive the server env from (defaults to process.env). */
   env?: NodeJS.ProcessEnv;
+  /** Reuse an already-running `jarvis serve` on :7001 instead of embedding. */
+  reuseExternalServer?: boolean;
 }
 
 export class ServerManager {
@@ -62,10 +69,15 @@ export class ServerManager {
   private readonly prefsDir: string;
   private readonly webDist: string;
   private readonly baseEnv: NodeJS.ProcessEnv;
+  private readonly reuseExternalServer: boolean;
 
   private app: ServerHandle | null = null;
   /** Live MCP child processes owned by the current embedded server (if any). */
   private mcpClients: McpClient[] = [];
+  /** Bonjour advertiser, live only while exposed to the LAN. */
+  private mdns: MdnsAdvertiser | null = null;
+  /** DDNS poll runtime owned by the current embedded server (env-seeded). */
+  private ddnsRuntime: DdnsRuntimeHandle = undefined;
   private apiOrigin: string = DEFAULT_EXTERNAL_ORIGIN;
   private kind: ServerKind = "stopped";
   private workspace: string | null = null;
@@ -77,6 +89,7 @@ export class ServerManager {
     this.prefsDir = deps.prefsDir;
     this.webDist = deps.webDist;
     this.baseEnv = deps.env ?? process.env;
+    this.reuseExternalServer = deps.reuseExternalServer ?? false;
   }
 
   /** Load persisted prefs and resolve the initial workspace. Call once at startup. */
@@ -91,8 +104,9 @@ export class ServerManager {
   }
 
   /**
-   * Reuse a running external server when one is already healthy at the default
-   * loopback origin; otherwise start our own embedded instance.
+   * Reuse a running external server only when the caller explicitly allows it
+   * and one is already healthy at the default loopback origin; otherwise start
+   * our own embedded instance.
    *
    * `forceEmbedded` skips the external-reuse probe and always starts our own
    * server — used by `restart()` when the user explicitly re-pins a workspace,
@@ -100,7 +114,11 @@ export class ServerManager {
    * (mirrors the Tauri shell, whose restart calls `start_sidecar` directly).
    */
   async ensureServer(opts: { forceEmbedded?: boolean } = {}): Promise<void> {
-    if (!opts.forceEmbedded && (await probeHealth(DEFAULT_EXTERNAL_ORIGIN))) {
+    if (
+      this.reuseExternalServer &&
+      !opts.forceEmbedded &&
+      (await probeHealth(DEFAULT_EXTERNAL_ORIGIN))
+    ) {
       this.apiOrigin = DEFAULT_EXTERNAL_ORIGIN;
       this.kind = "external";
       this.lastError = null;
@@ -108,6 +126,24 @@ export class ServerManager {
       return;
     }
     await this.startEmbedded(this.workspace);
+  }
+
+  /**
+   * Persist the LAN-exposure preference and restart the embedded server under
+   * the new posture. Always forces an embedded server: only our own instance
+   * can honour the bind/token change (an external `jarvis serve` is not ours
+   * to reconfigure).
+   */
+  async setLanExposure(enabled: boolean): Promise<DesktopStatus> {
+    if (this.prefs.lanExposure !== enabled) {
+      this.prefs = { ...this.prefs, lanExposure: enabled };
+      await savePrefs(this.prefsDir, this.prefs);
+    }
+    this.logs.push(`LAN exposure ${enabled ? "enabled" : "disabled"} — restarting embedded server`);
+    await this.stop();
+    this.lastError = null;
+    await this.ensureServer({ forceEmbedded: true });
+    return await this.status();
   }
 
   /** Stop, optionally re-pin the workspace, then ensure a server again. */
@@ -123,6 +159,14 @@ export class ServerManager {
 
   /** Close the embedded server + its MCP children (no-op for an external one). */
   async stop(): Promise<void> {
+    if (this.mdns !== null) {
+      this.mdns.stop();
+      this.mdns = null;
+    }
+    if (this.ddnsRuntime !== undefined) {
+      this.ddnsRuntime.stop();
+      this.ddnsRuntime = undefined;
+    }
     if (this.app !== null) {
       this.logs.push("Stopping embedded Jarvis server");
       try {
@@ -166,6 +210,7 @@ export class ServerManager {
       workspace: this.workspace,
       logs: this.logs.tail(120),
       last_error: this.lastError,
+      lan_exposure: this.prefs.lanExposure === true,
     };
   }
 
@@ -176,38 +221,79 @@ export class ServerManager {
       const ws = workspace ?? this.defaultWorkspace();
       await this.recordWorkspace(ws);
 
-      const port = await pickPort();
-      const addr = `127.0.0.1:${port}`;
+      // LAN exposure flips three things at once (mobile-ddns proposal 待办):
+      //   bind 0.0.0.0 (not loopback), prefer a STABLE port (phones keep a
+      //   saved URL across restarts), and REQUIRE a bearer token — generated
+      //   once and persisted so pairing links keep working.
+      const lan = this.prefs.lanExposure === true;
+      const bindHost = lan ? "0.0.0.0" : "127.0.0.1";
+      const port = lan
+        ? await pickPort(bindHost, this.prefs.lanPort ?? 7001)
+        : await pickPort();
+      const addr = `${bindHost}:${port}`;
       const env: NodeJS.ProcessEnv = {
         ...this.baseEnv,
         JARVIS_ADDR: addr,
         JARVIS_FS_ROOT: ws,
         JARVIS_WEB_DIST: this.webDist,
       };
+      if (lan && env.JARVIS_ACCESS_TOKEN === undefined) {
+        env.JARVIS_ACCESS_TOKEN = await this.ensureAccessToken();
+      }
 
       const config = loadConfig(env);
       this.logs.push(
         `Starting embedded Jarvis server: provider=${config.provider} ` +
-          `model=${config.model} addr=${addr} workspace=${ws}`,
+          `model=${config.model} addr=${addr} workspace=${ws}` +
+          (lan ? " (LAN exposure: token required)" : ""),
       );
 
       const provider = await buildProvider(config);
       const stores = await openStores(config);
-      const { state, mcpClients } = await buildAppState(config, { provider, stores });
+      const { state, mcpClients, ddnsRuntime } = await buildAppState(config, { provider, stores });
       this.mcpClients = mcpClients;
-      const { host, port: listenPort } = parseAddr(config.addr);
+      this.ddnsRuntime = ddnsRuntime;
+      const { port: listenPort } = parseAddr(config.addr);
 
-      this.app = await serve({ host, port: listenPort }, state);
-      this.apiOrigin = `http://${addr}`;
+      this.app = await serve({ host: bindHost, port: listenPort }, state);
+      // The window always talks loopback (0.0.0.0 includes it) — keeps the
+      // renderer on the auth-exempt path and `/v1/remote/pairing` unlockable.
+      this.apiOrigin = `http://127.0.0.1:${port}`;
       this.kind = "embedded";
       this.lastError = null;
-      this.logs.push(`Embedded Jarvis server ready at ${this.apiOrigin}`);
+      this.logs.push(`Embedded Jarvis server ready at ${this.apiOrigin} (bound ${addr})`);
+
+      if (lan) {
+        // Bonjour advertise for the iOS app's zero-config discovery. The serve
+        // subcommand does this in main.ts; embedded servers must do it here.
+        this.mdns = new MdnsAdvertiser();
+        await this.mdns.start({
+          name: config.deviceName,
+          port,
+          txt: {
+            version: state.serverInfo?.version ?? "0.0.0",
+            auth: config.accessToken !== undefined ? "1" : "0",
+          },
+          logger: (m) => this.logs.push(m),
+        });
+      }
     } catch (e) {
       this.lastError = errMessage(e);
       this.kind = "stopped";
       this.app = null;
       this.logs.push(`Failed to start embedded Jarvis server: ${this.lastError}`);
     }
+  }
+
+  /** Return the persisted access token, generating (and persisting) on first use. */
+  private async ensureAccessToken(): Promise<string> {
+    const existing = this.prefs.accessToken;
+    if (existing !== undefined && existing.length > 0) return existing;
+    const token = crypto.randomBytes(24).toString("base64url");
+    this.prefs = { ...this.prefs, accessToken: token };
+    await savePrefs(this.prefsDir, this.prefs);
+    this.logs.push("Generated a LAN access token (persisted in prefs.json, mode 0600)");
+    return token;
   }
 
   private defaultWorkspace(): string {

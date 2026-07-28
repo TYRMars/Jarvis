@@ -121,6 +121,7 @@ export function ContextWindowBadge() {
   );
   const usedValue = used ? formatTokens(used) : "0";
   const compressionDescription = memoryCompressionDescription(serverInfo);
+  const hasCapacity = Boolean(info.tokens && info.tokens > 0);
   const style = { "--context-pct": `${pct}%` } as CSSProperties;
 
   return (
@@ -131,6 +132,14 @@ export function ContextWindowBadge() {
       tabIndex={0}
     >
       <span className="context-window-dot" aria-hidden="true" />
+      <span className="context-window-readout" aria-hidden="true">
+        <span className="context-window-readout-tokens">
+          {hasCapacity ? `${usedValue} / ${value}` : usedValue}
+        </span>
+        {hasCapacity ? (
+          <span className="context-window-readout-pct">{`${pct}%`}</span>
+        ) : null}
+      </span>
       <span className="context-window-tooltip" aria-hidden="true">
         <span className="context-window-tooltip-muted">
           {t("contextWindowPopupTitle")}

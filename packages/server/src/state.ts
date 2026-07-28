@@ -1,8 +1,9 @@
 // Server-shared application state. Ported (minimal P2 subset) from
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
-import type { Agent, Approver, LlmProvider, ToolRegistry } from "@jarvis/core";
+import type { Agent, Approver, HumanLayer, LlmProvider, Tool, ToolRegistry } from "@jarvis/core";
 import type { ChatRunRegistry } from "./chat-runs.ts";
+import type { PermissionMode, PermissionStore } from "./permissions-routes.ts";
 import type { McpManager } from "./mcp-manager.ts";
 import type { RoutePolicyStore } from "./route-policy.ts";
 import type { ConversationStore, WorkspaceStore } from "@jarvis/store";
@@ -31,7 +32,9 @@ import type {
 } from "@jarvis/learning";
 import type { AutomationStore } from "@jarvis/automation";
 import type { EvalStore, ObservabilityStore } from "@jarvis/observability";
+import type { MemorySyncBackend } from "@jarvis/tools";
 import type { SubAgentRegistry, SubAgentRunStore } from "@jarvis/subagents";
+import type { DdnsRuntime } from "@jarvis/ddns";
 import type {
   ConnectorAccountStore,
   ProjectBindingStore,
@@ -45,6 +48,21 @@ import type {
  * server/library never reads process.env. Returns undefined when unresolved.
  */
 export type ConnectorSecretResolver = (ref: string) => Promise<string | undefined>;
+
+/**
+ * Memory tree roots + chosen sync transport. The composition root builds this
+ * from `JARVIS_ENABLE_MEMORY` / `JARVIS_MEMORY_USER_ROOT` /
+ * `JARVIS_MEMORY_SYNC_BACKEND` and hands it to {@link AppState.memoryRuntime}.
+ * Mirrors `harness_server::state::MemoryRuntime`.
+ */
+export interface MemoryRuntime {
+  /** Pinned workspace root — parent of `<root>/.jarvis/memory/` for workspace scope. */
+  workspaceRoot: string;
+  /** Parent of the user-scope memory tree; absent disables user scope. */
+  userRoot?: string;
+  /** Which sync transport is wired (`none` → sync ops 503). */
+  backend: MemorySyncBackend;
+}
 
 /**
  * One entry in the read-only `GET /v1/providers` catalog that drives the client
@@ -93,10 +111,18 @@ export interface ServerInfo {
 export interface AppState {
   /**
    * Build an Agent for one request. The optional `approver` is the per-socket
-   * gate the WebSocket transport supplies (mirrors Rust `state.build_agent`).
-   * The blocking / SSE chat routes call this with no approver.
+   * gate the WebSocket transport supplies (mirrors Rust `state.build_agent`);
+   * the optional `human` is the per-socket HITL responder for `ask.*` tools.
+   * The blocking / SSE chat routes call this with neither. `opts.model`
+   * overrides the configured model for this agent (the WS `configure` frame's
+   * per-socket sticky model) — same provider, different model id;
+   * `opts.toolFilter` is Plan Mode's structural gate on the tool catalogue.
    */
-  createAgent(approver?: Approver): Agent;
+  createAgent(
+    approver?: Approver,
+    human?: HumanLayer,
+    opts?: { model?: string; toolFilter?: (tool: Tool) => boolean },
+  ): Agent;
   /**
    * The shared tool registry that `createAgent` builds agents from. Surfaced
    * here so `GET /v1/tools` can list the catalog (including muted tools) and
@@ -112,6 +138,20 @@ export interface AppState {
    * button) and is populated by the WS turn loop. Routes 503 when absent.
    */
   chatRuns?: ChatRunRegistry;
+  /**
+   * Permission rule table (deny/ask/allow buckets + persisted default mode).
+   * Backs `/v1/permissions*` — 503 when absent — and is consulted by the chat
+   * WebSocket's `RuleApprover` before it ever prompts. Absent → an empty table
+   * is used, so the permission MODES still work and only persisted RULES are
+   * unavailable.
+   */
+  permissionStore?: PermissionStore;
+  /**
+   * Permission mode a fresh chat socket starts in (`JARVIS_PERMISSION_MODE`).
+   * Defaults to `ask`. Clients are told via a `permission_mode` frame on
+   * connect and can change it for their socket with `set_mode`.
+   */
+  defaultPermissionMode?: PermissionMode;
   /**
    * Dynamic MCP server manager backing `/v1/mcp/servers*` (list/add/remove/
    * health/reload). Wraps the shared ToolRegistry so a server added at runtime
@@ -206,6 +246,14 @@ export interface AppState {
   workspaceRoot?: string;
 
   /**
+   * Memory tree roots + sync backend backing the `/v1/memory/sync*` +
+   * `/v1/memory/includes*` routes. Absent → those routes 503 ("memory tools
+   * not enabled"). Mirrors the Rust `AppState.memory_runtime`; the routes
+   * reconstruct the stateless `memory.*` tool impls per request from it.
+   */
+  memoryRuntime?: MemoryRuntime;
+
+  /**
    * Optional shell override for the workspace terminal PTY
    * (`/v1/workspace/terminal/ws`). The Rust module reads `$SHELL`; the Node
    * server never touches process.env, so the composition root may supply an
@@ -237,6 +285,24 @@ export interface AppState {
    * (never 503; an empty list is a valid "no providers" answer).
    */
   providerCatalog?: ProviderCatalog;
+
+  /**
+   * Bearer token required of NON-loopback callers (mobile clients). When set,
+   * the `requireAuth` onRequest hook 401s any `/v1` request whose remote address
+   * isn't loopback unless it presents `Authorization: Bearer <token>` (or
+   * `?token=` on the WS upgrade). Absent → no auth (today's loopback/LAN
+   * behaviour). MUST be set before exposing the server externally (DDNS).
+   */
+  accessToken?: string;
+
+  /**
+   * DDNS / remote-access runtime backing `/v1/ddns/*` + the external block of
+   * `/v1/remote/info`. Absent → those DDNS routes 503 ("DDNS not enabled").
+   */
+  ddnsRuntime?: DdnsRuntime;
+
+  /** Friendly device name for `GET /v1/remote/info` (defaults to the hostname). */
+  deviceName?: string;
 }
 
 /**

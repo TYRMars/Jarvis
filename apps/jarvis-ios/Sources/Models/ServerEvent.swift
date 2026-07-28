@@ -30,6 +30,13 @@ enum ServerEvent {
     /// Plan Mode: the agent finished read-only investigation and
     /// proposed a plan. A `done` follows — the turn is over until the
     /// user accepts (`accept_plan`) or refines (`refine_plan`).
+    /// `ask.*` question awaiting the operator — render a HITL card and
+    /// answer with a `hitl_response` frame. Re-sent on reconnect while
+    /// still blocking.
+    case hitlRequest(request: HitlRequest)
+    /// A HITL request was answered (possibly from another device) —
+    /// dismiss the matching card.
+    case hitlResolved(requestId: String)
     case planProposed(plan: String)
     case done
     case error(message: String)
@@ -167,6 +174,18 @@ enum ServerEvent {
                 promptTokens: obj["prompt_tokens"]?.intValue,
                 completionTokens: obj["completion_tokens"]?.intValue,
                 cachedTokens: obj["cached_prompt_tokens"]?.intValue)
+
+        case "hitl_request":
+            guard let request = HitlRequest.parse(obj["request"]) else {
+                return .ignored(type: type)
+            }
+            return .hitlRequest(request: request)
+
+        case "hitl_response":
+            let requestId = obj["response"]?.objectValue?["request_id"]?.stringValue
+                ?? obj["request_id"]?.stringValue
+            guard let requestId else { return .ignored(type: type) }
+            return .hitlResolved(requestId: requestId)
 
         case "plan_proposed":
             return .planProposed(plan: obj["plan"]?.stringValue ?? "")

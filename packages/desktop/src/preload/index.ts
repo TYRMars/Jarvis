@@ -20,6 +20,8 @@ const bridge: JarvisDesktopBridge = {
   openPath: (path: string): Promise<OpenResult> => ipcRenderer.invoke(IPC.openPath, path),
   revealPath: (path: string): Promise<OpenResult> => ipcRenderer.invoke(IPC.revealPath, path),
   logs: (limit?: number): Promise<string[]> => ipcRenderer.invoke(IPC.logs, limit ?? 200),
+  setLanExposure: (enabled: boolean): Promise<DesktopStatus> =>
+    ipcRenderer.invoke(IPC.setLanExposure, enabled),
 };
 
 contextBridge.exposeInMainWorld("jarvisDesktop", bridge);

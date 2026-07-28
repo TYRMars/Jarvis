@@ -151,6 +151,81 @@ check("done", { if case .done? = decodeEvent(#"{"type":"done"}"#) { return true 
 check("error", { if case .error(let m)? = decodeEvent(#"{"type":"error","message":"boom"}"#) { return m == "boom" }; return false }())
 check("seq high-water mark is surfaced", ServerEvent.decode(#"{"type":"delta","content":"x","seq":42}"#)?.seq == 42)
 check("unknown frame degrades to .ignored (forward-compat)", { if case .ignored(let t)? = decodeEvent(#"{"type":"brand_new_frame"}"#) { return t == "brand_new_frame" }; return false }())
+check("hitl_request (input kind)", {
+    if case .hitlRequest(let r)? = decodeEvent(#"{"type":"hitl_request","request":{"id":"q1","transport":"text","kind":"input","title":"Your name?","body":"Please answer.","default_value":"ada"}}"#) {
+        return r.id == "q1" && r.kind == "input" && r.title == "Your name?" && r.defaultValue == "ada"
+    }
+    return false
+}())
+check("hitl_request (choice options)", {
+    if case .hitlRequest(let r)? = decodeEvent(#"{"type":"hitl_request","request":{"id":"q2","transport":"text","kind":"choice","title":"Pick","options":[{"value":"a","label":"Option A"},{"value":"b","label":"Option B"}]}}"#) {
+        return r.options.count == 2 && r.options.first?.value == "a" && r.options.first?.label == "Option A"
+    }
+    return false
+}())
+check("hitl_response event resolves by request_id", {
+    if case .hitlResolved(let id)? = decodeEvent(#"{"type":"hitl_response","response":{"request_id":"q1","status":"submitted","payload":"ada","reason":null}}"#) { return id == "q1" }
+    return false
+}())
+checkNoThrow("hitl_response client frame is flat + snake_case") {
+    let frame = ClientFrame.hitlResponse(requestId: "q1", status: "submitted",
+                                         payload: .string("ada"), reason: nil)
+    let obj = try JSONSerialization.jsonObject(with: data(try frame.encoded())) as? [String: Any]
+    guard obj?["type"] as? String == "hitl_response", obj?["request_id"] as? String == "q1",
+          obj?["status"] as? String == "submitted", obj?["payload"] as? String == "ada" else { throw Err("frame keys") }
+}
+
+// MARK: - remote access + DDNS (token, /v1/remote/info, /v1/ddns/*)
+
+print("\nServerConfig token precedence:")
+check("token UserDefaults override wins",
+      ServerConfig.resolveToken(userDefault: "tok-ud", env: "tok-env", plist: "tok-plist") == "tok-ud")
+check("token env beats plist",
+      ServerConfig.resolveToken(userDefault: nil, env: "tok-env", plist: "tok-plist") == "tok-env")
+check("token empty/whitespace skipped → nil",
+      ServerConfig.resolveToken(userDefault: "  ", env: nil, plist: nil) == nil)
+
+print("\nGET /v1/remote/info decodes:")
+checkNoThrow("RemoteInfo") {
+    let json = #"{"device_name":"home-mac","lan_addrs":["192.168.1.20"],"port":7001,"external":{"hostname":"h.duckdns.org","reachable":null},"requires_auth":true,"version":"0.2.0"}"#
+    let info = try JSONDecoder().decode(RemoteInfo.self, from: data(json))
+    guard info.deviceName == "home-mac", info.port == 7001, info.requiresAuth,
+          info.external.hostname == "h.duckdns.org", info.external.reachable == nil else { throw Err("RemoteInfo fields") }
+}
+
+print("\nGET /v1/ddns/* decodes:")
+checkNoThrow("DdnsStatus") {
+    let json = #"{"enabled":true,"configured":true,"provider":"duckdns","hostname":"h.duckdns.org","public_ip":"203.0.113.7","last_result":{"ok":true,"message":"ok"},"upnp":{"mapped":true,"external_port":7001},"reachable":true,"lan_addrs":["192.168.1.20"]}"#
+    let s = try JSONDecoder().decode(DdnsStatus.self, from: data(json))
+    guard s.provider == .duckdns, s.publicIp == "203.0.113.7", s.upnp?.mapped == true,
+          s.lastResult?.ok == true, s.reachable == true else { throw Err("DdnsStatus fields") }
+}
+checkNoThrow("DdnsConfigView is scrubbed (no secret values, only key names)") {
+    let json = #"{"provider":"cloudflare","hostname":"home.example.com","port":7001,"record_type":"A","interval_seconds":300,"upnp_enabled":true,"credential_keys":["api_token"]}"#
+    let v = try JSONDecoder().decode(DdnsConfigView.self, from: data(json))
+    guard v.provider == .cloudflare, v.credentialKeys == ["api_token"], v.upnpEnabled == true else { throw Err("DdnsConfigView fields") }
+}
+checkNoThrow("DdnsConfigInput round-trips with snake_case keys") {
+    let input = DdnsConfigInput(provider: .aliyun, hostname: "home.example.com", port: 7001,
+                                recordType: "A", intervalSeconds: nil, upnpEnabled: true,
+                                credentials: ["access_key_id": "id", "access_key_secret": "secret"])
+    let encoded = try JSONEncoder().encode(input)
+    let obj = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    guard obj?["upnp_enabled"] as? Bool == true, obj?["record_type"] as? String == "A" else { throw Err("snake_case keys") }
+}
+
+print("\nPairingPayload.parse:")
+check("jarvis:// pairing url",
+      PairingPayload.parse("jarvis://pair?origin=https://h.example.com&token=abc&name=Home%20Mac")
+        == PairingPayload(origin: "https://h.example.com", token: "abc", name: "Home Mac"))
+check("bare http origin → no token", {
+    let p = PairingPayload.parse("http://192.168.1.20:7001")
+    return p?.origin == "http://192.168.1.20:7001" && p?.token == nil
+}())
+check("unsupported scheme → nil", PairingPayload.parse("ftp://nope") == nil)
+
+check("provider credential metadata", DdnsProviderKind.cloudflare.requiredCredentialKeys == ["api_token"]
+      && DdnsProviderKind.allCases.count == 5)
 
 // MARK: - optional live mode
 
@@ -167,6 +242,7 @@ if let base = ProcessInfo.processInfo.environment["JARVIS_SMOKE_BASE_URL"], !bas
     await live("GET /health") { try await api.health() }
     await live("GET /v1/conversations decodes as [ConversationSummary]") { _ = try await api.listConversations(limit: 5) }
     await live("GET /v1/providers decodes as ProvidersResponse") { _ = try await api.listProviders() }
+    await live("GET /v1/remote/info decodes as RemoteInfo") { _ = try await api.remoteInfo() }
     if strict { failures += liveFailures }
     else if liveFailures > 0 { print("  (live failures are diagnostic; set JARVIS_SMOKE_STRICT=1 to gate on them)") }
 }

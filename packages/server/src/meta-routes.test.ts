@@ -18,7 +18,6 @@ function fakeProvider(failWith?: string): LlmProvider {
       if (failWith) throw new Error(failWith);
       return { message: { role: "assistant", content: "" }, finish_reason: "stop", usage: undefined } as never;
     },
-    // eslint-disable-next-line require-yield
     async *completeStream() {
       void calls;
       throw new Error("not used");

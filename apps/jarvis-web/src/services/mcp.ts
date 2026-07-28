@@ -68,6 +68,13 @@ export async function addMcpServer(cfg: McpClientConfig): Promise<{ prefix: stri
   return request("POST", "/v1/mcp/servers", cfg);
 }
 
+export async function replaceMcpServer(
+  prefix: string,
+  cfg: McpClientConfig,
+): Promise<{ prefix: string; tools: string[] }> {
+  return request("PUT", `/v1/mcp/servers/${encodeURIComponent(prefix)}`, cfg);
+}
+
 export async function removeMcpServer(prefix: string): Promise<void> {
   await request<{ deleted: boolean }>("DELETE", `/v1/mcp/servers/${encodeURIComponent(prefix)}`);
 }
@@ -100,4 +107,30 @@ export function configFromCommandLine(prefix: string, cmdline: string): McpClien
     transport: { type: "stdio", command, args },
     enabled: true,
   };
+}
+
+export function configFromComposio(opts: {
+  prefix: string;
+  apiKey: string;
+  mcpUrl?: string;
+  serverId?: string;
+  userId?: string;
+  allowTools?: string[];
+  denyTools?: string[];
+}): McpClientConfig {
+  const url =
+    opts.mcpUrl?.trim() ||
+    `https://backend.composio.dev/v3/mcp/${encodeURIComponent(opts.serverId?.trim() ?? "")}?user_id=${encodeURIComponent(opts.userId?.trim() ?? "")}`;
+  const cfg: McpClientConfig = {
+    prefix: opts.prefix.trim() || "composio",
+    transport: {
+      type: "streamable-http",
+      url,
+      headers: { "x-api-key": opts.apiKey },
+    },
+    enabled: true,
+  };
+  if (opts.allowTools && opts.allowTools.length > 0) cfg.allow_tools = opts.allowTools;
+  if (opts.denyTools && opts.denyTools.length > 0) cfg.deny_tools = opts.denyTools;
+  return cfg;
 }

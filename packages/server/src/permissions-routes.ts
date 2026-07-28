@@ -459,6 +459,20 @@ export class RuleApprover implements Approver {
     return this.#mode.get();
   }
 
+  /**
+   * True only when the rule table + mode land on `ask` AND the fallback would
+   * itself prompt — so the agent loop skips the client-facing approval prompt
+   * for anything this policy auto-decides.
+   */
+  async willPrompt(request: ApprovalRequest): Promise<boolean> {
+    const activeMode = this.#mode.get();
+    const table = await this.#store.snapshot();
+    const def = modeDefault(activeMode, request.category);
+    const hit = evaluateTable(table, request.tool_name, request.arguments, def, activeMode);
+    if (hit.decision !== "ask") return false;
+    return (await this.#fallback.willPrompt?.(request)) ?? true;
+  }
+
   async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
     const [decision] = await this.approveWithSource(request);
     return decision;
@@ -489,20 +503,8 @@ export class RuleApprover implements Approver {
   }
 }
 
-// ---------------------------------------------------------------------------
-// State seam. The committed AppState does not yet carry `permissionStore`
-// (and this port must not edit state.ts), so the routes read it off a
-// structural widening. The composition root sets it; the Assemble step folds
-// the field into AppState proper.
-// ---------------------------------------------------------------------------
-
-interface PermissionRoutesState extends AppState {
-  /** Permission rule store. Absent → every permission route 503s. */
-  permissionStore?: PermissionStore;
-}
-
 /** Return the store, or send a 503 and return undefined. */
-function requireStore(state: PermissionRoutesState, reply: FastifyReply): PermissionStore | undefined {
+function requireStore(state: AppState, reply: FastifyReply): PermissionStore | undefined {
   if (!state.permissionStore) {
     reply.code(503).send({ error: "permission store not configured" });
     return undefined;
@@ -520,7 +522,7 @@ function internalError(reply: FastifyReply, e: unknown): FastifyReply {
 // ---------------------------------------------------------------------------
 
 export function registerPermissionsRoutes(app: FastifyInstance, state: AppState): void {
-  const s = state as PermissionRoutesState;
+  const s = state;
 
   // ------------------- GET /v1/permissions -------------------
   app.get("/v1/permissions", async (_req, reply) => {

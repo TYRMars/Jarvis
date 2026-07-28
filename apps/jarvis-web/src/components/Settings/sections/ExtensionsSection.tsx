@@ -1,6 +1,6 @@
-// "Extensions" super-section. Three different mechanisms for
-// loading capabilities into Jarvis at runtime — MCP servers, Skill
-// packs, and Plugins — share an "extension" concept from the
+// "Extensions" super-section. Different mechanisms for loading
+// capabilities into Jarvis at runtime — Composio connectors, MCP
+// servers, Skill packs, and Plugins — share an "extension" concept from the
 // user's POV, so they live behind one nav item with internal
 // tabs. Each tab is the original section component embedded.
 
@@ -9,6 +9,7 @@ import { Tabs, type TabItem } from "../../ui/Tabs";
 import { McpSection } from "./McpSection";
 import { SkillsSection } from "./SkillsSection";
 import { PluginsSection } from "./PluginsSection";
+import { ComposioSection } from "./ComposioSection";
 import { t } from "../../../utils/i18n";
 
 function tx(key: string, fallback: string): string {
@@ -16,9 +17,9 @@ function tx(key: string, fallback: string): string {
   return v === key ? fallback : v;
 }
 
-export const EXTENSIONS_TABS = ["mcp", "skills", "plugins"] as const;
+export const EXTENSIONS_TABS = ["connectors", "mcp", "skills", "plugins"] as const;
 export type ExtensionsTab = (typeof EXTENSIONS_TABS)[number];
-export const DEFAULT_EXTENSIONS_TAB: ExtensionsTab = "mcp";
+export const DEFAULT_EXTENSIONS_TAB: ExtensionsTab = "connectors";
 
 interface Props {
   tab?: ExtensionsTab;
@@ -27,6 +28,11 @@ interface Props {
 
 export function ExtensionsSection({ tab, onTabChange }: Props = {}) {
   const items: TabItem[] = [
+    {
+      id: "connectors",
+      label: tx("settingsTabConnectors", "Connectors"),
+      content: <ComposioSection embedded />,
+    },
     {
       id: "mcp",
       label: tx("settingsTabMcp", "MCP servers"),

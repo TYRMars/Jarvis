@@ -3,6 +3,7 @@
 // app; transports never reimplement the agent loop (see sse.ts / chat-routes).
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
+import { registerAuthHook } from "./auth.ts";
 import { registerChatRoutes } from "./chat-routes.ts";
 import { registerConversationsRoutes } from "./conversations-routes.ts";
 import { registerProjectsRoutes } from "./projects-routes.ts";
@@ -37,6 +38,7 @@ import { registerMcpRoutes } from "./mcp-routes.ts";
 import { registerMetaRoutes } from "./meta-routes.ts";
 import { registerRoutingRoutes } from "./routing-routes.ts";
 import { registerMemorySyncRoutes } from "./memory-sync-routes.ts";
+import { registerDdnsRoutes } from "./ddns-routes.ts";
 import { registerUiRoutes } from "./ui.ts";
 import type { AppState } from "./state.ts";
 
@@ -44,6 +46,10 @@ import type { AppState } from "./state.ts";
 export async function buildServer(state: AppState): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(fastifyWebsocket);
+
+  // Bearer-auth gate for remote (non-loopback) callers — no-op unless a token is
+  // configured. Registered BEFORE the routes so it guards every /v1 + WS path.
+  registerAuthHook(app, state);
 
   app.get("/health", async () => ({ status: "ok" }));
   registerChatRoutes(app, state);
@@ -80,6 +86,7 @@ export async function buildServer(state: AppState): Promise<FastifyInstance> {
   registerMcpRoutes(app, state);
   registerMetaRoutes(app, state);
   registerRoutingRoutes(app, state);
+  registerDdnsRoutes(app, state);
 
   // LAST: the SPA static + fallback catch-all. Registered after every /v1 +
   // /health + WS route so its not-found handler only fires on unmatched paths

@@ -110,7 +110,7 @@ export interface UsageSnapshot {
 /// render right under the assistant turn that triggered it.
 export type UiMessage =
   | { uid: string; kind: "system"; content: string }
-  | { uid: string; kind: "user"; content: string; userOrdinal: number }
+  | { uid: string; kind: "user"; content: string; submittedContent?: string; userOrdinal: number }
   | {
       uid: string;
       kind: "assistant";

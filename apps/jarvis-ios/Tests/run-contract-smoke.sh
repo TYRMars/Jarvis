@@ -20,12 +20,15 @@ if ! command -v swiftc >/dev/null 2>&1; then
   exit 127
 fi
 
-# Foundation-only client sources under test. ChatSocket/Views/ViewModels pull in
-# Combine/SwiftUI/Observation, so they are intentionally excluded.
+# Foundation-only client sources under test. Views/ViewModels pull in
+# SwiftUI/Observation, so they are intentionally excluded; ChatSocket is
+# Foundation-only (URLSessionWebSocketTask) and included for the ClientFrame
+# wire-shape goldens.
 sources=(
   "$ios"/Sources/Models/*.swift
   "$ios/Sources/Networking/ServerConfig.swift"
   "$ios/Sources/Networking/JarvisAPI.swift"
+  "$ios/Sources/Networking/ChatSocket.swift"
   "$here/ContractSmoke/main.swift"
 )
 

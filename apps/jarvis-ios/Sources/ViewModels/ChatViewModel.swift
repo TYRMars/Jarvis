@@ -80,6 +80,8 @@ final class ChatViewModel {
     private(set) var plan: [PlanItem] = []
     private(set) var usage: UsageDisplay?
     var pendingApproval: PendingApproval?
+    /// The `ask.*` question currently blocking the turn, if any.
+    var pendingHitl: HitlRequest?
     var draft = ""
 
     /// Current per-socket permission mode (kebab-case, e.g. `"ask"`,
@@ -231,6 +233,27 @@ final class ChatViewModel {
                 }
             } catch {
                 items.append(TranscriptItem(kind: .error("审批发送失败: \(error.localizedDescription)")))
+            }
+        }
+    }
+
+    /// Answer (or cancel) the pending HITL question. `payload` is the
+    /// operator's value — a chosen option's `value`, free text, or nil
+    /// on cancel.
+    func resolveHitl(payload: String?, status: String = "submitted") {
+        guard let pending = pendingHitl else { return }
+        pendingHitl = nil
+        items.append(TranscriptItem(kind: .info(
+            payload.map { "回答「\(pending.title)」:\($0)" } ?? "已取消提问「\(pending.title)」")))
+        Task {
+            do {
+                try await socket.send(.hitlResponse(
+                    requestId: pending.id,
+                    status: status,
+                    payload: payload.map { JSONValue.string($0) },
+                    reason: nil))
+            } catch {
+                items.append(TranscriptItem(kind: .error("回答发送失败: \(error.localizedDescription)")))
             }
         }
     }
@@ -476,6 +499,14 @@ final class ChatViewModel {
                 model: model, promptTokens: prompt,
                 completionTokens: completion, cachedTokens: cached)
 
+        case .hitlRequest(let request):
+            pendingHitl = request
+
+        case .hitlResolved(let requestId):
+            // Answered — possibly from another device on the same
+            // conversation; dismiss the stale card.
+            if pendingHitl?.id == requestId { pendingHitl = nil }
+
         case .planProposed(let plan):
             // The matching `done` flips isStreaming off; the card
             // waits on the user to accept or refine.
@@ -586,6 +617,7 @@ final class ChatViewModel {
         isStreaming = false
         streamingIndex = nil
         pendingApproval = nil
+        pendingHitl = nil
         if let error {
             items.append(TranscriptItem(kind: .error(error)))
         }

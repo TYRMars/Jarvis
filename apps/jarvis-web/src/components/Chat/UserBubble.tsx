@@ -12,14 +12,25 @@ import { currentJarvisSoulPrompt } from "../../store/persistence";
 interface Props {
   uid: string;
   content: string;
+  submittedContent?: string;
   userOrdinal: number;
 }
 
-export function UserBubble({ uid: _uid, content, userOrdinal }: Props) {
+interface ForkFrame {
+  type: "fork";
+  user_ordinal: number;
+  content: string;
+  provider?: string;
+  model?: string;
+  soul_prompt?: string;
+}
+
+export function UserBubble({ uid: _uid, content, submittedContent, userOrdinal }: Props) {
   const [editing, setEditing] = useState(false);
   const inFlight = useAppStore((s) => s.inFlight);
   const setInFlight = useAppStore((s) => s.setInFlight);
   const showBanner = useAppStore((s) => s.showBanner);
+  const rerunContent = submittedContent ?? content;
 
   return (
     <div
@@ -53,7 +64,7 @@ export function UserBubble({ uid: _uid, content, userOrdinal }: Props) {
         </div>
         {editing ? (
           <UserEditor
-            initial={content}
+            initial={rerunContent}
             onCancel={() => setEditing(false)}
             onSubmit={(value) => {
               const v = value.trim();
@@ -61,7 +72,7 @@ export function UserBubble({ uid: _uid, content, userOrdinal }: Props) {
                 setEditing(false);
                 return;
               }
-              const frame: any = { type: "fork", user_ordinal: userOrdinal, content: v };
+              const frame: ForkFrame = { type: "fork", user_ordinal: userOrdinal, content: v };
               const routing = useAppStore.getState().routing;
               if (routing) {
                 const idx = routing.indexOf("|");

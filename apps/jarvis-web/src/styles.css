@@ -60,52 +60,72 @@
   color-scheme: light;
   --bg: #ffffff;
   --sidebar-bg: #fafafa;
+  --sidebar-glass-bg: rgba(255, 255, 255, 0.16);
+  --sidebar-glass-border: rgba(255, 255, 255, 0.42);
+  --sidebar-glass-shadow: 0 18px 42px rgba(34, 32, 28, 0.045);
+  --sidebar-item-hover: rgba(255, 255, 255, 0.34);
+  --sidebar-item-active: rgba(255, 255, 255, 0.48);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.32);
+  --desktop-sidebar-text: rgba(28, 38, 41, 0.9);
+  --desktop-sidebar-muted: rgba(36, 48, 52, 0.74);
+  --desktop-sidebar-soft: rgba(40, 52, 56, 0.72);
+  --desktop-sidebar-faint: rgba(43, 56, 60, 0.6);
+  --desktop-control-bg: rgba(255, 255, 255, 0.64);
+  --desktop-control-border: rgba(216, 220, 222, 0.66);
+  --desktop-card-bg: rgba(255, 255, 255, 0.74);
+  --desktop-composer-bg: rgba(255, 255, 255, 0.96);
+  --desktop-context-bg: rgba(245, 245, 244, 0.95);
+  --desktop-context-border: rgba(218, 220, 219, 0.84);
+  --desktop-sidebar-footer-bg: linear-gradient(to top, rgba(244, 247, 244, 0.18), rgba(244, 247, 244, 0.055) 70%, transparent);
+  --desktop-elevated-shadow: 0 24px 52px rgba(22, 25, 29, 0.08);
+  --desktop-card-shadow: 0 10px 24px rgba(25, 31, 36, 0.035);
+  --desktop-attachment-shadow: 0 4px 12px rgba(20, 24, 28, 0.05);
   --panel: #ffffff;
-  --panel-raised: #f6f6f5;
-  --panel-hover: #eeeeec;
-  --panel-active: #e9e8e5;
-  --text: #262624;
-  --text-muted: #5f5d58;
-  --text-soft: #8d8a83;
-  --border: #e4e2dd;
-  --border-soft: #efede8;
+  --panel-raised: #f7f7f7;
+  --panel-hover: #efefef;
+  --panel-active: #e8e8e8;
+  --text: #1f1f1f;
+  --text-muted: #6b6b6b;
+  --text-soft: #9a9a9a;
+  --border: #e6e6e6;
+  --border-soft: #efefef;
   --accent: #d87948;
   --accent-contrast: #23140c;
   --accent-green: #2f9c4a;
   --accent-red: #c94d45;
   --accent-blue: #397fd6;
   --purple: #7b61d7;
-  --mode-bg: #ededeb;
+  --mode-bg: #ececec;
   --mode-text: #242424;
-  --control-bg: #f7f7f5;
-  --control-active-bg: #e8e8e4;
+  --control-bg: #f6f6f6;
+  --control-active-bg: #e8e8e8;
   --control-active-text: #1f1f1e;
-  --user-bubble-bg: #f6f5f2;
+  --user-bubble-bg: #f4f4f5;
   --user-bubble-text: #2a2926;
-  --avatar-bg: #d8d1c7;
-  --avatar-text: #29231c;
+  --avatar-bg: #d6d6d6;
+  --avatar-text: #2a2a2a;
   --assistant-avatar-bg: #d87948;
   --assistant-avatar-text: #2b160b;
-  --system-avatar-bg: #ecebe7;
-  --tool-bg: #fbfaf8;
-  --tool-header-bg: #f2f1ed;
-  --tool-header-hover: #ebe9e4;
-  --pre-bg: #f7f6f2;
+  --system-avatar-bg: #ececec;
+  --tool-bg: #fafafa;
+  --tool-header-bg: #f1f1f1;
+  --tool-header-hover: #ebebeb;
+  --pre-bg: #f6f6f6;
   --branch-bg: #ffffff;
   --branch-icon-bg: #f2f1ed;
   --input-bg: #ffffff;
-  --input-border: #dedcd5;
-  --input-focus: #c9c5ba;
-  --placeholder: #aaa6a0;
-  --disabled-bg: #ecebe7;
-  --disabled-text: #9e9a93;
-  --model-trigger-bg: #e2e0da;
-  --model-trigger-hover: #efede8;
-  --model-menu-bg: #fbfbfa;
-  --model-menu-border: #deddda;
+  --input-border: #e0e0e0;
+  --input-focus: #c4c4c4;
+  --placeholder: #a8a8a8;
+  --disabled-bg: #ececec;
+  --disabled-text: #9e9e9e;
+  --model-trigger-bg: #e2e2e2;
+  --model-trigger-hover: #efefef;
+  --model-menu-bg: #fbfbfb;
+  --model-menu-border: #dedede;
   --model-menu-text: #262626;
   --model-menu-muted: #858585;
-  --model-menu-hover: #eeeeec;
+  --model-menu-hover: #eeeeee;
   --kbd-bg: #f1f1f1;
   --kbd-border: #dddddd;
   --danger-bg: rgba(201, 77, 69, 0.1);
@@ -114,8 +134,8 @@
   --shadow-soft: 0 10px 24px rgba(27, 26, 24, 0.08);
   --shadow-popover: 0 18px 42px rgba(27, 26, 24, 0.16);
   --composer-scrim: rgba(255, 255, 255, 0);
-  --scroll-thumb: #d0cdc7;
-  --scroll-thumb-hover: #b8b3aa;
+  --scroll-thumb: #d0d0d0;
+  --scroll-thumb-hover: #b8b8b8;
   --radius: 8px;
   --font-sans: Inter, "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, "PingFang SC", monospace;
@@ -128,7 +148,7 @@
   --fs-18: 16px;
   --fs-22: 20px;
   --fs-menu: 14px;
-  --sidebar-width: 260px;
+  --sidebar-width: 248px;
   --rail-width: 540px;
   --content-width: 860px;
   --composer-width: 860px;
@@ -180,15 +200,35 @@
   color-scheme: dark;
   --bg: #090909;
   --sidebar-bg: #121212;
+  --sidebar-glass-bg: rgba(14, 14, 14, 0.22);
+  --sidebar-glass-border: rgba(255, 255, 255, 0.14);
+  --sidebar-glass-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+  --sidebar-item-hover: rgba(255, 255, 255, 0.08);
+  --sidebar-item-active: rgba(255, 255, 255, 0.13);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.055);
+  --desktop-sidebar-text: rgba(236, 236, 236, 0.9);
+  --desktop-sidebar-muted: rgba(214, 214, 214, 0.74);
+  --desktop-sidebar-soft: rgba(202, 202, 202, 0.66);
+  --desktop-sidebar-faint: rgba(188, 188, 188, 0.58);
+  --desktop-control-bg: rgba(255, 255, 255, 0.05);
+  --desktop-control-border: rgba(255, 255, 255, 0.1);
+  --desktop-card-bg: rgba(255, 255, 255, 0.04);
+  --desktop-composer-bg: rgba(255, 255, 255, 0.05);
+  --desktop-context-bg: rgba(255, 255, 255, 0.045);
+  --desktop-context-border: rgba(255, 255, 255, 0.09);
+  --desktop-sidebar-footer-bg: linear-gradient(to top, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.04) 70%, transparent);
+  --desktop-elevated-shadow: 0 16px 36px rgba(0, 0, 0, 0.42);
+  --desktop-card-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+  --desktop-attachment-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
   --panel: #101010;
   --panel-raised: #171717;
   --panel-hover: #202020;
   --panel-active: #2d2d2d;
-  --text: #d6d2cb;
-  --text-muted: #9c978f;
-  --text-soft: #69655f;
-  --border: #262626;
-  --border-soft: #1b1b1b;
+  --text: #ececec;
+  --text-muted: #a8a8a8;
+  --text-soft: #6e6e6e;
+  --border: #2a2a2a;
+  --border-soft: #1f1f1f;
   --accent: #d88a52;
   --accent-contrast: #1b130e;
   --accent-green: #5ebf67;
@@ -196,13 +236,13 @@
   --accent-blue: #4da2ff;
   --purple: #a783ff;
   --mode-bg: #4a4a4a;
-  --mode-text: #f0ede8;
+  --mode-text: #f0f0f0;
   --control-bg: #151515;
   --control-active-bg: #4b4b4b;
-  --control-active-text: #f8f3ee;
+  --control-active-text: #f5f5f5;
   --user-bubble-bg: #1d1d1d;
-  --user-bubble-text: #f5f1ea;
-  --avatar-bg: #c9c0b4;
+  --user-bubble-text: #f0f0f0;
+  --avatar-bg: #c4c4c4;
   --avatar-text: #151515;
   --assistant-avatar-bg: #d88a52;
   --assistant-avatar-text: #241308;
@@ -223,8 +263,8 @@
   --model-trigger-hover: #3a3a3a;
   --model-menu-bg: #171717;
   --model-menu-border: #303030;
-  --model-menu-text: #e7e2da;
-  --model-menu-muted: #9c978f;
+  --model-menu-text: #ececec;
+  --model-menu-muted: #a8a8a8;
   --model-menu-hover: #242424;
   --kbd-bg: #242424;
   --kbd-border: #3a3a3a;
@@ -376,6 +416,42 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+html.jarvis-desktop-shell,
+body.jarvis-desktop-shell {
+  background: transparent;
+}
+
+html.jarvis-desktop-shell {
+  --desktop-titlebar-height: 50px;
+  --desktop-window-radius: 10px;
+  --sidebar-width: 192px;
+  --sidebar-glass-bg: rgba(255, 255, 255, 0.16);
+  --sidebar-glass-border: rgba(255, 255, 255, 0.42);
+  --sidebar-glass-shadow: 0 18px 42px rgba(34, 32, 28, 0.025);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.28);
+  --sidebar-item-hover: rgba(255, 255, 255, 0.3);
+  --sidebar-item-active: rgba(255, 255, 255, 0.42);
+  --composer-scrim: rgba(255, 255, 255, 0);
+  --desktop-main-bg: #ffffff;
+  --desktop-main-border: rgba(229, 231, 232, 0.92);
+  --desktop-main-inset: rgba(255, 255, 255, 0.92);
+  --desktop-settings-nav-bg: rgba(248, 250, 250, 0.82);
+  --composer-width: 580px;
+}
+
+html.jarvis-desktop-shell[data-theme="dark"] {
+  --sidebar-glass-bg: rgba(14, 14, 14, 0.22);
+  --sidebar-glass-border: rgba(255, 255, 255, 0.14);
+  --sidebar-glass-shadow: 0 18px 42px rgba(0, 0, 0, 0.18);
+  --sidebar-control-bg: rgba(255, 255, 255, 0.035);
+  --sidebar-item-hover: rgba(255, 255, 255, 0.08);
+  --sidebar-item-active: rgba(255, 255, 255, 0.13);
+  --desktop-main-bg: #090909;
+  --desktop-main-border: rgba(82, 82, 82, 0.28);
+  --desktop-main-inset: rgba(255, 255, 255, 0.035);
+  --desktop-settings-nav-bg: rgba(12, 12, 12, 0.24);
+}
+
 button,
 select,
 textarea {
@@ -417,6 +493,80 @@ button {
   min-height: 0;
 }
 
+.jarvis-desktop-shell #app {
+  position: relative;
+  height: 100vh;
+  box-sizing: border-box;
+  padding-top: var(--desktop-titlebar-height);
+  background: transparent;
+  -webkit-app-region: no-drag;
+}
+
+.jarvis-desktop-shell #app::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 82px;
+  z-index: 1;
+  height: var(--desktop-titlebar-height);
+  -webkit-app-region: drag;
+}
+
+.jarvis-desktop-shell #app::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 0;
+  height: var(--desktop-titlebar-height);
+  pointer-events: none;
+  background: rgba(248, 250, 250, 0.84);
+  border-bottom: 1px solid rgba(226, 230, 231, 0.72);
+  backdrop-filter: blur(34px) saturate(1.28);
+  -webkit-backdrop-filter: blur(34px) saturate(1.28);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] #app::after {
+  background: rgba(12, 12, 12, 0.34);
+  border-bottom-color: rgba(82, 82, 82, 0.28);
+}
+
+/* Top-bar controls must sit ABOVE the #app::before drag overlay
+   (z-index:1). That overlay is a real (pseudo) element painted on top of
+   the titlebar strip with pointer-events enabled (it IS the window-drag
+   handle), so without lifting the interactive controls above it the drag
+   region swallows every click and the whole top bar goes dead. Elevate +
+   mark no-drag the toggle/back/forward, the breadcrumb, and the header
+   actions; the empty strip between them stays draggable. */
+.jarvis-desktop-shell .sidebar-topbar .ghost-icon,
+.jarvis-desktop-shell #chat-header .header-leading,
+.jarvis-desktop-shell #chat-header .header-actions {
+  position: relative;
+  z-index: 2;
+  -webkit-app-region: no-drag;
+}
+
+/* Same fix for the other full-page headers (projects / docs / customize /
+   work-overview): their controls — back link, search, tabs, action
+   buttons — also land in the titlebar strip and get swallowed by the drag
+   overlay. Elevate the interactive descendants (not the whole header) so
+   the header's empty space + title stay draggable. */
+.jarvis-desktop-shell .projects-page-header :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .docs-editor-header :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .docs-empty-header :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .docs-page-header :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .customize-topbar :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .work-overview-page-shell header :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .workspace-rail-toolbar :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .auto-mode-page > header :is(button, a, input, label, [role="button"]),
+.jarvis-desktop-shell .worktrees-page > header :is(button, a, input, label, [role="button"]) {
+  position: relative;
+  z-index: 2;
+  -webkit-app-region: no-drag;
+}
+
 #sidebar { grid-area: sidebar; }
 #chat { grid-area: chat; }
 #workspace-rail { grid-area: rail; }
@@ -455,14 +605,24 @@ body.sidebar-closed #input-area {
 }
 
 #sidebar {
+  position: relative;
+  z-index: 20;
   display: flex;
   flex-direction: column;
   min-height: 0;
   margin: 10px 0 10px 10px;
-  overflow: hidden;
-  background: var(--sidebar-bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  overflow: visible;
+  background: var(--sidebar-glass-bg);
+  border: 1px solid var(--sidebar-glass-border);
+  border-radius: 11px;
+  box-shadow: var(--sidebar-glass-shadow);
+  background-clip: padding-box;
+  backdrop-filter: blur(34px) saturate(1.18);
+  -webkit-backdrop-filter: blur(34px) saturate(1.18);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] #sidebar {
+  background: var(--sidebar-glass-bg);
 }
 
 .sidebar-topbar {
@@ -479,7 +639,7 @@ body.sidebar-closed #input-area {
   justify-content: center;
   width: 28px;
   height: 28px;
-  color: var(--text-soft);
+  color: var(--desktop-sidebar-soft);
   background: transparent;
   border-radius: 6px;
   cursor: pointer;
@@ -487,7 +647,7 @@ body.sidebar-closed #input-area {
 
 .ghost-icon:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-row {
@@ -498,6 +658,11 @@ body.sidebar-closed #input-area {
   padding: 6px 16px 10px;
 }
 
+.jarvis-desktop-shell .mode-row {
+  gap: 3px;
+  padding: 5px 12px 10px;
+}
+
 .mode-tab {
   display: inline-flex;
   align-items: center;
@@ -506,7 +671,7 @@ body.sidebar-closed #input-area {
   height: 34px;
   min-width: 0;
   padding: 0 8px;
-  color: var(--text-soft);
+  color: var(--desktop-sidebar-soft);
   background: transparent;
   border-radius: var(--radius);
   cursor: pointer;
@@ -515,14 +680,23 @@ body.sidebar-closed #input-area {
   text-decoration: none;
 }
 
+.jarvis-desktop-shell .mode-tab {
+  gap: 4px;
+  height: 31px;
+  padding: 0 5px;
+  border-radius: 7px;
+  font-size: var(--fs-13);
+}
+
 .mode-tab:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-tab.active {
   color: var(--mode-text);
-  background: var(--mode-bg);
+  background: var(--sidebar-item-active);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
 }
 
 .mode-tab span {
@@ -544,7 +718,7 @@ body.sidebar-closed #input-area {
   width: 100%;
   height: 32px;
   padding: 0;
-  color: var(--text-muted);
+  color: var(--desktop-sidebar-muted);
   background: transparent;
   border-radius: 6px;
   cursor: pointer;
@@ -554,11 +728,12 @@ body.sidebar-closed #input-area {
 
 .nav-item:hover {
   color: var(--text);
+  background: var(--sidebar-item-hover);
 }
 
 .nav-item.active {
   color: var(--text);
-  background: var(--panel-active);
+  background: var(--sidebar-item-active);
 }
 
 .sidebar-section {
@@ -591,10 +766,10 @@ body.sidebar-closed #input-area {
 
 .convo-auto-filter {
   display: inline-flex;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--sidebar-glass-border);
   border-radius: 999px;
   overflow: hidden;
-  background: transparent;
+  background: var(--sidebar-control-bg);
 }
 
 .convo-auto-filter-seg {
@@ -610,16 +785,16 @@ body.sidebar-closed #input-area {
 }
 
 .convo-auto-filter-seg + .convo-auto-filter-seg {
-  border-left: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-left: 1px solid var(--sidebar-glass-border);
 }
 
 .convo-auto-filter-seg:hover {
-  background: var(--surface-2, rgba(0, 0, 0, 0.04));
+  background: var(--sidebar-item-hover);
   color: var(--text);
 }
 
 .convo-auto-filter-seg.active {
-  background: var(--surface-2, rgba(0, 0, 0, 0.06));
+  background: var(--sidebar-item-active);
   color: var(--text);
 }
 
@@ -645,8 +820,8 @@ body.sidebar-closed #input-area {
 }
 
 .convo-group-toggle:hover {
-  background: var(--surface-2, rgba(0, 0, 0, 0.04));
-  border-color: var(--border, rgba(0, 0, 0, 0.08));
+  background: var(--sidebar-item-hover);
+  border-color: var(--sidebar-glass-border);
   color: var(--text);
 }
 
@@ -657,7 +832,7 @@ body.sidebar-closed #input-area {
 
 .section-label {
   margin: 0 0 10px;
-  color: var(--text-soft);
+  color: var(--desktop-sidebar-muted);
   font-size: 14px;
   font-weight: 560;
 }
@@ -692,7 +867,7 @@ body.sidebar-closed #input-area {
   width: 100%;
   min-height: 34px;
   padding: 6px 8px;
-  color: var(--text-muted);
+  color: var(--desktop-sidebar-muted);
   background: transparent;
   border-radius: 7px;
   cursor: pointer;
@@ -701,7 +876,7 @@ body.sidebar-closed #input-area {
 
 .mode-sidebar-row:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-sidebar-row span:last-child {
@@ -719,7 +894,7 @@ body.sidebar-closed #input-area {
 }
 
 .mode-sidebar-auto-switch:hover:not(:disabled) {
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .mode-sidebar-auto-switch:focus-visible {
@@ -730,7 +905,7 @@ body.sidebar-closed #input-area {
 .mode-sidebar-empty {
   margin: 0;
   padding: 6px 0;
-  color: var(--text-soft);
+  color: var(--desktop-sidebar-soft);
   font-size: var(--fs-13);
 }
 
@@ -739,13 +914,13 @@ body.sidebar-closed #input-area {
   align-items: center;
   gap: 10px;
   height: 28px;
-  color: var(--text-soft);
+  color: var(--desktop-sidebar-soft);
 }
 
 .empty-state {
   margin: 0;
   padding: 8px 0 12px;
-  color: var(--text-soft);
+  color: var(--desktop-sidebar-soft);
   font-size: 14px;
 }
 
@@ -784,7 +959,7 @@ body.sidebar-closed #input-area {
   gap: 2px;
   min-height: 42px;
   padding: 6px 8px 6px 11px;
-  color: var(--text-muted);
+  color: var(--desktop-sidebar-muted);
   background: transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -795,14 +970,14 @@ body.sidebar-closed #input-area {
 #running-list li:not(.convo-group-label):hover,
 #convo-list li:not(.convo-group-label):hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 #pinned-list li.active,
 #running-list li.active:not(.convo-group-label),
 #convo-list li.active:not(.convo-group-label) {
   color: var(--text);
-  background: var(--panel-active);
+  background: var(--sidebar-item-active);
 }
 
 #pinned-list .id,
@@ -817,7 +992,7 @@ body.sidebar-closed #input-area {
 #pinned-list .meta,
 #running-list .meta,
 #convo-list .meta {
-  color: var(--text-soft);
+  color: var(--desktop-sidebar-soft);
   font-size: 11px;
 }
 
@@ -847,6 +1022,7 @@ body.sidebar-closed #input-area {
 
 .sidebar-footer {
   position: relative;
+  z-index: 30;
   flex: 0 0 auto;
   margin-top: auto;
   display: flex;
@@ -854,8 +1030,28 @@ body.sidebar-closed #input-area {
   justify-content: space-between;
   gap: 10px;
   padding: 12px 16px;
-  color: var(--text-muted);
-  background: var(--sidebar-bg);
+  color: var(--desktop-sidebar-muted);
+  background: var(--desktop-sidebar-footer-bg);
+  border-top: 1px solid color-mix(in srgb, var(--sidebar-glass-border) 48%, transparent);
+}
+
+.jarvis-desktop-shell .sidebar-footer {
+  background: linear-gradient(
+    to top,
+    rgba(255, 255, 255, 0.07),
+    rgba(255, 255, 255, 0.015) 72%,
+    transparent
+  );
+  border-top-color: color-mix(in srgb, var(--sidebar-glass-border) 46%, transparent);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] .sidebar-footer {
+  background: linear-gradient(
+    to top,
+    rgba(12, 12, 12, 0.14),
+    rgba(12, 12, 12, 0.025) 72%,
+    transparent
+  );
 }
 
 .account-chip {
@@ -865,7 +1061,7 @@ body.sidebar-closed #input-area {
   max-width: 190px;
   height: 30px;
   padding: 0 8px;
-  color: var(--text-muted);
+  color: var(--desktop-sidebar-muted);
   background: transparent;
   border-radius: 7px;
   cursor: pointer;
@@ -875,7 +1071,7 @@ body.sidebar-closed #input-area {
 .account-chip:hover,
 .account-chip[aria-expanded="true"] {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .account-chip span {
@@ -886,6 +1082,7 @@ body.sidebar-closed #input-area {
 
 .account-menu-wrap {
   position: relative;
+  z-index: 80;
   min-width: 0;
 }
 
@@ -893,14 +1090,34 @@ body.sidebar-closed #input-area {
   position: absolute;
   left: 0;
   bottom: calc(100% + 10px);
-  z-index: 70;
+  z-index: 120;
   width: 270px;
   padding: 10px;
   color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: #fafaf9;
+  border: 1px solid rgba(215, 212, 205, 0.72);
   border-radius: 12px;
-  box-shadow: var(--shadow-popover);
+  box-shadow: 0 22px 48px rgba(27, 26, 24, 0.18), 0 4px 14px rgba(27, 26, 24, 0.08);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+:root[data-theme="dark"] .account-menu {
+  background: #161616;
+  border-color: rgba(82, 82, 82, 0.72);
+  box-shadow: 0 26px 58px rgba(0, 0, 0, 0.38), 0 8px 20px rgba(0, 0, 0, 0.24);
+}
+
+.jarvis-desktop-shell .account-menu {
+  background: #fafaf9;
+  border-color: rgba(215, 212, 205, 0.72);
+  box-shadow: 0 26px 58px rgba(27, 26, 24, 0.2), 0 8px 20px rgba(27, 26, 24, 0.1);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] .account-menu {
+  background: #161616;
+  border-color: rgba(82, 82, 82, 0.72);
+  box-shadow: 0 26px 58px rgba(0, 0, 0, 0.38), 0 8px 20px rgba(0, 0, 0, 0.24);
 }
 
 .account-menu-title {
@@ -924,7 +1141,7 @@ body.sidebar-closed #input-area {
 }
 
 .account-menu-row:hover {
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 .account-menu-label {
@@ -936,7 +1153,7 @@ body.sidebar-closed #input-area {
 .account-menu-divider {
   height: 1px;
   margin: 8px 0;
-  background: var(--border-soft);
+  background: color-mix(in srgb, var(--sidebar-glass-border) 62%, transparent);
 }
 
 .account-menu-action {
@@ -956,7 +1173,7 @@ body.sidebar-closed #input-area {
 
 .account-menu-action:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 
 /* Settings link in the account dropdown — same row chrome as
@@ -976,12 +1193,12 @@ body.sidebar-closed #input-area {
   border-radius: 8px;
   text-decoration: none;
   font-size: var(--fs-14);
-  border-top: 1px solid var(--border-soft);
+  border-top: 1px solid color-mix(in srgb, var(--sidebar-glass-border) 62%, transparent);
   padding-top: 8px;
 }
 .account-menu-link:hover {
   color: var(--text);
-  background: var(--panel-hover);
+  background: var(--sidebar-item-hover);
 }
 .account-menu-link svg {
   flex-shrink: 0;
@@ -1023,6 +1240,43 @@ body.sidebar-closed #input-area {
   position: relative;
 }
 
+.jarvis-desktop-shell #chat,
+.jarvis-desktop-shell .settings-page,
+.jarvis-desktop-shell .customize-page,
+.jarvis-desktop-shell .projects-page,
+.jarvis-desktop-shell .docs-page,
+.jarvis-desktop-shell .docs-page-3p,
+.jarvis-desktop-shell .docs-page-single,
+.jarvis-desktop-shell .work-overview-page-shell,
+.jarvis-desktop-shell .auto-mode-page,
+.jarvis-desktop-shell .worktrees-page {
+  background: var(--desktop-main-bg);
+  border-left: 1px solid var(--desktop-main-border);
+  box-shadow: inset 1px 0 var(--desktop-main-inset);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] #chat,
+.jarvis-desktop-shell[data-theme="dark"] .settings-page,
+.jarvis-desktop-shell[data-theme="dark"] .customize-page,
+.jarvis-desktop-shell[data-theme="dark"] .projects-page,
+.jarvis-desktop-shell[data-theme="dark"] .docs-page,
+.jarvis-desktop-shell[data-theme="dark"] .docs-page-3p,
+.jarvis-desktop-shell[data-theme="dark"] .docs-page-single,
+.jarvis-desktop-shell[data-theme="dark"] .work-overview-page-shell,
+.jarvis-desktop-shell[data-theme="dark"] .auto-mode-page,
+.jarvis-desktop-shell[data-theme="dark"] .worktrees-page {
+  background: var(--desktop-main-bg);
+  box-shadow: inset 1px 0 var(--desktop-main-inset);
+}
+
+/* The workspace rail is part of the opaque right side: pin its
+   container background so the inter-card gutters / outer padding don't
+   leak the desktop wallpaper in the Mac shell. The inner .rail-card
+   panels keep their own var(--panel) surface on top. */
+.jarvis-desktop-shell #workspace-rail {
+  background: var(--desktop-main-bg);
+}
+
 /* Floating "scroll to bottom" button. Centered horizontally over the
    chat column and parked just above the composer scrim. Shown only
    while the user has scrolled up and a turn's worth of messages
@@ -1047,6 +1301,16 @@ body.sidebar-closed #input-area {
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
   transition: background-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.jarvis-desktop-shell .scroll-to-bottom-btn {
+  width: 32px;
+  height: 32px;
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--panel-raised) 82%, transparent);
+  box-shadow: 0 8px 20px rgba(27, 26, 24, 0.1);
+  backdrop-filter: blur(14px) saturate(1.12);
+  -webkit-backdrop-filter: blur(14px) saturate(1.12);
 }
 
 .scroll-to-bottom-btn:hover {
@@ -1117,7 +1381,7 @@ body.sidebar-closed #input-area {
 }
 .workspace-badge-dot {
   color: #d97706;
-  font-size: 10px;
+  font-size: var(--fs-14);
   line-height: 1;
 }
 .workspace-badge-dirty {
@@ -1156,6 +1420,32 @@ body.sidebar-closed #input-area {
   flex: 0 0 auto;
   height: 72px;
   padding: 18px 36px 10px 30px;
+}
+
+/* Collapsed sidebar: the reveal toggle (#open-sidebar) becomes the
+   leading element of the chat header, which now starts at x=0 (the
+   sidebar column is gone). Mirror the open-state topbar's 82px
+   traffic-light clearance so the toggle isn't hidden under the native
+   macOS window controls. */
+body.sidebar-closed.jarvis-desktop-shell #chat-header,
+body.sidebar-closed.jarvis-desktop-shell .projects-page-header,
+body.sidebar-closed.jarvis-desktop-shell .docs-editor-header,
+body.sidebar-closed.jarvis-desktop-shell .docs-empty-header,
+body.sidebar-closed.jarvis-desktop-shell .customize-topbar,
+body.sidebar-closed.jarvis-desktop-shell .auto-mode-page > header,
+body.sidebar-closed.jarvis-desktop-shell .worktrees-page > header {
+  padding-left: 82px;
+}
+
+.jarvis-desktop-shell .project-crumb {
+  gap: 7px;
+  font-size: var(--fs-15);
+  font-weight: 600;
+}
+
+.jarvis-desktop-shell .project-crumb svg,
+.jarvis-desktop-shell .header-actions {
+  color: var(--text-soft);
 }
 
 .project-crumb {
@@ -1277,7 +1567,7 @@ body.sidebar-closed #input-area {
   background: var(--danger-bg);
   border: 1px solid var(--danger-border);
   border-radius: var(--radius);
-  font-size: var(--fs-13);
+  font-size: var(--fs-14);
 }
 
 .hidden {
@@ -1289,6 +1579,10 @@ body.sidebar-closed #input-area {
   min-height: 0;
   overflow-y: auto;
   padding: 0 36px 206px;
+}
+
+.jarvis-desktop-shell #messages {
+  padding-bottom: 184px;
 }
 
 #messages > .welcome,
@@ -1303,6 +1597,10 @@ body.sidebar-closed #input-area {
   color: var(--text-muted);
 }
 
+.jarvis-desktop-shell .welcome {
+  padding-top: 12px;
+}
+
 .welcome.hidden {
   display: none;
 }
@@ -1314,11 +1612,23 @@ body.sidebar-closed #input-area {
   line-height: 1.2;
 }
 
+.jarvis-desktop-shell .welcome h1 {
+  margin-bottom: 9px;
+  font-size: var(--fs-22);
+  font-weight: 610;
+}
+
 .welcome p {
   max-width: 720px;
   margin: 0;
   color: var(--text-muted);
   font-size: var(--fs-15);
+}
+
+.jarvis-desktop-shell .welcome p {
+  max-width: 700px;
+  color: color-mix(in srgb, var(--text-muted) 92%, var(--text));
+  line-height: 1.65;
 }
 
 .msg-row {
@@ -2591,9 +2901,9 @@ body.sidebar-closed #input-area {
 }
 
 .convo-chip.source {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-soft));
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-color: var(--border-soft);
+  color: var(--text-soft);
+  background: var(--panel-raised);
 }
 
 .convo-title-zone .convo-chip.source {
@@ -3354,6 +3664,90 @@ li.is-abandoned {
   opacity: 0.58;
 }
 
+.jarvis-desktop-shell #pinned-list,
+.jarvis-desktop-shell #running-list,
+.jarvis-desktop-shell #convo-list,
+.jarvis-desktop-shell #project-convo-list,
+.jarvis-desktop-shell .convo-section-list {
+  gap: 0;
+}
+
+.jarvis-desktop-shell #pinned-list li:not(.convo-group-label),
+.jarvis-desktop-shell #running-list li:not(.convo-group-label),
+.jarvis-desktop-shell #convo-list li:not(.convo-group-label),
+.jarvis-desktop-shell #project-convo-list li:not(.convo-group-label),
+.jarvis-desktop-shell .convo-section-list li:not(.convo-group-label):not(.convo-project-group) {
+  min-height: 31px;
+  border-radius: 7px;
+}
+
+.jarvis-desktop-shell #pinned-list li:not(.convo-group-label):hover,
+.jarvis-desktop-shell #running-list li:not(.convo-group-label):hover,
+.jarvis-desktop-shell #convo-list li:not(.convo-group-label):hover,
+.jarvis-desktop-shell #project-convo-list li:not(.convo-group-label):hover,
+.jarvis-desktop-shell .convo-section-list li:not(.convo-group-label):not(.convo-project-group):hover {
+  background: var(--sidebar-item-hover);
+}
+
+.jarvis-desktop-shell #pinned-list li.active:not(.convo-group-label),
+.jarvis-desktop-shell #running-list li.active:not(.convo-group-label),
+.jarvis-desktop-shell #convo-list li.active:not(.convo-group-label),
+.jarvis-desktop-shell #project-convo-list li.active:not(.convo-group-label),
+.jarvis-desktop-shell .convo-section-list li.active:not(.convo-group-label):not(.convo-project-group) {
+  background: var(--sidebar-item-active);
+}
+
+.jarvis-desktop-shell .convo-main {
+  min-height: 31px;
+  padding-inline: 10px 8px;
+  border-radius: 7px;
+}
+
+.jarvis-desktop-shell .convo-title {
+  font-size: var(--fs-13);
+  font-weight: 520;
+}
+
+.jarvis-desktop-shell .convo-row-meta {
+  max-width: 74px;
+  font-size: 11px;
+}
+
+.jarvis-desktop-shell .convo-chip {
+  height: 15px;
+  padding-inline: 4px;
+  background: color-mix(in srgb, var(--panel-raised) 62%, transparent);
+  border-color: color-mix(in srgb, var(--border-soft) 70%, transparent);
+}
+
+.jarvis-desktop-shell .convo-group-label {
+  margin: 10px 0 4px;
+  padding-inline: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.jarvis-desktop-shell .convo-group-label.is-date {
+  padding-left: 4px;
+}
+
+.jarvis-desktop-shell .convo-actions {
+  top: 4px;
+  right: 5px;
+  background: color-mix(in srgb, var(--sidebar-glass-bg) 74%, var(--sidebar-item-hover));
+  border: 1px solid color-mix(in srgb, var(--sidebar-glass-border) 58%, transparent);
+  border-radius: 7px;
+  box-shadow: 0 8px 18px rgba(27, 26, 24, 0.08);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+}
+
+.jarvis-desktop-shell #pinned-list li.active .convo-actions,
+.jarvis-desktop-shell #running-list li.active .convo-actions,
+.jarvis-desktop-shell #convo-list li.active .convo-actions {
+  background: color-mix(in srgb, var(--sidebar-glass-bg) 72%, var(--sidebar-item-active));
+}
+
 li.is-abandoned .convo-title {
   text-decoration-thickness: 1px;
 }
@@ -3832,26 +4226,46 @@ body.resizing input {
 .context-window-badge {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
   position: relative;
   flex: 0 0 auto;
-  width: 24px;
   height: 24px;
+  padding: 0 8px 0 6px;
   margin-left: 2px;
   background: transparent;
   border-radius: 999px;
   outline: none;
+  cursor: default;
 }
 
 .context-window-dot {
   display: block;
-  width: 18px;
-  height: 18px;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
   background:
     radial-gradient(circle at center, var(--bg) 0 43%, transparent 46%),
     conic-gradient(var(--text-soft) var(--context-pct, 0%), var(--border) 0);
   border: 1px solid color-mix(in srgb, var(--text-soft) 34%, transparent);
   border-radius: 999px;
+}
+
+.context-window-readout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.context-window-readout-pct {
+  color: var(--text-soft);
+}
+
+.jarvis-desktop-shell .context-window-readout {
+  font-size: 11px;
 }
 
 .context-window-tooltip {
@@ -4348,6 +4762,16 @@ body.turn-in-flight #input {
   background: linear-gradient(180deg, var(--composer-scrim), var(--bg) 42%);
 }
 
+.jarvis-desktop-shell #input-area {
+  padding: 30px 36px 16px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--bg) 34%, transparent) 52%,
+    color-mix(in srgb, var(--bg) 58%, transparent)
+  );
+}
+
 body.workspace-rail-closed #input-area {
   right: 0;
 }
@@ -4373,11 +4797,23 @@ body.workspace-rail-closed #input-area {
   display: flex;
   align-items: center;
   gap: 14px;
-  background: var(--input-bg);
-  border: 1px solid var(--border);
+  background: var(--desktop-context-bg);
+  border: 1px solid var(--desktop-context-border);
   border-radius: 16px;
-  box-shadow: 0 12px 32px rgba(27, 26, 24, 0.07);
+  box-shadow: var(--desktop-card-shadow);
   font-size: var(--fs-15);
+}
+
+.jarvis-desktop-shell .composer-shoulder {
+  min-height: 30px;
+  margin-bottom: 8px;
+  padding: 0 2px;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: var(--fs-13);
 }
 
 .shoulder-crumb {
@@ -4400,6 +4836,24 @@ body.workspace-rail-closed #input-area {
 
 .shoulder-crumb:hover {
   background: var(--panel-hover);
+}
+
+.jarvis-desktop-shell .shoulder-crumb {
+  min-height: 30px;
+  padding-inline: 7px;
+  border-radius: 8px;
+}
+
+.jarvis-desktop-shell .shoulder-crumb:hover {
+  background: color-mix(in srgb, var(--panel-hover) 72%, transparent);
+}
+
+.jarvis-desktop-shell .shoulder-crumb svg {
+  width: 18px;
+  height: 18px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--panel-hover) 72%, transparent);
+  border-radius: 6px;
 }
 
 .shoulder-crumb-loading {
@@ -4458,20 +4912,45 @@ body.workspace-rail-closed #input-area {
   gap: 6px;
   min-height: 32px;
   padding: 3px 14px;
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--desktop-card-bg);
+  border: 1px solid var(--desktop-context-border);
   border-radius: 10px;
   color: var(--text);
   font-family: var(--font-mono);
   font-size: var(--fs-15);
   cursor: pointer;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 5px 14px rgba(27, 26, 24, 0.06);
+  box-shadow: var(--desktop-attachment-shadow);
 }
 
 .shoulder-stat:hover {
   background: var(--panel);
   border-color: var(--text-muted);
+}
+
+.jarvis-desktop-shell .shoulder-stat,
+.jarvis-desktop-shell .shoulder-pr,
+.jarvis-desktop-shell .session-chip {
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(12px) saturate(1.12);
+  -webkit-backdrop-filter: blur(12px) saturate(1.12);
+}
+
+.jarvis-desktop-shell .shoulder-stat,
+.jarvis-desktop-shell .shoulder-pr {
+  min-height: 30px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  font-size: var(--fs-13);
+}
+
+.jarvis-desktop-shell .shoulder-stat:hover,
+.jarvis-desktop-shell .shoulder-pr:hover:not(:disabled),
+.jarvis-desktop-shell .session-chip:hover {
+  background: color-mix(in srgb, var(--panel-hover) 78%, transparent);
+  border-color: color-mix(in srgb, var(--text-muted) 38%, transparent);
 }
 
 .shoulder-stat-add { color: #4a9b53; font-weight: 600; }
@@ -4486,15 +4965,15 @@ body.workspace-rail-closed #input-area {
   gap: 6px;
   min-height: 32px;
   padding: 3px 14px;
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--desktop-card-bg);
+  border: 1px solid var(--desktop-context-border);
   border-radius: 10px;
   color: var(--text);
   font-family: inherit;
   font-size: var(--fs-15);
   font-weight: 500;
   cursor: pointer;
-  box-shadow: 0 5px 14px rgba(27, 26, 24, 0.06);
+  box-shadow: var(--desktop-attachment-shadow);
 }
 
 .shoulder-pr:hover:not(:disabled) {
@@ -4532,9 +5011,9 @@ body.workspace-rail-closed #input-area {
   max-width: 230px;
   height: 28px;
   padding: 0 9px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--desktop-context-border);
   border-radius: 7px;
-  background: var(--panel);
+  background: var(--desktop-card-bg);
   color: var(--text);
   font: inherit;
   line-height: 1;
@@ -5468,10 +5947,10 @@ body.workspace-rail-closed #input-area {
   margin-bottom: 7px;
   padding: 0 10px;
   color: var(--text-muted);
-  background: var(--branch-bg);
-  border: 1px solid var(--border-soft);
+  background: var(--desktop-context-bg);
+  border: 1px solid var(--desktop-context-border);
   border-radius: var(--radius);
-  box-shadow: 0 8px 22px rgba(27, 26, 24, 0.06);
+  box-shadow: var(--desktop-card-shadow);
 }
 
 .branch-icon {
@@ -5502,10 +5981,22 @@ body.workspace-rail-closed #input-area {
   gap: 10px;
   min-height: 58px;
   padding: 12px 12px 12px 18px;
-  background: var(--input-bg);
-  border: 1px solid var(--input-border);
+  background: var(--desktop-composer-bg);
+  border: 1px solid var(--desktop-context-border);
   border-radius: 16px;
-  box-shadow: 0 12px 32px rgba(27, 26, 24, 0.06);
+  box-shadow: var(--desktop-elevated-shadow);
+  cursor: text;
+}
+
+.jarvis-desktop-shell .input-wrapper {
+  min-height: 56px;
+  padding: 11px 11px 11px 17px;
+  background: color-mix(in srgb, var(--input-bg) 82%, transparent);
+  border-color: color-mix(in srgb, var(--input-border) 66%, transparent);
+  border-radius: 15px;
+  box-shadow: 0 14px 34px rgba(27, 26, 24, 0.06);
+  backdrop-filter: blur(18px) saturate(1.18);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
 }
 
 .input-wrapper:focus-within {
@@ -5518,6 +6009,7 @@ body.workspace-rail-closed #input-area {
   max-height: 170px;
   padding: 6px 2px;
   resize: none;
+  overflow-y: hidden;
   color: var(--text);
   background: transparent;
   border: 0;
@@ -5543,6 +6035,21 @@ body.workspace-rail-closed #input-area {
   cursor: pointer;
 }
 
+.send-btn,
+.stop-btn,
+.composer-tool-btn,
+.mode-badge-trigger,
+.model-trigger,
+.effort-trigger {
+  cursor: pointer;
+}
+
+.jarvis-desktop-shell .send-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
 .send-btn:hover:not(:disabled) {
   filter: brightness(1.08);
 }
@@ -5564,11 +6071,28 @@ body.workspace-rail-closed #input-area {
   font-size: var(--fs-14);
 }
 
+.jarvis-desktop-shell .composer-meta {
+  min-height: 28px;
+  padding: 8px 8px 0 12px;
+  font-size: var(--fs-13);
+}
+
 .composer-actions {
   display: inline-flex;
   align-items: center;
-  gap: 13px;
+  gap: 10px;
   min-width: 0;
+}
+
+.composer-tool-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.jarvis-desktop-shell .composer-actions {
+  gap: 10px;
 }
 
 .meta-dot {
@@ -5597,6 +6121,54 @@ body.workspace-rail-closed #input-area {
   flex: 0 0 auto;
 }
 
+/* Pairs the thinking-level chip with the model chip at the right of
+   the composer-meta row so they read as two sibling selectors. */
+.composer-model-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Thinking-level (reasoning effort) chip — same pill family as
+   `.model-trigger`, with a brain glyph, the level name, and a caret. */
+.effort-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  color: var(--model-menu-text);
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: var(--fs-16);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.effort-trigger:hover,
+.effort-trigger.open {
+  background: var(--model-trigger-hover);
+}
+
+.effort-trigger svg {
+  flex: 0 0 auto;
+}
+
+.effort-trigger-label {
+  font-size: inherit;
+}
+
+.jarvis-desktop-shell .effort-trigger {
+  height: 28px;
+  padding-inline: 9px 6px;
+  font-size: var(--fs-14);
+  border-radius: 8px;
+}
+
 .model-control {
   position: relative;
   display: inline-flex;
@@ -5619,6 +6191,13 @@ body.workspace-rail-closed #input-area {
   cursor: pointer;
   font-size: var(--fs-16);
   line-height: 1;
+}
+
+.jarvis-desktop-shell .model-trigger {
+  height: 28px;
+  padding-inline: 11px 8px;
+  font-size: var(--fs-14);
+  border-radius: 8px;
 }
 
 .model-trigger:hover,
@@ -5646,6 +6225,23 @@ body.workspace-rail-closed #input-area {
   border: 1px solid var(--model-menu-border);
   border-radius: 12px;
   box-shadow: var(--shadow-popover);
+}
+
+.jarvis-desktop-shell .model-menu {
+  width: 360px;
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--model-menu-bg) 84%, transparent);
+  border-color: color-mix(in srgb, var(--model-menu-border) 58%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 18px 42px rgba(27, 26, 24, 0.12), 0 3px 10px rgba(27, 26, 24, 0.06);
+  backdrop-filter: blur(20px) saturate(1.14);
+  -webkit-backdrop-filter: blur(20px) saturate(1.14);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] .model-menu {
+  background: color-mix(in srgb, var(--model-menu-bg) 78%, transparent);
+  border-color: color-mix(in srgb, var(--model-menu-border) 64%, transparent);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.3), 0 3px 10px rgba(0, 0, 0, 0.18);
 }
 
 .model-menu-heading {
@@ -5679,6 +6275,18 @@ body.workspace-rail-closed #input-area {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
   font-weight: 500;
+}
+
+.jarvis-desktop-shell .shortcut-set kbd {
+  min-width: 24px;
+  height: 24px;
+  background: color-mix(in srgb, var(--kbd-bg) 78%, transparent);
+  border-color: color-mix(in srgb, var(--kbd-border) 76%, transparent);
+}
+
+.jarvis-desktop-shell .model-menu-item {
+  min-height: 29px;
+  font-size: var(--fs-14);
 }
 
 .model-menu-options {
@@ -7003,15 +7611,47 @@ body.approvals-open #panel {
   }
 
   .composer-meta {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "context"
+      "controls"
+      "cluster";
     align-items: stretch;
-    flex-direction: column;
     gap: 8px;
     padding-inline: 4px;
+  }
+
+  .composer-meta:has(.composer-meta-context:empty) {
+    grid-template-areas:
+      "controls"
+      "cluster";
   }
 
   .composer-actions {
     flex-wrap: wrap;
     gap: 10px;
+  }
+
+  .composer-meta-controls {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .composer-model-cluster {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .context-window-readout {
+    display: none;
+  }
+
+  .context-window-badge {
+    padding-inline: 4px;
   }
 
   .composer-shoulder {
@@ -7057,6 +7697,12 @@ body.approvals-open #panel {
   .session-popover-project {
     left: 0;
     width: calc(100vw - 28px);
+  }
+
+  .composer-model-cluster {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
   .model-control,
@@ -7117,6 +7763,11 @@ body.approvals-open #panel {
   font-size: var(--fs-14);
 }
 
+.jarvis-desktop-shell .settings-page {
+  background: var(--desktop-main-bg);
+  padding-top: var(--desktop-titlebar-height);
+}
+
 .settings-header {
   display: flex;
   align-items: center;
@@ -7127,10 +7778,24 @@ body.approvals-open #panel {
   flex: 0 0 auto;
 }
 
+.jarvis-desktop-shell .settings-header {
+  min-height: 54px;
+  padding: 8px 28px 10px 72px;
+  background: color-mix(in srgb, var(--panel) 18%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--border-soft) 68%, transparent);
+  -webkit-app-region: drag;
+}
+
 .settings-header h1 {
   font-size: 16px;
   font-weight: 650;
   margin: 0;
+}
+
+.jarvis-desktop-shell .settings-header h1 {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 660;
 }
 
 .settings-back {
@@ -7147,6 +7812,19 @@ body.approvals-open #panel {
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
+
+.jarvis-desktop-shell .settings-back {
+  height: 31px;
+  padding: 0 12px;
+  background: color-mix(in srgb, var(--panel) 52%, transparent);
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 999px;
+  color: var(--text-muted);
+  -webkit-app-region: no-drag;
+  backdrop-filter: blur(16px) saturate(1.08);
+  -webkit-backdrop-filter: blur(16px) saturate(1.08);
+}
+
 .settings-back:hover {
   background: var(--panel-hover);
   color: var(--text);
@@ -7159,6 +7837,10 @@ body.approvals-open #panel {
   overflow: hidden;
 }
 
+.jarvis-desktop-shell .settings-body {
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
 .settings-nav {
   border-right: 1px solid var(--border-soft);
   padding: 18px 12px;
@@ -7166,6 +7848,14 @@ body.approvals-open #panel {
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
+}
+
+.jarvis-desktop-shell .settings-nav {
+  background: var(--desktop-settings-nav-bg);
+  border-right-color: color-mix(in srgb, var(--sidebar-glass-border) 72%, transparent);
+  padding: 18px 12px 18px 14px;
+  backdrop-filter: blur(26px) saturate(1.2);
+  -webkit-backdrop-filter: blur(26px) saturate(1.2);
 }
 
 .settings-nav-group {
@@ -7201,6 +7891,15 @@ body.approvals-open #panel {
   border-radius: 8px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+
+.jarvis-desktop-shell .settings-nav-search {
+  background: color-mix(in srgb, var(--input-bg) 58%, transparent);
+  border-color: color-mix(in srgb, var(--input-border) 66%, transparent);
+  box-shadow: 0 8px 20px rgba(27, 26, 24, 0.035);
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+}
+
 .settings-nav-search:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 25%, transparent);
@@ -7265,6 +7964,14 @@ body.approvals-open #panel {
 .settings-nav-result.active {
   background: var(--panel-active);
 }
+
+.jarvis-desktop-shell .settings-nav-result:hover {
+  background: var(--sidebar-item-hover);
+}
+
+.jarvis-desktop-shell .settings-nav-result.active {
+  background: var(--sidebar-item-active);
+}
 .settings-nav-result-label {
   font-size: var(--fs-13);
   font-weight: 600;
@@ -7326,12 +8033,30 @@ body.approvals-open #panel {
   font-weight: 680;
 }
 
+.jarvis-desktop-shell .settings-nav-link {
+  border-radius: 7px;
+}
+
+.jarvis-desktop-shell .settings-nav-link:hover {
+  background: var(--sidebar-item-hover);
+}
+
+.jarvis-desktop-shell .settings-nav-link.active {
+  background: var(--sidebar-item-active);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
 .settings-content {
   overflow-y: auto;
   padding: 34px 36px 80px;
   width: 100%;
   display: flex;
   justify-content: center;
+}
+
+.jarvis-desktop-shell .settings-content {
+  padding-top: 32px;
+  background: color-mix(in srgb, var(--panel) 16%, transparent);
 }
 
 .settings-content-inner {
@@ -7388,6 +8113,10 @@ body.approvals-open #panel {
   margin-bottom: -1px;
   overflow-x: auto;
   scrollbar-width: thin;
+}
+
+.jarvis-desktop-shell .settings-tabs-list {
+  border-bottom-color: color-mix(in srgb, var(--border-soft) 62%, transparent);
 }
 .settings-tabs-tab {
   display: inline-flex;
@@ -7776,6 +8505,14 @@ body.approvals-open #panel {
   font: inherit;
   font-size: var(--fs-12);
 }
+
+.jarvis-desktop-shell .provider-row-actions button {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  border-color: color-mix(in srgb, var(--border) 64%, transparent);
+  backdrop-filter: blur(10px) saturate(1.06);
+  -webkit-backdrop-filter: blur(10px) saturate(1.06);
+}
+
 .provider-row-actions button:hover:not(:disabled) {
   background: var(--panel-hover);
 }
@@ -7788,6 +8525,13 @@ body.approvals-open #panel {
   border-radius: 8px;
   background: var(--panel);
   margin-bottom: 12px;
+}
+
+.jarvis-desktop-shell .provider-form {
+  background: color-mix(in srgb, var(--panel) 52%, transparent);
+  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+  backdrop-filter: blur(14px) saturate(1.06);
+  -webkit-backdrop-filter: blur(14px) saturate(1.06);
 }
 /* When the create form lives inside the shared `<Modal>` shell, drop
    the dashed inline-card framing — the modal already provides its
@@ -7894,6 +8638,12 @@ body.approvals-open #panel {
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease;
 }
+
+.jarvis-desktop-shell .provider-kind-tile {
+  background: color-mix(in srgb, var(--bg) 52%, transparent);
+  border-color: color-mix(in srgb, var(--border) 68%, transparent);
+}
+
 .provider-kind-tile > strong {
   font-size: var(--fs-13);
   font-weight: 600;
@@ -7945,6 +8695,12 @@ body.approvals-open #panel {
   font-size: var(--fs-12);
   cursor: pointer;
 }
+
+.jarvis-desktop-shell .provider-form-key-toggle {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  border-color: color-mix(in srgb, var(--border) 64%, transparent);
+}
+
 .provider-form-key-toggle:hover:not(:disabled) {
   background: var(--panel-hover);
   color: var(--text);
@@ -8314,6 +9070,15 @@ body.approvals-open #panel {
   padding: 12px 14px;
   background: var(--panel);
 }
+
+.jarvis-desktop-shell .settings-provider {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  box-shadow: 0 10px 30px rgba(27, 26, 24, 0.035);
+  backdrop-filter: blur(14px) saturate(1.06);
+  -webkit-backdrop-filter: blur(14px) saturate(1.06);
+}
+
 .settings-provider-head {
   display: flex;
   gap: 8px;
@@ -8437,6 +9202,10 @@ body.approvals-open #panel {
   border-radius: 4px;
 }
 
+.jarvis-desktop-shell .settings-provider-models li {
+  background: color-mix(in srgb, var(--panel-hover) 70%, transparent);
+}
+
 /* ---- about ---- */
 .settings-about-grid {
   display: grid;
@@ -8500,6 +9269,14 @@ body.approvals-open #panel {
     gap: 6px;
   }
   .settings-row-label { padding-top: 0; }
+  .settings-composio-form-head,
+  .settings-composio-pair {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  .settings-composio-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ---------- Projects ---------- */
@@ -8537,6 +9314,11 @@ body.approvals-open #panel {
   padding: 72px clamp(36px, 12vw, 220px) 40px;
   color: var(--text);
   background: var(--bg);
+}
+
+.jarvis-desktop-shell .projects-page,
+.jarvis-desktop-shell .docs-page {
+  background: var(--desktop-main-bg);
 }
 
 .docs-page-header {
@@ -8633,6 +9415,11 @@ body.approvals-open #panel {
   width: 100%;
   margin: 0;
   padding: 16px 28px 12px;
+}
+
+.jarvis-desktop-shell .projects-page-header,
+.jarvis-desktop-shell .docs-page-header {
+  background: color-mix(in srgb, var(--panel) 14%, transparent);
 }
 
 /* Title — Inter to match the rest of the IDE chrome (the previous
@@ -9564,6 +10351,14 @@ body.approvals-open #panel {
   overflow: hidden; /* contains the inner scroll without showing a column-level bar */
 }
 
+.jarvis-desktop-shell .project-board-column {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  border-color: color-mix(in srgb, var(--border-soft) 70%, transparent);
+  box-shadow: 0 10px 26px rgba(27, 26, 24, 0.035);
+  backdrop-filter: blur(14px) saturate(1.06);
+  -webkit-backdrop-filter: blur(14px) saturate(1.06);
+}
+
 /* Subtle status-tinted column backgrounds — same hue language as
    Multica's Issues board, dialed way down so the kanban still reads
    as a calm grid rather than a rainbow. Stays neutral on Backlog. */
@@ -9832,6 +10627,21 @@ body.approvals-open #panel {
   border-radius: 8px;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.03);
   transition: border-color 120ms ease;
+}
+
+.jarvis-desktop-shell .requirement-card,
+.jarvis-desktop-shell .projects-page-row {
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  border-color: color-mix(in srgb, var(--border-soft) 68%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(10px) saturate(1.04);
+  -webkit-backdrop-filter: blur(10px) saturate(1.04);
+}
+
+.jarvis-desktop-shell .requirement-card.has-desc:hover,
+.jarvis-desktop-shell .projects-page-row:hover {
+  background: color-mix(in srgb, var(--panel-hover) 70%, transparent);
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
 }
 
 .requirement-card.has-desc {
@@ -11082,30 +11892,8 @@ select.settings-input {
   background: color-mix(in srgb, var(--accent-red, #c94d45) 12%, var(--panel-hover));
 }
 
-/* Reasoning-effort quick selector: icon button + portal dropdown. */
-.effort-level-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  color: var(--text);
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.effort-level-trigger:hover,
-.effort-level-trigger.open {
-  background: var(--panel-hover);
-}
-
-.effort-level-trigger svg {
-  flex: 0 0 auto;
-}
-
+/* Reasoning-effort selector dropdown (the chip trigger lives in the
+   `.effort-trigger` rules up by the model chip). */
 .effort-level-dropdown {
   position: fixed;
   z-index: 1000;
@@ -12880,6 +13668,69 @@ select.settings-input {
 }
 .settings-mcp-health.error {
   color: #b91c1c;
+}
+
+/* ---- Composio connector management ---- */
+.settings-composio-form {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-composio-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-composio-form-head p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+  line-height: 1.45;
+}
+
+.settings-composio-title {
+  font-size: var(--fs-14);
+  font-weight: 650;
+}
+
+.settings-composio-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 12px;
+}
+
+.settings-composio-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.settings-composio-notice {
+  color: #15803d;
+  font-size: var(--fs-13);
+}
+
+.settings-composio-empty {
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+}
+
+.settings-composio-list {
+  margin-top: 4px;
+}
+
+.settings-composio-url {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .settings-form {
@@ -15321,6 +16172,12 @@ select.settings-input {
   background: var(--bg);
 }
 
+.jarvis-desktop-shell .docs-page-3p,
+.jarvis-desktop-shell .docs-page-single,
+.jarvis-desktop-shell .docs-3p-editor {
+  background: transparent;
+}
+
 .docs-page-single > .docs-3p-editor {
   flex: 1 1 auto;
   min-height: 0;
@@ -15374,6 +16231,14 @@ select.settings-input {
   border-radius: var(--radius-md);
   color: var(--text-soft);
   min-width: 0;
+}
+
+.jarvis-desktop-shell .docs-list-search,
+.jarvis-desktop-shell .docs-rail-search-input {
+  background: color-mix(in srgb, var(--input-bg) 58%, transparent);
+  border-color: color-mix(in srgb, var(--input-border) 64%, transparent);
+  backdrop-filter: blur(12px) saturate(1.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
 }
 
 .docs-list-search:focus-within {
@@ -15446,6 +16311,17 @@ select.settings-input {
 .docs-card.is-selected {
   background: var(--panel-active);
   border-color: var(--border);
+}
+
+.jarvis-desktop-shell .docs-card:hover {
+  background: var(--sidebar-item-hover);
+}
+
+.jarvis-desktop-shell .docs-card.is-selected,
+.jarvis-desktop-shell .docs-scope-row.is-active,
+.jarvis-desktop-shell .docs-rail-row.is-active {
+  background: var(--sidebar-item-active);
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
 }
 .docs-card.is-archived .docs-card-title { opacity: 0.6; }
 
@@ -15580,6 +16456,10 @@ select.settings-input {
   min-width: 0;
   background: var(--bg);
 }
+
+.jarvis-desktop-shell .docs-3p-editor {
+  background: transparent;
+}
 .docs-3p-editor.is-empty {
   align-items: center;
   justify-content: center;
@@ -15614,6 +16494,13 @@ select.settings-input {
   gap: 8px;
   background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: blur(10px);
+}
+
+.jarvis-desktop-shell .docs-editor-header {
+  background: color-mix(in srgb, var(--bg) 56%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--border-soft) 66%, transparent);
+  backdrop-filter: blur(18px) saturate(1.06);
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
 }
 
 .docs-editor-title-row {
@@ -18635,6 +19522,366 @@ select.settings-input {
 @media (max-width: 640px) {
   .agent-runtime-strip-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* macOS Codex-like shell pass.
+   Keep these late in the file so they win over older desktop polish
+   blocks above without perturbing the normal web layout. */
+@media (min-width: 981px) {
+  html.jarvis-desktop-shell {
+    --sidebar-width: 196px;
+    --composer-width: 600px;
+    --desktop-titlebar-height: 0px;
+    --desktop-main-bg: #ffffff;
+    --desktop-main-border: rgba(226, 229, 231, 0.78);
+    --desktop-main-inset: rgba(255, 255, 255, 0);
+    --sidebar-glass-bg: rgba(255, 255, 255, 0.16);
+    --sidebar-glass-border: rgba(255, 255, 255, 0.42);
+    --sidebar-glass-shadow: none;
+    --sidebar-item-hover: rgba(38, 51, 56, 0.05);
+    --sidebar-item-active: rgba(38, 51, 56, 0.075);
+    --sidebar-control-bg: rgba(255, 255, 255, 0.34);
+  }
+
+  .jarvis-desktop-shell #app {
+    padding-top: 0;
+    background: transparent;
+  }
+
+  .jarvis-desktop-shell #app::after {
+    height: 0;
+    border-bottom: 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .jarvis-desktop-shell #app::before {
+    height: 54px;
+    left: 156px;
+  }
+
+  .jarvis-desktop-shell #sidebar {
+    margin: 0;
+    overflow: visible;
+    border: 0;
+    border-right: 1px solid var(--sidebar-glass-border);
+    border-radius: 0;
+    background: var(--sidebar-glass-bg);
+    box-shadow: none;
+    backdrop-filter: blur(34px) saturate(1.18);
+    -webkit-backdrop-filter: blur(34px) saturate(1.18);
+  }
+
+  .jarvis-desktop-shell .sidebar-topbar {
+    height: 54px;
+    padding: 18px 10px 4px 74px;
+    gap: 8px;
+  }
+
+  .jarvis-desktop-shell .sidebar-topbar .ghost-icon {
+    width: 22px;
+    height: 22px;
+    color: color-mix(in srgb, var(--text-soft) 82%, transparent);
+  }
+
+  .jarvis-desktop-shell .primary-nav {
+    gap: 3px;
+    padding: 6px 12px 22px;
+  }
+
+  .jarvis-desktop-shell .primary-nav .nav-item {
+    height: 27px;
+    gap: 9px;
+    padding: 0 4px;
+    border-radius: 7px;
+    color: color-mix(in srgb, var(--text) 72%, transparent);
+    font-size: 12px;
+    font-weight: 560;
+  }
+
+  .jarvis-desktop-shell .primary-nav .nav-item svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .jarvis-desktop-shell .primary-nav #new-convo {
+    background: transparent;
+  }
+
+  .jarvis-desktop-shell .primary-nav #new-convo:hover,
+  .jarvis-desktop-shell .primary-nav .nav-item:hover,
+  .jarvis-desktop-shell .primary-nav .nav-item.active {
+    background: var(--sidebar-item-active);
+  }
+
+  .jarvis-desktop-shell .convo-rail-sections {
+    padding: 0 10px 10px 12px;
+    gap: 18px;
+  }
+
+  .jarvis-desktop-shell #sidebar .section-label,
+  .jarvis-desktop-shell #sidebar .convo-section-title {
+    color: color-mix(in srgb, var(--text-soft) 80%, transparent);
+    font-size: 11px;
+    font-weight: 520;
+  }
+
+  .jarvis-desktop-shell .convo-main {
+    min-height: 26px;
+    padding: 0 4px;
+    border-radius: 7px;
+  }
+
+  .jarvis-desktop-shell .convo-title {
+    color: color-mix(in srgb, var(--text) 74%, transparent);
+    font-size: 12px;
+    font-weight: 540;
+  }
+
+  .jarvis-desktop-shell .convo-row-meta {
+    color: color-mix(in srgb, var(--text-soft) 74%, transparent);
+    font-size: 11px;
+  }
+
+  .jarvis-desktop-shell .sidebar-footer {
+    padding: 9px 10px 12px;
+    background: linear-gradient(to top, rgba(248, 250, 250, 0.94), rgba(248, 250, 250, 0.72) 70%, transparent);
+    border-top-color: rgba(225, 229, 231, 0.56);
+    backdrop-filter: blur(18px) saturate(1.08);
+    -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  }
+
+  .jarvis-desktop-shell .account-chip {
+    max-width: 112px;
+    height: 28px;
+    padding-inline: 8px;
+    gap: 8px;
+    color: color-mix(in srgb, var(--text) 72%, transparent);
+    font-size: 12px;
+  }
+
+  .jarvis-desktop-shell .account-menu {
+    left: 0;
+    bottom: calc(100% + 8px);
+    width: 170px;
+    padding: 7px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.94);
+    border-color: rgba(225, 229, 231, 0.92);
+    box-shadow: 0 18px 44px rgba(27, 26, 24, 0.14), 0 4px 12px rgba(27, 26, 24, 0.06);
+    backdrop-filter: blur(22px) saturate(1.08);
+    -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  }
+
+  .jarvis-desktop-shell .account-menu-title {
+    padding: 5px 6px 6px;
+    font-size: 12px;
+  }
+
+  .jarvis-desktop-shell .account-menu-row {
+    grid-template-columns: 42px minmax(0, 1fr);
+    min-height: 34px;
+    gap: 8px;
+    padding: 3px 4px 3px 6px;
+  }
+
+  .jarvis-desktop-shell .account-menu-label,
+  .jarvis-desktop-shell .account-menu-link {
+    font-size: 12px;
+  }
+
+  .jarvis-desktop-shell .account-menu .mini-switch {
+    min-width: 0;
+  }
+
+  .jarvis-desktop-shell .account-menu .lang-btn,
+  .jarvis-desktop-shell .account-menu .theme-btn {
+    min-width: 0;
+    height: 25px;
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+
+  .jarvis-desktop-shell .account-menu-link {
+    min-height: 30px;
+    margin-top: 3px;
+    padding: 7px 6px 0;
+  }
+
+  .jarvis-desktop-shell .resize-sidebar {
+    left: calc(var(--sidebar-width) - 2px);
+    width: 4px;
+  }
+
+  .jarvis-desktop-shell #chat {
+    margin: 7px 7px 7px 0;
+    overflow: hidden;
+    border: 1px solid var(--desktop-main-border);
+    border-left: 1px solid var(--desktop-main-border);
+    border-radius: 14px;
+    background: var(--desktop-main-bg);
+    box-shadow: none;
+  }
+
+  .jarvis-desktop-shell #chat-header {
+    height: 54px;
+    padding: 10px 18px 8px 22px;
+    border-bottom: 1px solid rgba(229, 231, 232, 0.74);
+  }
+
+  .jarvis-desktop-shell #chat:has(.welcome) #chat-header {
+    border-bottom-color: transparent;
+  }
+
+  .jarvis-desktop-shell .project-crumb {
+    color: color-mix(in srgb, var(--text) 72%, transparent);
+    font-size: 13px;
+    font-weight: 560;
+  }
+
+  .jarvis-desktop-shell .header-actions {
+    gap: 8px;
+  }
+
+  .jarvis-desktop-shell .header-actions .ghost-icon,
+  .jarvis-desktop-shell .workspace-panel-trigger,
+  .jarvis-desktop-shell .background-tasks-button {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border-color: rgba(226, 229, 231, 0.86);
+    background: rgba(255, 255, 255, 0.82);
+    color: color-mix(in srgb, var(--text-soft) 78%, transparent);
+    box-shadow: 0 2px 8px rgba(27, 26, 24, 0.035);
+  }
+
+  .jarvis-desktop-shell #messages:has(.welcome) {
+    display: grid;
+    place-items: center;
+    padding: 0 34px;
+  }
+
+  .jarvis-desktop-shell .welcome {
+    display: grid;
+    justify-items: center;
+    width: min(760px, 100%);
+    min-height: 575px;
+    padding: 0;
+    transform: translateY(10px);
+  }
+
+  .jarvis-desktop-shell .welcome-copy {
+    transform: translateY(-96px);
+  }
+
+  .jarvis-desktop-shell .welcome h1 {
+    margin: 0;
+    color: color-mix(in srgb, var(--text) 90%, transparent);
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 1.24;
+    text-align: center;
+  }
+
+  .jarvis-desktop-shell .welcome-suggestions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: min(560px, 100%);
+    gap: 12px;
+    margin-top: 214px;
+  }
+
+  .jarvis-desktop-shell .welcome-suggestion-card {
+    min-height: 92px;
+    padding: 12px 12px 11px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.78);
+    border-color: rgba(226, 229, 231, 0.82);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .jarvis-desktop-shell .welcome-suggestion-card strong {
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .jarvis-desktop-shell .welcome-suggestion-card span:last-child {
+    color: color-mix(in srgb, var(--text-soft) 78%, transparent);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .jarvis-desktop-shell #chat:has(.welcome) #input-area {
+    top: calc(50% - 28px);
+    right: 0;
+    bottom: auto;
+    left: var(--sidebar-width);
+    padding: 0 34px;
+    background: transparent;
+  }
+
+  .jarvis-desktop-shell #input-form {
+    width: min(var(--composer-width), calc(100vw - var(--sidebar-width) - 130px));
+  }
+
+  .jarvis-desktop-shell .input-wrapper {
+    overflow: hidden;
+    border-radius: 15px;
+    background: rgba(255, 255, 255, 0.96);
+    border-color: rgba(222, 225, 226, 0.92);
+    box-shadow: 0 18px 52px rgba(27, 26, 24, 0.06);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .jarvis-desktop-shell .composer-editor-row {
+    min-height: 86px;
+    padding: 14px 10px 8px 14px;
+  }
+
+  .jarvis-desktop-shell #input {
+    min-height: 52px;
+    padding: 0 2px;
+    color: color-mix(in srgb, var(--text) 82%, transparent);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .jarvis-desktop-shell #input::placeholder {
+    color: color-mix(in srgb, var(--text-soft) 54%, transparent);
+  }
+
+  .jarvis-desktop-shell .composer-meta {
+    min-height: 36px;
+    padding: 3px 8px 7px 10px;
+    border-top-color: rgba(226, 229, 231, 0.72);
+    background: rgba(247, 247, 247, 0.74);
+  }
+
+  .jarvis-desktop-shell .composer-meta .mode-badge {
+    height: 24px;
+    padding-inline: 9px;
+    border-radius: 999px;
+  }
+
+  .jarvis-desktop-shell .composer-tool-btn {
+    width: 25px;
+    height: 25px;
+  }
+
+  .jarvis-desktop-shell .send-btn {
+    width: 30px;
+    height: 30px;
+    background: #15171a;
+    color: #ffffff;
+  }
+
+  .jarvis-desktop-shell .send-btn:disabled {
+    background: #ececec;
+    color: #9a9a9a;
   }
 }
 
@@ -22176,56 +23423,131 @@ select.settings-input {
 }
 
 /* ----------------------------------------------------------------- */
-/* Desktop sidecar startup-error overlay. Only mounts inside the
-   Tauri shell when `desktop_status` reports `last_error` or the
-   server health check fails. Sits above every page so the user
-   can recover before getting frustrated by a blank chat. */
+/* Desktop startup-error panel. Only mounts inside the desktop shell
+   when `desktop_status` reports `last_error` or the server health
+   check fails. Non-modal by design: the app stays inspectable and
+   Settings remains reachable even when the embedded server is down. */
 
 .desktop-startup-overlay {
   position: fixed;
-  inset: 0;
+  right: 14px;
+  top: calc(var(--desktop-titlebar-height, 0px) + 10px);
   z-index: 2000;
-  background: rgba(8, 10, 14, 0.6);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  max-width: min(288px, calc(100vw - 28px));
+  pointer-events: none;
 }
+
+.jarvis-desktop-shell .desktop-startup-overlay {
+  right: 96px;
+  top: 12px;
+  max-width: min(380px, calc(100vw - 124px));
+}
+
 .desktop-startup-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.32);
-  padding: 24px 26px 22px;
-  width: min(560px, 100%);
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.11), 0 2px 8px rgba(0, 0, 0, 0.05);
+  padding: 12px;
+  width: min(320px, 100%);
   display: flex;
   flex-direction: column;
+  gap: 9px;
+  backdrop-filter: blur(24px) saturate(1.18);
+  -webkit-backdrop-filter: blur(24px) saturate(1.18);
+}
+.desktop-startup-card.is-compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: min(288px, 100%);
+  min-height: 36px;
+  padding: 5px 5px 5px 9px;
+  gap: 7px;
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.09), 0 1px 6px rgba(0, 0, 0, 0.04);
+}
+.desktop-startup-compact-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+.desktop-startup-status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #e07a45;
+  box-shadow: 0 0 0 3px rgba(224, 122, 69, 0.14);
+}
+.desktop-startup-compact-main .desktop-startup-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desktop-startup-compact-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+.desktop-startup-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 12px;
 }
 .desktop-startup-title {
   margin: 0;
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 650;
   color: var(--text);
+}
+.desktop-startup-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: -5px -7px 0 0;
+  color: var(--text-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+.desktop-startup-dismiss:hover {
+  color: var(--text);
+  background: var(--panel-hover);
 }
 .desktop-startup-hint {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--muted);
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 .desktop-startup-error {
-  font-size: 12.5px;
+  font-size: 11px;
   font-family: var(--font-mono, ui-monospace, monospace);
   background: var(--code-bg, rgba(255, 90, 90, 0.08));
   border: 1px solid rgba(255, 90, 90, 0.32);
   color: var(--text);
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
+  padding: 7px 8px;
+  border-radius: 8px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.desktop-startup-card.is-compact .desktop-startup-error {
+  max-height: 42px;
+  overflow: hidden;
 }
 .desktop-startup-meta {
   display: flex;
@@ -22250,27 +23572,42 @@ select.settings-input {
 .desktop-startup-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 6px;
+  margin-top: 2px;
 }
-.desktop-startup-actions .btn {
-  font-size: 13px;
-  padding: 7px 14px;
-  border-radius: var(--radius-md);
+.desktop-startup-actions .btn,
+.desktop-startup-compact-actions .btn {
+  font-size: 11.5px;
+  padding: 5px 8px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel-soft, transparent);
   color: var(--text);
   cursor: pointer;
 }
-.desktop-startup-actions .btn:hover:not(:disabled) {
+.desktop-startup-compact-actions .btn {
+  min-height: 25px;
+  padding: 3px 6px;
+  font-size: 11px;
+}
+.desktop-startup-compact-actions .desktop-startup-dismiss {
+  width: 25px;
+  height: 25px;
+  margin: 0 -2px 0 0;
+  font-size: 18px;
+}
+.desktop-startup-actions .btn:hover:not(:disabled),
+.desktop-startup-compact-actions .btn:hover:not(:disabled) {
   background: var(--panel-hover, rgba(255, 255, 255, 0.04));
 }
-.desktop-startup-actions .btn.primary {
+.desktop-startup-actions .btn.primary,
+.desktop-startup-compact-actions .btn.primary {
   background: var(--accent);
   color: var(--accent-fg, #fff);
   border-color: var(--accent);
 }
-.desktop-startup-actions .btn.primary:hover:not(:disabled) {
+.desktop-startup-actions .btn.primary:hover:not(:disabled),
+.desktop-startup-compact-actions .btn.primary:hover:not(:disabled) {
   filter: brightness(1.05);
 }
 .desktop-startup-actions .btn.ghost {
@@ -22293,6 +23630,22 @@ select.settings-input {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .desktop-startup-overlay {
+    right: 14px;
+    top: auto;
+    bottom: 14px;
+    max-width: calc(100vw - 28px);
+  }
+
+  .jarvis-desktop-shell .desktop-startup-overlay {
+    right: 14px;
+    top: auto;
+    bottom: 14px;
+    max-width: calc(100vw - 28px);
+  }
 }
 
 /* ============================================================
@@ -22935,6 +24288,12 @@ select.settings-input {
   color: var(--text);
   overflow: hidden;
 }
+
+.jarvis-desktop-shell .customize-page {
+  grid-area: chat;
+  background: var(--desktop-main-bg);
+}
+
 .customize-topbar {
   display: flex;
   align-items: center;
@@ -22944,6 +24303,15 @@ select.settings-input {
   padding: 8px 20px;
   border-bottom: 1px solid var(--border-soft);
   background: var(--bg);
+}
+
+.jarvis-desktop-shell .customize-topbar {
+  min-height: 54px;
+  padding: 9px 22px;
+  background: color-mix(in srgb, var(--panel) 18%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--border-soft) 68%, transparent);
+  backdrop-filter: blur(18px) saturate(1.06);
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
 }
 .customize-tabs {
   display: inline-flex;
@@ -23004,6 +24372,15 @@ select.settings-input {
   cursor: pointer;
   transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
 }
+
+.jarvis-desktop-shell .customize-back,
+.jarvis-desktop-shell .customize-action-btn {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  border-color: color-mix(in srgb, var(--border) 64%, transparent);
+  backdrop-filter: blur(12px) saturate(1.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
+}
+
 .customize-back:hover {
   background: var(--panel-hover);
   border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
@@ -23059,22 +24436,26 @@ select.settings-input {
   overflow-y: auto;
   padding: 38px 24px 80px;
 }
+
+.jarvis-desktop-shell .customize-content {
+  background: color-mix(in srgb, var(--panel) 12%, transparent);
+}
 .customize-market-content {
-  padding-top: 54px;
+  padding-top: 26px;
 }
 .customize-manage-content {
   padding-top: 24px;
 }
 .customize-hero {
-  width: min(100%, 860px);
-  margin: 0 auto 32px;
-  text-align: center;
+  width: min(100%, 930px);
+  margin: 0 auto 14px;
+  text-align: left;
 }
 .customize-title {
   margin: 0;
-  font-size: clamp(30px, 4vw, 42px);
-  font-weight: 760;
-  letter-spacing: 0;
+  font-size: 20px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
 }
 .customize-subtitle {
   margin: 12px auto 0;
@@ -23092,7 +24473,7 @@ select.settings-input {
 }
 .customize-market-column {
   width: min(100%, 930px);
-  gap: 22px;
+  gap: 14px;
 }
 .customize-manage-toolbar {
   display: grid;
@@ -23112,6 +24493,15 @@ select.settings-input {
   border-radius: 999px;
   background: var(--panel);
   color: var(--text-muted);
+}
+
+.jarvis-desktop-shell .customize-manage-search,
+.jarvis-desktop-shell .customize-market-search,
+.jarvis-desktop-shell .market-search .settings-input {
+  background: color-mix(in srgb, var(--input-bg) 58%, transparent);
+  border-color: color-mix(in srgb, var(--input-border) 64%, transparent);
+  backdrop-filter: blur(12px) saturate(1.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
 }
 .customize-manage-search span {
   color: var(--text-muted);
@@ -23133,9 +24523,10 @@ select.settings-input {
   color: var(--text-muted);
 }
 .customize-market-search {
-  width: min(100%, 570px);
-  min-height: 36px;
-  margin: -14px auto 16px;
+  width: 100%;
+  min-height: 38px;
+  margin: 0 0 6px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--bg) 70%, var(--panel));
 }
 .customize-market-search input {
@@ -23227,6 +24618,19 @@ select.settings-input {
   border-radius: 8px;
   background: var(--panel);
 }
+
+.jarvis-desktop-shell .customize-content-panel .settings-skill-item,
+.jarvis-desktop-shell .customize-content-panel .settings-mcp-item,
+.jarvis-desktop-shell .customize-content-panel .settings-plugin-item,
+.jarvis-desktop-shell .customize-feature-panel,
+.jarvis-desktop-shell .customize-plugin-icon {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  border-color: color-mix(in srgb, var(--border-soft) 68%, transparent);
+  box-shadow: 0 10px 26px rgba(27, 26, 24, 0.035);
+  backdrop-filter: blur(14px) saturate(1.06);
+  -webkit-backdrop-filter: blur(14px) saturate(1.06);
+}
+
 .customize-content-panel .settings-skill-item.active {
   border-color: color-mix(in srgb, var(--accent) 22%, transparent);
   background: color-mix(in srgb, var(--accent) 5%, var(--panel));
@@ -23403,6 +24807,13 @@ select.settings-input {
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
+
+.jarvis-desktop-shell .market-tags span,
+.jarvis-desktop-shell .market-tag,
+.jarvis-desktop-shell .customize-content-panel .settings-mcp-tools li {
+  background: color-mix(in srgb, var(--panel-hover) 68%, transparent);
+  border-color: color-mix(in srgb, var(--border-soft) 62%, transparent);
+}
 .market-tag {
   color: var(--text);
   font-weight: 650;
@@ -23419,30 +24830,31 @@ select.settings-input {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: center;
-  min-height: 216px;
-  margin-bottom: 12px;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: auto;
+  margin-bottom: 14px;
+  padding: 13px 16px;
   border: 1px solid var(--border-soft);
-  border-radius: 14px;
+  border-radius: 12px;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 30% 24%, color-mix(in srgb, #d97706 15%, transparent), transparent 32%),
-    radial-gradient(circle at 78% 28%, color-mix(in srgb, #7c3aed 13%, transparent), transparent 36%),
-    linear-gradient(135deg, color-mix(in srgb, var(--panel-hover) 62%, var(--bg)), var(--panel));
+  background: var(--panel-raised);
 }
 .customize-feature-chip {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  max-width: min(80%, 560px);
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  gap: 9px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
   font-size: var(--fs-13);
-  font-weight: 650;
-  box-shadow: 0 18px 42px color-mix(in srgb, #000 8%, transparent);
+  font-weight: 550;
+  box-shadow: none;
 }
 .customize-feature-icon {
   display: inline-flex;
@@ -23457,14 +24869,13 @@ select.settings-input {
   font-weight: 800;
 }
 .customize-feature-btn {
-  position: absolute;
-  left: 50%;
-  bottom: 30px;
-  transform: translateX(-50%);
+  position: static;
+  transform: none;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 34px;
+  min-height: 32px;
   padding: 0 14px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -23839,6 +25250,10 @@ select.settings-input {
 .memory-sync-badge.backend-icloud {
   background: #ffe9d8;
   color: #b45309;
+}
+[data-theme="dark"] .memory-sync-badge.backend-icloud {
+  background: rgba(180, 83, 9, 0.2);
+  color: #f0b27a;
 }
 .memory-sync-badge.backend-none {
   background: var(--panel-hover);
@@ -24348,4 +25763,2272 @@ select.settings-input {
   margin: 0;
   color: var(--text-soft);
   font-variant-numeric: tabular-nums;
+}
+
+/* ================= Codex reference polish =================
+   Electron-only visual tightening for the supplied Codex screenshots:
+   simpler sidebar IA, centered empty-chat composer, and Settings as a
+   two-pane page with a quiet left rail. */
+
+/* (consolidated) --sidebar-width/--composer-width live in the html-scoped
+   block (~line 399); the #sidebar surface is defined once near the end of
+   this section. The 258/790 sizing + rounded-corner block here was fully
+   overridden and never rendered. */
+
+.jarvis-desktop-shell .sidebar-topbar {
+  height: 50px;
+  padding: 16px 14px 3px;
+}
+
+.jarvis-desktop-shell .sidebar-topbar .ghost-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.primary-nav {
+  display: grid;
+  gap: 2px;
+  padding: 4px 14px 18px;
+}
+
+.primary-nav .nav-item,
+.jarvis-desktop-shell .primary-nav .nav-item {
+  height: 30px;
+  gap: 10px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: var(--desktop-sidebar-muted);
+  font-size: var(--fs-14);
+  font-weight: 560;
+}
+
+.primary-nav .nav-item.active,
+.jarvis-desktop-shell .primary-nav .nav-item.active,
+.primary-nav .nav-item:hover {
+  color: var(--text);
+  background: var(--sidebar-item-active);
+}
+
+.primary-nav #new-convo {
+  color: var(--text);
+  background: var(--sidebar-item-active);
+}
+
+.jarvis-desktop-shell .nav-list {
+  padding-inline: 14px;
+}
+
+#sidebar .section-label,
+#sidebar .convo-section-title {
+  border: 0;
+  background: transparent;
+  color: var(--desktop-sidebar-muted);
+  font-size: var(--fs-13);
+  font-weight: 520;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.jarvis-desktop-shell .convo-rail-sections {
+  padding: 0 12px 8px 14px;
+  gap: 16px;
+}
+
+.jarvis-desktop-shell .convo-section-header {
+  min-height: 27px;
+  margin-bottom: 2px;
+}
+
+.jarvis-desktop-shell .convo-main {
+  min-height: 31px;
+  padding-left: 8px;
+  padding-right: 5px;
+  border-radius: 7px;
+}
+
+.jarvis-desktop-shell .convo-title {
+  font-size: var(--fs-13);
+  font-weight: 510;
+}
+
+.jarvis-desktop-shell .convo-row-meta {
+  font-size: 12px;
+}
+
+.jarvis-desktop-shell .sidebar-footer {
+  padding: 9px 14px 12px;
+}
+
+.jarvis-desktop-shell #messages:has(.welcome) {
+  display: grid;
+  place-items: center;
+  padding: 0 36px;
+}
+
+.welcome {
+  width: min(760px, 100%);
+  min-height: 560px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.jarvis-desktop-shell .welcome {
+  padding-top: 0;
+  transform: translateY(-4px);
+}
+
+.welcome-copy {
+  transform: translateY(-78px);
+}
+
+.welcome h1,
+.jarvis-desktop-shell .welcome h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: 28px;
+  font-weight: 540;
+  line-height: 1.22;
+}
+
+.welcome p {
+  display: none;
+}
+
+.welcome-suggestions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  width: min(720px, 100%);
+  margin-top: 154px;
+}
+
+.jarvis-desktop-shell .welcome-suggestions {
+  margin-top: 186px;
+}
+
+.welcome-suggestion-card {
+  position: relative;
+  display: grid;
+  grid-template-rows: 24px auto auto;
+  justify-items: start;
+  gap: 6px;
+  min-height: 112px;
+  padding: 15px 16px 14px;
+  text-align: left;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+  box-shadow: 0 8px 22px rgba(27, 26, 24, 0.032);
+  cursor: pointer;
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.welcome-suggestion-card:hover {
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border-color: color-mix(in srgb, var(--text-muted) 34%, transparent);
+}
+
+.welcome-suggestion-card.is-connected {
+  color: color-mix(in srgb, var(--text) 58%, transparent);
+}
+
+.welcome-suggestion-check {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #12a150;
+  color: #ffffff;
+}
+
+.welcome-suggestion-card strong {
+  font-size: var(--fs-14);
+  font-weight: 650;
+}
+
+.welcome-suggestion-card span:last-child {
+  color: var(--text-soft);
+  font-size: var(--fs-13);
+  line-height: 1.45;
+}
+
+.welcome-suggestion-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border-soft);
+}
+
+/* Full-color brand logos (Slack / Gmail / Drive) sit on a neutral square,
+   matching Codex's card icons. The per-brand color/tint is no longer
+   needed — the SVG carries the brand colors. */
+.welcome-suggestion-mark svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
+.jarvis-desktop-shell #chat:has(.welcome) #input-area {
+  top: calc(50% - 76px);
+  bottom: auto;
+  padding-top: 0;
+  padding-bottom: 0;
+  background: transparent;
+}
+
+.jarvis-desktop-shell #chat:has(.welcome) .composer-hint-row {
+  display: none;
+}
+
+.input-wrapper {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.composer-editor-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 78px;
+  padding: 14px 10px 8px 17px;
+}
+
+.jarvis-desktop-shell .input-wrapper {
+  min-height: 0;
+  padding: 0;
+  border-radius: 17px;
+  background: color-mix(in srgb, var(--input-bg) 94%, transparent);
+  border-color: rgba(222, 222, 218, 0.96);
+  box-shadow: 0 18px 42px rgba(27, 26, 24, 0.065);
+}
+
+.jarvis-desktop-shell .composer-editor-row {
+  min-height: 70px;
+}
+
+.jarvis-desktop-shell #input {
+  min-height: 42px;
+  padding-top: 0;
+  font-size: var(--fs-15);
+}
+
+.composer-editor-row .send-btn,
+.composer-editor-row .stop-btn {
+  align-self: flex-end;
+  margin-top: 0;
+}
+
+.composer-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "controls cluster";
+  align-items: center;
+  column-gap: 10px;
+  min-height: 38px;
+  padding: 6px 8px 8px 13px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+}
+
+/* Codex-style context row: project · runtime · branch as a quiet chevron
+   row BELOW/outside the rounded input box (the in-box meta now holds only
+   the action controls + model). */
+.composer-context-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 2px 0;
+  min-width: 0;
+}
+.composer-context-row .composer-meta-context {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.jarvis-desktop-shell .composer-context-row {
+  margin: 9px 8px 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+/* When there's no contextual crumb to show (e.g. the shoulder hides
+   itself with no git / no workspace) collapse back to a single bar so
+   we don't leave an empty row + gap above the controls. */
+.composer-meta:has(.composer-meta-context:empty) {
+  grid-template-areas: "controls cluster";
+  row-gap: 0;
+}
+
+.composer-meta-controls {
+  grid-area: controls;
+}
+
+.composer-model-cluster {
+  grid-area: cluster;
+  justify-self: end;
+}
+
+.jarvis-desktop-shell .composer-meta {
+  min-height: 34px;
+  padding: 3px 8px 7px 11px;
+  font-size: 12px;
+}
+
+.composer-meta-context {
+  grid-area: context;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Belt-and-suspenders against the squeeze: when the actions + model
+   cluster eat the row, the 1fr context column can shrink toward 0.
+   Force its contents onto a single line and clip — never let CJK
+   text wrap one glyph per line into a tall vertical stack. */
+.composer-meta-context > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-meta .composer-project-rail,
+.composer-meta .composer-shoulder {
+  width: auto;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+}
+
+.composer-meta .composer-project-rail,
+.composer-meta .composer-shoulder {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.jarvis-desktop-shell .composer-meta .composer-project-rail {
+  min-height: 24px;
+  gap: 5px;
+  color: color-mix(in srgb, var(--text-muted) 82%, transparent);
+}
+
+.jarvis-desktop-shell .composer-meta .composer-project-chip {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jarvis-desktop-shell .composer-meta .composer-project-chip:hover {
+  background: color-mix(in srgb, var(--panel-hover) 70%, transparent);
+  color: var(--text);
+}
+
+.jarvis-desktop-shell .composer-meta .composer-project-chip.is-selected {
+  padding-left: 8px;
+  border: 0;
+  border-style: none;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.jarvis-desktop-shell .composer-meta .composer-project-chip.is-selected::before {
+  display: none;
+}
+
+.jarvis-desktop-shell .composer-meta .composer-project-chip-name {
+  max-width: 148px;
+}
+
+.jarvis-desktop-shell .composer-meta .composer-project-chip-clear {
+  width: 18px;
+  height: 18px;
+  margin-left: 0;
+  border-radius: 5px;
+}
+
+.composer-meta .composer-shoulder {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.composer-meta-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.composer-meta-controls > .mode-badge,
+.composer-meta-controls > .usage-slot {
+  flex: 0 0 auto;
+}
+
+.composer-model-cluster {
+  justify-content: flex-end;
+}
+
+.composer-meta > .model-control,
+.composer-meta .model-control {
+  justify-self: end;
+}
+
+.jarvis-desktop-shell .send-btn {
+  align-self: end;
+  width: 34px;
+  height: 34px;
+  margin-top: 26px;
+  border-radius: 999px;
+  color: #fff;
+  background: #8c8c8c;
+}
+
+.jarvis-desktop-shell .send-btn:disabled {
+  color: #8f8f8f;
+  background: #ededed;
+}
+
+.jarvis-desktop-shell .permission-mode-chip {
+  min-height: 24px;
+  padding: 0 8px;
+  gap: 5px;
+  background: transparent;
+  color: var(--accent-red, #c94d45);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.jarvis-desktop-shell .permission-mode-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-red, #c94d45) 8%, transparent);
+}
+
+.jarvis-desktop-shell .permission-mode-chip-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.jarvis-desktop-shell .meta-dot {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.jarvis-desktop-shell,
+.jarvis-desktop-shell body,
+.jarvis-desktop-shell #app {
+  background: transparent;
+}
+
+.jarvis-desktop-shell #app {
+  padding-top: 0;
+  /* Codex-style rounded, bordered window panel. The Electron window is
+     transparent, so the content draws the window's rounded corners +
+     hairline outline; overflow:hidden clips the sidebar/chat panels to
+     the rounded shape (incl. the right conversation area's corners). */
+  border-radius: var(--desktop-window-radius);
+  border: 1px solid var(--desktop-main-border);
+  overflow: hidden;
+}
+
+.jarvis-desktop-shell #app::after {
+  display: none;
+}
+
+.jarvis-desktop-shell #chat,
+.jarvis-desktop-shell .settings-page,
+.jarvis-desktop-shell .customize-page,
+.jarvis-desktop-shell .projects-page,
+.jarvis-desktop-shell .docs-page,
+.jarvis-desktop-shell .docs-page-3p,
+.jarvis-desktop-shell .docs-page-single,
+.jarvis-desktop-shell .work-overview-page-shell,
+.jarvis-desktop-shell .auto-mode-page,
+.jarvis-desktop-shell .worktrees-page {
+  min-height: 0;
+  overflow: hidden;
+  background: var(--desktop-main-bg);
+  border: 0;
+  border-left: 1px solid var(--desktop-main-border);
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.jarvis-desktop-shell #chat {
+  border-left-color: var(--desktop-main-border);
+}
+
+.jarvis-desktop-shell #sidebar {
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--sidebar-glass-border) 72%, transparent);
+  border-radius: 0;
+  background: var(--sidebar-glass-bg);
+  box-shadow: none;
+  backdrop-filter: blur(16px) saturate(1.04);
+  -webkit-backdrop-filter: blur(16px) saturate(1.04);
+}
+
+.jarvis-desktop-shell .sidebar-topbar {
+  height: 48px;
+  padding: 15px 10px 4px 82px;
+  gap: 4px;
+}
+
+.jarvis-desktop-shell .sidebar-topbar .ghost-icon {
+  width: 22px;
+  height: 22px;
+  color: color-mix(in srgb, var(--text-muted) 82%, transparent);
+}
+
+.jarvis-desktop-shell .sidebar-history-btn {
+  color: color-mix(in srgb, var(--text-muted) 70%, transparent);
+}
+
+.jarvis-desktop-shell .primary-nav {
+  padding: 3px 8px 18px;
+  gap: 3px;
+}
+
+.jarvis-desktop-shell .primary-nav .nav-item,
+.jarvis-desktop-shell .nav-list .nav-item {
+  height: 28px;
+  gap: 9px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--text) 68%, transparent);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.jarvis-desktop-shell .primary-nav #new-convo {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+}
+
+.jarvis-desktop-shell .primary-nav .nav-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jarvis-desktop-shell .nav-shortcut {
+  display: none;
+  justify-self: end;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: color-mix(in srgb, var(--text) 48%, transparent);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.jarvis-desktop-shell .primary-nav .nav-item svg,
+.jarvis-desktop-shell .nav-list .nav-item svg {
+  width: 15px;
+  height: 15px;
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+}
+
+.jarvis-desktop-shell .primary-nav .nav-item:hover,
+.jarvis-desktop-shell .primary-nav .nav-item.active,
+.jarvis-desktop-shell .nav-list .nav-item:hover,
+.jarvis-desktop-shell .nav-list .nav-item.active {
+  color: var(--text);
+  background: var(--sidebar-item-hover);
+}
+
+.jarvis-desktop-shell .primary-nav #new-convo {
+  color: var(--text);
+  background: var(--sidebar-item-active);
+  font-weight: 650;
+}
+
+.jarvis-desktop-shell .convo-rail-sections {
+  padding: 0 9px 12px;
+  gap: 16px;
+}
+
+.jarvis-desktop-shell .convo-section-header {
+  min-height: 28px;
+  margin-bottom: 2px;
+  padding-inline: 6px 2px;
+}
+
+.jarvis-desktop-shell #sidebar .section-label,
+.jarvis-desktop-shell #sidebar .convo-section-title {
+  color: color-mix(in srgb, var(--text) 54%, transparent);
+  font-size: 13px;
+  font-weight: 520;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Codex detail pass: section headers read as plain muted labels (对话 /
+   项目) like Codex. The organize/sort + new-convo/new-project buttons are
+   kept (no lost function) but fade in only on hover / keyboard focus. */
+.jarvis-desktop-shell .convo-section-actions {
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.jarvis-desktop-shell .convo-section-header:hover .convo-section-actions,
+.jarvis-desktop-shell .convo-section-actions:focus-within,
+.jarvis-desktop-shell .convo-section-icon.active {
+  opacity: 1;
+}
+/* Codex has no per-row source badge; the requirement source stays in the
+   row's aria-label, so this is visual-only. */
+.jarvis-desktop-shell .convo-title-zone .convo-chip.source {
+  display: none;
+}
+/* Codex section labels (对话 / 项目) are plain text — drop the collapse
+   chevron. The label button still toggles collapse on click. */
+.jarvis-desktop-shell .convo-section-title > svg {
+  display: none;
+}
+
+.jarvis-desktop-shell .convo-section-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.jarvis-desktop-shell .convo-group-label.is-project {
+  min-height: 25px;
+  padding: 0 8px;
+  gap: 7px;
+  color: color-mix(in srgb, var(--text) 48%, transparent);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.jarvis-desktop-shell .convo-group-empty {
+  padding: 4px 0 7px 26px;
+  color: color-mix(in srgb, var(--text) 42%, transparent);
+  font-size: 12px;
+}
+
+.jarvis-desktop-shell #pinned-list li:not(.convo-group-label),
+.jarvis-desktop-shell #running-list li:not(.convo-group-label),
+.jarvis-desktop-shell #convo-list li:not(.convo-group-label),
+.jarvis-desktop-shell #project-convo-list li:not(.convo-group-label),
+.jarvis-desktop-shell .convo-section-list li:not(.convo-group-label):not(.convo-project-group) {
+  min-height: 29px;
+}
+
+.jarvis-desktop-shell .convo-main {
+  min-height: 29px;
+  padding: 0 3px 0 8px;
+  border-radius: 7px;
+}
+
+.jarvis-desktop-shell .convo-main:hover,
+.jarvis-desktop-shell #convo-list li.active .convo-main,
+.jarvis-desktop-shell #project-convo-list li.active .convo-main {
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.jarvis-desktop-shell .convo-title-zone {
+  gap: 5px;
+}
+
+.jarvis-desktop-shell .convo-title {
+  color: color-mix(in srgb, var(--text) 78%, transparent);
+  font-size: 12.5px;
+  font-weight: 590;
+}
+
+.jarvis-desktop-shell .convo-row-meta,
+.jarvis-desktop-shell .convo-time {
+  color: color-mix(in srgb, var(--text) 42%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jarvis-desktop-shell .convo-chip.source {
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 640;
+}
+
+.jarvis-desktop-shell .convo-group-expand {
+  margin: 2px 0 0 26px;
+  color: color-mix(in srgb, var(--text) 40%, transparent);
+  font-size: 12px;
+}
+
+.jarvis-desktop-shell .sidebar-footer {
+  padding: 9px 12px 12px;
+  background: var(--desktop-sidebar-footer-bg, linear-gradient(to top, rgba(244, 247, 244, 0.18), rgba(244, 247, 244, 0.055) 70%, transparent));
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+}
+
+.jarvis-desktop-shell .account-menu {
+  background: #fafaf9;
+  border-color: rgba(215, 212, 205, 0.72);
+  box-shadow: 0 26px 58px rgba(27, 26, 24, 0.2), 0 8px 20px rgba(27, 26, 24, 0.1);
+  backdrop-filter: blur(24px) saturate(1.12);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] .account-menu {
+  background: #161616;
+  border-color: rgba(82, 82, 82, 0.72);
+  box-shadow: 0 26px 58px rgba(0, 0, 0, 0.38), 0 8px 20px rgba(0, 0, 0, 0.24);
+}
+
+.jarvis-desktop-shell #chat-header {
+  height: 50px;
+  padding: 14px 24px 4px 28px;
+  color: var(--text-soft);
+}
+
+.jarvis-desktop-shell .project-crumb {
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.jarvis-desktop-shell .header-actions .ghost-icon,
+.jarvis-desktop-shell .workspace-panel-trigger,
+.jarvis-desktop-shell .background-tasks-button {
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  background: rgba(255, 255, 255, 0.54);
+  box-shadow: none;
+}
+
+.jarvis-desktop-shell #messages:has(.welcome) {
+  display: grid;
+  place-items: center;
+  padding: 0 32px;
+}
+
+.jarvis-desktop-shell .welcome {
+  width: min(580px, 100%);
+  min-height: 548px;
+  padding: 0;
+  transform: translateY(18px);
+}
+
+.jarvis-desktop-shell .welcome-copy {
+  transform: translateY(-86px);
+}
+
+.jarvis-desktop-shell .welcome h1 {
+  font-size: 25px;
+  font-weight: 500;
+  line-height: 1.26;
+}
+
+.jarvis-desktop-shell .welcome-suggestions {
+  width: min(540px, 100%);
+  gap: 12px;
+  margin-top: 172px;
+}
+
+.jarvis-desktop-shell .welcome-suggestion-card {
+  min-height: 92px;
+  padding: 12px 12px 11px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(224, 224, 220, 0.78);
+  box-shadow: 0 8px 20px rgba(27, 26, 24, 0.035);
+}
+
+.jarvis-desktop-shell #chat:has(.welcome) #input-area {
+  top: calc(50% - 95px);
+  right: max(0px, var(--rail-width));
+  bottom: auto;
+  left: var(--sidebar-width);
+  padding: 0 32px;
+  background: transparent;
+}
+
+body.workspace-rail-closed.jarvis-desktop-shell #chat:has(.welcome) #input-area {
+  right: 0;
+}
+
+.jarvis-desktop-shell #input-form {
+  width: min(var(--composer-width), 100%);
+}
+
+.jarvis-desktop-shell .input-wrapper {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(222, 222, 218, 0.96);
+  box-shadow: 0 16px 36px rgba(27, 26, 24, 0.07);
+  backdrop-filter: blur(18px) saturate(1.18);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+}
+
+.jarvis-desktop-shell .composer-editor-row {
+  min-height: 78px;
+  padding: 16px 12px 10px 18px;
+}
+
+.jarvis-desktop-shell #input {
+  min-height: 46px;
+  padding: 0 2px;
+  color: color-mix(in srgb, var(--text) 82%, transparent);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.jarvis-desktop-shell .composer-meta {
+  min-height: 34px;
+  padding: 3px 8px 7px 11px;
+  border-top: 1px solid rgba(224, 224, 220, 0.64);
+  font-size: 12px;
+}
+
+.jarvis-desktop-shell[data-theme="dark"] .composer-meta {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+.jarvis-desktop-shell .model-trigger {
+  max-width: 230px;
+  height: 26px;
+  padding-inline: 8px 6px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.jarvis-desktop-shell .usage-slot {
+  width: 18px;
+  height: 18px;
+}
+
+.jarvis-desktop-shell .send-btn {
+  width: 34px;
+  height: 34px;
+  margin-top: 24px;
+  border-radius: 999px;
+  background: #17191d;
+  color: #fff;
+}
+
+.jarvis-desktop-shell .send-btn:disabled {
+  background: #ededed;
+  color: #9d9d9a;
+}
+
+.jarvis-desktop-shell .composer-editor-row .send-btn,
+.jarvis-desktop-shell .composer-editor-row .stop-btn {
+  align-self: center;
+  margin-top: 0;
+}
+
+.jarvis-desktop-shell[data-theme="dark"] #chat,
+.jarvis-desktop-shell[data-theme="dark"] .settings-page,
+.jarvis-desktop-shell[data-theme="dark"] .customize-page,
+.jarvis-desktop-shell[data-theme="dark"] .projects-page,
+.jarvis-desktop-shell[data-theme="dark"] .docs-page,
+.jarvis-desktop-shell[data-theme="dark"] .docs-page-3p,
+.jarvis-desktop-shell[data-theme="dark"] .docs-page-single,
+.jarvis-desktop-shell[data-theme="dark"] .work-overview-page-shell,
+.jarvis-desktop-shell[data-theme="dark"] .auto-mode-page,
+.jarvis-desktop-shell[data-theme="dark"] .worktrees-page {
+  background: var(--desktop-main-bg);
+  border-color: var(--desktop-main-border);
+  box-shadow: none;
+}
+
+/* Dark-mode glass. The desktop-shell light surfaces above hardcode
+   white glass (rgba(255,255,255,…)) — over the near-black dark canvas
+   those would render as bright panels (composer, welcome cards, active
+   convo rows, header icon buttons). Re-skin them as subtle light-on-dark
+   glass so the frosted look survives in dark mode. Higher specificity
+   ([data-theme="dark"]) so these win over the light rules above. */
+.jarvis-desktop-shell[data-theme="dark"] .input-wrapper {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.42);
+}
+.jarvis-desktop-shell[data-theme="dark"] .welcome-suggestion-card {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+}
+.jarvis-desktop-shell[data-theme="dark"] .welcome-suggestion-card:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.jarvis-desktop-shell[data-theme="dark"] .convo-main:hover,
+.jarvis-desktop-shell[data-theme="dark"] #convo-list li.active .convo-main,
+.jarvis-desktop-shell[data-theme="dark"] #project-convo-list li.active .convo-main {
+  background: rgba(255, 255, 255, 0.07);
+}
+.jarvis-desktop-shell[data-theme="dark"] .convo-chip.source {
+  background: rgba(255, 255, 255, 0.07);
+}
+.jarvis-desktop-shell[data-theme="dark"] .header-actions .ghost-icon,
+.jarvis-desktop-shell[data-theme="dark"] .workspace-panel-trigger,
+.jarvis-desktop-shell[data-theme="dark"] .background-tasks-button {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.jarvis-desktop-shell[data-theme="dark"] .send-btn {
+  background: #ececec;
+  color: #17191d;
+}
+.jarvis-desktop-shell[data-theme="dark"] .send-btn:disabled {
+  background: #2a2a2a;
+  color: #6e6e6e;
+}
+
+.settings-page {
+  display: block;
+}
+
+.settings-header {
+  display: none;
+}
+
+.settings-body,
+.jarvis-desktop-shell .settings-body {
+  height: 100%;
+  grid-template-columns: 268px minmax(0, 1fr);
+}
+
+.settings-nav {
+  padding-top: 18px;
+}
+
+.jarvis-desktop-shell .settings-nav {
+  padding: calc(var(--desktop-titlebar-height) + 14px) 10px 18px 16px;
+  background: var(--sidebar-glass-bg);
+}
+
+.settings-nav-back {
+  align-self: flex-start;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  border-radius: 6px;
+}
+
+.jarvis-desktop-shell .settings-nav-back {
+  height: 28px;
+  padding: 0 4px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.settings-nav-back:hover {
+  background: var(--sidebar-item-hover);
+}
+
+.settings-nav-search {
+  height: 30px;
+  margin: 2px 0 8px;
+  padding: 4px 8px;
+  border-radius: 9px;
+}
+
+.settings-nav-group {
+  gap: 1px;
+}
+
+.settings-nav-group-title {
+  padding: 13px 8px 5px;
+  font-size: 12px;
+  font-weight: 520;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 31px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: var(--fs-14);
+  font-weight: 530;
+}
+
+.settings-nav-link svg {
+  flex: 0 0 auto;
+  color: var(--text-soft);
+}
+
+.settings-nav-link.active svg {
+  color: var(--text);
+}
+
+.settings-content {
+  padding: 58px 36px 90px;
+}
+
+.jarvis-desktop-shell .settings-content {
+  padding-top: 58px;
+  background: color-mix(in srgb, var(--panel) 10%, transparent);
+}
+
+.settings-content-inner {
+  width: min(100%, 600px);
+}
+
+.settings-section-header h2 {
+  margin-bottom: 12px;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.settings-section-desc {
+  display: none;
+}
+
+.settings-section-body {
+  gap: 12px;
+}
+
+.settings-tabs-list {
+  min-height: 30px;
+  margin-bottom: 0;
+  border-bottom: 0;
+  gap: 6px;
+}
+
+.settings-tabs {
+  gap: 9px;
+}
+
+.settings-tabs-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.settings-tabs-tab.active {
+  color: var(--text);
+  background: var(--sidebar-item-active);
+  border-bottom-color: transparent;
+}
+
+.settings-row {
+  min-height: 44px;
+  padding: 0 14px;
+}
+
+.settings-section-embedded {
+  border-radius: 12px;
+}
+
+.settings-theme-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.settings-theme-preview {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
+.settings-theme-preview.active .theme-preview-chrome {
+  border-color: #339cff;
+  box-shadow: 0 0 0 2px rgba(51, 156, 255, 0.16);
+}
+
+.settings-theme-preview:hover .theme-preview-chrome {
+  border-color: color-mix(in srgb, var(--text-muted) 36%, var(--border));
+}
+
+.theme-preview-chrome {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34% 1fr;
+  grid-template-rows: 1fr;
+  height: 104px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  background: #f6f6f5;
+}
+
+.theme-preview-chrome.tone-system {
+  background: linear-gradient(90deg, #9c9c9a 0 50%, #525252 50% 100%);
+}
+
+.theme-preview-chrome.tone-dark {
+  background: #525252;
+}
+
+.theme-preview-sidebar {
+  grid-row: 1;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.tone-light .theme-preview-sidebar {
+  background: #ececec;
+}
+
+.theme-preview-content {
+  grid-column: 2;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 18px 16px 0;
+}
+
+.theme-preview-content span,
+.theme-preview-card span {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.26);
+}
+
+.theme-preview-content span:first-child {
+  width: 72%;
+  height: 7px;
+  margin-inline: auto;
+}
+
+.theme-preview-content span:nth-child(2) {
+  width: 96%;
+}
+
+.theme-preview-content span:nth-child(3) {
+  width: 58%;
+}
+
+.theme-preview-card {
+  position: absolute;
+  left: 22%;
+  right: 8%;
+  bottom: 14px;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.tone-dark .theme-preview-card,
+.tone-system .theme-preview-card {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.settings-theme-diff {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.settings-theme-diff-pane {
+  display: grid;
+  padding: 8px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.settings-theme-diff-pane + .settings-theme-diff-pane {
+  border-left: 4px solid #16a34a;
+}
+
+.settings-theme-diff-pane div {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  padding: 0 12px 0 0;
+}
+
+.settings-theme-diff-pane span {
+  color: var(--text-soft);
+  text-align: center;
+}
+
+.settings-theme-diff-pane code {
+  min-width: 0;
+  overflow: hidden;
+  color: #8b5cf6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-theme-diff-pane.is-remove div:nth-child(n+2):nth-child(-n+4) {
+  background: #fde7e3;
+}
+
+.settings-theme-diff-pane.is-remove div:nth-child(n+2):nth-child(-n+4) code {
+  color: #c55a11;
+}
+
+.settings-theme-diff-pane.is-add div:nth-child(n+2):nth-child(-n+4) {
+  background: #e7f5e8;
+}
+
+.settings-theme-diff-pane.is-add div:nth-child(n+2):nth-child(-n+4) code {
+  color: #208142;
+}
+
+[data-theme="dark"] .settings-theme-diff-pane.is-remove div:nth-child(n+2):nth-child(-n+4) {
+  background: rgba(248, 81, 73, 0.13);
+}
+[data-theme="dark"] .settings-theme-diff-pane.is-remove div:nth-child(n+2):nth-child(-n+4) code {
+  color: #f0a892;
+}
+[data-theme="dark"] .settings-theme-diff-pane.is-add div:nth-child(n+2):nth-child(-n+4) {
+  background: rgba(63, 185, 80, 0.13);
+}
+[data-theme="dark"] .settings-theme-diff-pane.is-add div:nth-child(n+2):nth-child(-n+4) code {
+  color: #7ee787;
+}
+
+.settings-theme-token-card {
+  overflow: hidden;
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.settings-theme-token-head,
+.settings-theme-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 41px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settings-theme-token-head {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.settings-theme-token-head span {
+  color: var(--text-soft);
+  font-size: var(--fs-12);
+  font-weight: 500;
+}
+
+.settings-theme-token-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-theme-token-row > span {
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: 610;
+}
+
+.settings-theme-token-row code {
+  min-width: 128px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-hover);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: center;
+}
+
+.settings-theme-token-row .token-swatch {
+  position: relative;
+  padding-left: 26px;
+}
+
+.settings-theme-token-row .token-swatch::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+
+.settings-theme-token-row .token-swatch.accent {
+  color: #fff;
+  background: #339cff;
+  border-color: #339cff;
+}
+
+.settings-theme-token-row .token-swatch.accent::before {
+  background: #339cff;
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.settings-theme-token-row .token-swatch.background {
+  background: #fff;
+  color: #222;
+}
+
+.settings-theme-token-row .token-swatch.background::before {
+  background: #fff;
+}
+
+.settings-theme-token-row .token-swatch.foreground {
+  background: #1a1c1f;
+  color: #fff;
+}
+
+.settings-theme-token-row .token-swatch.foreground::before {
+  background: #1a1c1f;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.composer-file-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.input-wrapper.is-dragging-files {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 9%, transparent),
+      color-mix(in srgb, var(--panel) 94%, transparent)
+    );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent),
+    0 18px 48px rgba(0, 0, 0, 0.12);
+}
+
+.composer-attachment-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 0 10px 9px;
+}
+
+.composer-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: min(280px, 100%);
+  height: 30px;
+  gap: 7px;
+  padding: 0 6px 0 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, var(--text-muted));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel) 86%, var(--bg));
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: 560;
+}
+
+.composer-attachment-chip.is-loading {
+  color: var(--text-muted);
+}
+
+.composer-attachment-chip.is-error {
+  border-color: color-mix(in srgb, var(--danger) 44%, var(--border));
+  background: color-mix(in srgb, var(--danger) 9%, var(--panel));
+}
+
+.composer-attachment-thumb {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--panel-hover);
+}
+
+.composer-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-meta {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.composer-attachment-remove {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 21px;
+  height: 21px;
+  margin-left: 1px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.composer-attachment-remove:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.composer-add-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.composer-add-menu .composer-tool-btn[aria-expanded="true"],
+.composer-tool-btn:focus-visible,
+.composer-add-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 54%, transparent);
+  outline-offset: 2px;
+}
+
+.composer-add-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  z-index: 120;
+  display: grid;
+  min-width: 248px;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text-muted));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 96%, var(--bg));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.16);
+}
+
+.composer-add-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-add-item:hover {
+  background: var(--panel-hover);
+}
+
+.composer-add-item svg {
+  color: var(--text-muted);
+}
+
+.composer-add-item span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.composer-add-item strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: 640;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-add-item small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .welcome-suggestions {
+    grid-template-columns: 1fr;
+    margin-top: 118px;
+  }
+
+  .settings-body,
+  .jarvis-desktop-shell .settings-body {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .settings-theme-preview-grid,
+  .settings-theme-diff {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 980px) {
+  .jarvis-desktop-shell {
+    --sidebar-width: 0px;
+    --rail-width: 0px;
+    --composer-width: calc(100vw - 28px);
+  }
+
+  .jarvis-desktop-shell #app,
+  .jarvis-desktop-shell #app.page-app,
+  body.sidebar-closed.jarvis-desktop-shell #app,
+  body.workspace-rail-closed.jarvis-desktop-shell #app,
+  body.sidebar-closed.workspace-rail-closed.jarvis-desktop-shell #app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "chat";
+  }
+
+  .jarvis-desktop-shell #chat {
+    grid-area: chat;
+  }
+
+  .jarvis-desktop-shell #messages:has(.welcome) {
+    display: block;
+    padding: 88px 28px 220px;
+  }
+
+  .jarvis-desktop-shell .welcome {
+    min-height: 0;
+    align-content: start;
+    transform: none;
+  }
+
+  .jarvis-desktop-shell .welcome-copy {
+    transform: none;
+  }
+
+  .jarvis-desktop-shell .welcome h1 {
+    font-size: 24px;
+  }
+
+  .jarvis-desktop-shell .welcome-suggestions {
+    grid-template-columns: 1fr;
+    width: min(570px, 100%);
+    margin-top: 34px;
+    gap: 12px;
+  }
+
+  .jarvis-desktop-shell #chat:has(.welcome) #input-area {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    padding: 0 14px 14px;
+    background: linear-gradient(
+      180deg,
+      transparent,
+      color-mix(in srgb, var(--bg) 42%, transparent) 46%,
+      color-mix(in srgb, var(--bg) 76%, transparent)
+    );
+  }
+}
+
+@media (max-width: 640px) {
+  .composer-meta {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "context"
+      "controls"
+      "cluster";
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .composer-meta:has(.composer-meta-context:empty) {
+    grid-template-areas:
+      "controls"
+      "cluster";
+  }
+
+  .composer-meta-controls,
+  .composer-model-cluster {
+    justify-content: flex-start;
+    justify-self: stretch;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .composer-meta > .model-control,
+  .composer-meta .model-control {
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .jarvis-desktop-shell #messages:has(.welcome) {
+    padding: 72px 16px 248px;
+  }
+
+  .jarvis-desktop-shell .welcome h1 {
+    font-size: 22px;
+    line-height: 1.28;
+  }
+
+  .jarvis-desktop-shell .composer-meta {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "context"
+      "controls"
+      "cluster";
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .jarvis-desktop-shell .composer-meta-controls {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .jarvis-desktop-shell .composer-model-cluster {
+    justify-content: flex-start;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .jarvis-desktop-shell .composer-meta > .model-control,
+  .jarvis-desktop-shell .composer-meta .model-control {
+    justify-self: stretch;
+    width: 100%;
+  }
+}
+
+/* ================= Jarvis mac target restore =================
+   Final desktop-shell pass against the supplied mac reference. Keep this
+   below the Codex polish block so it wins without disturbing web/mobile. */
+html.jarvis-desktop-shell {
+  --sidebar-width: 303px;
+  --composer-width: 918px;
+  --content-width: 918px;
+  --desktop-window-radius: 10px;
+  --desktop-main-bg: #ffffff;
+  --desktop-main-border: rgba(215, 222, 220, 0.7);
+  --desktop-sidebar-text: rgba(28, 38, 41, 0.9);
+  --desktop-sidebar-muted: rgba(36, 48, 52, 0.74);
+  --desktop-sidebar-soft: rgba(40, 52, 56, 0.72);
+  --desktop-sidebar-faint: rgba(43, 56, 60, 0.6);
+  --desktop-control-bg: rgba(255, 255, 255, 0.64);
+  --desktop-control-border: rgba(216, 220, 222, 0.66);
+  --desktop-card-bg: rgba(255, 255, 255, 0.74);
+  --desktop-composer-bg: rgba(255, 255, 255, 0.96);
+  --desktop-context-bg: rgba(245, 245, 244, 0.95);
+  --desktop-context-border: rgba(218, 220, 219, 0.84);
+  --desktop-sidebar-footer-bg: linear-gradient(to top, rgba(244, 247, 244, 0.18), rgba(244, 247, 244, 0.055) 70%, transparent);
+  --desktop-elevated-shadow: 0 24px 52px rgba(22, 25, 29, 0.08);
+  --desktop-card-shadow: 0 10px 24px rgba(25, 31, 36, 0.035);
+  --desktop-attachment-shadow: 0 4px 12px rgba(20, 24, 28, 0.05);
+  --sidebar-glass-bg: rgba(255, 255, 255, 0.16);
+  --sidebar-glass-border: rgba(255, 255, 255, 0.42);
+  --sidebar-item-hover: rgba(255, 255, 255, 0.34);
+  --sidebar-item-active: rgba(255, 255, 255, 0.48);
+}
+
+html.jarvis-desktop-shell[data-theme="dark"] {
+  --desktop-main-bg: #090909;
+  --desktop-main-border: rgba(82, 82, 82, 0.28);
+  --desktop-sidebar-text: rgba(236, 236, 236, 0.9);
+  --desktop-sidebar-muted: rgba(214, 214, 214, 0.74);
+  --desktop-sidebar-soft: rgba(202, 202, 202, 0.66);
+  --desktop-sidebar-faint: rgba(188, 188, 188, 0.58);
+  --desktop-control-bg: rgba(255, 255, 255, 0.05);
+  --desktop-control-border: rgba(255, 255, 255, 0.1);
+  --desktop-card-bg: rgba(255, 255, 255, 0.04);
+  --desktop-composer-bg: rgba(255, 255, 255, 0.05);
+  --desktop-context-bg: rgba(255, 255, 255, 0.045);
+  --desktop-context-border: rgba(255, 255, 255, 0.09);
+  --desktop-sidebar-footer-bg: linear-gradient(to top, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.04) 70%, transparent);
+  --desktop-elevated-shadow: 0 16px 36px rgba(0, 0, 0, 0.42);
+  --desktop-card-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+  --desktop-attachment-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  --sidebar-glass-bg: rgba(14, 14, 14, 0.22);
+  --sidebar-glass-border: rgba(255, 255, 255, 0.14);
+  --sidebar-item-hover: rgba(255, 255, 255, 0.08);
+  --sidebar-item-active: rgba(255, 255, 255, 0.13);
+}
+
+.jarvis-desktop-shell #app {
+  border: 0;
+  border-radius: var(--desktop-window-radius);
+}
+
+.jarvis-desktop-shell #sidebar {
+  background: var(--sidebar-glass-bg);
+  border-right: 1px solid var(--sidebar-glass-border);
+  backdrop-filter: blur(34px) saturate(1.18);
+  -webkit-backdrop-filter: blur(34px) saturate(1.18);
+}
+
+.jarvis-desktop-shell #chat {
+  height: 100%;
+  margin-top: 0;
+  overflow: hidden;
+  background: var(--desktop-main-bg);
+  border: 0;
+  border-radius: 11px 0 0 0;
+}
+
+.jarvis-desktop-shell .sidebar-topbar {
+  height: 64px;
+  padding: 22px 18px 8px 112px;
+  gap: 13px;
+}
+
+.jarvis-desktop-shell .sidebar-topbar .ghost-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--desktop-sidebar-muted);
+}
+
+/* Full-screen: macOS hides the traffic lights, so the top bar no longer needs
+   to reserve the left inset for them — align the toggle / back-forward buttons
+   with the nav items below instead of leaving the windowed-mode gap. The
+   `jarvis-fullscreen` class is toggled by the Electron main process on
+   enter/leave-full-screen (and re-applied on each load). */
+.jarvis-desktop-shell.jarvis-fullscreen .sidebar-topbar {
+  padding-left: 18px;
+}
+
+.jarvis-desktop-shell .primary-nav {
+  padding: 2px 20px 34px;
+  gap: 6px;
+}
+
+.jarvis-desktop-shell .primary-nav .nav-item,
+.jarvis-desktop-shell .nav-list .nav-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  height: 42px;
+  gap: 12px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--desktop-sidebar-text);
+  font-size: var(--fs-14);
+  font-weight: 540;
+}
+
+.jarvis-desktop-shell .primary-nav .nav-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jarvis-desktop-shell .primary-nav .nav-shortcut {
+  display: inline-grid;
+  place-items: center;
+  min-width: 34px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+  font-size: var(--fs-14);
+  font-weight: 660;
+  line-height: 1;
+}
+
+.jarvis-desktop-shell .primary-nav .nav-item svg,
+.jarvis-desktop-shell .nav-list .nav-item svg {
+  width: 18px;
+  height: 18px;
+  color: var(--desktop-sidebar-muted);
+}
+
+.jarvis-desktop-shell .primary-nav #new-convo,
+.jarvis-desktop-shell .primary-nav .nav-item:hover,
+.jarvis-desktop-shell .primary-nav .nav-item.active,
+.jarvis-desktop-shell .nav-list .nav-item:hover,
+.jarvis-desktop-shell .nav-list .nav-item.active {
+  background: var(--sidebar-item-active);
+  color: var(--desktop-sidebar-text);
+}
+
+.jarvis-desktop-shell .primary-nav .sidebar-docs-link {
+  display: none;
+}
+
+.jarvis-desktop-shell .convo-rail-sections {
+  padding: 0 22px 16px;
+  gap: 27px;
+}
+
+.jarvis-desktop-shell .convo-section-header {
+  min-height: 34px;
+  padding-inline: 0;
+  margin-bottom: 4px;
+}
+
+.jarvis-desktop-shell #sidebar .section-label,
+.jarvis-desktop-shell #sidebar .convo-section-title {
+  color: var(--desktop-sidebar-muted);
+  font-size: var(--fs-13);
+  font-weight: 560;
+}
+
+.jarvis-desktop-shell #pinned-list li:not(.convo-group-label),
+.jarvis-desktop-shell #running-list li:not(.convo-group-label),
+.jarvis-desktop-shell #convo-list li:not(.convo-group-label),
+.jarvis-desktop-shell #project-convo-list li:not(.convo-group-label),
+.jarvis-desktop-shell .convo-section-list li:not(.convo-group-label):not(.convo-project-group) {
+  min-height: 46px;
+}
+
+.jarvis-desktop-shell .convo-main {
+  min-height: 44px;
+  padding: 0 0 0 2px;
+  border-radius: 8px;
+}
+
+.jarvis-desktop-shell .convo-main:hover,
+.jarvis-desktop-shell #convo-list li.active .convo-main,
+.jarvis-desktop-shell #project-convo-list li.active .convo-main {
+  background: var(--sidebar-item-hover);
+}
+
+.jarvis-desktop-shell .convo-title {
+  color: var(--desktop-sidebar-text);
+  font-size: var(--fs-14);
+  font-weight: 510;
+}
+
+.jarvis-desktop-shell .convo-row-meta,
+.jarvis-desktop-shell .convo-time {
+  color: var(--desktop-sidebar-soft);
+  font-size: var(--fs-12);
+}
+
+.jarvis-desktop-shell .convo-group-label.is-project {
+  min-height: 40px;
+  padding: 0;
+  color: var(--desktop-sidebar-text);
+  font-size: var(--fs-13);
+}
+
+.jarvis-desktop-shell .convo-group-expand {
+  margin: 5px 0 0 18px;
+  color: var(--desktop-sidebar-soft);
+  font-size: var(--fs-12);
+}
+
+.jarvis-desktop-shell .sidebar-footer {
+  min-height: 58px;
+  padding: 12px 22px 18px;
+  color: var(--desktop-sidebar-muted);
+  background: var(--desktop-sidebar-footer-bg);
+}
+
+.jarvis-desktop-shell .account-chip {
+  height: 32px;
+  padding: 0;
+  font-size: var(--fs-14);
+}
+
+.jarvis-desktop-shell .ws-status {
+  font-size: var(--fs-12);
+}
+
+.jarvis-desktop-shell #chat-header {
+  height: 70px;
+  padding: 24px 34px 4px 36px;
+}
+
+.jarvis-desktop-shell .project-crumb {
+  gap: 8px;
+  color: var(--desktop-sidebar-soft);
+  font-size: 14px;
+  font-weight: 590;
+}
+
+.jarvis-desktop-shell .project-crumb svg {
+  width: 17px;
+  height: 17px;
+}
+
+.jarvis-desktop-shell .header-actions .ghost-icon,
+.jarvis-desktop-shell .workspace-panel-trigger,
+.jarvis-desktop-shell .background-tasks-button {
+  background: var(--desktop-control-bg);
+  border-color: var(--desktop-control-border);
+  border-radius: 9px;
+}
+
+.jarvis-desktop-shell #messages:has(.welcome) {
+  display: grid;
+  place-items: center;
+  padding: 0 48px;
+}
+
+.jarvis-desktop-shell .welcome {
+  width: min(930px, 100%);
+  min-height: 0;
+  /* Cards removed: the lone heading is centered in #messages, and the
+     composer floats fixed at calc(50% - 64px). Lift the heading clear
+     above the composer; both anchor to viewport-center so the offset
+     holds across window heights. */
+  transform: translateY(-150px);
+}
+
+.jarvis-desktop-shell .welcome-copy {
+  transform: translateY(-4px);
+}
+
+.jarvis-desktop-shell .welcome h1 {
+  color: var(--text);
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 1.22;
+}
+
+.jarvis-desktop-shell .welcome-suggestions {
+  width: min(850px, 100%);
+  gap: 18px;
+  margin-top: clamp(220px, 40vh, 328px);
+}
+
+.jarvis-desktop-shell .welcome-suggestion-card {
+  min-height: 145px;
+  padding: 20px 20px 18px;
+  border-radius: 14px;
+  background: var(--desktop-card-bg);
+  border-color: var(--desktop-context-border);
+  box-shadow: var(--desktop-card-shadow);
+}
+
+.jarvis-desktop-shell .welcome-suggestion-card.is-connected {
+  color: color-mix(in srgb, var(--text) 78%, transparent);
+}
+
+.jarvis-desktop-shell .welcome-suggestion-card.is-connected .welcome-suggestion-mark {
+  opacity: 0.85;
+}
+
+.jarvis-desktop-shell .welcome-suggestion-check {
+  top: 24px;
+  right: 24px;
+  width: 28px;
+  height: 28px;
+  background: #11a657;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+  opacity: 1;
+}
+
+.jarvis-desktop-shell .welcome-suggestion-card strong {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.jarvis-desktop-shell .welcome-suggestion-card span:last-child {
+  color: color-mix(in srgb, var(--text) 40%, transparent);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.jarvis-desktop-shell .welcome-suggestion-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.jarvis-desktop-shell .welcome-suggestion-mark svg {
+  width: 21px;
+  height: 21px;
+}
+
+.jarvis-desktop-shell #chat:has(.welcome) #input-area {
+  top: calc(50% - 64px);
+  right: max(0px, var(--rail-width));
+  left: var(--sidebar-width);
+  padding: 0 44px;
+}
+
+body.workspace-rail-closed.jarvis-desktop-shell #chat:has(.welcome) #input-area {
+  right: 0;
+}
+
+.jarvis-desktop-shell #input-form {
+  width: min(var(--composer-width), 100%);
+}
+
+/* Context bar is a separate rounded card below the input, so the input
+   keeps all four corners rounded. */
+.jarvis-desktop-shell #input-form:has(.composer-context-row) .input-wrapper {
+  box-shadow: var(--desktop-elevated-shadow);
+}
+
+.jarvis-desktop-shell .input-wrapper {
+  overflow: hidden;
+  border: 1px solid var(--desktop-context-border);
+  border-radius: 20px;
+  background: var(--desktop-composer-bg);
+  box-shadow: var(--desktop-elevated-shadow);
+}
+
+.jarvis-desktop-shell .composer-editor-row {
+  align-items: center;
+  min-height: 48px;
+  padding: 10px 12px 10px 18px;
+}
+
+.jarvis-desktop-shell .input-wrapper:has(.composer-attachment-strip) .composer-editor-row {
+  min-height: 52px;
+  padding-top: 10px;
+}
+
+.jarvis-desktop-shell #input {
+  min-height: 24px;
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.jarvis-desktop-shell #input::placeholder {
+  color: var(--desktop-sidebar-faint);
+}
+
+.jarvis-desktop-shell .send-btn,
+.jarvis-desktop-shell .stop-btn {
+  align-self: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.jarvis-desktop-shell .send-btn {
+  background: #17191d;
+  color: #ffffff;
+}
+
+/* Idle/disabled send reads as a rounded-square outline (Claude-Code). */
+.jarvis-desktop-shell .send-btn:disabled {
+  background: transparent;
+  border: 1.5px solid color-mix(in srgb, var(--text) 20%, transparent);
+  color: color-mix(in srgb, var(--text) 34%, transparent);
+}
+
+.jarvis-desktop-shell[data-theme="dark"] .send-btn:disabled {
+  background: transparent;
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.32);
+}
+
+/* Action toolbar sits inside the rounded input box as the lower row. */
+.jarvis-desktop-shell .composer-meta {
+  min-height: 36px;
+  margin-top: 7px;
+  padding: 0 6px;
+  background: transparent;
+  border-top: 0;
+}
+
+.jarvis-desktop-shell .composer-meta-controls {
+  gap: 12px;
+  justify-content: flex-start;
+}
+
+.jarvis-desktop-shell .composer-tool-group {
+  gap: 12px;
+}
+
+.jarvis-desktop-shell .composer-tool-btn {
+  width: 25px;
+  height: 25px;
+  color: var(--desktop-sidebar-text);
+}
+
+.jarvis-desktop-shell .permission-mode-chip {
+  min-height: 27px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 95, 95, 0.12);
+  color: #f05f5f;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.jarvis-desktop-shell .composer-model-cluster {
+  gap: 12px;
+}
+
+.jarvis-desktop-shell .model-trigger,
+.jarvis-desktop-shell .effort-trigger {
+  height: 28px;
+  padding-inline: 8px;
+  color: var(--desktop-sidebar-text);
+  background: transparent;
+  border: 0;
+  font-size: 14px;
+}
+
+.jarvis-desktop-shell .usage-slot,
+.jarvis-desktop-shell .context-window-badge {
+  color: var(--desktop-sidebar-muted);
+  font-size: 13px;
+}
+
+/* Context bar — a separate rounded card below the input box
+   (project · branch · diff · CI). */
+.jarvis-desktop-shell .composer-context-row {
+  display: flex;
+  align-items: center;
+  width: min(var(--composer-width), 100%);
+  min-height: 34px;
+  margin: 0 auto 8px;
+  padding: 3px 14px;
+  background: var(--desktop-context-bg);
+  border: 1px solid var(--desktop-context-border);
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.jarvis-desktop-shell[data-theme="dark"] .composer-context-row {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+
+/* Collapse the bar entirely when the shoulder / rail renders nothing
+   (e.g. free-chat with no workspace), so we don't leave an empty bar. */
+.jarvis-desktop-shell .composer-context-row:has(> .composer-meta-context:empty) {
+  display: none;
+}
+
+.jarvis-desktop-shell .composer-context-row .composer-meta-context {
+  width: 100%;
+}
+
+.jarvis-desktop-shell .composer-context-row .composer-project-rail,
+.jarvis-desktop-shell .composer-context-row .composer-shoulder {
+  width: 100%;
+  min-height: 36px;
+  gap: 18px;
+}
+
+.jarvis-desktop-shell .composer-context-row .composer-project-chip {
+  min-height: 32px;
+  padding: 0;
+  color: var(--desktop-sidebar-muted);
+  background: transparent;
+  border: 0;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.jarvis-desktop-shell .composer-attachment-strip {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px 0;
+}
+
+.jarvis-desktop-shell .composer-attachment-chip {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-items: stretch;
+  width: 108px;
+  height: 100px;
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 13px;
+  background: var(--desktop-composer-bg);
+  border-color: var(--desktop-context-border);
+  box-shadow: var(--desktop-attachment-shadow);
+}
+
+.jarvis-desktop-shell .composer-attachment-thumb {
+  width: 100%;
+  height: 72px;
+  border: 0;
+  border-radius: 0;
+  object-fit: cover;
+}
+
+.jarvis-desktop-shell .composer-attachment-chip > svg {
+  align-self: center;
+  justify-self: center;
+  width: 28px;
+  height: 28px;
+  color: var(--desktop-sidebar-soft);
+}
+
+.jarvis-desktop-shell .composer-attachment-name {
+  padding: 0 7px 8px;
+  color: var(--desktop-sidebar-text);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.jarvis-desktop-shell .composer-attachment-meta {
+  display: none;
+}
+
+.jarvis-desktop-shell .composer-attachment-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 23px;
+  height: 23px;
+  margin: 0;
+  color: #fff;
+  background: rgba(13, 17, 23, 0.9);
+  border-radius: 999px;
 }

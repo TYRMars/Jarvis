@@ -267,9 +267,11 @@ function renderList(
                   </span>
                 </div>
                 <div className="settings-mcp-actions">
-                  <button type="button" className="settings-btn" onClick={() => onEdit(s)}>
-                    {tx("settingsEdit", "Edit")}
-                  </button>
+                  {s.config.transport.type === "stdio" && (
+                    <button type="button" className="settings-btn" onClick={() => onEdit(s)}>
+                      {tx("settingsEdit", "Edit")}
+                    </button>
+                  )}
                   <button type="button" className="settings-btn" onClick={() => { void onHealth(s.prefix); }}>
                     {tx("mcpHealthBtn", "Health")}
                   </button>

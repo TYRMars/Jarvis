@@ -24,6 +24,9 @@ enum ClientFrame {
     /// Send refinement feedback for a proposed plan (a labelled user
     /// turn).
     case refinePlan(feedback: String)
+    /// Answer a `hitl_request` (`ask.*` question). Flat frame, wire-
+    /// compatible with the web AskTextCard.
+    case hitlResponse(requestId: String, status: String, payload: JSONValue?, reason: String?)
 
     var jsonObject: [String: JSONValue] {
         switch self {
@@ -69,6 +72,15 @@ enum ClientFrame {
             return ["type": .string("accept_plan"), "post_mode": .string(postMode)]
         case .refinePlan(let feedback):
             return ["type": .string("refine_plan"), "feedback": .string(feedback)]
+        case .hitlResponse(let requestId, let status, let payload, let reason):
+            var obj: [String: JSONValue] = [
+                "type": .string("hitl_response"),
+                "request_id": .string(requestId),
+                "status": .string(status),
+            ]
+            if let payload { obj["payload"] = payload }
+            if let reason, !reason.isEmpty { obj["reason"] = .string(reason) }
+            return obj
         }
     }
 
@@ -102,7 +114,13 @@ final class ChatSocket {
         guard let url = ServerConfig.chatSocketURL else {
             throw APIError.badURL
         }
-        let task = URLSession.shared.webSocketTask(with: url)
+        // Bearer token on the upgrade request for DDNS-exposed servers (native
+        // URLSessionWebSocketTask forwards request headers); loopback stays open.
+        var request = URLRequest(url: url)
+        if let token = ServerConfig.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let task = URLSession.shared.webSocketTask(with: request)
         self.task = task
 
         let stream = AsyncStream<Frame> { continuation in

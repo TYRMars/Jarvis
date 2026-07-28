@@ -29,17 +29,35 @@ export interface ApprovalRequest {
 
 export interface Approver {
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;
+  /**
+   * Whether `approve` will actually block on a human for this request.
+   * Optional — an approver that omits it is assumed to prompt (the historical
+   * behaviour, and the safe assumption for an unknown implementation).
+   *
+   * The agent loop uses this to decide whether to emit `approval_request`
+   * BEFORE awaiting: a policy that auto-resolves (mode default `auto`, an
+   * `allow`/`deny` rule) must not make clients flash an approval prompt that
+   * is answered a millisecond later. The `approval_decision` event is emitted
+   * either way, so the audit trail never loses an auto-decision.
+   */
+  willPrompt?(request: ApprovalRequest): Promise<boolean> | boolean;
 }
 
 export class AlwaysApprove implements Approver {
   approve(_request: ApprovalRequest): Promise<ApprovalDecision> {
     return Promise.resolve({ decision: "approve" });
   }
+  willPrompt(): boolean {
+    return false;
+  }
 }
 
 export class AlwaysDeny implements Approver {
   approve(_request: ApprovalRequest): Promise<ApprovalDecision> {
     return Promise.resolve({ decision: "deny", reason: "default deny policy" });
+  }
+  willPrompt(): boolean {
+    return false;
   }
 }
 

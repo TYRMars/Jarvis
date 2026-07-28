@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../store/appStore";
 import { newConversation } from "../../services/conversations";
 import { t } from "../../utils/i18n";
+import { Icon, SquarePen } from "../ui";
 
 export function NewConvoButton() {
   const activeFilter = useAppStore((s) => s.activeProjectFilter);
@@ -29,11 +30,9 @@ export function NewConvoButton() {
       title={t("newConversation")}
       onClick={onClick}
     >
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 5v14" />
-        <path d="M5 12h14" />
-      </svg>
-      <span>{t("newSession")}</span>
+      <Icon icon={SquarePen} size={17} strokeWidth={1.9} />
+      <span>{t("newConversation")}</span>
+      <kbd className="nav-shortcut" aria-hidden="true">⌘N</kbd>
     </button>
   );
 }

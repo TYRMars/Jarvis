@@ -21,6 +21,8 @@ export type DesktopStatus = {
   logs: string[];
   last_error?: string | null;
   server_kind?: string;
+  /** Electron shell only: embedded server exposed on the LAN (0.0.0.0 + token). */
+  lan_exposure?: boolean;
 };
 
 type OpenResult = { ok: boolean; error?: string | null };
@@ -33,6 +35,8 @@ type ElectronBridge = {
   openPath: (path: string) => Promise<OpenResult>;
   revealPath: (path: string) => Promise<OpenResult>;
   logs: (limit?: number) => Promise<string[]>;
+  // Optional: preloads older than the LAN-exposure feature don't expose it.
+  setLanExposure?: (enabled: boolean) => Promise<DesktopStatus>;
 };
 
 function electronBridge(): ElectronBridge | null {
@@ -45,7 +49,8 @@ function tauriCore(): TauriCore | null {
 }
 
 export function isDesktopRuntime(): boolean {
-  return !!electronBridge() || !!tauriCore();
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  return !!electronBridge() || !!tauriCore() || ua.includes("Electron/") || ua.includes("Tauri/");
 }
 
 /** Mirror a freshly-fetched status into the API-origin override + persistence. */
@@ -117,6 +122,23 @@ export async function revealDesktopPath(path: string): Promise<boolean> {
     return result.ok;
   }
   return false;
+}
+
+/**
+ * Toggle the Electron shell's LAN exposure (bind 0.0.0.0 + access token).
+ * Electron-only: returns null in the browser and under the legacy Tauri shell.
+ * The main process re-navigates the window afterwards (the port may change),
+ * so callers should treat the page as about to reload.
+ */
+export async function setDesktopLanExposure(enabled: boolean): Promise<DesktopStatus | null> {
+  const electron = electronBridge();
+  if (electron?.setLanExposure) return applyStatus(await electron.setLanExposure(enabled));
+  return null;
+}
+
+/** Whether the running desktop shell supports the LAN-exposure toggle. */
+export function supportsLanExposure(): boolean {
+  return typeof electronBridge()?.setLanExposure === "function";
 }
 
 export async function fetchDesktopLogs(limit = 200): Promise<string[]> {

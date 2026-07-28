@@ -246,6 +246,7 @@ describe("AppSidebar search", () => {
   });
 
   it("applies organize menu layout, sort, visibility, and section order controls", () => {
+    useAppStore.getState().setConvoSectionOrder("projectsFirst");
     useAppStore.getState().setActiveProjectFilter("proj-a");
     useAppStore.getState().setDraftWorkspace("/repo/a", null);
     useAppStore.getState().setProjects([
@@ -363,7 +364,8 @@ describe("AppSidebar search", () => {
 
     renderWithRouter(<AppSidebar />);
 
-    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+    const primaryNav = screen.getByRole("navigation", { name: "Mode" });
+    fireEvent.click(within(primaryNav).getByRole("button", { name: "New chat" }));
 
     const s = useAppStore.getState();
     expect(s.activeId).toBeNull();
@@ -372,15 +374,17 @@ describe("AppSidebar search", () => {
     expect(s.draftWorkspacePath).toBe("/Users/x/code/current");
   });
 
-  it("renders Projects as a primary active tab", () => {
+  it("renders Codex primary nav with the work sidebar body", () => {
     renderWithRouter(<AppSidebar />, ["/projects/overview"]);
 
-    expect(screen.getByRole("link", { name: "Chat" })).toHaveAttribute("href", "/");
-    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("href", "/projects/overview");
+    const primaryNav = screen.getByRole("navigation", { name: "Mode" });
+    expect(within(primaryNav).getByRole("button", { name: "New chat" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Plugins" })).toHaveAttribute("href", "/customize");
+    expect(screen.getByRole("link", { name: "Automation" })).toHaveAttribute("href", "/projects/auto-mode");
     expect(screen.getByRole("link", { name: "Doc" })).toHaveAttribute("href", "/docs");
     expect(screen.queryByText("Code")).not.toBeInTheDocument();
 
-    expect(screen.getByRole("link", { name: "Projects" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "Overview" })).toHaveClass("active");
     expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "新建会话" })).not.toBeInTheDocument();

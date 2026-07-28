@@ -26,7 +26,8 @@ open JarvisiOS.xcodeproj
 1. 在 Mac 上启动服务器(需要先开启写/执行工具才能看到审批流程):
 
    ```bash
-   JARVIS_ENABLE_FS_WRITE=1 JARVIS_ENABLE_SHELL_EXEC=1 cargo run -p jarvis
+   JARVIS_ENABLE_FS_WRITE=1 JARVIS_ENABLE_SHELL_EXEC=1 \
+     node --experimental-strip-types packages/jarvis-app/src/main.ts serve
    ```
 
 2. App 内左上角 ⚙ 打开设置,填服务器地址:
@@ -60,16 +61,18 @@ JARVIS_SMOKE_BASE_URL=http://localhost:7001 ./Tests/run-contract-smoke.sh   # + 
 ```
 
 离线模式用「黄金样本」校验 iOS Codable 模型能否解出服务端 `/v1` 线格式(会话列表/
-详情/providers/WS `AgentEvent` 帧),黄金样本对齐 **Rust `harness-server` 的契约**
-(权威基线)。CI 见 `.github/workflows/ios-contract.yml`。
+详情/providers/WS `AgentEvent` 帧/HITL/DDNS),黄金样本对齐 **Node `@jarvis/server`
+的契约**(Rust 退役后的权威基线;`packages/server/src/server.test.ts` 的 WS 协议
+测试与这些金样互为镜像)。CI 见 `.github/workflows/ios-contract.yml`。
 
 > 迁移期发现:Node 服务端 `GET /v1/conversations` 曾把数组包进 `{conversations:[…]}`
 > (已在本次随 P7.10 修回裸数组,补 `conversations-routes.test.ts` 锁定);另
 > `GET /v1/providers`(只读目录)Node 端尚未实现(仅 `POST` + `GET /:name`),
 > 会话列表也缺 `title`/`source` 富化——留待 P8.1「Node 独立成服务」补齐。
 
-开发期 Info.plist 设置了 `NSAllowsArbitraryLoads` 以允许局域网明文
-http/ws;正式分发前应收紧 ATS 并改用 TLS。
+ATS 已按商店口径收紧:仅 `NSAllowsLocalNetworking`(局域网明文 http/ws 可用),
+**外网(DDNS)访问必须 https**——给服务器加一层 TLS 反代(如 Caddy/nginx),或开发期
+临时在 `project.yml` 加回 `NSAllowsArbitraryLoads: true`(提审前务必移除)。
 
 ## 与服务端协议的对应关系
 
@@ -80,7 +83,8 @@ http/ws;正式分发前应收紧 ATS 并改用 TLS。
 | `Sources/Models/PlanItem.swift` | `harness-core::plan::PlanItem`(`plan_update` 全量快照) |
 | `Sources/Models/SubagentFrame.swift` | `harness-core::subagent::SubAgentFrame`(`sub_agent_event`,`kind` 标签) |
 | `Sources/Models/ProviderInfo.swift` | `harness-server::ProviderInfo`(`GET /v1/providers`) |
-| `Sources/Networking/ChatSocket.swift` | `harness-server` 的 `WsClientMessage`:`start_turn` / `user` / `resume` / `approve` / `deny` / `interrupt` / `configure` / `set_mode` / `accept_plan` / `refine_plan` |
+| `Sources/Networking/ChatSocket.swift` | Node `packages/server/src/chat-routes.ts` 的 WS 帧:`start_turn` / `user` / `resume {after_seq}` / `approve` / `deny` / `interrupt` / `configure` / `hitl_response`(`set_mode` / `accept_plan` / `refine_plan` 已在客户端实现,待服务端 Plan Mode 落地) |
+| `Sources/Models/Hitl.swift` + `Views/HitlCardView.swift` | `@jarvis/core` `HitlRequest`(`hitl_request` 事件 → 问答卡,回 `hitl_response`) |
 | `Sources/Networking/JarvisAPI.swift` | `/v1/conversations` CRUD + `/v1/providers` + `/health` |
 
 会话流程:新会话首条消息发 `start_turn {mode:"new", id:<uuid>, content}`(服务端
@@ -105,24 +109,75 @@ deny 的原因会作为 `tool denied: <reason>` 回馈给模型。
 `sub_agent_event` 渲染为原地更新的子代理卡片(状态/任务/输出尾部/工具计数);
 `memory_compacted`(非 no_op)与 `provider_fallback` 渲染为居中提示行。
 
+## 远程访问:鉴权 / 配对 / DDNS
+
+详见 `docs/proposals/mobile-ddns.zh-CN.md`。
+
+- **访问令牌**:服务器设了 `JARVIS_ACCESS_TOKEN` 后,非 loopback 请求必须带
+  `Authorization: Bearer`。设置页填「访问令牌」(或扫码自动带入),`JarvisAPI` /
+  `ChatSocket` 会自动附加;loopback 服务器留空即免鉴权。
+- **扫码配对**:设置页「扫码配对」用相机扫电脑「远程访问」页生成的二维码
+  (`jarvis://pair?origin=…&token=…&name=…`),自动填入地址+令牌;同样的链接被点击/
+  AirDrop 时经 `onOpenURL` 深链处理。
+- **局域网发现**:设置页经 Bonjour 浏览 `_jarvis._tcp`(电脑端设 `JARVIS_MDNS=1` 广播),
+  列出同网服务器作为提示。
+- **远程访问 / DDNS**:设置 → 「远程访问 / DDNS」配置本机的动态 DNS——选服务商
+  (Cloudflare / DuckDNS / 通用 dyndns2 / 阿里云 / DNSPod)、填域名 + 凭据 + UPnP 开关,
+  写入 `/v1/ddns/config` 并立即更新;状态区显示公网 IP、上次结果、UPnP 映射、可达性。
+  之后用 DDNS 域名 + 令牌即可在外网连回。
+
+## 发布到 App Store
+
+工程侧已备齐:App 图标(`Assets.xcassets/AppIcon`,1024 无透明通道)、隐私清单
+(`PrivacyInfo.xcprivacy`:无追踪、无数据收集、UserDefaults 声明 CA92.1)、出口合规
+(`ITSAppUsesNonExemptEncryption: false`,标准 TLS 豁免)、收紧的 ATS(见上)、
+版本号(`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`,在 `project.yml`)。
+
+在装有完整 Xcode 的机器上:
+
+1. **前置**:加入 Apple Developer Program;在 App Store Connect → Identifiers 注册
+   你自己的 bundle id,并把 `project.yml` 的 `PRODUCT_BUNDLE_IDENTIFIER` 改成它,
+   `settings.base` 加 `DEVELOPMENT_TEAM: <你的TeamID>`。
+2. `xcodegen generate && open JarvisiOS.xcodeproj`。
+3. 版本:每次提审前在 `project.yml` 递增 `MARKETING_VERSION`(用户可见)与
+   `CURRENT_PROJECT_VERSION`(构建号,同版本内每次上传都要 +1),重新 generate。
+4. **Archive**:目标选 `Any iOS Device (arm64)` → Product → Archive → Organizer →
+   Distribute App → App Store Connect。出口合规问题已由 plist 键回答,不会再弹。
+5. **App Store Connect**:新建 App(绑定 bundle id)→ 填元数据/截图(6.7" 与 6.5"
+   两组必需)→ 隐私问卷选「不收集数据」(与 PrivacyInfo 一致)→ 先发 TestFlight
+   内测,再提交审核。
+6. **审核注意**:这是一个连接**用户自有服务器**的客户端,审核可能要求可用的演示
+   环境——在 App Review 备注里提供一个公网 https 测试服务器地址 + 访问令牌
+   (扫码配对链接同样可填),说明 App 本身不含服务端、无账号体系。
+
 ## 目录结构
 
 ```
-project.yml              # XcodeGen 工程描述
+project.yml              # XcodeGen 工程描述(含相机/Bonjour 用途串 + jarvis:// scheme)
 Sources/
-  JarvisApp.swift        # @main 入口
+  JarvisApp.swift        # @main 入口(+ jarvis:// 深链)
   Models/                # JSONValue / ChatMessage / Conversation / ServerEvent
-                         #   / PlanItem / SubagentFrame
-  Networking/            # ServerConfig / JarvisAPI(REST) / ChatSocket(WS)
+                         #   / PlanItem / SubagentFrame / Ddns / Pairing
+  Networking/            # ServerConfig(URL+令牌)/ JarvisAPI(REST,含 /v1/ddns/*)
+                         #   / ChatSocket(WS,带令牌)/ Discovery(Bonjour)
   ViewModels/            # ChatViewModel / ConversationListViewModel(@Observable)
   Views/                 # 会话列表 / 聊天 / 审批弹窗 / 设置 / 计划卡片 / 子代理卡片
+                         #   / QRScannerView(扫码)/ DDNSView(远程访问配置)
+Tests/                   # run-contract-smoke.sh + ContractSmoke(swiftc,无需 Xcode)
 ```
+
+> `Sources/Models/*` + `Networking/{ServerConfig,JarvisAPI}` 是 Foundation-only,由
+> `Tests/run-contract-smoke.sh` 用 `swiftc` 直接编译并跑金样断言(含 DDNS / RemoteInfo /
+> Pairing / 令牌解析),无需完整 Xcode。
 
 ## 已知边界
 
-- 未渲染的事件:`plan_proposed` / `mode_changed`(Plan Mode 的 accept/refine 流程)、
-  `hitl_request`(`ask.*` 工具)、`workspace_changed`、`skill_activated` 等暂被
-  忽略;Plan Mode 下的会话在 iOS 端无法接受计划。
-- 单 socket 单会话:未实现 `configure`(切模型/provider)、`fork`(编辑重跑)、
-  `set_workspace`。
+- ~~Plan Mode 等待服务端~~:**已打通**。Node 服务端实现了每 socket 的权限模式
+  (连接即发 `permission_mode`)、Plan Mode 的结构性工具过滤(只暴露 read 类工具 +
+  `exit_plan`)、`exit_plan` 终止本轮并发 `plan_proposed`,以及
+  `accept_plan {post_mode}`(切模式 + 把计划作为执行简报回灌)/`refine_plan {feedback}`
+  (留在 Plan Mode 重规划)。iOS 的模式菜单与计划卡片现在是实际可用功能。
+- `configure` 仅支持**同 provider 切模型**;切 provider 需要服务端第二 provider
+  运行时(暂拒绝)。`fork`(编辑重跑)、`set_workspace` 未实现。
+- `workspace_changed`、`skill_activated` 等事件暂被忽略(降级为 `ignored`)。
 - 工程文件:`JarvisiOS.xcodeproj` 与 `Generated/` 为生成产物,建议加入 `.gitignore`。

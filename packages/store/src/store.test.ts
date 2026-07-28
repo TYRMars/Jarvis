@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -126,6 +126,30 @@ test("json-file: ':' id writes a %3A filename on disk", async () => {
     await store.save("__memory__.summary:deadbeef", convo("s"));
     const files = await readdir(dir);
     assert.ok(files.includes("__memory__.summary%3Adeadbeef.json"));
+  });
+});
+
+test("json-file: a sibling store's file in the same dir doesn't break list()", async () => {
+  await withTempDir(async (dir) => {
+    const store = await JsonFileConversationStore.open(dir);
+    await store.save("real-conv", convo("hi"));
+    // The conversations dir is shared with other JSON-file stores. These all
+    // parse as JSON but are not conversations; before the shape check, the
+    // array one threw `Cannot read properties of undefined (reading 'length')`
+    // and 500'd GET /v1/conversations — i.e. one neighbour emptied the whole
+    // sidebar.
+    await writeFile(path.join(dir, "channel_instances.json"), "[]");
+    await writeFile(path.join(dir, "settings.json"), JSON.stringify({ theme: "dark" }));
+    await writeFile(path.join(dir, "half-written.json"), "{ not json");
+
+    const records = await store.list(50);
+    assert.deepEqual(
+      records.map((r) => r.id),
+      ["real-conv"],
+    );
+    // …and they are not loadable as conversations either.
+    assert.equal(await store.load("channel_instances"), undefined);
+    assert.equal(await store.load("settings"), undefined);
   });
 });
 

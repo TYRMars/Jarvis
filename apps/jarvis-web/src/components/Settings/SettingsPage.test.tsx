@@ -16,6 +16,8 @@ afterEach(() => {
   useAppStore.getState().setTheme("light");
   useAppStore.getState().setLang("en");
   localStorage.removeItem("jarvis.soul");
+  sessionStorage.clear();
+  delete (window as any).jarvisDesktop;
   window.history.replaceState(null, "", "/settings");
 });
 
@@ -28,17 +30,17 @@ describe("SettingsPage", () => {
     );
     // h1 page title
     expect(screen.getByRole("heading", { name: "Settings", level: 1 })).toBeInTheDocument();
-    // Default landing section is the first nav item — "Appearance & Layout".
+    // Default landing section is the first nav item — "Appearance".
     // The leaf section ("Appearance") renders embedded (no h2 of its own);
     // the super-section h2 is what the user sees.
     expect(
-      screen.getByRole("heading", { name: "Appearance & Layout", level: 2 }),
+      screen.getByRole("heading", { name: "Appearance", level: 2 }),
     ).toBeInTheDocument();
     // No other top-level section's h2 should be rendered.
     expect(screen.queryByRole("heading", { name: "Models", level: 2 })).not.toBeInTheDocument();
     // The active nav link should be marked.
     expect(
-      screen.getByRole("link", { name: "Appearance & Layout" }),
+      screen.getByRole("link", { name: "Appearance" }),
     ).toHaveAttribute("aria-current", "page");
     // The Persona nav link points at the persona section.
     expect(screen.getByRole("link", { name: "Persona" })).toHaveAttribute("href", "#persona");
@@ -57,7 +59,7 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("heading", { name: "Jarvis Soul", level: 2 })).toBeInTheDocument();
     // The previous super-section's h2 is gone.
     expect(
-      screen.queryByRole("heading", { name: "Appearance & Layout", level: 2 }),
+      screen.queryByRole("heading", { name: "Appearance", level: 2 }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Persona" })).toHaveAttribute("aria-current", "page");
   });
@@ -116,5 +118,40 @@ describe("SettingsPage", () => {
     );
     expect(screen.getByRole("heading", { name: "Jarvis Soul", level: 2 })).toBeInTheDocument();
     expect(window.location.hash).toBe("#persona");
+  });
+
+  it("does not rewrite the HashRouter route when desktop opens provider settings", () => {
+    (window as any).jarvisDesktop = {
+      status: () => Promise.resolve({
+        api_origin: "http://127.0.0.1:7001",
+        server_running: false,
+        workspace: "/tmp/work",
+        logs: [],
+        last_error: "OPENAI_API_KEY missing",
+      }),
+      restartServer: () => Promise.resolve({
+        api_origin: "http://127.0.0.1:7001",
+        server_running: false,
+        workspace: "/tmp/work",
+        logs: [],
+        last_error: "OPENAI_API_KEY missing",
+      }),
+      selectWorkspaceDir: () => Promise.resolve(null),
+      openPath: () => Promise.resolve({ ok: true }),
+      revealPath: () => Promise.resolve({ ok: true }),
+      logs: () => Promise.resolve([]),
+    };
+    sessionStorage.setItem("jarvis.settings.target", JSON.stringify({ id: "models" }));
+    window.history.replaceState(null, "", "/#/settings");
+
+    render(
+      <MemoryRouter>
+        <SettingsPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Models", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Models" })).toHaveAttribute("href", "#");
+    expect(window.location.hash).toBe("#/settings");
   });
 });

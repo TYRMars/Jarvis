@@ -30,6 +30,7 @@ import { applyPatch, parsePatch } from "diff";
 import type { ParsedDiff } from "diff";
 import type { JsonValue, Tool, ToolCategory } from "@jarvis/core";
 import { resolveUnder } from "./sandbox.ts";
+import { withDiagnostics, type DiagnosticsHook } from "./diagnostics.ts";
 
 type ChangeKind = "created" | "modified" | "deleted";
 
@@ -63,9 +64,11 @@ export class FsPatchTool implements Tool {
     "paths outside the sandbox root. Does not stage changes.";
 
   readonly #root: string;
+  readonly #diagnostics: DiagnosticsHook | undefined;
 
-  constructor(config: { root: string }) {
+  constructor(config: { root: string; diagnostics?: DiagnosticsHook }) {
     this.#root = config.root;
+    this.#diagnostics = config.diagnostics;
   }
 
   get parameters(): JsonValue {
@@ -242,7 +245,10 @@ export class FsPatchTool implements Tool {
       const marker = w.kind === "created" ? "A" : w.kind === "modified" ? "M" : "D";
       summary += `  ${marker} ${w.rel}   (+${w.added} -${w.removed})\n`;
     }
-    return summary;
+    // Diagnose the files that still exist (created / modified); deletes can't
+    // be opened. Best-effort — never breaks an applied patch.
+    const touched = planned.filter((w) => w.kind !== "deleted").map((w) => w.abs);
+    return withDiagnostics(summary, this.#diagnostics, touched);
   }
 }
 

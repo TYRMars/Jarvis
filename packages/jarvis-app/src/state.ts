@@ -15,13 +15,22 @@
 // the workspace project context (AGENTS.md / CLAUDE.md / AGENT.md, priority
 // order, 8 KiB cap) is appended unless disabled.
 import { readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
-import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider, type Memory } from "@jarvis/core";
+import { Agent, ToolRegistry, type AgentConfig, type Approver, type HumanLayer, type LlmProvider, type Memory } from "@jarvis/core";
+import { DdnsRuntime } from "@jarvis/ddns";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
+import { lookupCapability, canonicalKind } from "@jarvis/llm";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
+import {
+  ChatRunRegistry,
+  FilePermissionStore,
+  RoutePolicyStore,
+  isRouteSlot,
+  parseModelTarget,
+} from "@jarvis/server";
 import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
@@ -109,6 +118,39 @@ export interface AppStateBundle {
   subagents: SubAgentRegistry;
   /** The resolved system prompt (surfaced for `status` / logging). */
   systemPrompt: string;
+  /**
+   * DDNS runtime (when `JARVIS_DDNS_ENABLE`). Already started; the caller owns
+   * its lifetime — call `.stop()` on shutdown/restart. Absent otherwise.
+   */
+  ddnsRuntime?: DdnsRuntime;
+}
+
+/**
+ * User-scope permission rules: `~/.config/jarvis/permissions.json` (the path
+ * the permission-modes proposal specifies). Undefined when there is no
+ * resolvable home, which simply disables the user scope.
+ */
+function userPermissionsPath(): string | undefined {
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    return undefined;
+  }
+  if (!home) return undefined;
+  return path.join(home, ".config", "jarvis", "permissions.json");
+}
+
+/** Persisted DDNS config path under the user data dir, or undefined (no home). */
+function ddnsConfigPath(): string | undefined {
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    return undefined;
+  }
+  if (home === "" || home === undefined) return undefined;
+  return path.join(home, ".local", "share", "jarvis", "ddns.json");
 }
 
 // ---------------------------------------------------------------------------
@@ -191,15 +233,38 @@ export function buildMemory(
   summaryStore?: SummaryStore,
   routePolicy?: RoutePolicyStore,
 ): Memory | undefined {
-  if (config.memoryTokens === undefined) return undefined;
+  const budget = resolveMemoryBudget(config);
+  if (budget === undefined) return undefined;
   if (config.memoryMode === "summary") {
-    let sm = new SummarizingMemory(llm, config.memoryModel ?? config.model, config.memoryTokens);
+    let sm = new SummarizingMemory(llm, config.memoryModel ?? config.model, budget);
     // Honour the operator route policy's `summarization` slot (non-hollow
     // consumer of /v1/routing), mirroring the Rust LlmRouteResolver.
     if (routePolicy) sm = sm.withModelResolver(() => routePolicy.summarizationModel());
     return summaryStore !== undefined ? sm.withPersistence(summaryStore) : sm;
   }
-  return new SlidingWindowMemory(config.memoryTokens);
+  return new SlidingWindowMemory(budget);
+}
+
+/** Reserve carved out of a model's context window for output + system/tools
+ * headroom when deriving a default memory budget (mirrors opencode's
+ * COMPACTION_BUFFER cap). 20% of context, clamped to [4k, 20k] tokens. */
+function reservedTokens(contextWindow: number): number {
+  return Math.min(20_000, Math.max(4_000, Math.floor(contextWindow * 0.2)));
+}
+
+/**
+ * The effective memory token budget. Explicit `JARVIS_MEMORY_TOKENS` wins;
+ * otherwise derive `contextWindow - reserved` from the model's capability
+ * catalog so compaction adapts to the model's window instead of being off
+ * entirely. Returns `undefined` when neither is available (unknown model with
+ * no explicit budget) — the historical "no memory installed" behaviour.
+ */
+export function resolveMemoryBudget(config: JarvisConfig): number | undefined {
+  if (config.memoryTokens !== undefined) return config.memoryTokens;
+  const ctx = lookupCapability(canonicalKind(config.provider), config.model)?.contextWindow;
+  if (ctx === undefined || ctx <= 0) return undefined;
+  const budget = ctx - reservedTokens(ctx);
+  return budget > 0 ? budget : undefined;
 }
 
 /**
@@ -270,9 +335,26 @@ export async function buildAppState(
     return new Agent(provider, innerCfg);
   };
 
+  // DDNS / remote-access runtime (JARVIS_DDNS_ENABLE). Created here so it can be
+  // shared into both the tool registry (the `ddns.*` family) and AppState (the
+  // `/v1/ddns/*` routes). Started immediately; the caller stops it on shutdown.
+  let ddnsRuntime: DdnsRuntime | undefined;
+  if (config.ddnsEnabled) {
+    const configPath = ddnsConfigPath();
+    ddnsRuntime = await DdnsRuntime.create({
+      ...(configPath !== undefined ? { configPath } : {}),
+      ...(config.ddnsSeed !== undefined ? { seed: config.ddnsSeed } : {}),
+      logger: (m) => process.stderr.write(`${m}\n`),
+    });
+    ddnsRuntime.start();
+  }
+
   // Build the canonical tool registry (with the subagent adapters wired via the
   // inner factory) + connect the external MCP servers.
-  const toolBundle = await buildToolRegistry(config, toolStores, { createAgent: makeInnerAgent });
+  const toolBundle = await buildToolRegistry(config, toolStores, {
+    createAgent: makeInnerAgent,
+    ...(ddnsRuntime !== undefined ? { ddns: ddnsRuntime } : {}),
+  });
 
   // Cross-process summary cache tier: the persistent conversation store doubles
   // as the SummaryStore (rows under `__memory__.summary:<hash>`, filtered out of
@@ -282,6 +364,15 @@ export async function buildAppState(
 
   // Operator route policy: seed from JARVIS_ROUTE_* then share the mutable store
   // between the /v1/routing CRUD and the SummarizingMemory resolver.
+  // Permission rules: session in-memory, project committed under the
+  // workspace, user per-machine. `JARVIS_PERMISSION_MODE` seeds the session
+  // default; either file may pin a stronger one (user > project > session).
+  const permissionStore = new FilePermissionStore({
+    projectPath: path.join(config.fsRoot, ".jarvis", "permissions.json"),
+    defaultMode: config.permissionMode,
+    ...(userPermissionsPath() !== undefined ? { userPath: userPermissionsPath() as string } : {}),
+  });
+
   const routePolicy = new RoutePolicyStore();
   for (const [slot, raw] of Object.entries(config.routeSlots)) {
     if (!isRouteSlot(slot)) continue;
@@ -290,17 +381,19 @@ export async function buildAppState(
   }
   const memory = buildMemory(config, provider, summaryStore, routePolicy);
 
-  const createAgent = (approver?: Approver): Agent => {
+  const createAgent = (approver?: Approver, human?: HumanLayer, opts?: { model?: string }): Agent => {
     const agentConfig: AgentConfig = {
-      model: config.model,
+      model: opts?.model ?? config.model,
       systemPrompt,
       // The registry is shared (read-only at request time); the per-socket
-      // approver lives on AgentConfig, not the registry, so this is safe.
+      // approver / human responder live on AgentConfig, not the registry, so
+      // this is safe.
       tools: toolBundle.registry,
       maxIterations: 80,
       refreshSystemPromptOnResume: true,
     };
     if (approver !== undefined) agentConfig.approver = approver;
+    if (human !== undefined) agentConfig.human = human;
     if (memory !== undefined) agentConfig.memory = memory;
     return new Agent(provider, agentConfig);
   };
@@ -314,7 +407,7 @@ export async function buildAppState(
     config_path: null,
     persistence: config.dbUrl ?? "json",
     project_store: stores.projects !== undefined,
-    memory: { mode: config.memoryMode, budget_tokens: config.memoryTokens ?? null },
+    memory: { mode: config.memoryMode, budget_tokens: resolveMemoryBudget(config) ?? null },
     approval_mode: config.permissionMode,
     coding_mode: codingMode(config),
     project_context: { loaded: config.includeProjectContext, max_bytes: config.projectContextMaxBytes },
@@ -335,6 +428,12 @@ export async function buildAppState(
     tools: toolBundle.registry,
     // In-process chat-run registry for the turn-status badge / Stop button.
     chatRuns: new ChatRunRegistry(),
+    // Permission rule table (session in-memory + project/user JSON files) and
+    // the mode fresh chat sockets start in. Wiring these is what makes
+    // JARVIS_PERMISSION_MODE actually govern approvals and /v1/permissions
+    // answer instead of 503.
+    permissionStore,
+    defaultPermissionMode: config.permissionMode,
     // MCP server manager backing /v1/mcp/servers* (shares the tool registry).
     mcpManager: toolBundle.mcpManager,
     // Operator route policy backing /v1/routing (shared with the summariser).
@@ -353,8 +452,23 @@ export async function buildAppState(
     subagents: toolBundle.subagents,
     workspaceRoot: config.fsRoot,
     providerCatalog: buildProviderCatalog(config),
+    deviceName: config.deviceName,
+    ...(config.accessToken !== undefined ? { accessToken: config.accessToken } : {}),
+    ...(ddnsRuntime !== undefined ? { ddnsRuntime } : {}),
     ...(config.webDistDir !== undefined ? { webDistDir: config.webDistDir } : {}),
     ...(deps.learningMemory !== undefined ? { learningMemory: deps.learningMemory } : {}),
+    // Memory tree roots + sync backend backing /v1/memory/sync* + /includes*.
+    // Only populated when JARVIS_ENABLE_MEMORY is set, so the routes otherwise
+    // 503 ("memory tools not enabled").
+    ...(config.enableMemory
+      ? {
+          memoryRuntime: {
+            workspaceRoot: config.fsRoot,
+            ...(config.memoryUserRoot !== undefined ? { userRoot: config.memoryUserRoot } : {}),
+            backend: config.memorySyncBackend,
+          },
+        }
+      : {}),
   };
 
   return {
@@ -362,5 +476,6 @@ export async function buildAppState(
     mcpClients: toolBundle.mcpClients,
     subagents: toolBundle.subagents,
     systemPrompt,
+    ...(ddnsRuntime !== undefined ? { ddnsRuntime } : {}),
   };
 }
