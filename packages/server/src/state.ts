@@ -1,7 +1,8 @@
 // Server-shared application state. Ported (minimal P2 subset) from
 // harness-server/src/state.rs. The composition root (apps/jarvis) builds this
 // and hands it to `buildServer`; the server itself reads no env / config.
-import type { Agent, Approver, HumanLayer, LlmProvider, ToolRegistry } from "@jarvis/core";
+import type { Agent, Approver, HumanLayer, LlmProvider, Tool, ToolRegistry } from "@jarvis/core";
+import type { PermissionStore } from "./permissions-routes.ts";
 import type { ChatRunRegistry } from "./chat-runs.ts";
 import type { McpManager } from "./mcp-manager.ts";
 import type { RoutePolicyStore } from "./route-policy.ts";
@@ -110,10 +111,12 @@ export interface AppState {
   /**
    * Build an Agent for one request. The optional `approver` is the per-socket
    * gate the WebSocket transport supplies (mirrors Rust `state.build_agent`);
-   * the optional `human` is the per-socket HITL responder for `ask.*` tools.
-   * The blocking / SSE chat routes call this with neither.
+   * the optional `human` is the per-socket HITL responder for `ask.*` tools;
+   * the optional `toolFilter` is the per-socket Plan-Mode restriction (it's
+   * re-read on every iteration, so a socket can back it with its mutable mode
+   * handle). The blocking / SSE chat routes call this with none of them.
    */
-  createAgent(approver?: Approver, human?: HumanLayer): Agent;
+  createAgent(approver?: Approver, human?: HumanLayer, toolFilter?: (tool: Tool) => boolean): Agent;
   /**
    * The shared tool registry that `createAgent` builds agents from. Surfaced
    * here so `GET /v1/tools` can list the catalog (including muted tools) and
@@ -153,6 +156,14 @@ export interface AppState {
   routePolicy?: RoutePolicyStore;
   /** Optional conversation persistence. Routes 503 when absent. */
   store?: ConversationStore;
+  /**
+   * Permission rule table + default mode. Backs `/v1/permissions*` and the
+   * per-socket `RuleApprover` the chat WS installs, so `JARVIS_PERMISSION_MODE`
+   * and any stored allow/deny rules actually gate tool calls. Absent → the
+   * permission routes 503 and the WS falls back to prompting for every gated
+   * tool (the pre-engine behaviour).
+   */
+  permissionStore?: PermissionStore;
 
   // ---- Work / Project domain stores (each route 503s when its store is absent) ----
   projects?: ProjectStore;

@@ -17,12 +17,18 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { Agent, ToolRegistry, type AgentConfig, type Approver, type HumanLayer, type LlmProvider, type Memory } from "@jarvis/core";
+import { Agent, ToolRegistry, type AgentConfig, type Approver, type HumanLayer, type LlmProvider, type Memory, type Tool } from "@jarvis/core";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
 import { lookupCapability, canonicalKind } from "@jarvis/llm";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
+import {
+  ChatRunRegistry,
+  MemoryPermissionStore,
+  RoutePolicyStore,
+  isRouteSlot,
+  parseModelTarget,
+} from "@jarvis/server";
 import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
@@ -314,22 +320,32 @@ export async function buildAppState(
   }
   const memory = buildMemory(config, provider, summaryStore, routePolicy);
 
-  const createAgent = (approver?: Approver, human?: HumanLayer): Agent => {
+  const createAgent = (
+    approver?: Approver,
+    human?: HumanLayer,
+    toolFilter?: (tool: Tool) => boolean,
+  ): Agent => {
     const agentConfig: AgentConfig = {
       model: config.model,
       systemPrompt,
       // The registry is shared (read-only at request time); the per-socket
-      // approver / human responder live on AgentConfig, not the registry, so
-      // this is safe.
+      // approver / human responder / tool filter live on AgentConfig, not the
+      // registry, so this is safe.
       tools: toolBundle.registry,
       maxIterations: 80,
       refreshSystemPromptOnResume: true,
     };
     if (approver !== undefined) agentConfig.approver = approver;
     if (human !== undefined) agentConfig.human = human;
+    if (toolFilter !== undefined) agentConfig.toolFilter = toolFilter;
     if (memory !== undefined) agentConfig.memory = memory;
     return new Agent(provider, agentConfig);
   };
+
+  // The permission rule engine. Seeded with the resolved JARVIS_PERMISSION_MODE
+  // so the env var actually gates tool calls (each chat socket adopts this as
+  // its starting mode); `/v1/permissions*` edits the same table.
+  const permissionStore = new MemoryPermissionStore(config.permissionMode);
 
   // Static config snapshot for GET /v1/server/info + /v1/version (no secrets).
   const serverInfo: ServerInfo = {
@@ -359,6 +375,9 @@ export async function buildAppState(
     // lists the live catalog and `PATCH /v1/tools/:name` mutes take effect for
     // the next turn.
     tools: toolBundle.registry,
+    // Permission rule table + default mode: gates gated-tool dispatch on every
+    // chat socket and backs /v1/permissions*.
+    permissionStore,
     // In-process chat-run registry for the turn-status badge / Stop button.
     chatRuns: new ChatRunRegistry(),
     // MCP server manager backing /v1/mcp/servers* (shares the tool registry).

@@ -38,7 +38,7 @@ opencode 真正值得借鉴的不是"更多功能"，而是**闭合两个环路*
 | 编辑后 LSP 诊断回灌 | `lsp/diagnostic.ts` + edit 回灌 | 编辑后无任何回灌 | **P0/P1 借鉴（高）** |
 | 反应式上下文压缩 | `session/{overflow,compaction,summary}.ts` | 每轮无条件压到固定 env 预算；Usage 被丢弃 | **P0 借鉴（中）** |
 | 原生 web 搜索 + HTML→MD | `tool/{websearch,webfetch,mcp-websearch}.ts` | 仅 `http.fetch` 返回截断原始 HTML | **P0 借鉴（中）** |
-| Plan Mode 强制只读 | `agent/agent.ts` ruleset + `tool/plan.ts` | "名词"齐全但**纯装饰**：write 工具仍可调用、`exit_plan` 不停 turn | **P1 借鉴（中）** |
+| Plan Mode 强制只读 | `agent/agent.ts` ruleset + `tool/plan.ts` | ~~"名词"齐全但纯装饰~~ → **已落地（P1.5）**：目录期过滤 + 派发期拒绝 + `isTerminal` 停 turn | ✅ 已完成 |
 | 快照与回退（跨 turn undo） | `snapshot/index.ts` + `session/revert.ts` | 有 worktree 隔离，但无事后 undo / per-message diff | **P1 借鉴（中）** |
 | 完整 LSP 工具（hover/def/refs） | `lsp/*` + `tool/lsp.ts` | 无 | **P1 借鉴（高）** |
 | 自定义命令 / 提示模板 | `command/*` + `$ARGUMENTS` 展开 | 有 Skills（自动激活），无显式带参命令 | **P1 借鉴（低-中）** |
@@ -60,7 +60,7 @@ opencode 真正值得借鉴的不是"更多功能"，而是**闭合两个环路*
 4. **web 搜索 + HTML→Markdown** —— `http.fetch` 加 `format`，搜索复用 `@jarvis/mcp` 客户端。
 
 ### P1 — 高价值能力（中-高成本）
-5. Plan Mode 真实落地（mode-signal 通道 + 请求构建期 tool-filter + `isTerminal` 停 turn）。
+5. ~~Plan Mode 真实落地~~ **✅ 已落地**（见下方 P1.5 小节）。
 6. 快照与回退（`@jarvis/snapshot` shadow-git 树 + `POST /v1/conversations/:id/revert`）。
 7. 完整 LSP 工具（`code.lsp` 9 操作，3-4 个 server 仅 PATH 探测）。
 8. 反应式压缩完整版（413 中途恢复 + overflow 触发 + tool-output 剪枝）。
@@ -250,3 +250,83 @@ Node 侧改用更轻的 node-html-markdown）。
 `packages/tools/src/http.test.ts`：`htmlToMarkdown`（标题/链接/列表）、`looksLikeHtml`
 （content-type 决策 + 嗅探）、`format=markdown` 转 HTML、`format=markdown` 透传 JSON、
 默认 `raw` 保留 HTML。
+
+---
+
+## P1.5 详细设计：Plan Mode 真实落地 + 权限引擎接线（已落地）
+
+### 起因：两侧都建好了，中间没接
+
+核验时发现的不是"缺功能"，而是**一条断掉的线**：
+
+- 规则引擎（`RuleApprover` / `MemoryPermissionStore` / `modeDefault` / glob 匹配器）在
+  `packages/server/src/permissions-routes.ts` 里**实现完整、单测齐全**，也从
+  `@jarvis/server` 的 index 导出——但**全仓没有任何一处 `new` 它**。
+- `JARVIS_PERMISSION_MODE` 被解析、被启动日志打印、被 `/v1/server/info` 上报，
+  却**没有任何 approver 读它**。`auto` / `bypass` / `plan` 的实际行为与 `ask` 完全一致。
+- Web SPA 的 `ModeBadge` / `PlanModeBanner` / `PlanProposedCard` / `BypassBanner` /
+  `DecisionSourceChip` / `GrantPermissionChip` **全部已建好**，会发 `set_mode` /
+  `accept_plan` / `refine_plan` 帧——服务端回的是 `unknown frame type`。
+- `Tool.isTerminal` 只存在于 catalog 元数据里，agent 循环从不读它，
+  所以 `exit_plan` 不停 turn；`ToolRegistry.specsFiltered` 是死代码。
+
+与 P0.1（HITL）同一个"已移植但从未接线"的模式。
+
+### 三层改动
+
+**1. `@jarvis/core`** —— 新增 `mode.ts`（`AsyncLocalStorage` 通道，与 `plan.ts` /
+`hitl.ts` 同构），导出 `AgentMode` 词汇表 + `emitModeSignal` / `withModeSignal`。
+`AgentConfig.toolFilter` 在**两处**生效，这是 Plan Mode 从"提示"变成"护栏"的关键：
+
+- `buildRequest` 用 `specsFiltered` 构目录 —— 模型看不到 write 工具；
+- `runOne` 在派发期再判一次 —— 模型即便从历史里翻出 `fs.write` 也**跑不起来**，
+  只拿到 `tool error: … is not available in the current mode`。
+
+`isTerminal` 由循环负责：终结工具的结果落盘后，同批次剩余调用**跳过**，
+循环**不再回模型**直接结束 turn。被 approver 拒绝的终结工具不算终结（它根本没跑）。
+
+**2. `@jarvis/server`** —— chat WS 每条 socket 持有一个 `SocketModeHandle`
+（初值取自 store 的 `default_mode`）与一个包住 `ChannelApprover` 的 `RuleApprover`。
+`toolFilter` 是对 mode handle 的闭包，因此每轮迭代重新求值，`set_mode` 下一轮即生效。
+`PermissionMode` 改为 `@jarvis/core` `AgentMode` 的别名，避免两份词汇表漂移。
+
+**3. `packages/jarvis-app`** —— 组合根构造 `MemoryPermissionStore(config.permissionMode)`
+并挂到 `AppState.permissionStore`，`/v1/permissions*` 随之不再 503。
+
+### 线协议（严格匹配既有前端）
+
+| 方向 | 帧 |
+|---|---|
+| C→S | `set_mode{mode}` · `accept_plan{post_mode}` · `refine_plan{feedback}` |
+| S→C | `permission_mode{mode,via?}` · `plan_proposed{plan}` |
+| S→C 增强 | `approval_decision` 附加 `source: HitSource` |
+
+两个刻意的决定：
+
+- **自动放行的调用照常发 `approval_request`。** 核心循环在 await approver *之前*
+  就 yield 请求事件，它不知道 approver 会秒批。不去抑制它——抑制等于让自动放行的
+  工具调用在审计流里**隐身**。区分"自动"靠的是决策帧上的 `source`
+  （`mode_default` / `rule` / `user_prompt`），前端 `DecisionSourceChip` 正是为此而建。
+- **`mode_changed` 不原样转发。** WS 收下、应用到自己的 mode handle，
+  再以 `permission_mode{via:"tool"}` 重新发布——前端只认后者。
+
+turn 期间发给客户端的每一帧同时以**相同形状**写入 `chatRuns` 重放缓冲，
+断线重连走 `/v1/chat/runs/:id/events` 看到的与在线客户端一致。
+
+### 验证
+
+`packages/core/src/mode.test.ts`（12 项）：目录过滤 / 派发期拒绝（阻塞+流式）/
+被过滤工具不进 approver / `isTerminal` 停 turn 并跳过同批次剩余调用（阻塞+流式）/
+被拒终结工具不停 turn / mode 通道（无 sink 空转、sink 投递、循环中转 `mode_changed`）/
+`isAgentMode` 边界。
+
+`packages/server/src/server.test.ts`（9 项 WS）：连接即公告 store 默认 mode /
+`set_mode` 回显与非法值报错 / `auto` 模式无人工输入即放行且 `source=mode_default` /
+deny 规则拦截且 `source.kind=rule` / `plan` 模式拒绝 write 工具且不进审批 /
+`exit_plan` → `plan_proposed` → `accept_plan` 切模式并续跑 / 模型调
+`enter_plan_mode` 切 socket 模式 / `refine_plan` 空反馈报错 /
+无 permission store 时退回逐次询问。
+
+**顺带修掉**：`@jarvis/core` 的 `package.json` 是全仓 25 个包里唯一手写测试文件清单的
+（其余都用 `src/*.test.ts` glob），导致 P0.1 留下的 `hitl.test.ts` **从未在 CI 跑过**。
+改成 glob 后 core 的用例数 32 → 50。

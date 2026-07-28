@@ -18,10 +18,17 @@
 //   * a tool calling `requestHuman` (e.g. `ask.text`) yields `hitl_request`
 //     BEFORE awaiting the operator and `hitl_response` once they answer, both
 //     between `tool_start` and `tool_end`. Only active when config.human is set.
+//   * `config.toolFilter` hides tools from the model's catalogue AND refuses
+//     them at dispatch, so a filtered-out tool cannot be invoked even if the
+//     model names one from history or hallucination. This is what makes Plan
+//     Mode a guard rather than a hint.
+//   * a tool whose `isTerminal` is set ends the turn as soon as its result is
+//     appended: any later calls in the same batch are skipped and the loop
+//     stops instead of asking the model again. `exit_plan` relies on this.
 //
 // Deferred to later phases (documented in nodejs-rewrite-tasklist.zh-CN.md):
-// parallel tool dispatch, tool_filter (Plan Mode), session workspace,
-// memory-compaction / subagent / fallback / mode events, Responses chaining.
+// parallel tool dispatch, session workspace, memory-compaction / subagent /
+// fallback events, Responses chaining.
 import type { Conversation } from "./conversation.ts";
 import { systemMessage, toolResult, type Message, type ToolCall } from "./message.ts";
 import {
@@ -39,6 +46,7 @@ import type { Memory } from "./memory.ts";
 import { withPlan, type PlanItem } from "./plan.ts";
 import { withProgress, type ToolProgress } from "./progress.ts";
 import { withHitl, type HumanLayer, type HitlRequest, type HitlResponse } from "./hitl.ts";
+import { withModeSignal, type AgentMode } from "./mode.ts";
 import { errorText, MaxIterationsError, MemoryError } from "./error.ts";
 import type { JsonValue } from "./json.ts";
 import { context, trace, type Span } from "@opentelemetry/api";
@@ -59,6 +67,15 @@ export interface AgentConfig {
    * `expired` and the tool returns without a human round-trip.
    */
   human?: HumanLayer;
+  /**
+   * Restrict which registered tools this run may see and call. Absent → every
+   * non-muted tool. Evaluated fresh on each iteration (so a transport can back
+   * it with a mutable mode handle and have the change land on the next turn),
+   * and enforced on BOTH sides: filtered-out tools are omitted from the request
+   * catalogue *and* refused at dispatch with a `tool error:` result. Plan Mode
+   * is `(t) => toolCategory(t) === "read"`.
+   */
+  toolFilter?: (tool: Tool) => boolean;
   /** Replace a stale leading System message on resume. Default: true. */
   refreshSystemPromptOnResume: boolean;
 }
@@ -85,6 +102,7 @@ export type AgentEvent =
   | { type: "approval_decision"; id: string; name: string; decision: ApprovalDecision }
   | { type: "hitl_request"; request: HitlRequest }
   | { type: "hitl_response"; response: HitlResponse }
+  | { type: "mode_changed"; mode: AgentMode; via: "tool" }
   | { type: "tool_start"; id: string; name: string; arguments: JsonValue }
   | { type: "tool_progress"; id: string; name: string; stream: string; chunk: string }
   | { type: "tool_end"; id: string; name: string; content: string }
@@ -132,12 +150,26 @@ export class Agent {
 
           const message = resp.message;
           if (isToolCallTurn(message, resp.finish_reason)) {
+            let terminated = false;
             for (const call of message.tool_calls) {
-              const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
-              const output = await runOne(this.config.tools, call, approval?.[1]);
+              const approval = await maybeRequestApproval(
+                this.config.tools,
+                this.config.approver,
+                call,
+                this.config.toolFilter,
+              );
+              const output = await runOne(this.config.tools, call, approval?.[1], undefined, this.config.toolFilter);
               conversation.messages.push(toolResult(call.id, output));
+              if (isTerminalCall(this.config.tools, call, approval?.[1], this.config.toolFilter)) {
+                terminated = true;
+                break;
+              }
             }
-            continue;
+            if (!terminated) continue;
+            // A terminal tool (e.g. `exit_plan`) ends the turn without another
+            // round-trip to the model.
+            endAgentSpan(span, { iterations: iter });
+            return [{ kind: "stopped", iterations: iter }, totalUsage];
           }
 
           const outcome: RunOutcome =
@@ -220,11 +252,14 @@ export class Agent {
 
         const message = finish.message;
         if (isToolCallTurn(message, finish.finish_reason)) {
+          let terminated = false;
           for (const call of message.tool_calls) {
             // Resolve the approval decision, emitting the request BEFORE awaiting
             // the approver so an interactive transport can respond in time.
+            // A tool hidden by the filter is refused at dispatch instead, so it
+            // never reaches the approver.
             let decision: ApprovalDecision | undefined;
-            const tool = this.config.tools.resolve(call.name);
+            const tool = this.#visibleTool(call.name);
             if (this.config.approver && tool && toolRequiresApproval(tool)) {
               const request: ApprovalRequest = {
                 tool_call_id: call.id,
@@ -252,6 +287,10 @@ export class Agent {
             const planSink = (items: PlanItem[]): void => queue.push({ type: "plan_update", items });
             const progressSink = (p: ToolProgress): void =>
               queue.push({ type: "tool_progress", id: call.id, name: call.name, stream: p.stream, chunk: p.chunk });
+            // A tool asking to switch permission mode (`enter_plan_mode`). The
+            // loop only relays it; applying it is the transport's job, and it
+            // lands on the next request build via `config.toolFilter`.
+            const modeSink = (mode: AgentMode): void => queue.push({ type: "mode_changed", mode, via: "tool" });
             const human = this.config.human;
             const hitlSink = async (req: HitlRequest): Promise<HitlResponse> => {
               if (!human) return { request_id: req.id, status: "expired", reason: "no HITL transport available" };
@@ -262,7 +301,11 @@ export class Agent {
             };
             const dispatch = (): Promise<string> =>
               withPlan(planSink, () =>
-                withProgress(progressSink, () => runOne(this.config.tools, call, decision, span)),
+                withProgress(progressSink, () =>
+                  withModeSignal(modeSink, () =>
+                    runOne(this.config.tools, call, decision, span, this.config.toolFilter),
+                  ),
+                ),
               );
             const invoked = (human ? withHitl(hitlSink, dispatch) : dispatch()).finally(() => queue.close());
 
@@ -271,8 +314,17 @@ export class Agent {
 
             yield { type: "tool_end", id: call.id, name: call.name, content };
             conversation.messages.push(toolResult(call.id, content));
+
+            // `isTerminal` ends the turn here: later calls in this batch are
+            // skipped and we do NOT go back to the model.
+            if (tool && !decisionDenied(decision) && tool.isTerminal === true) {
+              terminated = true;
+              break;
+            }
           }
-          continue;
+          if (!terminated) continue;
+          yield { type: "done", outcome: { kind: "stopped", iterations: iter }, conversation };
+          return;
         }
 
         const outcome: RunOutcome =
@@ -307,13 +359,43 @@ export class Agent {
     }
 
     const req: ChatRequest = { model: this.config.model, messages };
-    const tools = this.config.tools.specs();
+    const filter = this.config.toolFilter;
+    const tools = filter ? this.config.tools.specsFiltered(filter) : this.config.tools.specs();
     if (tools.length > 0) req.tools = tools;
     if (this.config.temperature !== undefined) req.temperature = this.config.temperature;
     if (conv.last_response_id != null) req.previous_response_id = conv.last_response_id;
     if (conv.last_response_chain_origin != null) req.chain_origin = conv.last_response_chain_origin;
     return req;
   }
+
+  /** Resolve a tool only if it survives `config.toolFilter`. */
+  #visibleTool(name: string): Tool | undefined {
+    const tool = this.config.tools.resolve(name);
+    if (!tool) return undefined;
+    const filter = this.config.toolFilter;
+    return filter && !filter(tool) ? undefined : tool;
+  }
+}
+
+/** Whether an approval decision blocked the call (so it never actually ran). */
+function decisionDenied(decision: ApprovalDecision | undefined): boolean {
+  return decision !== undefined && decision.decision === "deny";
+}
+
+/**
+ * Whether `call` resolved to a tool that ends the turn. A denied call — or one
+ * refused by the tool filter — never ran, so it never terminates.
+ */
+function isTerminalCall(
+  tools: ToolRegistry,
+  call: ToolCall,
+  decision: ApprovalDecision | undefined,
+  filter: ((tool: Tool) => boolean) | undefined,
+): boolean {
+  if (decisionDenied(decision)) return false;
+  const tool = tools.resolve(call.name);
+  if (!tool || (filter && !filter(tool))) return false;
+  return tool.isTerminal === true;
 }
 
 type ToolCallMessage = Extract<Message, { role: "assistant" }> & { tool_calls: ToolCall[] };
@@ -354,15 +436,18 @@ export function ensureSystemPrompt(
  * Ask the configured approver about `call` iff an approver is set and the
  * tool's `requiresApproval` is true. Returns `[request, decision]` when a
  * round-trip happened, else undefined. An approver throw becomes a Deny.
+ * A tool hidden by `filter` is refused at dispatch, so it never gets here.
  */
 async function maybeRequestApproval(
   tools: ToolRegistry,
   approver: Approver | undefined,
   call: ToolCall,
+  filter: ((tool: Tool) => boolean) | undefined,
 ): Promise<[ApprovalRequest, ApprovalDecision] | undefined> {
   if (!approver) return undefined;
   const tool = tools.resolve(call.name);
   if (!tool) return undefined;
+  if (filter && !filter(tool)) return undefined;
   if (!toolRequiresApproval(tool)) return undefined;
 
   const request: ApprovalRequest = {
@@ -384,18 +469,28 @@ async function maybeRequestApproval(
  * Invoke `call` if `decision` permits, else surface the deny reason as text.
  * Tool errors (and tool-not-found) are caught and surfaced as text too, so
  * the model can read them and adapt.
+ *
+ * `filter` is the enforcement half of {@link AgentConfig.toolFilter}: a tool
+ * the filter rejects is never invoked, no matter how the model came to name it.
  */
 async function runOne(
   tools: ToolRegistry,
   call: ToolCall,
   decision: ApprovalDecision | undefined,
   parentSpan?: Span,
+  filter?: (tool: Tool) => boolean,
 ): Promise<string> {
   if (decision && decision.decision === "deny") {
     return `tool denied: ${decision.reason ?? "no reason given"}`;
   }
   const tool: Tool | undefined = tools.resolve(call.name);
   if (!tool) return `tool error: tool not found: ${call.name}`;
+  if (filter && !filter(tool)) {
+    return (
+      `tool error: ${call.name} is not available in the current mode. ` +
+      `Only the tools listed in this request may be called.`
+    );
+  }
   try {
     // The `gen_ai.tool.call` span wraps the raw invoke so a throwing tool is
     // recorded on the span even though we format the failure as text below.

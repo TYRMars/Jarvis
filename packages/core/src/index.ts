@@ -69,6 +69,15 @@ export {
   ChannelApprover,
 } from "./approval.ts";
 export { type PlanItem, type PlanStatus, emitPlan, planActive, withPlan } from "./plan.ts";
+export {
+  type AgentMode,
+  AGENT_MODES,
+  isAgentMode,
+  emitModeSignal,
+  modeSignalActive,
+  withModeSignal,
+  planModeToolFilter,
+} from "./mode.ts";
 export { type ToolProgress, emitProgress, progressActive, withProgress } from "./progress.ts";
 export {
   type HitlKind,
