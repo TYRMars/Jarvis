@@ -57,7 +57,12 @@ async function createWindow(): Promise<void> {
     center: true,
     show: false,
     title: "Jarvis",
-    backgroundColor: "#0b0b0d",
+    backgroundColor: "#00000000",
+    transparent: true,
+    vibrancy: "sidebar",
+    visualEffectState: "active",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 18 },
     webPreferences: {
       preload: path.join(app.getAppPath(), "out", "preload", "index.cjs"),
       contextIsolation: true,
@@ -70,6 +75,22 @@ async function createWindow(): Promise<void> {
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
   });
+
+  // The sidebar top bar reserves a left inset for the macOS traffic lights
+  // (titleBarStyle: hiddenInset). In native full-screen the OS hides them, so
+  // that inset becomes a dead gap and the toggle / back-forward buttons sit in a
+  // different spot than when windowed. Toggle a `jarvis-fullscreen` class on the
+  // document so the CSS can drop the reserved padding. Re-applied on every load
+  // because the window navigates file:// -> server origin (which resets the DOM).
+  const syncFullscreen = (): void => {
+    const isFull = win.isFullScreen();
+    win.webContents
+      .executeJavaScript(`document.documentElement.classList.toggle("jarvis-fullscreen", ${isFull});`)
+      .catch(() => {});
+  };
+  win.on("enter-full-screen", syncFullscreen);
+  win.on("leave-full-screen", syncFullscreen);
+  win.webContents.on("did-finish-load", syncFullscreen);
 
   // 7.6: load the bundled SPA from disk first (instant first paint / fallback).
   try {
@@ -170,7 +191,12 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       webDist = resolveWebDist();
-      manager = new ServerManager({ logs, prefsDir: app.getPath("userData"), webDist });
+      manager = new ServerManager({
+        logs,
+        prefsDir: app.getPath("userData"),
+        webDist,
+        reuseExternalServer: !app.isPackaged,
+      });
       await manager.init();
       registerIpc();
       await createWindow();

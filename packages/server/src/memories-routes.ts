@@ -12,10 +12,9 @@
 // MemoryStore) is absent so callers can distinguish "feature not enabled" from
 // "really broken". Phase 1 of docs/proposals/self-improving-agent.zh-CN.md.
 //
-// DEFERRED: /v1/memory/sync/* (git / iCloud sync). The Rust crate wires those
-// through a separate sync backend that the Node AppState does not yet carry, so
-// they are intentionally NOT registered here. Port them once the sync subsystem
-// lands in AppState.
+// The git / iCloud memory sync + include routes (`/v1/memory/sync*`,
+// `/v1/memory/includes*`) live in memory-sync-routes.ts (ported in P8); this
+// file owns only the row-based `/v1/memories` CRUD.
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { errorText } from "@jarvis/core";
 import {

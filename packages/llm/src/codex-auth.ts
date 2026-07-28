@@ -183,18 +183,22 @@ export class CodexAuth {
     } catch (e) {
       throw new ProviderError(`refresh read body: ${errorText(e)}`);
     }
+    // SECURITY: never interpolate the refresh response body into error text —
+    // it carries access/refresh tokens on the happy path and can carry them in
+    // server-echoed error payloads. Surface only the status / a generic note so
+    // tokens can't leak into logs or upstream error messages (P8.6).
     if (!resp.ok) {
-      throw new ProviderError(`refresh failed: status ${resp.status}: ${body}`);
+      throw new ProviderError(`refresh failed: status ${resp.status}`);
     }
 
     let parsed: { access_token?: unknown; refresh_token?: unknown };
     try {
       parsed = JSON.parse(body) as typeof parsed;
     } catch (e) {
-      throw new ProviderError(`decode refresh response: ${errorText(e)}; body=${body}`);
+      throw new ProviderError(`decode refresh response: ${errorText(e)}`);
     }
     if (typeof parsed.access_token !== "string") {
-      throw new ProviderError(`decode refresh response: missing access_token; body=${body}`);
+      throw new ProviderError("decode refresh response: missing access_token");
     }
 
     this.accessToken = parsed.access_token;
@@ -235,7 +239,11 @@ export class CodexAuth {
     const pretty = `${JSON.stringify(value, null, 2)}\n`;
     const tmp = `${filePath}.tmp`;
     try {
-      await writeFile(tmp, pretty, "utf8");
+      // SECURITY: 0o600 — auth.json holds OAuth access/refresh tokens; restrict
+      // to owner read/write so other local accounts can't read them. The mode
+      // rides through the rename onto the final path (P8.6). Mirrors the
+      // json-file store's secret-file pattern.
+      await writeFile(tmp, pretty, { encoding: "utf8", mode: 0o600 });
     } catch (e) {
       throw new ProviderError(`write ${tmp}: ${errorText(e)}`);
     }

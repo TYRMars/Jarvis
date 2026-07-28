@@ -146,6 +146,20 @@ describe("composer pasted blobs", () => {
     get().gcPastedBlobs();
     expect(get().pastedBlobs).toEqual({});
   });
+
+  it("pushComposerHistory dedupes entries and keeps the newest prompts", () => {
+    get().pushComposerHistory(" first ");
+    get().pushComposerHistory("second");
+    get().pushComposerHistory("first");
+    for (let i = 0; i < 55; i += 1) {
+      get().pushComposerHistory(`prompt ${i}`);
+    }
+
+    expect(get().composerHistory).toHaveLength(50);
+    expect(get().composerHistory[0]).toBe("prompt 5");
+    expect(get().composerHistory.at(-1)).toBe("prompt 54");
+    expect(get().composerHistory.includes("first")).toBe(false);
+  });
 });
 
 describe("settings", () => {
@@ -191,10 +205,22 @@ describe("messages slice", () => {
     const users = get().messages.filter((m) => m.kind === "user") as Array<{
       kind: "user";
       content: string;
+      submittedContent?: string;
       userOrdinal: number;
     }>;
     expect(users.map((u) => u.userOrdinal)).toEqual([0, 1]);
     expect(users.map((u) => u.content)).toEqual(["first", "second"]);
+  });
+
+  it("pushUserMessage keeps visible and submitted content separate", () => {
+    get().pushUserMessage("visible attachment summary", "submitted attachment payload");
+    const user = get().messages.find((m) => m.kind === "user");
+
+    expect(user?.kind).toBe("user");
+    if (user?.kind === "user") {
+      expect(user.content).toBe("visible attachment summary");
+      expect(user.submittedContent).toBe("submitted attachment payload");
+    }
   });
 
   it("appendDelta accumulates into the trailing assistant entry", () => {

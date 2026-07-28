@@ -1,30 +1,35 @@
 # Architecture
 
-Jarvis is a Rust agent runtime shaped around one design rule:
+Jarvis is a Node/TypeScript agent runtime shaped around one design rule:
 
-> **`harness-core` knows nothing about HTTP, providers, storage, or MCP.**
-> It only owns the agent loop and the traits everything else implements.
-> Every concrete integration lives in a sibling crate that plugs in.
+> **`@jarvis/core` knows nothing about HTTP, providers, storage, or MCP.**
+> It only owns the agent loop and the interfaces everything else implements.
+> Every concrete integration lives in a sibling package that plugs in.
 
-This document gives the big-picture view: how the crates fit together,
+This document gives the big-picture view: how the packages fit together,
 how a request flows through the system, and where to extend it.
 For day-to-day working rules and subtle gotchas, see `CLAUDE.md`.
+
+The runtime is Node ≥ 22.6 — the TypeScript sources run directly via
+`--experimental-strip-types`, with no build step for the server. The package
+manager is **pnpm** (one workspace under `packages/*`), and **eslint** is the
+lint gate. The web SPA (`apps/jarvis-web`) is a standalone app built by Vite.
 
 ## Layering
 
 ```
                           ┌────────────────────────────────────┐
-  transport / composition │         apps/jarvis (bin)          │
+  transport / composition │   packages/jarvis-app/src/main.ts  │
                           └──────────────┬─────────────────────┘
                                          │ wires everything
           ┌──────────────────┬───────────┼───────────┬──────────────────┐
           ▼                  ▼           ▼           ▼                  ▼
    ┌────────────┐   ┌────────────┐  ┌────────┐  ┌────────────┐   ┌────────────┐
-   │harness-    │   │harness-    │  │harness-│  │harness-    │   │harness-    │
+   │@jarvis/    │   │@jarvis/    │  │@jarvis/│  │@jarvis/    │   │@jarvis/    │
    │server      │   │llm         │  │tools   │  │mcp         │   │store       │
-   │(axum HTTP) │   │(OpenAI)    │  │(echo,  │  │(rmcp       │   │(sqlx       │
-   │            │   │            │  │ fs,…)  │  │ client +   │   │ SQLite /   │
-   │            │   │            │  │        │  │ server)    │   │ PG / MySQL)│
+   │(Fastify    │   │(OpenAI,    │  │(echo,  │  │(MCP client │   │(JSON files │
+   │ HTTP)      │   │ Anthropic, │  │ fs,…)  │  │ + server)  │   │ default /  │
+   │            │   │ Google, …) │  │        │  │            │   │ SQLite …)  │
    └─────┬──────┘   └─────┬──────┘  └────┬───┘  └─────┬──────┘   └─────┬──────┘
          │                │              │            │                │
          │      implements LlmProvider   │   implement Tool             │
@@ -32,162 +37,203 @@ For day-to-day working rules and subtle gotchas, see `CLAUDE.md`.
          └────────────────┴──────┬───────┴────────────┴────────────────┘
                                  ▼
                      ┌───────────────────────┐
-                     │     harness-core      │
+                     │     @jarvis/core      │
                      │                       │
                      │  Agent (run / stream) │
                      │  Conversation         │
                      │  Message, ToolCall    │
-                     │  trait Tool           │
-                     │  trait LlmProvider    │
-                     │  trait ConversationStore │
-                     │  trait ToolRegistry   │
+                     │  interface Tool       │
+                     │  interface LlmProvider│
+                     │  interface Memory     │
+                     │  ToolRegistry         │
                      └───────────────────────┘
 ```
 
-Dependency direction is strictly downward: sibling crates depend on
-`harness-core`; nothing in `harness-core` depends on them. Adding a new
-integration means adding a new crate and wiring it in `apps/jarvis` —
-never adding `use harness_server::…` inside `harness-core` or similar.
+Dependency direction is strictly downward: sibling packages depend on
+`@jarvis/core`; nothing in `@jarvis/core` depends on them. Adding a new
+integration means adding a new package and wiring it in
+`packages/jarvis-app/src/main.ts` — never adding an `import` of
+`@jarvis/server` inside `@jarvis/core` or similar.
 
-## Crate responsibilities
+## Package responsibilities
 
-| crate             | owns                                                      | depends on                               |
-|-------------------|-----------------------------------------------------------|------------------------------------------|
-| `harness-core`    | `Agent` run loop, `Conversation`, `Message`, traits       | no sibling crate                         |
-| `harness-llm`     | `OpenAiProvider` (implements `LlmProvider`)               | `harness-core`, `reqwest`                |
-| `harness-tools`   | Built-in tools (`echo`, `time.now`, `http.fetch`, `fs.*`) | `harness-core`, `reqwest`                |
-| `harness-mcp`     | MCP client (adapts remote tools) + server (exposes local) | `harness-core`, `rmcp`                   |
-| `harness-server`  | Axum router, `AppState`, `/v1/chat/*` endpoints           | `harness-core`, `axum`                   |
-| `harness-store`   | `ConversationStore` impls (sqlx) + `connect(url)`         | `harness-core`, `sqlx`, `chrono`         |
-| `apps/jarvis`     | Composition root: env vars, wiring, process lifecycle     | every library crate above                |
+Libraries live under `packages/*` and publish as `@jarvis/<name>`; the
+applications live under `apps/*`. The table below covers the load-bearing
+packages; the rest (`@jarvis/channel`, `@jarvis/project`,
+`@jarvis/requirement`-style execution, `@jarvis/workflow`,
+`@jarvis/skill`, `@jarvis/subagents`, `@jarvis/plugin`,
+`@jarvis/learning`, `@jarvis/automation`, `@jarvis/observability`,
+`@jarvis/router`, `@jarvis/connectors`, `@jarvis/agent-profile`,
+`@jarvis/todo`, `@jarvis/shared-types`) follow the same rule: depend on
+`@jarvis/core` (and each other where noted in `CLAUDE.md`), never the
+other way around.
 
-## Core abstractions (`harness-core`)
+| package            | owns                                                              | depends on                               |
+|--------------------|------------------------------------------------------------------|------------------------------------------|
+| `@jarvis/core`     | `Agent` run loop, `Conversation`, `Message`, interfaces           | nothing (the leaf)                       |
+| `@jarvis/llm`      | `LlmProvider` impls (OpenAI / Anthropic / Google / Responses)     | `@jarvis/core`                           |
+| `@jarvis/tools`    | Built-in tools (`echo`, `time.now`, `http.fetch`, `fs.*`, …)      | `@jarvis/core`                           |
+| `@jarvis/mcp`      | MCP client (adapts remote tools) + server (exposes local)         | `@jarvis/core`, MCP SDK                  |
+| `@jarvis/server`   | Fastify router, `AppState`, `/v1/*` endpoints                     | `@jarvis/core`, Fastify                  |
+| `@jarvis/store`    | `ConversationStore` + domain-store impls + `connect(url)`         | `@jarvis/core`, `@jarvis/project`        |
+| `@jarvis/memory`   | `Memory` impls (sliding-window + summarizing)                     | `@jarvis/core`                           |
+| `@jarvis/router`   | `RoutingProvider` (an `LlmProvider`) — difficulty-tier routing    | `@jarvis/core`                           |
+| `@jarvis/shared-types` | Wire-shape types crossing the SPA boundary (source of truth) | nothing                                  |
+| `@jarvis/jarvis-app` | Composition root: env vars, wiring, subcommand dispatch         | every library package above              |
+| `@jarvis/jarvis-cli` | Terminal coding-agent — drives `Agent` in-process (no HTTP)     | `@jarvis/core`, `@jarvis/llm`, …         |
+| `apps/jarvis-web`  | React 19 + react-router SPA, built by Vite into `dist/`           | (standalone app; consumes shared-types)  |
+| `apps/jarvis-desktop` | Tauri shell (excluded from default CI)                         | `apps/jarvis-web`                        |
 
-Three traits form the extension surface. Every sibling crate implements
-one (or, in `harness-mcp`'s case, bridges tools in both directions).
+## Core abstractions (`@jarvis/core`)
 
-### `trait Tool`
+A small set of TypeScript interfaces forms the extension surface. Every
+sibling package implements one (or, in `@jarvis/mcp`'s case, bridges
+tools in both directions).
 
-```rust
-#[async_trait]
-pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn parameters(&self) -> serde_json::Value; // JSON Schema (object)
-    async fn invoke(&self, args: Value) -> Result<String, BoxError>;
+### `interface Tool`
+
+```ts
+export interface Tool {
+  readonly name: string;
+  readonly description: string;
+  /** JSON schema for the `arguments` object passed to `invoke` (object-shaped). */
+  readonly parameters: JsonValue;
+  invoke(args: JsonValue): Promise<string>;
+
+  readonly requiresApproval?: boolean;          // gate behind a configured Approver (default false)
+  readonly category?: ToolCategory;             // "read" | "write" | "exec" | "network"
+  readonly isTerminal?: boolean;                // call ends the turn even if more calls were emitted
 }
 ```
 
-`ToolRegistry` is a thin `HashMap<String, Arc<dyn Tool>>`. The agent loop
-only talks to the registry; every tool (built-in, MCP-remote, user code)
-lives behind it.
+`ToolRegistry` is a thin map keyed by `Tool.name`. The agent loop only
+talks to the registry; every tool (built-in, MCP-remote, user code) lives
+behind it. Same-named registration silently overwrites, so keep names
+namespaced (`<group>.<verb>`). The `category` drives Plan-Mode filtering
+(only `read` tools reach the model in plan mode) and concurrency defaults.
 
-### `trait LlmProvider`
+### `interface LlmProvider`
 
-```rust
-#[async_trait]
-pub trait LlmProvider: Send + Sync {
-    async fn complete(&self, req: ChatRequest) -> Result<ChatResponse>;
-    async fn complete_stream(&self, req: ChatRequest) -> Result<LlmStream>;
+```ts
+export interface LlmProvider {
+  complete(req: ChatRequest): Promise<ChatResponse>;
+  /** Stream a completion; may return the iterable directly or a Promise of it. */
+  completeStream(req: ChatRequest): AsyncIterable<LlmChunk> | Promise<AsyncIterable<LlmChunk>>;
 }
 ```
 
-`complete_stream` has a default implementation that calls `complete` and
-emits a single `Finish` chunk — new providers only need the non-streaming
-method to start.
+`defaultCompleteStream(provider, req)` and the `LlmProviderBase` class
+supply a streaming fallback that calls `complete` and emits a single
+synthesised `finish` chunk — new providers only need `complete` to start.
+Providers with real streaming implement `completeStream` directly.
 
-### `trait ConversationStore`
+### `interface ConversationStore`
 
-```rust
-#[async_trait]
-pub trait ConversationStore: Send + Sync {
-    async fn save(&self, id: &str, c: &Conversation) -> Result<(), BoxError>;
-    async fn load(&self, id: &str) -> Result<Option<Conversation>, BoxError>;
-    async fn list(&self, limit: u32) -> Result<Vec<ConversationRecord>, BoxError>;
-    async fn delete(&self, id: &str) -> Result<bool, BoxError>;
+```ts
+export interface ConversationStore {
+  saveEnvelope(id: string, c: Conversation, metadata: ConversationMetadata): Promise<void>;
+  loadEnvelope(id: string): Promise<[Conversation, ConversationMetadata] | undefined>;
+  list(limit: number): Promise<ConversationRecord[]>;        // newest first
+  listByProject(projectId: string, limit: number): Promise<ConversationRecord[]>;
+  delete(id: string): Promise<boolean>;                      // false if absent
+  save(id: string, c: Conversation): Promise<void>;          // envelope w/ default metadata
+  load(id: string): Promise<Conversation | undefined>;
 }
 ```
 
-Keyed by an opaque id chosen by the caller (e.g. session UUID). See
-`DB.md` for the backends and schema.
+(The interface lives in `@jarvis/store`; `ConversationStoreBase` supplies
+the wrapper methods so a backend only implements the core four.) Keyed by
+an opaque id chosen by the caller (e.g. session UUID). See `DB.md` for the
+backends and schema.
 
 ## The agent loop
 
 `Agent` has two entry points backed by the same state machine:
 
-- `Agent::run(&mut Conversation) -> Result<RunOutcome>` — blocking.
-- `Agent::run_stream(self: Arc<Self>, Conversation) -> AgentStream` —
+- `Agent.run(conversation): Promise<RunOutcome>` — blocking
+  (`runWithUsage` also returns aggregated provider usage).
+- `Agent.runStream(conversation): AsyncGenerator<AgentEvent>` —
   streaming; yields `AgentEvent`s.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Agent::run loop                          │
+│                        Agent.run loop                           │
 │                                                                 │
 │   ┌───────────────────────────────────────────────────────┐    │
 │   │ prepend system prompt (if conversation has none)      │    │
 │   └──────────────────────────┬────────────────────────────┘    │
 │                              ▼                                  │
 │   ┌───────────────────────────────────────────────────────┐    │
-│   │ LlmProvider::complete / complete_stream               │    │
+│   │ LlmProvider.complete / completeStream                 │    │
 │   └──────────────────────────┬────────────────────────────┘    │
 │                              ▼                                  │
 │   ┌───────────────────────────────────────────────────────┐    │
-│   │ append assistant message → Conversation               │    │
+│   │ push assistant message → Conversation                 │    │
 │   └──────────────────────────┬────────────────────────────┘    │
 │                              ▼                                  │
-│                  finish_reason == ToolCalls?                    │
+│                  finish_reason == tool calls?                   │
 │                   ┌─────────┴─────────┐                         │
 │                   │ yes               │ no                      │
 │                   ▼                   ▼                         │
 │        for each tool_call:        return RunOutcome             │
-│         invoke_tool(registry)                                   │
-│         append Tool message                                     │
+│         (maybe request approval)                                │
+│         invoke via registry                                     │
+│         push tool result                                        │
 │                   │                                             │
 │                   └── back to LlmProvider (next iteration) ──┐  │
 │                                                              │  │
-│              bounded by AgentConfig::max_iterations ─────────┘  │
+│              bounded by AgentConfig.maxIterations ───────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Key invariants (enforced in `agent.rs` — preserve when editing):
+Key invariants (enforced in `agent.ts` — preserve when editing):
 
 - The system prompt is **prepended once**, only if the conversation
   doesn't already have a system message.
-- Tool errors are **caught and surfaced as text** (`"tool error: {e}"`)
+- Tool errors are **caught and surfaced as text** (`"tool error: …"`)
   so the model can recover on the next turn.
-- Streaming emits exactly one terminal event: either `AgentEvent::Done`
-  (carrying the final `Conversation`) or `AgentEvent::Error`.
+- Streaming emits exactly one terminal event: either `done`
+  (carrying the final `Conversation`) or `error`.
+- The blocking path runs inside a `jarvis.agent.run` OpenTelemetry span;
+  each tool call gets a nested `gen_ai.tool.call` child span. Both are
+  no-ops unless an OTel SDK is registered (`JARVIS_OTEL_ENABLED`).
 
 ### `AgentEvent` (streaming)
 
+`runStream` yields a discriminated union (`type` field). The main variants:
+
 ```
-Delta { content }                       // token / chunk from the LLM
-AssistantMessage { message, finish }    // one complete assistant turn
-ToolStart { id, name, arguments }       // bracketing a tool invocation
-ToolEnd   { id, name, content }
-Done { conversation }                   // terminal success
-Error { message }                       // terminal failure
+{ type: "delta"; content }                       // token / chunk from the LLM
+{ type: "assistant_message"; message; finish_reason } // one complete assistant turn
+{ type: "approval_request"; id; name; arguments } // emitted BEFORE awaiting the approver
+{ type: "approval_decision"; id; name; decision }
+{ type: "tool_start"; id; name; arguments }       // bracketing a tool invocation
+{ type: "tool_progress"; id; name; stream; chunk } // incremental tool output
+{ type: "tool_end"; id; name; content }
+{ type: "plan_update"; items }                     // full plan snapshot (replace, not patch)
+{ type: "usage"; model; … }                        // provider-reported token usage
+{ type: "done"; outcome; conversation }            // terminal success
+{ type: "error"; message }                         // terminal failure
 ```
 
 ## Request lifecycle
 
-All three HTTP transports are thin serialisation layers over
-`Agent::run` / `run_stream`. They share `AppState`, never reimplement the
-loop.
+All chat transports are thin serialisation layers over `Agent.run` /
+`runStream`. They share `AppState` and never reimplement the loop.
 
 ```
-Client                 harness-server                 harness-core
+Client                 @jarvis/server                 @jarvis/core
 ──────                 ──────────────                 ────────────
                        ┌────────────┐
-POST /v1/chat/…  ───▶  │ routes.rs  │
+POST /v1/chat/…  ───▶  │ chat-routes│
                        │            │  build Conversation from body
-                       │            │  call Agent::run or run_stream
+                       │            │  call Agent.run or runStream
                        │            │  ┌──────────────────────────┐
                        │            │  │ Agent loop                │──▶ LlmProvider
                        │            │  │                           │──▶ Tools
                        │            │  │                           │    (possibly
-                       │            │  │                           │     RemoteTool
-                       │            │  │                           │     via MCP)
+                       │            │  │                           │     a remote
+                       │            │  │                           │     MCP tool)
                        │            │  └──────────────────────────┘
                        │            │  serialise response / stream
 ◀───  JSON / SSE / WS  │            │
@@ -200,26 +246,36 @@ POST /v1/chat/…  ───▶  │ routes.rs  │
 | `POST /v1/chat/completions/stream`    | SSE; each `data:` is one JSON `AgentEvent` |
 | `GET  /v1/chat/ws`                    | WebSocket; multi-turn, server-held state |
 
-The WebSocket handler is the only endpoint that keeps conversation state
-across turns: it captures `AgentEvent::Done { conversation }` and carries
-it into the next incoming user message. Clients don't resend history.
+The WebSocket handler is the only chat endpoint that keeps conversation
+state across turns: it captures the `done` event's `conversation` and
+carries it into the next incoming user message. Clients don't resend
+history. Each socket gets its own per-call approver so the client can
+approve/deny gated tools in real time.
 
-`AppState` currently holds:
+Beyond chat, `@jarvis/server` mounts the full `/v1/*` domain surface —
+persisted conversations CRUD, projects/requirements (the Work kanban +
+auto-loop), workflows, automations, skills, plugins, channels,
+memories + memory sync, diagnostics, and more. See `CLAUDE.md` for the
+route-by-route map. Every domain surface follows the same pattern:
+return `503` when its store is unconfigured.
 
-```rust
-struct AppState {
-    agent: Arc<Agent>,
-    store: Option<Arc<dyn ConversationStore>>,  // set if JARVIS_DB_URL
+`AppState` is the shared bundle the router carries:
+
+```ts
+interface AppState {
+  agent: Agent;
+  stores?: StoreBundle;        // conversations + domain stores, if JARVIS_DB_URL
+  memoryRuntime?: …;           // long-term memory + sync, if JARVIS_ENABLE_MEMORY
+  // … further optional runtimes (auto-mode, workflows, channels, …)
 }
 ```
 
-No handler reads `store` yet — that's where persistence endpoints plug
-in next.
+Extend `AppState` rather than threading registries through handlers.
 
-## MCP bridge (`harness-mcp`)
+## MCP bridge (`@jarvis/mcp`)
 
-`harness-mcp` wires the agent into the Model Context Protocol in both
-directions on top of the `rmcp` SDK (stdio transport only, for now):
+`@jarvis/mcp` wires the agent into the Model Context Protocol in both
+directions on top of the MCP SDK (stdio transport):
 
 ```
         ┌──────────────────────────────────────────────┐
@@ -228,140 +284,188 @@ directions on top of the `rmcp` SDK (stdio transport only, for now):
         │    ┌──────────────────────────────────┐     │
         │    │ ToolRegistry                     │     │
         │    │  ├─ built-in tools               │     │
-        │    │  └─ RemoteTool (one per remote)  │─────┼──┐
+        │    │  └─ remote tool (one per remote) │─────┼──┐
         │    └──────────────────────────────────┘     │  │  remote MCP server
         │                       ▲                     │  │  (child process,
-        │                       │ register_into()     │  │   stdio)
+        │                       │ registerInto()      │  │   stdio)
         │              ┌────────┴─────────┐           │  │
-        │              │ McpClient (rmcp) │──────────────┘
+        │              │ McpClient        │──────────────┘
         │              └──────────────────┘           │
         │                                              │
         │    ┌──────────────────────────────────┐     │
-        │    │ McpServer (rmcp::ServerHandler)  │──┐  │  another MCP-aware
+        │    │ McpServer                        │──┐  │  another MCP-aware
         │    │   exposes ToolRegistry over stdio│  │  │  agent (calls us)
         │    └──────────────────────────────────┘  │  │
         │                                          └──┼────────────▶
         └──────────────────────────────────────────────┘
 ```
 
-- **Client** (`client.rs`): `McpClient::connect(&McpClientConfig)` spawns
-  a remote MCP server as a child process, handshakes, lists its tools,
-  and inserts a `RemoteTool` adapter into the local `ToolRegistry` for
-  each one. Names are namespaced as `<prefix>.<tool>` so multiple
-  servers don't collide.
-- **Server** (`server.rs`): `McpServer::new(Arc<ToolRegistry>)`
-  implements `rmcp::ServerHandler` by hand (the `#[tool_router]` macro
-  doesn't fit a runtime-known registry). `serve_registry_stdio` is the
-  one-liner the `--mcp-serve` binary mode calls.
+- **Client** (`client.ts`): `McpClient.connect(config)` spawns a remote
+  MCP server as a child process, handshakes, lists its tools, and
+  `registerInto(registry, …)` inserts a remote-tool adapter into the
+  local `ToolRegistry` for each one. Names are namespaced as
+  `<prefix>.<tool>` so multiple servers don't collide. `connectAllMcp`
+  is the batch helper.
+- **Server** (`server.ts`): `McpServer` adapts the local `ToolRegistry`
+  into an MCP server. `serveRegistryStdio` is the one-liner the
+  `--mcp-serve` subcommand calls — no LLM or HTTP credentials required.
 
-## Persistence (`harness-store`)
+## Persistence (`@jarvis/store`)
 
-Driver selection is both **compile-time** (cargo features) and
-**runtime** (URL scheme picked by `connect(url)`):
+Backend selection is by **URL scheme**, chosen at runtime by `connect(url)`
+(`connectAll(url)` opens the whole domain-store family):
 
-| feature    | URL prefixes                    | backend            |
-|------------|---------------------------------|--------------------|
-| `sqlite`   | `sqlite:`, `sqlite::memory:`    | SQLite (default)   |
-| `postgres` | `postgres://`, `postgresql://`  | Postgres           |
-| `mysql`    | `mysql://`, `mariadb://`        | MySQL / MariaDB    |
+| URL prefixes                    | backend                                  |
+|---------------------------------|------------------------------------------|
+| `json:`, `json://`              | JSON files in a directory (**default**)  |
+| `sqlite:`, `sqlite::memory:`    | SQLite (`better-sqlite3`)                |
+| `postgres://`, `postgresql://`  | Postgres (deferred — currently throws)   |
+| `mysql://`, `mariadb://`        | MySQL / MariaDB (deferred — throws)      |
 
-All backends share one table, `conversations(id, messages, created_at,
-updated_at)`, where `messages` is the JSON-serialised `Conversation` and
-timestamps are RFC-3339 strings. See `DB.md` for details.
+**JSON files are the default.** With no `JARVIS_DB_URL`, the composition
+root resolves to `json:///<data>/jarvis/conversations` (i.e.
+`~/.local/share/jarvis/conversations/`), one `<id>.json` per conversation,
+written atomically (`.tmp` + rename). SQLite and the SQL backends are
+**opt-in** via the `JARVIS_DB_URL` scheme. An all-in-memory bundle
+(`makeMemoryStores()`) backs tests and the server's no-DB fallback. See
+`DB.md` for details.
 
-## Composition (`apps/jarvis`)
+## Composition (`packages/jarvis-app/src/main.ts`)
 
-The binary is the only place that reads `std::env`, picks default
-models, or decides which tools ship on by default. Library crates must
-never call `std::env::var` — put config on their input types and let
-`main.rs` populate them.
+`main.ts` is the only place that reads `process.env`, picks default models,
+or decides which tools ship on by default. Library packages must never read
+`process.env` — put config on their input types and let `main.ts` populate
+them. It dispatches these subcommands (default `serve`):
 
-Startup order:
+| subcommand   | does                                                         |
+|--------------|-------------------------------------------------------------|
+| `serve`      | build everything and start the `@jarvis/server` HTTP server |
+| `mcp-serve`  | expose the local tool registry over MCP stdio (no LLM/HTTP) |
+| `init`       | scaffold a config skeleton (prints the env knobs to set)    |
+| `login`      | store an API key (OAuth device-code flow for `codex`)       |
+| `status`     | print the resolved config summary (no secrets)              |
+| `workspace`  | print the pinned workspace root (+ optional JSON)           |
 
-1. Initialise tracing.
-2. Build a `ToolRegistry`; register built-ins via
-   `harness_tools::register_builtins`.
-3. If `--mcp-serve`: hand the registry to `serve_registry_stdio` and
-   return — no LLM or HTTP setup.
-4. Otherwise: build an `OpenAiProvider` from `OPENAI_API_KEY` /
-   `JARVIS_MODEL` / `OPENAI_BASE_URL`.
-5. If `JARVIS_MCP_SERVERS` is set: spawn external MCP servers and merge
-   their tools into the registry via `connect_all_mcp`.
-6. Construct the `Agent` (provider + registry + system prompt +
+`serve` startup order:
+
+1. Resolve config from env (`config.ts`) — the sole `process.env` reader.
+2. Initialise OpenTelemetry tracing if `JARVIS_OTEL_ENABLED`.
+3. Build a `ToolRegistry` and register built-ins (honouring the
+   write/exec opt-in gates).
+4. If `--mcp-serve`: hand the registry to `serveRegistryStdio` and return —
+   no LLM or HTTP setup.
+5. Otherwise build the configured `LlmProvider` (OpenAI by default; or
+   Anthropic / Google / Responses / Codex / Kimi / Ollama), optionally
+   wrapped in the `RoutingProvider` when `JARVIS_ROUTER_ENABLED`.
+6. If `JARVIS_MCP_SERVERS` is set: spawn external MCP servers and merge
+   their tools into the registry.
+7. Construct the `Agent` (provider + registry + system prompt +
    max iterations).
-7. If `JARVIS_DB_URL` is set: call `harness_store::connect` and stash
-   the store on `AppState`.
-8. `serve(addr, state)`.
+8. Open persistence (`connectAll(JARVIS_DB_URL)`, default `json:`) and
+   build `AppState`; attach the memory runtime if `JARVIS_ENABLE_MEMORY`.
+9. `serve(opts, state)`.
+
+The web SPA is served from a real directory on disk (`@fastify/static`):
+`make dev` builds `apps/jarvis-web/dist/` and `JARVIS_WEB_DIST` points the
+server at it. A React-Router-aware fallback serves `index.html` for
+extension-less unmatched paths so client routes resolve, while `/v1/` and
+`/health` always 404 cleanly from the fallback.
 
 ## Extension points
 
-Each extension point is a trait implementation in a new (or existing)
-sibling crate, plus one wiring line in `apps/jarvis`.
+Each extension point is an interface implementation in a new (or existing)
+sibling package, plus one wiring line in `packages/jarvis-app/src/main.ts`.
 
 ### Add a new built-in tool
 
-1. New module in `crates/harness-tools/src/` with a `Tool` impl.
-2. Re-export from `crates/harness-tools/src/lib.rs`.
-3. (Optional) Register in `register_builtins` if it should be on by
-   default. Otherwise let the binary opt in.
-4. Keep names namespaced: `<group>.<verb>` (e.g. `fs.read`).
+1. New module in `packages/tools/src/` exporting a `Tool` impl.
+2. Re-export from `packages/tools/src/index.ts`.
+3. (Optional) Register it in the built-ins entry point if it should be on
+   by default. Otherwise let the composition root opt in.
+4. Keep names namespaced: `<group>.<verb>` (e.g. `fs.read`). Anything that
+   writes to disk or runs code stays opt-in and approval-gated.
 
 ### Add a new LLM provider
 
-1. New module in `crates/harness-llm/src/` (or a brand-new crate).
-2. Implement `LlmProvider`. Start with `complete`; add
-   `complete_stream` when you need real-time tokens.
-3. Re-export from `lib.rs`.
-4. Wire it in `apps/jarvis/src/main.rs` — likely behind a new env var
-   or CLI flag.
+1. New module in `packages/llm/src/` (or a brand-new package).
+2. Implement `LlmProvider`. Start with `complete` (extend
+   `LlmProviderBase` for the streaming fallback); add `completeStream`
+   when you need real-time tokens.
+3. Re-export from `packages/llm/src/index.ts`.
+4. Wire it in `main.ts` — typically behind the `JARVIS_PROVIDER` switch or
+   a CLI flag. Preserve tool-call / tool-result pairing in the conversion.
 
 ### Add a new `ConversationStore` backend
 
-1. New module in `crates/harness-store/src/` guarded by a cargo
-   feature.
-2. Follow the `sqlite.rs` pattern: pool wrapper, idempotent `migrate()`,
-   `ConversationStore` impl that round-trips JSON + RFC-3339 strings.
-3. Declare the feature in `crates/harness-store/Cargo.toml`.
-4. Add a match arm in `connect()` in `src/lib.rs`.
+1. New module in `packages/store/src/`.
+2. Follow the `json-file.ts` (always-on) or `sqlite.ts` pattern: a backend
+   that round-trips the JSON `Conversation` + metadata.
+3. Add a match arm for the URL scheme in `connect()` / `connectAll()`.
 
 ### Add a new HTTP transport / endpoint
 
-1. Handler in `crates/harness-server/src/routes.rs`.
-2. Mount it in `router(AppState)`.
-3. For streaming, call `Agent::run_stream` and serialise `AgentEvent`s —
+1. Handler module in `packages/server/src/` (e.g. `*-routes.ts`).
+2. Mount it in the router (`server.ts`).
+3. For streaming, call `Agent.runStream` and serialise `AgentEvent`s —
    don't reimplement the loop.
 4. Extend `AppState` rather than threading extra handles through every
-   handler.
+   handler. Return `503` when the backing store is unconfigured.
 
 ## Configuration surface
 
-All user-facing configuration is read by `apps/jarvis` and passed as
-plain Rust values into the library crates.
+All user-facing configuration is read by `packages/jarvis-app/src/config.ts`
+and passed as plain values into the library packages. A representative slice
+(the full set is documented in `CLAUDE.md`):
 
-| env var                   | default        | purpose                                       |
-|---------------------------|----------------|-----------------------------------------------|
-| `OPENAI_API_KEY`          | —              | Required (unless `--mcp-serve`)               |
-| `JARVIS_MODEL`            | `gpt-4o-mini`  | OpenAI model id                               |
-| `OPENAI_BASE_URL`         | OpenAI         | For OpenAI-compatible gateways                |
-| `JARVIS_ADDR`             | `0.0.0.0:7001` | Bind address for the HTTP server              |
-| `JARVIS_FS_ROOT`          | `.`            | Sandbox root for `fs.*` tools                 |
-| `JARVIS_ENABLE_FS_WRITE`  | unset          | Any value opts into `fs.write`                |
-| `JARVIS_MCP_SERVERS`      | unset          | `prefix=cmd args, …` — external MCP servers   |
-| `JARVIS_DB_URL`           | unset          | `sqlite:…` / `postgres://…` / `mysql://…`     |
-| `RUST_LOG`                | `info`         | `tracing_subscriber` filter                   |
+| env var                   | default               | purpose                                       |
+|---------------------------|-----------------------|-----------------------------------------------|
+| `JARVIS_PROVIDER`         | `openai`              | `openai` / `openai-responses` / `anthropic` / `google` / `codex` / `kimi` / `ollama` |
+| `OPENAI_API_KEY`          | —                     | required for OpenAI (unless `--mcp-serve`)    |
+| `JARVIS_MODEL`            | per-provider default  | model id                                      |
+| `JARVIS_ADDR`             | `0.0.0.0:7001`        | bind address for the HTTP server              |
+| `JARVIS_FS_ROOT`          | `.`                   | sandbox root for `fs.*` / `git.*` / `shell.exec` |
+| `JARVIS_ENABLE_FS_WRITE`  | unset                 | any value opts into `fs.write`                |
+| `JARVIS_MCP_SERVERS`      | unset                 | `prefix=cmd args, …` — external MCP servers   |
+| `JARVIS_DB_URL`           | `json:///…` (under `~/.local/share`) | persistence URL (`json:` / `sqlite:` …) |
+| `JARVIS_ENABLE_MEMORY`    | unset                 | enable the long-term memory store + `/v1/memory/sync*` |
+| `JARVIS_MEMORY_SYNC_BACKEND` | `none`             | markdown-memory sync: `none` / `git` / `icloud` |
+| `JARVIS_HTTP_ALLOW_PRIVATE` | unset               | opt out of the `http.fetch` SSRF guard (private hosts are blocked by default) |
+| `JARVIS_OTEL_ENABLED`     | unset                 | enable OpenTelemetry tracing                  |
+| `JARVIS_OTEL_CONSOLE`     | unset                 | also export spans to the console              |
 
-CLI flags consumed by the binary:
+CLI flags consumed by the binary include `--mcp-serve` (expose the local
+`ToolRegistry` over MCP stdio instead of the HTTP server),
+`--workspace <path>` (alias `--fs-root`), `--addr`, and `--provider`.
 
-- `--mcp-serve` — expose the local `ToolRegistry` over MCP stdio instead
-  of starting the HTTP server.
+## Commands
+
+```bash
+make check        # typecheck + lint + test — what CI runs
+make dev          # build web + run the Node server with the embedded UI
+make test         # node test runner across every package
+make typecheck    # tsc --noEmit across every package
+make lint         # eslint (the CI gate)
+make perf         # the Node harness perf baseline (P8.3)
+
+pnpm -r typecheck && pnpm -r test                 # CI without the make wrapper
+pnpm --filter @jarvis/core test                   # one package
+node --experimental-strip-types packages/jarvis-app/src/main.ts serve   # run the server (needs OPENAI_API_KEY)
+```
+
+See also `docs/security/p8-security-baseline.md` (SSRF guard, write/exec
+gating, secret handling) and `docs/observability/perf-baseline.md` (the
+`make perf` baseline).
 
 ## Conventions
 
-- Workspace-only deps: every crate uses `foo.workspace = true`; versions
-  live once in the root `Cargo.toml` `[workspace.dependencies]`.
-- No `unwrap` in library crates. Return `harness_core::Result` or
-  `BoxError`; let the binary decide how to surface failure.
-- `clippy --workspace --all-targets -- -D warnings` is the CI gate.
-- Streaming is a separate method, not a retrofit on `complete`.
-- Tool name collisions are silent — the second registration wins.
-  Namespace aggressively.
+- **Workspace-only deps** — packages depend on `@jarvis/*` siblings; shared
+  dev-deps live once in the root `package.json`.
+- **No `process.env` in library packages** — config flows in through input
+  types; `packages/jarvis-app/src/main.ts` is the sole composition root.
+- **eslint is the gate** — `make lint` must pass clean (mirrors CI).
+- **Streaming is a separate method** — `completeStream` parallels
+  `complete`; don't retrofit `complete`'s return type.
+- **Tool-name collisions are silent** — the second registration wins.
+  Namespace aggressively (`<group>.<verb>`).
+- **Wire-shape types are owned by `@jarvis/shared-types`** — the single
+  source of truth for types crossing the SPA boundary.

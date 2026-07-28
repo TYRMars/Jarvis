@@ -2,17 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **⚠️ Runtime is now Node/TypeScript (P8.2 — Rust decommissioned).** The Rust
-> workspace (`crates/harness-*`, `apps/jarvis`, `apps/jarvis-cli`,
+> **⚠️ Runtime is Node/TypeScript — Rust fully decommissioned (P8 complete).**
+> The Rust workspace (`crates/harness-*`, `apps/jarvis`, `apps/jarvis-cli`,
 > `apps/jarvis-desktop`, `Cargo.toml`) was removed; Jarvis runs entirely on the
 > **pnpm workspace under `packages/*`** + the `apps/jarvis-web` SPA. The Rust
 > source remains in git history (tag `rust-archive-pre-takedown`). Each Node
 > package mirrors the crate it was ported from (e.g. `@jarvis/core` ←
 > `harness-core`), so the architecture notes below still describe the *shape* of
 > the system — read them with `<crate>` → `@jarvis/<name>`,
-> `apps/jarvis/src/main.rs` → `packages/jarvis-app/src/main.ts`. A full prose
-> rewrite of this file is tracked as **P8.5**. Build/test via `make check`
-> (pnpm) or `pnpm -r typecheck && pnpm -r test`.
+> `apps/jarvis/src/main.rs` → `packages/jarvis-app/src/main.ts`. Build/test via
+> `make check` (pnpm) or `pnpm -r typecheck && pnpm -r test`.
+>
+> P8 close-out shipped the last contract gaps + non-blocking items: the
+> `/v1/memory/sync*` + `/v1/memory/includes*` routes are live (git/iCloud memory
+> sync ported — `@jarvis/tools` `memory.{sync,sync_setup,sync_setup_icloud,
+> sync_status}`); OpenTelemetry tracing emits `jarvis.agent.run` +
+> `gen_ai.tool.call` spans (P8.4); a security baseline review landed hardening +
+> findings (`docs/security/p8-security-baseline.md`, P8.6); and a Node perf
+> baseline exists (`make perf`, P8.3). README/ARCHITECTURE were rewritten
+> Node-native (P8.5).
 
 ## Project Overview
 
@@ -128,13 +136,17 @@ and served by the Node server via `JARVIS_WEB_DIST`.
 
 **Responses/reasoning knobs:** `CODEX_REASONING_SUMMARY` / `OPENAI_REASONING_SUMMARY` (`auto`/`concise`/`detailed` — required for reasoning models), `CODEX_INCLUDE_ENCRYPTED_REASONING` / `OPENAI_INCLUDE_ENCRYPTED_REASONING` (any value enables), `CODEX_SERVICE_TIER` / `OPENAI_SERVICE_TIER` (`auto`/`priority`/`flex`).
 
-**Server / workspace:** `JARVIS_ADDR` (`0.0.0.0:7001`), `JARVIS_FS_ROOT` (`.`, sandboxes `fs.*`/`git.*`/`code.grep`/`workspace.context` + `shell.exec` cwd; `--workspace <path>` CLI flag overrides), `JARVIS_NO_PROJECT_CONTEXT` (disable auto-loading `AGENTS.md`/`CLAUDE.md`/`AGENT.md`), `JARVIS_PROJECT_CONTEXT_BYTES` (cap, default 8 KiB), `RUST_LOG`.
+**Server / workspace:** `JARVIS_ADDR` (`0.0.0.0:7001`), `JARVIS_FS_ROOT` (`.`, sandboxes `fs.*`/`git.*`/`code.grep`/`workspace.context` + `shell.exec` cwd; `--workspace <path>` CLI flag overrides), `JARVIS_NO_PROJECT_CONTEXT` (disable auto-loading `AGENTS.md`/`CLAUDE.md`/`AGENT.md`), `JARVIS_PROJECT_CONTEXT_BYTES` (cap, default 8 KiB). (Logging is via `console`/`process.stderr`; there is no `RUST_LOG`-style level env in the Node runtime.)
 
-**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`).
+**Tool gating** (write/exec tools are opt-in; any value enables): `JARVIS_ENABLE_FS_WRITE`, `JARVIS_ENABLE_FS_EDIT`, `JARVIS_ENABLE_FS_PATCH`, `JARVIS_ENABLE_SHELL_EXEC`, `JARVIS_SHELL_TIMEOUT_MS` (`30000`), `JARVIS_DISABLE_GIT_READ` (drops the otherwise-on `git.*` group), `JARVIS_HTTP_ALLOW_PRIVATE` (P8.6 SSRF guard is **on by default** — `http.fetch` blocks loopback/private/link-local/metadata hosts + non-http(s) schemes; set this to allow `localhost` dev servers), `JARVIS_ENABLE_LSP` (off by default; when set **and** a write primitive is enabled, `fs.{write,edit,patch}` append an LSP `<diagnostics>` block for the files they wrote — the agent's edit→verify loop via `@jarvis/lsp`. Language servers are PATH-probed (`typescript-language-server`/`pyright-langserver`/`gopls`/`rust-analyzer`); absent servers no-op, none are auto-downloaded), `JARVIS_MCP_SERVERS` (comma-sep `prefix=command args...`). Composio-managed MCP can be enabled with either `JARVIS_COMPOSIO_MCP_URL` or `JARVIS_COMPOSIO_MCP_SERVER_ID` + `JARVIS_COMPOSIO_USER_ID`; `COMPOSIO_API_KEY` / `JARVIS_COMPOSIO_API_KEY` is forwarded as `x-api-key`, with optional `JARVIS_COMPOSIO_PREFIX`, `JARVIS_COMPOSIO_ALLOW_TOOLS`, `JARVIS_COMPOSIO_DENY_TOOLS`.
 
-**Permissions:** `JARVIS_PERMISSION_MODE` (`ask`/`accept-edits`/`plan`/`auto`/`bypass`). `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
+**Permissions:** `JARVIS_PERMISSION_MODE` (`ask` (default) /`accept-edits`/`plan`/`auto`/`bypass`) seeds the `MemoryPermissionStore`'s `default_mode`; every chat WebSocket adopts it as its starting mode and gates gated-tool dispatch through a `RuleApprover`. `ask` prompts, `accept-edits` auto-allows `write` tools, `auto`/`bypass` auto-allow everything, `plan` hides non-`read` tools from the model *and* refuses them at dispatch. Per-socket overrides come from the WS `set_mode` frame (ephemeral); the persisted default + allow/deny rules are edited via `/v1/permissions*`. `JARVIS_APPROVAL_MODE` is **deprecated** (logs a startup WARN; still accepted).
 
-**Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in cargo features), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`), `JARVIS_MEMORY_MAX_ITEMS` (long-term Memory store retention cap; default `5000`, `0`/`off`/`unlimited` disables pruning; pinned rows are never pruned).
+**Persistence & memory:** `JARVIS_DB_URL` (defaults to `json:///<data>/jarvis/conversations`; scheme picks backend — `json:`/`sqlite:`/`postgres://`/`mysql://`, SQL backends are opt-in), `JARVIS_DISABLE_TODOS`, `JARVIS_MEMORY_TOKENS` (installs a token-budgeted memory backend), `JARVIS_MEMORY_MODE` (`window` (default) / `summary`), `JARVIS_MEMORY_MODEL` (summary mode, defaults to `JARVIS_MODEL`), `JARVIS_MEMORY_MAX_ITEMS` (long-term Memory store retention cap; default `5000`, `0`/`off`/`unlimited` disables pruning; pinned rows are never pruned).
+
+**Markdown memory + sync** (the `memory.*` agent surface + `/v1/memory/*` routes; off by default): `JARVIS_ENABLE_MEMORY` (truthy registers `memory.{list,read,write,delete}` + `memory.include_*` and populates `AppState.memoryRuntime` so the REST routes work instead of 503-ing), `JARVIS_MEMORY_USER_ROOT` (parent of the user-scope `<root>/.jarvis/memory/` tree; defaults to the home dir), `JARVIS_MEMORY_SYNC_BACKEND` (`none` (default) / `git` / `icloud` — wires the matching `memory.{sync,sync_setup,sync_setup_icloud,sync_status}` tools + gates the `/v1/memory/sync*` routes).
+
+**Observability (OpenTelemetry, P8.4):** off unless enabled. `JARVIS_OTEL_ENABLED` (truthy → OTLP/HTTP exporter, honours the standard `OTEL_EXPORTER_OTLP_*` vars), `JARVIS_OTEL_CONSOLE` (print spans to stderr — verify/debug, no collector needed), or just set `OTEL_EXPORTER_OTLP_ENDPOINT`. The agent loop emits `jarvis.agent.run` + `gen_ai.tool.call` spans via `@opentelemetry/api` (no-op when disabled); the SDK is registered only in the `packages/jarvis-app` composition root (`otel.ts`).
 
 **Auto/Work mode** (`JARVIS_WORK_MODE` = `off` (default) / `auto`): `JARVIS_WORK_TICK_SECONDS` (`30`), `JARVIS_WORK_MAX_UNITS_PER_TICK` (`1` — per-tick burst), `JARVIS_WORK_MAX_CONCURRENT` (`2` — true global concurrency cap via a Semaphore; independent of the burst budget), `JARVIS_WORK_MAX_RETRIES` (`1`), `JARVIS_WORK_RUN_TIMEOUT_MS` (`600000`), `JARVIS_REVIEWER_AUTO_ACCEPT` (opt into reviewer-subagent dispatch on Review→Done under `Subagent` policy; default off).
 
@@ -196,7 +208,10 @@ default. **Anything that writes to disk or runs code stays opt-in and approval-g
 the `fs.write` / `shell.exec` precedent).
 
 **Always-on, read-only:** `echo`, `time.now`, `http.fetch` (GET/POST, body truncated to
-`http_max_bytes`≈256 KiB), `code.grep` (regex over sandbox, `.gitignore`-aware via the `ignore`
+`http_max_bytes`≈256 KiB; `format: "markdown"` arg converts HTML responses to clean Markdown
+via `node-html-markdown` — non-HTML bodies pass through; native web search is intentionally not
+built — point `JARVIS_MCP_SERVERS` at a search MCP server, e.g. `web=npx -y exa-mcp-server`, to
+get `web.search`), `code.grep` (regex over sandbox, `.gitignore`-aware via the `ignore`
 crate, `path`/`glob` narrowers, `max_results` + 64 KiB budget), `git.{status,diff,log,show}`
 (read-only over host `git -C <root>`, typed per-subcommand schemas, arg validators reject
 `-`-leading/null/newline; off via `JARVIS_DISABLE_GIT_READ`), `workspace.context` (compact JSON
@@ -312,13 +327,21 @@ clients never parse SPA HTML as JSON). The web client is baked in from `apps/jar
 - `POST /v1/chat/completions` — blocking → `{message, iterations, history}`.
 - `POST /v1/chat/completions/stream` — SSE, each `data:` is one JSON `AgentEvent`.
 - `GET /v1/chat/ws` — multi-turn WebSocket. Frames in: `user` / `reset` / `resume{id}` /
-  `new{id?}` / `approve{tool_call_id}` / `deny{tool_call_id,reason?}`. Each socket gets its own
-  `ChannelApprover` wired into a per-socket `Agent`; pending approvals drain in the handler's
+  `new{id?}` / `approve{tool_call_id}` / `deny{tool_call_id,reason?}` /
+  `hitl_response{request_id,status,payload,reason}` / `set_mode{mode}` / `accept_plan{post_mode}` /
+  `refine_plan{feedback}`. Frames out: every `AgentEvent` verbatim, plus `reset_ok` / `resumed` /
+  `session` / `cancelled` / `permission_mode{mode,via?}` / `plan_proposed{plan}`. Each socket gets
+  its own `ChannelApprover` wired into a per-socket `Agent`; pending approvals drain in the handler's
   `tokio::select!` loop, which maps `tool_call_id → oneshot::Sender<ApprovalDecision>`. The agent
   yields `ApprovalRequest` **before** awaiting so the client can decide in time. Guards: new
-  `user`/`reset`/`resume`/`new` while a turn runs → `error: turn in progress`; unknown approval id
-  → `error: no pending approval`. In persisted mode the WS saves `Done.conversation` under the
-  active id; `reset` clears both in-memory state and the persisted flag.
+  `user`/`reset`/`resume`/`new`/`accept_plan`/`refine_plan` while a turn runs → `error: turn in
+  progress`; unknown approval id → `error: no pending approval`. `set_mode` is deliberately allowed
+  mid-turn (the mode handle is read live). `ModeChanged` is **not** forwarded raw — the WS applies it
+  and republishes as `permission_mode{via:"tool"}`, which is what the client listens for. Everything
+  the socket sends during a turn also goes into the `chatRuns` replay buffer in the *same* shape, so
+  a client replaying `/v1/chat/runs/:id/events` sees what a live client saw. In persisted mode the WS
+  saves `Done.conversation` under the active id; `reset` clears both in-memory state and the
+  persisted flag.
 
 **Persisted conversations CRUD** (503 when no `ConversationStore`): `POST /v1/conversations`
 (`{system?,id?}` → 201 `{id}`), `GET /v1/conversations?limit=N`, `GET`/`DELETE /v1/conversations/:id`,
@@ -377,7 +400,8 @@ prefixed names.
 - `/v1/subagents` (list) + `/v1/subagents/runs*` (run ledger / cancel).
 - `/v1/agent-profiles` — user identity bundles (name/provider/model/system prompt).
 - `/v1/providers` (+ `/default`) — runtime provider config (503 with no admin impl).
-- `/v1/memories` + `/v1/memory/sync/*` — Phase-1 memory store + sync backend.
+- `/v1/memories` — Phase-1 row-based memory store (`memories-routes.ts`).
+- `/v1/memory/sync_status` · `/sync` · `/sync_setup` · `/sync_setup_icloud` + `/v1/memory/includes` (GET/POST/DELETE) · `/includes/refresh` — git/iCloud memory-tree sync + include directives (`memory-sync-routes.ts`; invokes the `memory.*` tool impls directly per request from `AppState.memoryRuntime`, 503 when `JARVIS_ENABLE_MEMORY` is unset, backend-mismatch 503 for git/iCloud ops).
 - `/v1/learning/skill-usage` (+ `/report`) — skill-activation telemetry.
 - `/v1/doc-projects*` (+ `/:id/draft`) — append-only Markdown drafts.
 - `/v1/work/{overview,quality}` — dashboard aggregation (tolerates partial stores).
@@ -431,6 +455,37 @@ over an mpsc for a transport-side consumer — the WS building block). Streaming
 `AgentEvent::ApprovalRequest{id,name,arguments}` before and `ApprovalDecision{id,name,decision}` after;
 `ToolStart`/`ToolEnd` always wrap the call (deny writes the sentinel into `ToolEnd.content`). The WS
 transport overrides the global config with a per-socket `ChannelApprover` for genuine per-call control.
+
+**Permission modes + the rule engine** (`@jarvis/server` `permissions-routes.ts`). The chat WS wraps
+its per-socket `ChannelApprover` in a `RuleApprover(permissionStore, prompt, modeHandle)`: eval order
+is `deny → ask → allow → mode default`, and the fall-through comes from `modeDefault(mode, category)`.
+The socket's `SocketModeHandle` is seeded from the store's persisted `default_mode` (itself seeded
+from `JARVIS_PERMISSION_MODE`) and is written by the `set_mode` / `accept_plan` frames or by the model
+calling `enter_plan_mode`. Auto-allowed calls still emit `ApprovalRequest`/`ApprovalDecision` so they
+stay in the audit trail — what marks them auto is the `source: HitSource` the WS attaches to the
+decision frame (`{kind:"mode_default"|"rule"|"user_prompt"}`), which the web renders as the
+`DecisionSourceChip`. **No `permissionStore` on `AppState` → the WS degrades to prompting for every
+gated tool and `/v1/permissions*` 503s** (the pre-engine behaviour).
+
+### Plan Mode (`@jarvis/core` `mode.ts` + `AgentConfig.toolFilter`)
+
+Plan Mode is enforced, not advisory. `AgentConfig.toolFilter` is applied **twice** per iteration:
+`buildRequest` builds the tool catalogue with `ToolRegistry::specsFiltered`, and `runOne` refuses any
+call whose tool the filter rejects (`tool error: <name> is not available in the current mode`) — so a
+write tool named from conversation history or hallucination still cannot run. The filter is a closure
+over the socket's mode handle, so it is re-read every iteration and a `set_mode` lands on the next
+turn. `exit_plan` / `enter_plan_mode` declare `category: "read"` precisely to survive it.
+
+`Tool::is_terminal` ends the turn: once a terminal tool's result is appended, remaining calls in the
+batch are skipped and the loop stops without another model round-trip (a *denied* terminal call does
+not terminate — it never ran). `exit_plan` is the terminal tool; the WS republishes its output as a
+`plan_proposed` frame, which the operator answers with `accept_plan{post_mode}` (switch mode + resume)
+or `refine_plan{feedback}` (stay in plan mode, feed the note back as a user turn).
+
+`mode.ts` is the mode-signal channel — an `AsyncLocalStorage` sink shaped like `plan.ts` / `hitl.ts`.
+`enter_plan_mode` calls `emitModeSignal("plan")`; the loop relays it as `AgentEvent::ModeChanged
+{mode, via:"tool"}` and the transport applies it. Outside an agent loop the sink is absent, so the
+emit is a no-op.
 
 ### Persistence (`harness-store`)
 

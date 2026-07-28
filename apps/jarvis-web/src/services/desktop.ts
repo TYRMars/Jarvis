@@ -45,7 +45,8 @@ function tauriCore(): TauriCore | null {
 }
 
 export function isDesktopRuntime(): boolean {
-  return !!electronBridge() || !!tauriCore();
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  return !!electronBridge() || !!tauriCore() || ua.includes("Electron/") || ua.includes("Tauri/");
 }
 
 /** Mirror a freshly-fetched status into the API-origin override + persistence. */

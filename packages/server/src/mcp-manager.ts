@@ -58,12 +58,25 @@ export function wireToConfig(w: McpClientConfigWire): McpClientConfig {
 
 /** Internal (camelCase) → wire (snake_case) config. */
 export function configToWire(c: McpClientConfig): McpClientConfigWire {
-  const w: McpClientConfigWire = { prefix: c.prefix, transport: c.transport };
+  const w: McpClientConfigWire = { prefix: c.prefix, transport: redactTransport(c.transport) };
   if (c.allowTools !== undefined) w.allow_tools = c.allowTools;
   if (c.denyTools !== undefined) w.deny_tools = c.denyTools;
   if (c.alias !== undefined) w.alias = c.alias;
   if (c.enabled !== undefined) w.enabled = c.enabled;
   return w;
+}
+
+function redactTransport(transport: McpClientConfig["transport"]): McpClientConfig["transport"] {
+  if (transport.type === "stdio" || transport.headers === undefined) return transport;
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(transport.headers)) {
+    headers[key] = isSensitiveHeader(key) ? "__redacted__" : value;
+  }
+  return { ...transport, headers };
+}
+
+function isSensitiveHeader(key: string): boolean {
+  return ["authorization", "proxy-authorization", "x-api-key", "api-key"].includes(key.toLowerCase());
 }
 
 interface Slot {

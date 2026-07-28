@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { IncomingMessage, ServerResponse, Server as HttpServer } from "node:http";
 
 import { ToolRegistry, type JsonValue } from "@jarvis/core";
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   CallToolRequestSchema,
@@ -138,15 +141,43 @@ test("mcpClientConfig builds a stdio shorthand", () => {
   assert.deepEqual(cfg.transport, { type: "stdio", command: "node", args: ["server.js"] });
 });
 
-test("connect rejects non-stdio transports", async () => {
+test("connect rejects invalid http urls before opening a transport", async () => {
   const cfg: McpClientConfig = {
     prefix: "srv",
-    transport: { type: "http", url: "http://localhost" },
+    transport: { type: "http", url: "not a url" },
   };
   await assert.rejects(() => McpClient.connect(cfg), (e: unknown) => {
     assert.ok(e instanceof McpError);
+    assert.match((e as McpError).message, /invalid mcp http url/);
     return true;
   });
+});
+
+test("connect supports streamable HTTP MCP servers with headers", async () => {
+  const fixture = await startHttpMcpFixture([ECHO], "secret");
+  try {
+    const client = await McpClient.connect({
+      prefix: "remote",
+      transport: {
+        type: "streamable-http",
+        url: fixture.url,
+        headers: { "x-api-key": "secret" },
+      },
+    });
+    try {
+      const tools = await client.collectRemoteTools({
+        prefix: "remote",
+        transport: { type: "streamable-http", url: fixture.url },
+      });
+      assert.equal(tools.length, 1);
+      const [, tool] = tools[0]!;
+      assert.equal(await tool.invoke({ msg: "hi" }), 'called echo with {"msg":"hi"}');
+    } finally {
+      await client.shutdown();
+    }
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("stdioTransport defaults args to empty", () => {
@@ -164,8 +195,8 @@ interface FakeTool {
   inputSchema: { type: "object"; properties?: Record<string, unknown> };
 }
 
-function buildServer(tools: FakeTool[]): { server: Server; transport: InMemoryTransport } {
-  const server = new Server(
+function buildServer(tools: FakeTool[]): { server: McpSdkServer; transport: InMemoryTransport } {
+  const server = new McpSdkServer(
     { name: "fixture", version: "0.0.0" },
     { capabilities: { tools: {} } },
   );
@@ -189,6 +220,84 @@ function buildServer(tools: FakeTool[]): { server: Server; transport: InMemoryTr
   // Connect the server side; the client side is handed to McpClient.fromHandle.
   void server.connect(serverTransport);
   return { server, transport: clientTransport };
+}
+
+async function startHttpMcpFixture(
+  tools: FakeTool[],
+  requiredApiKey?: string,
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const httpServer = createServer((req, res) => {
+    void handleHttpMcpRequest(req, res, tools, requiredApiKey);
+  });
+  await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+  const addr = httpServer.address();
+  assert.ok(addr && typeof addr === "object");
+  return {
+    url: `http://127.0.0.1:${addr.port}/mcp`,
+    close: () => closeHttpServer(httpServer),
+  };
+}
+
+async function handleHttpMcpRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tools: FakeTool[],
+  requiredApiKey?: string,
+): Promise<void> {
+  if (req.url !== "/mcp" || req.method !== "POST") {
+    res.writeHead(404).end();
+    return;
+  }
+  if (requiredApiKey !== undefined && req.headers["x-api-key"] !== requiredApiKey) {
+    res.writeHead(401).end();
+    return;
+  }
+  const parsedBody = await readJsonBody(req);
+  const server = buildMcpSdkServer(tools);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
+  } finally {
+    await transport.close().catch(() => {});
+    await server.close().catch(() => {});
+  }
+}
+
+function buildMcpSdkServer(tools: FakeTool[]): McpSdkServer {
+  const server = new McpSdkServer(
+    { name: "http-fixture", version: "0.0.0" },
+    { capabilities: { tools: {} } },
+  );
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    })),
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const { name, arguments: args } = req.params;
+    return {
+      content: [{ type: "text", text: `called ${name} with ${JSON.stringify(args ?? {})}` }],
+    };
+  });
+  return server;
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  return raw === "" ? undefined : JSON.parse(raw);
+}
+
+async function closeHttpServer(server: HttpServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
 }
 
 async function linkedClient(prefix: string, tools: FakeTool[]): Promise<McpClient> {

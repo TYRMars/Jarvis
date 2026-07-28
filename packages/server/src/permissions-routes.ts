@@ -39,8 +39,9 @@
 // - `DELETE /v1/permissions/rules`  — delete rule (query: scope, bucket, index)
 // - `PUT    /v1/permissions/mode`   — set the default mode of a scope (body: {scope, mode})
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { JsonValue } from "@jarvis/core";
+import { AGENT_MODES, type JsonValue } from "@jarvis/core";
 import type {
+  AgentMode,
   ApprovalDecision,
   ApprovalRequest,
   Approver,
@@ -54,18 +55,16 @@ import type { AppState } from "./state.ts";
 
 /**
  * What permission mode the session is currently in. Drives the fall-through
- * "no rule matched" decision plus the Plan Mode tool filter that the binary
+ * "no rule matched" decision plus the Plan Mode tool filter the chat WS
  * installs. Serialised kebab-case to match the Rust enum's wire form.
+ *
+ * Aliased to `@jarvis/core`'s {@link AgentMode} rather than redeclared: core
+ * owns the vocabulary because the agent loop's tool filter and the
+ * `mode_changed` event both speak it, and two copies would drift.
  */
-export type PermissionMode = "ask" | "accept-edits" | "plan" | "auto" | "bypass";
+export type PermissionMode = AgentMode;
 
-export const PERMISSION_MODES: readonly PermissionMode[] = [
-  "ask",
-  "accept-edits",
-  "plan",
-  "auto",
-  "bypass",
-];
+export const PERMISSION_MODES: readonly PermissionMode[] = AGENT_MODES;
 
 /**
  * Parse a permission mode from a string (CLI flag, env var, settings file).
@@ -385,6 +384,12 @@ export const OUT_OF_BOUNDS = "out of bounds";
 export class MemoryPermissionStore implements PermissionStore {
   #table: PermissionTable = emptyTable();
 
+  /** `defaultMode` seeds `default_mode` (the composition root passes the
+   * resolved `JARVIS_PERMISSION_MODE`). Omitted → "ask". */
+  constructor(defaultMode?: PermissionMode) {
+    if (defaultMode) this.#table.default_mode = defaultMode;
+  }
+
   snapshot(): Promise<PermissionTable> {
     // Deep-ish clone so callers can't mutate our buckets.
     return Promise.resolve({
@@ -444,6 +449,30 @@ export interface ModeHandle {
   get(): PermissionMode;
 }
 
+/**
+ * The concrete per-socket mode handle. Each chat WebSocket owns one, seeded
+ * from the store's persisted `default_mode`; a `set_mode` frame (or the model
+ * calling `enter_plan_mode`) writes it, and both the {@link RuleApprover} and
+ * the Plan-Mode tool filter read it live. Ephemeral by design — flipping a
+ * socket's mode must not rewrite the persisted default, which is what
+ * `PUT /v1/permissions/mode` is for.
+ */
+export class SocketModeHandle implements ModeHandle {
+  #mode: PermissionMode;
+
+  constructor(initial: PermissionMode = "ask") {
+    this.#mode = initial;
+  }
+
+  get(): PermissionMode {
+    return this.#mode;
+  }
+
+  set(mode: PermissionMode): void {
+    this.#mode = mode;
+  }
+}
+
 export class RuleApprover implements Approver {
   #store: PermissionStore;
   #fallback: Approver;
@@ -490,19 +519,12 @@ export class RuleApprover implements Approver {
 }
 
 // ---------------------------------------------------------------------------
-// State seam. The committed AppState does not yet carry `permissionStore`
-// (and this port must not edit state.ts), so the routes read it off a
-// structural widening. The composition root sets it; the Assemble step folds
-// the field into AppState proper.
+// Routes read `permissionStore` straight off AppState (the composition root
+// sets it). Absent → every permission route 503s.
 // ---------------------------------------------------------------------------
 
-interface PermissionRoutesState extends AppState {
-  /** Permission rule store. Absent → every permission route 503s. */
-  permissionStore?: PermissionStore;
-}
-
 /** Return the store, or send a 503 and return undefined. */
-function requireStore(state: PermissionRoutesState, reply: FastifyReply): PermissionStore | undefined {
+function requireStore(state: AppState, reply: FastifyReply): PermissionStore | undefined {
   if (!state.permissionStore) {
     reply.code(503).send({ error: "permission store not configured" });
     return undefined;
@@ -520,7 +542,7 @@ function internalError(reply: FastifyReply, e: unknown): FastifyReply {
 // ---------------------------------------------------------------------------
 
 export function registerPermissionsRoutes(app: FastifyInstance, state: AppState): void {
-  const s = state as PermissionRoutesState;
+  const s = state;
 
   // ------------------- GET /v1/permissions -------------------
   app.get("/v1/permissions", async (_req, reply) => {

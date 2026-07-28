@@ -21,7 +21,7 @@ import { assistantText, defaultCompleteStream } from "@jarvis/core";
 
 import { loadConfig, defaultModel, type ProviderKind } from "./config.ts";
 import { parseCliArgs } from "./main.ts";
-import { buildMemory, buildProviderCatalog } from "./state.ts";
+import { buildMemory, buildProviderCatalog, resolveMemoryBudget } from "./state.ts";
 import { ConversationSummaryStore, persistKey } from "./summary-store.ts";
 
 const ALL_KINDS: ProviderKind[] = [
@@ -127,9 +127,33 @@ test("ConversationSummaryStore round-trips under the __memory__ namespace", asyn
   assert.equal(conv.messages[0]?.role, "system");
 });
 
-test("buildMemory: undefined without a token budget", () => {
+test("buildMemory: derives a budget from a known model's context window", () => {
+  // No explicit JARVIS_MEMORY_TOKENS, but openai/gpt-4o-mini has a catalog
+  // contextWindow (128k) → compaction is installed at contextWindow - reserved.
   const cfg = loadConfig({ JARVIS_PROVIDER: "openai" });
+  const mem = buildMemory(cfg, new StubProvider());
+  assert.ok(mem instanceof SlidingWindowMemory, "known model → derived sliding-window budget");
+});
+
+test("buildMemory: undefined for an unknown model with no token budget", () => {
+  // Unknown model → no catalog contextWindow → historical "no memory" behaviour.
+  const cfg = loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MODEL: "some-unlisted-model-xyz" });
   assert.equal(buildMemory(cfg, new StubProvider()), undefined);
+});
+
+test("resolveMemoryBudget: explicit token budget wins; known model derives; unknown → undefined", () => {
+  // Explicit budget passes through verbatim.
+  assert.equal(
+    resolveMemoryBudget(loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MEMORY_TOKENS: "1234" })),
+    1234,
+  );
+  // gpt-4o-mini: 128k context − 20k reserve (0.2×128k clamped to 20k) = 108k.
+  assert.equal(resolveMemoryBudget(loadConfig({ JARVIS_PROVIDER: "openai" })), 108_000);
+  // Unknown model → no derivation.
+  assert.equal(
+    resolveMemoryBudget(loadConfig({ JARVIS_PROVIDER: "openai", JARVIS_MODEL: "ghost-model-404" })),
+    undefined,
+  );
 });
 
 test("buildMemory: window mode → SlidingWindowMemory (no persistence tier)", () => {

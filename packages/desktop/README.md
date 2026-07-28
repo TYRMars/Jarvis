@@ -33,8 +33,9 @@ covering tasklist items **P7.6 – P7.8**.
   same-origin (no CORS plumbing needed). If the server never starts (e.g. no API
   key) the window stays on the `file://` SPA, which surfaces the error;
   `restartServer` re-attempts.
-- **External-server reuse.** If a `jarvis serve` is already healthy on
-  `127.0.0.1:7001`, the desktop reuses it instead of starting a second instance.
+- **Dev external-server reuse only.** During `electron .` development, a healthy
+  `jarvis serve` on `127.0.0.1:7001` can be reused. Packaged apps always start
+  their embedded server so stale local services cannot shadow the bundled UI.
 - **Security.** `contextIsolation: true`, `sandbox: true`, `nodeIntegration:
   false`. The renderer only reaches the main process via the channel-scoped
   preload bridge (`window.jarvisDesktop`).

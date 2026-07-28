@@ -27,6 +27,9 @@ const ignore = ignoreDefault as unknown as (options?: { ignorecase?: boolean }) 
 const DEFAULT_MAX_RESULTS = 200;
 const DEFAULT_MAX_BYTES = 64 * 1024;
 const MAX_LINE_CHARS = 240;
+/** Upper bound on the user/model-supplied regex length — a ReDoS blast-radius
+ * cap, since JS regex has no match timeout (P8.6). */
+const MAX_PATTERN_LEN = 1000;
 
 export interface CodeGrepOptions {
   /** Sandbox root the search is scoped under. */
@@ -113,6 +116,12 @@ export class CodeGrepTool implements Tool {
     // resolveUnder rejects absolute paths and `..` escapes (throws SandboxError).
     const scopeRoot = rel !== undefined ? resolveUnder(this.#root, rel) : this.#root;
 
+    // Cap pattern length to bound catastrophic-backtracking (ReDoS) blast radius
+    // — JS regex has no built-in match timeout, so an enormous adversarial
+    // pattern run over many files could wedge the event loop (P8.6).
+    if (pattern.length > MAX_PATTERN_LEN) {
+      throw new Error(`pattern too long (>${MAX_PATTERN_LEN} chars)`);
+    }
     let regex: RegExp;
     try {
       regex = new RegExp(pattern, caseInsensitive ? "i" : "");

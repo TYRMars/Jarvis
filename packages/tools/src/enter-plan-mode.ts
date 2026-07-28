@@ -6,16 +6,14 @@
 // session into read-only investigation territory until the model finishes
 // drafting and calls `exit_plan`.
 //
-// DEFERRAL: the Rust version emits PermissionMode::Plan on the shared
-// `mode_signal` task-local channel (harness_core::mode_signal::emit) so the
-// agent loop can relay AgentEvent::ModeChanged to the transport. @jarvis/core
-// does not yet expose a mode-signal channel, so this port only returns the ack
-// string — the actual mode flip is a no-op until the channel lands in core.
-// This tool is off by default in register_builtins regardless.
+// Emits `plan` on the `@jarvis/core` mode-signal channel so the agent loop can
+// relay `AgentEvent.mode_changed` to the transport, which applies it to the
+// session's mode handle. Outside an agent loop the channel is absent and the
+// emit is a no-op, so the tool stays trivially unit-testable.
 //
 // Registration: off by default. The composition root opts in. Most coding
 // deployments want this on; locked-down deployments leave it off.
-import type { JsonValue } from "@jarvis/core";
+import { emitModeSignal, type JsonValue } from "@jarvis/core";
 import type { Tool, ToolCategory } from "@jarvis/core";
 
 export class EnterPlanModeTool implements Tool {
@@ -44,8 +42,7 @@ export class EnterPlanModeTool implements Tool {
   };
 
   async invoke(_args: JsonValue): Promise<string> {
-    // DEFERRED: emit PermissionMode::Plan on the mode-signal channel once
-    // @jarvis/core exposes one. For now this is a no-op signal-wise.
+    emitModeSignal("plan");
     return "plan mode armed for next turn";
   }
 }

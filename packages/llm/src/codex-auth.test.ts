@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -142,14 +142,32 @@ test("refresh: keeps existing refresh_token when the response omits a new one", 
   });
 });
 
-test("refresh: non-2xx surfaces status + body", async () => {
+test("refresh: non-2xx surfaces status but NOT the response body (no token leak)", async () => {
   await withTempDir(async (dir) => {
     await writeAuthJson(dir, JSON.stringify({ tokens: { access_token: "old", refresh_token: "rt-1" } }));
     const auth = await CodexAuth.loadFromCodexHome(dir, {
       refreshUrl: "https://stub.test/oauth/token",
-      fetchImpl: async () => new Response("bad token", { status: 400 }),
+      // A real error body can echo back tokens; assert we never interpolate it.
+      fetchImpl: async () => new Response('{"refresh_token":"SECRET-LEAK"}', { status: 400 }),
     });
-    await assert.rejects(() => auth.refresh(), /refresh failed: status 400: bad token/);
+    await assert.rejects(() => auth.refresh(), (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      assert.match(msg, /refresh failed: status 400/);
+      assert.doesNotMatch(msg, /SECRET-LEAK/);
+      return true;
+    });
+  });
+});
+
+test("writeBack: writes auth.json with owner-only (0o600) permissions", async () => {
+  await withTempDir(async (dir) => {
+    const file = path.join(dir, "auth.json");
+    const auth = CodexAuth.fromStatic({ accessToken: "x" });
+    await auth.writeBack(file);
+    const { mode } = await stat(file);
+    // Low 9 perm bits should be rw------- (0o600). Skipped semantics on
+    // platforms without POSIX modes still satisfy this on macOS/Linux CI.
+    assert.equal(mode & 0o777, 0o600, `expected 0o600, got 0o${(mode & 0o777).toString(8)}`);
   });
 });
 

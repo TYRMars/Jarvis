@@ -15,10 +15,20 @@
 //   * runStream() yields `approval_request` BEFORE awaiting the approver so an
 //     interactive transport has a chance to decide; `tool_start`/`tool_end`
 //     always wrap the call (even on the deny path).
+//   * a tool calling `requestHuman` (e.g. `ask.text`) yields `hitl_request`
+//     BEFORE awaiting the operator and `hitl_response` once they answer, both
+//     between `tool_start` and `tool_end`. Only active when config.human is set.
+//   * `config.toolFilter` hides tools from the model's catalogue AND refuses
+//     them at dispatch, so a filtered-out tool cannot be invoked even if the
+//     model names one from history or hallucination. This is what makes Plan
+//     Mode a guard rather than a hint.
+//   * a tool whose `isTerminal` is set ends the turn as soon as its result is
+//     appended: any later calls in the same batch are skipped and the loop
+//     stops instead of asking the model again. `exit_plan` relies on this.
 //
 // Deferred to later phases (documented in nodejs-rewrite-tasklist.zh-CN.md):
-// parallel tool dispatch, tool_filter (Plan Mode), session workspace, HITL,
-// memory-compaction / subagent / fallback / mode events, Responses chaining.
+// parallel tool dispatch, session workspace, memory-compaction / subagent /
+// fallback events, Responses chaining.
 import type { Conversation } from "./conversation.ts";
 import { systemMessage, toolResult, type Message, type ToolCall } from "./message.ts";
 import {
@@ -35,8 +45,12 @@ import type { Approver, ApprovalDecision, ApprovalRequest } from "./approval.ts"
 import type { Memory } from "./memory.ts";
 import { withPlan, type PlanItem } from "./plan.ts";
 import { withProgress, type ToolProgress } from "./progress.ts";
+import { withHitl, type HumanLayer, type HitlRequest, type HitlResponse } from "./hitl.ts";
+import { withModeSignal, type AgentMode } from "./mode.ts";
 import { errorText, MaxIterationsError, MemoryError } from "./error.ts";
 import type { JsonValue } from "./json.ts";
+import { context, trace, type Span } from "@opentelemetry/api";
+import { startAgentSpan, endAgentSpan, withToolSpan } from "./tracing.ts";
 
 export interface AgentConfig {
   model: string;
@@ -46,6 +60,22 @@ export interface AgentConfig {
   temperature?: number;
   memory?: Memory;
   approver?: Approver;
+  /**
+   * Transport-facing HITL responder. When set, the streaming loop installs a
+   * `withHitl` sink so `ask.*` tools can surface a question via `requestHuman`
+   * and block on the operator's answer. Absent → `requestHuman` resolves
+   * `expired` and the tool returns without a human round-trip.
+   */
+  human?: HumanLayer;
+  /**
+   * Restrict which registered tools this run may see and call. Absent → every
+   * non-muted tool. Evaluated fresh on each iteration (so a transport can back
+   * it with a mutable mode handle and have the change land on the next turn),
+   * and enforced on BOTH sides: filtered-out tools are omitted from the request
+   * catalogue *and* refused at dispatch with a `tool error:` result. Plan Mode
+   * is `(t) => toolCategory(t) === "read"`.
+   */
+  toolFilter?: (tool: Tool) => boolean;
   /** Replace a stale leading System message on resume. Default: true. */
   refreshSystemPromptOnResume: boolean;
 }
@@ -70,6 +100,9 @@ export type AgentEvent =
   | { type: "assistant_message"; message: Message; finish_reason: FinishReason }
   | { type: "approval_request"; id: string; name: string; arguments: JsonValue }
   | { type: "approval_decision"; id: string; name: string; decision: ApprovalDecision }
+  | { type: "hitl_request"; request: HitlRequest }
+  | { type: "hitl_response"; response: HitlResponse }
+  | { type: "mode_changed"; mode: AgentMode; via: "tool" }
   | { type: "tool_start"; id: string; name: string; arguments: JsonValue }
   | { type: "tool_progress"; id: string; name: string; stream: string; chunk: string }
   | { type: "tool_end"; id: string; name: string; content: string }
@@ -98,147 +131,217 @@ export class Agent {
     ensureSystemPrompt(conversation, this.config.systemPrompt, this.config.refreshSystemPromptOnResume);
     const totalUsage = emptyUsage();
 
-    for (let iter = 1; iter <= this.config.maxIterations; iter++) {
-      const req = await this.buildRequest(conversation);
-      const resp = await this.llm.complete(req);
-      conversation.messages.push(resp.message);
-      if (resp.usage) addUsage(totalUsage, resp.usage);
-      if (resp.response_id) {
-        conversation.last_response_id = resp.response_id;
-        conversation.last_response_chain_origin = conversation.messages.length;
-      }
+    // `jarvis.agent.run` span, made the active context so `gen_ai.tool.call`
+    // child spans nest under it (no-op when no OTel SDK is registered).
+    const span = startAgentSpan(this.config.model);
+    try {
+      return await context.with(
+        trace.setSpan(context.active(), span),
+        async (): Promise<[RunOutcome, Usage]> => {
+        for (let iter = 1; iter <= this.config.maxIterations; iter++) {
+          const req = await this.buildRequest(conversation);
+          const resp = await this.llm.complete(req);
+          conversation.messages.push(resp.message);
+          if (resp.usage) addUsage(totalUsage, resp.usage);
+          if (resp.response_id) {
+            conversation.last_response_id = resp.response_id;
+            conversation.last_response_chain_origin = conversation.messages.length;
+          }
 
-      const message = resp.message;
-      if (isToolCallTurn(message, resp.finish_reason)) {
-        for (const call of message.tool_calls) {
-          const approval = await maybeRequestApproval(this.config.tools, this.config.approver, call);
-          const output = await runOne(this.config.tools, call, approval?.[1]);
-          conversation.messages.push(toolResult(call.id, output));
+          const message = resp.message;
+          if (isToolCallTurn(message, resp.finish_reason)) {
+            let terminated = false;
+            for (const call of message.tool_calls) {
+              const approval = await maybeRequestApproval(
+                this.config.tools,
+                this.config.approver,
+                call,
+                this.config.toolFilter,
+              );
+              const output = await runOne(this.config.tools, call, approval?.[1], undefined, this.config.toolFilter);
+              conversation.messages.push(toolResult(call.id, output));
+              if (isTerminalCall(this.config.tools, call, approval?.[1], this.config.toolFilter)) {
+                terminated = true;
+                break;
+              }
+            }
+            if (!terminated) continue;
+            // A terminal tool (e.g. `exit_plan`) ends the turn without another
+            // round-trip to the model.
+            endAgentSpan(span, { iterations: iter });
+            return [{ kind: "stopped", iterations: iter }, totalUsage];
+          }
+
+          const outcome: RunOutcome =
+            resp.finish_reason === "length"
+              ? { kind: "length_limited", iterations: iter }
+              : { kind: "stopped", iterations: iter };
+          endAgentSpan(span, { iterations: iter });
+          return [outcome, totalUsage];
         }
-        continue;
-      }
-
-      const outcome: RunOutcome =
-        resp.finish_reason === "length"
-          ? { kind: "length_limited", iterations: iter }
-          : { kind: "stopped", iterations: iter };
-      return [outcome, totalUsage];
+        throw new MaxIterationsError(this.config.maxIterations);
+      });
+    } catch (e) {
+      endAgentSpan(span, { error: e });
+      throw e;
     }
-
-    throw new MaxIterationsError(this.config.maxIterations);
   }
 
   /** Streaming run. Yields exactly one terminal `done` or `error`. */
   async *runStream(conversation: Conversation): AsyncGenerator<AgentEvent> {
     ensureSystemPrompt(conversation, this.config.systemPrompt, this.config.refreshSystemPromptOnResume);
 
-    for (let iter = 1; iter <= this.config.maxIterations; iter++) {
-      let req: ChatRequest;
-      try {
-        req = await this.buildRequest(conversation);
-      } catch (e) {
-        yield { type: "error", message: errorText(e) };
-        return;
-      }
-
-      let stream: AsyncIterable<LlmChunk>;
-      try {
-        stream = await this.llm.completeStream(req);
-      } catch (e) {
-        yield { type: "error", message: errorText(e) };
-        return;
-      }
-
-      let finish: { message: Message; finish_reason: FinishReason; response_id?: string | null } | undefined;
-      try {
-        for await (const chunk of stream) {
-          if (chunk.type === "content_delta") {
-            yield { type: "delta", content: chunk.content };
-          } else if (chunk.type === "usage") {
-            yield { type: "usage", model: this.config.model, ...chunk.usage };
-          } else if (chunk.type === "finish") {
-            finish = {
-              message: chunk.message,
-              finish_reason: chunk.finish_reason,
-              response_id: chunk.response_id,
-            };
-            break;
-          }
-          // tool_call_delta: tool calls are surfaced via `finish`, not streamed.
+    // `jarvis.agent.run` span for the streaming path. Ambient OTel context isn't
+    // preserved across `yield`s, so the span is threaded into runOne explicitly
+    // as the parent for each `gen_ai.tool.call`. The finally ends it on every
+    // exit (done / error event / early generator return).
+    const span = startAgentSpan(this.config.model);
+    let iterations = 0;
+    try {
+      for (let iter = 1; iter <= this.config.maxIterations; iter++) {
+        iterations = iter;
+        let req: ChatRequest;
+        try {
+          req = await this.buildRequest(conversation);
+        } catch (e) {
+          yield { type: "error", message: errorText(e) };
+          return;
         }
-      } catch (e) {
-        yield { type: "error", message: errorText(e) };
-        return;
-      }
 
-      if (!finish) {
-        yield { type: "error", message: "llm stream ended without a Finish chunk" };
-        return;
-      }
+        let stream: AsyncIterable<LlmChunk>;
+        try {
+          stream = await this.llm.completeStream(req);
+        } catch (e) {
+          yield { type: "error", message: errorText(e) };
+          return;
+        }
 
-      conversation.messages.push(finish.message);
-      if (finish.response_id) {
-        conversation.last_response_id = finish.response_id;
-        conversation.last_response_chain_origin = conversation.messages.length;
-      }
-      yield { type: "assistant_message", message: finish.message, finish_reason: finish.finish_reason };
-
-      const message = finish.message;
-      if (isToolCallTurn(message, finish.finish_reason)) {
-        for (const call of message.tool_calls) {
-          // Resolve the approval decision, emitting the request BEFORE awaiting
-          // the approver so an interactive transport can respond in time.
-          let decision: ApprovalDecision | undefined;
-          const tool = this.config.tools.resolve(call.name);
-          if (this.config.approver && tool && toolRequiresApproval(tool)) {
-            const request: ApprovalRequest = {
-              tool_call_id: call.id,
-              tool_name: call.name,
-              arguments: call.arguments,
-              category: toolCategory(tool),
-            };
-            yield { type: "approval_request", id: call.id, name: call.name, arguments: call.arguments };
-            try {
-              decision = await this.config.approver.approve(request);
-            } catch (e) {
-              decision = { decision: "deny", reason: `approver failed: ${errorText(e)}` };
+        let finish: { message: Message; finish_reason: FinishReason; response_id?: string | null } | undefined;
+        try {
+          for await (const chunk of stream) {
+            if (chunk.type === "content_delta") {
+              yield { type: "delta", content: chunk.content };
+            } else if (chunk.type === "usage") {
+              yield { type: "usage", model: this.config.model, ...chunk.usage };
+            } else if (chunk.type === "finish") {
+              finish = {
+                message: chunk.message,
+                finish_reason: chunk.finish_reason,
+                response_id: chunk.response_id,
+              };
+              break;
             }
-            yield { type: "approval_decision", id: call.id, name: call.name, decision };
+            // tool_call_delta: tool calls are surfaced via `finish`, not streamed.
           }
-
-          yield { type: "tool_start", id: call.id, name: call.name, arguments: call.arguments };
-
-          // Stream plan/progress emitted during invoke, live, then tool_end.
-          const queue = new EventQueue<AgentEvent>();
-          const planSink = (items: PlanItem[]): void => queue.push({ type: "plan_update", items });
-          const progressSink = (p: ToolProgress): void =>
-            queue.push({ type: "tool_progress", id: call.id, name: call.name, stream: p.stream, chunk: p.chunk });
-
-          const invoked = withPlan(planSink, () =>
-            withProgress(progressSink, () => runOne(this.config.tools, call, decision)),
-          ).finally(() => queue.close());
-
-          for await (const ev of queue.drain()) yield ev;
-          const content = await invoked;
-
-          yield { type: "tool_end", id: call.id, name: call.name, content };
-          conversation.messages.push(toolResult(call.id, content));
+        } catch (e) {
+          yield { type: "error", message: errorText(e) };
+          return;
         }
-        continue;
+
+        if (!finish) {
+          yield { type: "error", message: "llm stream ended without a Finish chunk" };
+          return;
+        }
+
+        conversation.messages.push(finish.message);
+        if (finish.response_id) {
+          conversation.last_response_id = finish.response_id;
+          conversation.last_response_chain_origin = conversation.messages.length;
+        }
+        yield { type: "assistant_message", message: finish.message, finish_reason: finish.finish_reason };
+
+        const message = finish.message;
+        if (isToolCallTurn(message, finish.finish_reason)) {
+          let terminated = false;
+          for (const call of message.tool_calls) {
+            // Resolve the approval decision, emitting the request BEFORE awaiting
+            // the approver so an interactive transport can respond in time.
+            // A tool hidden by the filter is refused at dispatch instead, so it
+            // never reaches the approver.
+            let decision: ApprovalDecision | undefined;
+            const tool = this.#visibleTool(call.name);
+            if (this.config.approver && tool && toolRequiresApproval(tool)) {
+              const request: ApprovalRequest = {
+                tool_call_id: call.id,
+                tool_name: call.name,
+                arguments: call.arguments,
+                category: toolCategory(tool),
+              };
+              yield { type: "approval_request", id: call.id, name: call.name, arguments: call.arguments };
+              try {
+                decision = await this.config.approver.approve(request);
+              } catch (e) {
+                decision = { decision: "deny", reason: `approver failed: ${errorText(e)}` };
+              }
+              yield { type: "approval_decision", id: call.id, name: call.name, decision };
+            }
+
+            yield { type: "tool_start", id: call.id, name: call.name, arguments: call.arguments };
+
+            // Stream plan/progress emitted during invoke, live, then tool_end.
+            // When a HITL transport is wired (config.human), also install the
+            // human channel so `ask.*` tools can surface a question and block on
+            // the operator's answer: the sink emits `hitl_request` live, awaits
+            // the transport, then emits the `hitl_response` echo the card needs.
+            const queue = new EventQueue<AgentEvent>();
+            const planSink = (items: PlanItem[]): void => queue.push({ type: "plan_update", items });
+            const progressSink = (p: ToolProgress): void =>
+              queue.push({ type: "tool_progress", id: call.id, name: call.name, stream: p.stream, chunk: p.chunk });
+            // A tool asking to switch permission mode (`enter_plan_mode`). The
+            // loop only relays it; applying it is the transport's job, and it
+            // lands on the next request build via `config.toolFilter`.
+            const modeSink = (mode: AgentMode): void => queue.push({ type: "mode_changed", mode, via: "tool" });
+            const human = this.config.human;
+            const hitlSink = async (req: HitlRequest): Promise<HitlResponse> => {
+              if (!human) return { request_id: req.id, status: "expired", reason: "no HITL transport available" };
+              queue.push({ type: "hitl_request", request: req });
+              const response = await human.request(req);
+              queue.push({ type: "hitl_response", response });
+              return response;
+            };
+            const dispatch = (): Promise<string> =>
+              withPlan(planSink, () =>
+                withProgress(progressSink, () =>
+                  withModeSignal(modeSink, () =>
+                    runOne(this.config.tools, call, decision, span, this.config.toolFilter),
+                  ),
+                ),
+              );
+            const invoked = (human ? withHitl(hitlSink, dispatch) : dispatch()).finally(() => queue.close());
+
+            for await (const ev of queue.drain()) yield ev;
+            const content = await invoked;
+
+            yield { type: "tool_end", id: call.id, name: call.name, content };
+            conversation.messages.push(toolResult(call.id, content));
+
+            // `isTerminal` ends the turn here: later calls in this batch are
+            // skipped and we do NOT go back to the model.
+            if (tool && !decisionDenied(decision) && tool.isTerminal === true) {
+              terminated = true;
+              break;
+            }
+          }
+          if (!terminated) continue;
+          yield { type: "done", outcome: { kind: "stopped", iterations: iter }, conversation };
+          return;
+        }
+
+        const outcome: RunOutcome =
+          finish.finish_reason === "length"
+            ? { kind: "length_limited", iterations: iter }
+            : { kind: "stopped", iterations: iter };
+        yield { type: "done", outcome, conversation };
+        return;
       }
 
-      const outcome: RunOutcome =
-        finish.finish_reason === "length"
-          ? { kind: "length_limited", iterations: iter }
-          : { kind: "stopped", iterations: iter };
-      yield { type: "done", outcome, conversation };
-      return;
+      yield {
+        type: "error",
+        message: `agent reached max iterations (${this.config.maxIterations}) without terminating`,
+      };
+    } finally {
+      endAgentSpan(span, { iterations });
     }
-
-    yield {
-      type: "error",
-      message: `agent reached max iterations (${this.config.maxIterations}) without terminating`,
-    };
   }
 
   /** Assemble the next ChatRequest (compacting via memory unless chained). */
@@ -256,13 +359,43 @@ export class Agent {
     }
 
     const req: ChatRequest = { model: this.config.model, messages };
-    const tools = this.config.tools.specs();
+    const filter = this.config.toolFilter;
+    const tools = filter ? this.config.tools.specsFiltered(filter) : this.config.tools.specs();
     if (tools.length > 0) req.tools = tools;
     if (this.config.temperature !== undefined) req.temperature = this.config.temperature;
     if (conv.last_response_id != null) req.previous_response_id = conv.last_response_id;
     if (conv.last_response_chain_origin != null) req.chain_origin = conv.last_response_chain_origin;
     return req;
   }
+
+  /** Resolve a tool only if it survives `config.toolFilter`. */
+  #visibleTool(name: string): Tool | undefined {
+    const tool = this.config.tools.resolve(name);
+    if (!tool) return undefined;
+    const filter = this.config.toolFilter;
+    return filter && !filter(tool) ? undefined : tool;
+  }
+}
+
+/** Whether an approval decision blocked the call (so it never actually ran). */
+function decisionDenied(decision: ApprovalDecision | undefined): boolean {
+  return decision !== undefined && decision.decision === "deny";
+}
+
+/**
+ * Whether `call` resolved to a tool that ends the turn. A denied call — or one
+ * refused by the tool filter — never ran, so it never terminates.
+ */
+function isTerminalCall(
+  tools: ToolRegistry,
+  call: ToolCall,
+  decision: ApprovalDecision | undefined,
+  filter: ((tool: Tool) => boolean) | undefined,
+): boolean {
+  if (decisionDenied(decision)) return false;
+  const tool = tools.resolve(call.name);
+  if (!tool || (filter && !filter(tool))) return false;
+  return tool.isTerminal === true;
 }
 
 type ToolCallMessage = Extract<Message, { role: "assistant" }> & { tool_calls: ToolCall[] };
@@ -303,15 +436,18 @@ export function ensureSystemPrompt(
  * Ask the configured approver about `call` iff an approver is set and the
  * tool's `requiresApproval` is true. Returns `[request, decision]` when a
  * round-trip happened, else undefined. An approver throw becomes a Deny.
+ * A tool hidden by `filter` is refused at dispatch, so it never gets here.
  */
 async function maybeRequestApproval(
   tools: ToolRegistry,
   approver: Approver | undefined,
   call: ToolCall,
+  filter: ((tool: Tool) => boolean) | undefined,
 ): Promise<[ApprovalRequest, ApprovalDecision] | undefined> {
   if (!approver) return undefined;
   const tool = tools.resolve(call.name);
   if (!tool) return undefined;
+  if (filter && !filter(tool)) return undefined;
   if (!toolRequiresApproval(tool)) return undefined;
 
   const request: ApprovalRequest = {
@@ -333,19 +469,32 @@ async function maybeRequestApproval(
  * Invoke `call` if `decision` permits, else surface the deny reason as text.
  * Tool errors (and tool-not-found) are caught and surfaced as text too, so
  * the model can read them and adapt.
+ *
+ * `filter` is the enforcement half of {@link AgentConfig.toolFilter}: a tool
+ * the filter rejects is never invoked, no matter how the model came to name it.
  */
 async function runOne(
   tools: ToolRegistry,
   call: ToolCall,
   decision: ApprovalDecision | undefined,
+  parentSpan?: Span,
+  filter?: (tool: Tool) => boolean,
 ): Promise<string> {
   if (decision && decision.decision === "deny") {
     return `tool denied: ${decision.reason ?? "no reason given"}`;
   }
   const tool: Tool | undefined = tools.resolve(call.name);
   if (!tool) return `tool error: tool not found: ${call.name}`;
+  if (filter && !filter(tool)) {
+    return (
+      `tool error: ${call.name} is not available in the current mode. ` +
+      `Only the tools listed in this request may be called.`
+    );
+  }
   try {
-    return await tool.invoke(call.arguments);
+    // The `gen_ai.tool.call` span wraps the raw invoke so a throwing tool is
+    // recorded on the span even though we format the failure as text below.
+    return await withToolSpan(call.name, call.id, () => tool.invoke(call.arguments), parentSpan);
   } catch (e) {
     return `tool error: ${errorText(e)}`;
   }

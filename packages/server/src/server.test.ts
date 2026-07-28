@@ -7,6 +7,8 @@ import {
   Agent,
   ToolRegistry,
   defaultAgentConfig,
+  emitModeSignal,
+  requestHuman,
   type ChatRequest,
   type ChatResponse,
   type LlmChunk,
@@ -17,6 +19,11 @@ import {
 } from "@jarvis/core";
 import { MemoryConversationStore } from "@jarvis/store";
 import { buildServer, serve } from "./server.ts";
+import {
+  MemoryPermissionStore,
+  type PermissionMode,
+  type PermissionStore,
+} from "./permissions-routes.ts";
 import type { AppState } from "./state.ts";
 
 // ---------- fixtures ----------
@@ -73,13 +80,70 @@ const dangerTool: Tool = {
   invoke: () => Promise.resolve("ran"),
 };
 
-function makeState(turns: ScriptTurn[], opts: { store?: MemoryConversationStore; tools?: ToolRegistry } = {}): AppState {
+// Surfaces a HITL question and returns the operator's answer (mirrors ask.text).
+const askTool: Tool = {
+  name: "ask.text",
+  description: "ask the operator",
+  parameters: { type: "object" },
+  category: "read",
+  invoke: async () => {
+    const r = await requestHuman({ id: "q1", transport: "text", kind: "input", title: "Your name?" });
+    return `hi ${String(r.payload)} [${r.status}]`;
+  },
+};
+
+// Terminal tool: the loop must stop the turn as soon as this returns, and the
+// WS must republish its output as `plan_proposed`.
+const exitPlanTool: Tool = {
+  name: "exit_plan",
+  description: "submit a plan",
+  parameters: { type: "object" },
+  category: "read",
+  isTerminal: true,
+  invoke: (args) =>
+    Promise.resolve(
+      args && typeof args === "object" && !Array.isArray(args) && typeof args.plan === "string"
+        ? args.plan
+        : "",
+    ),
+};
+
+// Asks the session to switch into Plan Mode (mirrors the enter_plan_mode tool).
+const armPlanTool: Tool = {
+  name: "enter_plan_mode",
+  description: "arm plan mode",
+  parameters: { type: "object" },
+  category: "read",
+  invoke: () => {
+    emitModeSignal("plan");
+    return Promise.resolve("armed");
+  },
+};
+
+function makeState(
+  turns: ScriptTurn[],
+  opts: {
+    store?: MemoryConversationStore;
+    tools?: ToolRegistry;
+    permissionStore?: PermissionStore;
+  } = {},
+): AppState {
   const provider = new ScriptedProvider(turns);
   const tools = opts.tools ?? new ToolRegistry();
   return {
     store: opts.store,
-    createAgent: (approver) =>
-      new Agent(provider, { ...defaultAgentConfig("test-model"), tools, maxIterations: 5, approver }),
+    permissionStore: opts.permissionStore,
+    // `toolFilter` must be threaded through: it is how the WS hands the socket's
+    // live Plan-Mode restriction to the loop.
+    createAgent: (approver, human, toolFilter) =>
+      new Agent(provider, {
+        ...defaultAgentConfig("test-model"),
+        tools,
+        maxIterations: 5,
+        approver,
+        human,
+        toolFilter,
+      }),
   };
 }
 
@@ -248,9 +312,12 @@ interface WsHarness {
 
 async function openWs(port: number): Promise<WsHarness> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/chat/ws`);
-  await once(ws, "open");
   const frames: Frame[] = [];
   const waiters: { pred: (f: Frame) => boolean; resolve: (f: Frame) => void }[] = [];
+  // Attach BEFORE awaiting "open": the server sends `permission_mode` as soon as
+  // the socket is up, and a listener attached after the await races it away. A
+  // browser client attaches `onmessage` before the connection opens, so this
+  // matches real client behaviour rather than papering over a server bug.
   ws.on("message", (data: Buffer) => {
     const frame = JSON.parse(data.toString()) as Frame;
     frames.push(frame);
@@ -261,6 +328,7 @@ async function openWs(port: number): Promise<WsHarness> {
       }
     }
   });
+  await once(ws, "open");
   return {
     ws,
     frames,
@@ -332,6 +400,52 @@ test("WS: deny surfaces 'tool denied' and unknown approval id errors", async () 
   }
 });
 
+test("WS: HITL flow — ask.text parks at hitl_request, response echoes and resolves it", async () => {
+  const tools = new ToolRegistry().register(askTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "tc1", name: "ask.text", arguments: {} }] }, { content: "finished" }], { tools }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "user", content: "go" });
+    // The agent parks awaiting the operator's answer.
+    const req = await client.waitFor((f) => f.type === "hitl_request");
+    assert.equal((req.request as { id: string }).id, "q1");
+    assert.equal((req.request as { title: string }).title, "Your name?");
+
+    // Answer with the flat frame the web AskTextCard sends.
+    client.send({ type: "hitl_response", request_id: "q1", status: "submitted", payload: "Ada", reason: null });
+
+    // The server echoes a nested hitl_response so the card resolves, then the
+    // operator's answer reaches the tool and the turn completes.
+    const echo = await client.waitFor((f) => f.type === "hitl_response");
+    assert.equal((echo.response as { status: string }).status, "submitted");
+    assert.equal((echo.response as { payload: string }).payload, "Ada");
+    const toolEnd = await client.waitFor((f) => f.type === "tool_end");
+    assert.equal(toolEnd.content as string, "hi Ada [submitted]");
+    await client.waitFor((f) => f.type === "done");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: hitl_response with no pending request errors", async () => {
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState([{ content: "x" }]));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    client.send({ type: "hitl_response", request_id: "nope", status: "submitted", payload: "x" });
+    const e = await client.waitFor((f) => f.type === "error");
+    assert.match(e.message as string, /no pending hitl request/);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
 test("WS: new allocates a session id; reset acks; resume loads from store", async () => {
   const store = new MemoryConversationStore();
   await store.save("conv-1", { messages: [{ role: "user", content: "earlier" }] });
@@ -353,6 +467,210 @@ test("WS: new allocates a session id; reset acks; resume loads from store", asyn
     client.send({ type: "resume", id: "does-not-exist" });
     const err = await client.waitFor((f) => f.type === "error" && /not found/.test(f.message as string));
     assert.ok(err);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+// ---------- WebSocket: permission modes + Plan Mode ----------
+//
+// These assert the property that makes `JARVIS_PERMISSION_MODE` real: the mode
+// reaches the approver and the tool filter. Before the engine was wired, every
+// mode behaved like "ask" and Plan Mode was decorative.
+
+/** Serve with a permission store whose persisted default mode is `mode`. */
+async function servePermissions(
+  turns: ScriptTurn[],
+  mode: PermissionMode,
+  tools: ToolRegistry,
+): Promise<{ app: Awaited<ReturnType<typeof serve>>; client: WsHarness; store: MemoryPermissionStore }> {
+  const store = new MemoryPermissionStore(mode);
+  const app = await serve({ host: "127.0.0.1", port: 0 }, makeState(turns, { tools, permissionStore: store }));
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  return { app, client, store };
+}
+
+test("WS: announces the store's default mode on connect", async () => {
+  const { app, client } = await servePermissions([{ content: "ok" }], "accept-edits", new ToolRegistry());
+  try {
+    const frame = await client.waitFor((f) => f.type === "permission_mode");
+    assert.equal(frame.mode as string, "accept-edits");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: set_mode echoes permission_mode; an invalid mode errors", async () => {
+  const { app, client } = await servePermissions([{ content: "ok" }], "ask", new ToolRegistry());
+  try {
+    await client.waitFor((f) => f.type === "permission_mode");
+
+    client.send({ type: "set_mode", mode: "plan" });
+    const echo = await client.waitFor((f) => f.type === "permission_mode" && f.mode === "plan");
+    assert.equal(echo.via as string, "user");
+
+    client.send({ type: "set_mode", mode: "turbo" });
+    const err = await client.waitFor((f) => f.type === "error" && /valid mode/.test(f.message as string));
+    assert.ok(err);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: auto mode resolves a gated tool without operator input, tagged mode_default", async () => {
+  const tools = new ToolRegistry().register(dangerTool);
+  const { app, client } = await servePermissions(
+    [{ toolCalls: [{ id: "tc1", name: "danger.run", arguments: {} }] }, { content: "finished" }],
+    "auto",
+    tools,
+  );
+  try {
+    client.send({ type: "user", content: "go" });
+    // No `approve` frame is ever sent: reaching `done` at all is the proof the
+    // mode resolved the gate. (Under "ask" this same script parks forever —
+    // that's the pre-existing "approval flow" test above.)
+    const done = await client.waitFor((f) => f.type === "done");
+    assert.ok(done);
+
+    const end = client.frames.find((f) => f.type === "tool_end");
+    assert.equal(end?.content as string, "ran");
+
+    // The request card is still emitted (auto-allowed calls stay visible in the
+    // audit trail); what marks it auto is the provenance on the decision.
+    const decision = client.frames.find((f) => f.type === "approval_decision");
+    assert.equal((decision?.decision as { decision: string })?.decision, "approve");
+    assert.deepEqual(decision?.source, { kind: "mode_default", mode: "auto" });
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: a deny rule blocks the tool and names the rule as the source", async () => {
+  const tools = new ToolRegistry().register(dangerTool);
+  const { app, client, store } = await servePermissions(
+    [{ toolCalls: [{ id: "tc1", name: "danger.run", arguments: {} }] }, { content: "after deny" }],
+    "auto",
+    tools,
+  );
+  await store.appendRule("user", "deny", { tool: "danger.run" });
+  try {
+    client.send({ type: "user", content: "go" });
+    const end = await client.waitFor((f) => f.type === "tool_end");
+    assert.match(end.content as string, /tool denied/);
+
+    const decision = client.frames.find((f) => f.type === "approval_decision");
+    assert.equal((decision?.source as { kind: string })?.kind, "rule");
+    assert.equal((decision?.source as { scope: string })?.scope, "user");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: plan mode refuses a write tool the model names anyway", async () => {
+  const tools = new ToolRegistry().register(dangerTool);
+  const { app, client } = await servePermissions(
+    [{ toolCalls: [{ id: "tc1", name: "danger.run", arguments: {} }] }, { content: "gave up" }],
+    "plan",
+    tools,
+  );
+  try {
+    client.send({ type: "user", content: "go" });
+    const end = await client.waitFor((f) => f.type === "tool_end");
+    assert.match(end.content as string, /not available in the current mode/);
+    // Never prompted — the filter short-circuits before the approval gate.
+    assert.equal(client.frames.some((f) => f.type === "approval_request"), false);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: exit_plan ends the turn and surfaces plan_proposed; accept_plan switches mode and resumes", async () => {
+  const tools = new ToolRegistry().register(exitPlanTool);
+  const { app, client } = await servePermissions(
+    [
+      // One scripted turn for the plan; a second for the work after accept.
+      { toolCalls: [{ id: "tc1", name: "exit_plan", arguments: { plan: "1. do the thing" } }] },
+      { content: "carried it out" },
+    ],
+    "plan",
+    tools,
+  );
+  try {
+    client.send({ type: "user", content: "plan it" });
+    const proposed = await client.waitFor((f) => f.type === "plan_proposed");
+    assert.equal(proposed.plan as string, "1. do the thing");
+    // Terminal tool ⇒ the turn stopped without another model round-trip.
+    const done = await client.waitFor((f) => f.type === "done");
+    assert.ok(done);
+
+    client.send({ type: "accept_plan", post_mode: "accept-edits" });
+    const switched = await client.waitFor((f) => f.type === "permission_mode" && f.mode === "accept-edits");
+    assert.ok(switched);
+    const finished = await client.waitFor((f) => f.type === "done" && f !== done);
+    assert.ok(finished);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: the model calling enter_plan_mode switches the socket into plan mode", async () => {
+  const tools = new ToolRegistry().register(armPlanTool).register(dangerTool);
+  const { app, client } = await servePermissions(
+    [{ toolCalls: [{ id: "tc1", name: "enter_plan_mode", arguments: {} }] }, { content: "now planning" }],
+    "auto",
+    tools,
+  );
+  try {
+    client.send({ type: "user", content: "go" });
+    const changed = await client.waitFor((f) => f.type === "permission_mode" && f.via === "tool");
+    assert.equal(changed.mode as string, "plan");
+    await client.waitFor((f) => f.type === "done");
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: refine_plan requires non-empty feedback", async () => {
+  const { app, client } = await servePermissions([{ content: "ok" }], "plan", new ToolRegistry());
+  try {
+    client.send({ type: "refine_plan", feedback: "   " });
+    const err = await client.waitFor((f) => f.type === "error" && /feedback/.test(f.message as string));
+    assert.ok(err);
+  } finally {
+    client.close();
+    await app.close();
+  }
+});
+
+test("WS: with no permission store the socket still reports a mode and prompts as before", async () => {
+  const tools = new ToolRegistry().register(dangerTool);
+  const app = await serve(
+    { host: "127.0.0.1", port: 0 },
+    makeState([{ toolCalls: [{ id: "tc1", name: "danger.run", arguments: {} }] }, { content: "done" }], { tools }),
+  );
+  const { port } = app.server.address() as { port: number };
+  const client = await openWs(port);
+  try {
+    const frame = await client.waitFor((f) => f.type === "permission_mode");
+    assert.equal(frame.mode as string, "ask");
+
+    client.send({ type: "user", content: "go" });
+    const req = await client.waitFor((f) => f.type === "approval_request");
+    assert.equal(req.id as string, "tc1");
+
+    // Answer it: a turn left parked keeps the WS request in flight, which
+    // `app.close()` waits on.
+    client.send({ type: "deny", tool_call_id: "tc1" });
+    await client.waitFor((f) => f.type === "done");
   } finally {
     client.close();
     await app.close();

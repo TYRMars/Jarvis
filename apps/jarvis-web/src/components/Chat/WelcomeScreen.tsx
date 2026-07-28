@@ -5,11 +5,17 @@
 
 import { t } from "../../utils/i18n";
 
+function tx(key: string, fallback: string): string {
+  const value = t(key);
+  return value === key ? fallback : value;
+}
+
 export function WelcomeScreen() {
   return (
     <div className="welcome">
-      <h1>{t("welcomeTitle")}</h1>
-      <p>{t("welcomeBody")}</p>
+      <div className="welcome-copy">
+        <h1>{tx("welcomeCodexTitle", "我们应该在 Jarvis 中构建什么？")}</h1>
+      </div>
     </div>
   );
 }

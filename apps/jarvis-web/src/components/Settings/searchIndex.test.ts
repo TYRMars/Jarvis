@@ -37,6 +37,12 @@ describe("searchSettings", () => {
     expect(hits.some((h) => h.entry.sectionId === "permissions")).toBe(true);
   });
 
+  it("routes Composio searches to the connectors tab", () => {
+    const hits = searchSettings("composio");
+    expect(hits[0].entry.sectionId).toBe("extensions");
+    expect(hits[0].entry.tabId).toBe("connectors");
+  });
+
   it("is case-insensitive", () => {
     const lower = searchSettings("openai");
     const upper = searchSettings("OPENAI");

@@ -1,0 +1,14 @@
+{
+  "name": "@jarvis/lsp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal Language Server Protocol client — spawns language servers and surfaces post-edit diagnostics (the agent's edit→verify loop). Push-diagnostics only; dependency-free JSON-RPC over stdio.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

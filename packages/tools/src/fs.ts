@@ -9,11 +9,18 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { JsonValue, Tool, ToolCategory } from "@jarvis/core";
 import { resolveUnder } from "./sandbox.ts";
+import { withDiagnostics, type DiagnosticsHook } from "./diagnostics.ts";
 
 /** Configuration shared by the `fs.*` tools. */
 export interface FsConfig {
   /** Sandbox root; every path argument is resolved under it. */
   root: string;
+  /**
+   * Optional post-write diagnostics hook. The write tools (`fs.write`,
+   * `fs.edit`) call it with the path they wrote and append the returned
+   * `<diagnostics>` block. Read-only tools ignore it. Absent → no change.
+   */
+  diagnostics?: DiagnosticsHook;
 }
 
 function asObject(args: JsonValue): { [key: string]: JsonValue } {
@@ -145,9 +152,11 @@ export class FsWriteTool implements Tool {
   readonly category: ToolCategory = "write";
 
   #root: string;
+  #diagnostics: DiagnosticsHook | undefined;
 
   constructor(config: FsConfig) {
     this.#root = config.root;
+    this.#diagnostics = config.diagnostics;
   }
 
   get parameters(): JsonValue {
@@ -169,7 +178,7 @@ export class FsWriteTool implements Tool {
     await fs.mkdir(parent, { recursive: true });
     const bytes = Buffer.byteLength(content, "utf8");
     await fs.writeFile(abs, content, "utf8");
-    return `wrote ${bytes} bytes to ${abs}`;
+    return withDiagnostics(`wrote ${bytes} bytes to ${abs}`, this.#diagnostics, [abs]);
   }
 }
 
@@ -191,9 +200,11 @@ export class FsEditTool implements Tool {
   readonly category: ToolCategory = "write";
 
   #root: string;
+  #diagnostics: DiagnosticsHook | undefined;
 
   constructor(config: FsConfig) {
     this.#root = config.root;
+    this.#diagnostics = config.diagnostics;
   }
 
   get parameters(): JsonValue {
@@ -251,7 +262,7 @@ export class FsEditTool implements Tool {
     }
 
     await fs.writeFile(abs, updated, "utf8");
-    return `edited ${abs}: replaced ${replaced} occurrence(s)`;
+    return withDiagnostics(`edited ${abs}: replaced ${replaced} occurrence(s)`, this.#diagnostics, [abs]);
   }
 }
 

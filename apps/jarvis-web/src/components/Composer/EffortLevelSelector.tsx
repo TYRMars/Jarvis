@@ -1,8 +1,10 @@
-// Reasoning-effort quick selector for the composer toolbar.
+// Thinking-level (reasoning-effort) selector for the composer toolbar.
 //
-// A small brain-icon button that opens a portal dropdown of the five
-// effort presets (low → max), wired to `appStore.effort` /
-// `setEffort`. The button is hidden entirely when the currently
+// A labeled pill — brain glyph + the current level + caret — that sits
+// next to the model chip so model and thinking-level are picked
+// separately. Opens a portal dropdown of the five effort presets
+// (low → max), wired to `appStore.effort` / `setEffort` (which pins
+// the level per-model). The chip is hidden entirely when the currently
 // routed model reports `supportsReasoning: false`; if the capability
 // is unknown (null/undefined) or no model is pinned we leave it
 // visible — the catalog reports "unknown" rather than guessing, and
@@ -106,24 +108,28 @@ export function EffortLevelSelector() {
 
   if (supportsReasoning === false) return null;
 
+  const currentLabel = t(
+    (EFFORT_OPTIONS.find((o) => o.value === effort) ?? EFFORT_OPTIONS[1]).labelKey,
+  );
+
   return (
     <>
       <button
         ref={btnRef}
         type="button"
-        className={"effort-level-trigger" + (open ? " open" : "")}
+        className={"effort-trigger" + (open ? " open" : "")}
         aria-haspopup="menu"
         aria-expanded={open}
         title={t("composerEffortLevelButtonTitle")}
-        aria-label={t("composerEffortLevelButtonTitle")}
+        aria-label={`${t("composerEffortLevelButtonTitle")}: ${currentLabel}`}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
       >
         <svg
-          width="15"
-          height="15"
+          width="14"
+          height="14"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -134,6 +140,20 @@ export function EffortLevelSelector() {
         >
           <path d="M12 5a3 3 0 0 0-3 3 3 3 0 0 0-1 5.83A2.5 2.5 0 0 0 12 19a2.5 2.5 0 0 0 4-3.17A3 3 0 0 0 15 8a3 3 0 0 0-3-3Z" />
           <path d="M12 5v14" />
+        </svg>
+        <span className="effort-trigger-label">{currentLabel}</span>
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.1"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
       {open && pos

@@ -16,6 +16,7 @@ import {
 } from "../../services/conversations";
 import { exportConversationMarkdown } from "../../services/export";
 import type { ConvoListRow } from "../../types/frames";
+import { Ban, Download, Icon, Pencil, Pin, Trash2 } from "../ui";
 
 interface Props {
   row: ConvoListRow;
@@ -130,11 +131,12 @@ export function ConvoRow({ row, isPinned, unreadCount = 0 }: Props) {
             aria-label={t(isPinned ? "unpin" : "pin")}
             onClick={(e) => { e.stopPropagation(); togglePin(row.id); }}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill={isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 17v5" />
-              <path d="M9 10h6l1 7H8l1-7Z" />
-              <path d="M10 10V3h4v7" />
-            </svg>
+            <Icon
+              icon={Pin}
+              size={13}
+              fill={isPinned ? "currentColor" : "none"}
+              strokeWidth={1.8}
+            />
           </button>
           <button
             type="button"
@@ -143,11 +145,7 @@ export function ConvoRow({ row, isPinned, unreadCount = 0 }: Props) {
             aria-label={t("exportMd")}
             onClick={(e) => { e.stopPropagation(); void exportConversationMarkdown(row.id); }}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <path d="M7 10l5 5 5-5" />
-              <path d="M12 15V3" />
-            </svg>
+            <Icon icon={Download} size={13} strokeWidth={1.8} />
           </button>
           <button
             type="button"
@@ -156,10 +154,7 @@ export function ConvoRow({ row, isPinned, unreadCount = 0 }: Props) {
             aria-label={t("rename")}
             onClick={(e) => { e.stopPropagation(); setEditing(true); }}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4Z" />
-            </svg>
+            <Icon icon={Pencil} size={13} strokeWidth={1.8} />
           </button>
           {!isAbandoned && (
             <button
@@ -172,10 +167,7 @@ export function ConvoRow({ row, isPinned, unreadCount = 0 }: Props) {
                 void abandonConversation(row.id);
               }}
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-              </svg>
+              <Icon icon={Ban} size={13} strokeWidth={1.8} />
             </button>
           )}
           <button
@@ -184,7 +176,9 @@ export function ConvoRow({ row, isPinned, unreadCount = 0 }: Props) {
             title={t("delete")}
             aria-label={t("delete")}
             onClick={(e) => { e.stopPropagation(); void deleteConversation(row.id); }}
-          >×</button>
+          >
+            <Icon icon={Trash2} size={13} strokeWidth={1.8} />
+          </button>
       </div>
     </li>
   );

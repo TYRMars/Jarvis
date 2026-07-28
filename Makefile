@@ -70,6 +70,10 @@ test: ## Node test runner across every package
 .PHONY: check
 check: typecheck lint test ## Run typecheck + lint + tests, what CI runs
 
+.PHONY: perf
+perf: ## Run the Node harness perf baseline (P8.3)
+	$(NODE) --experimental-strip-types --expose-gc scripts/perf-baseline.ts
+
 # ---------------------------------------------------------------------------
 # Docker / Compose
 # ---------------------------------------------------------------------------

@@ -26,7 +26,27 @@
 
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { Link } from "react-router-dom";
+import type { LucideIcon } from "lucide-react";
+import { isDesktopRuntime } from "../../services/desktop";
 import { searchSettings, type SearchHit } from "./searchIndex";
+import {
+  Brain,
+  Cable,
+  Database,
+  FileText,
+  GitBranch,
+  Icon,
+  KeyRound,
+  ListChecks,
+  MemoryStick,
+  Palette,
+  Route,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Tags,
+  UserRound,
+  Wrench,
+} from "../ui";
 import {
   AppearanceLayoutSection,
   APPEARANCE_LAYOUT_TABS,
@@ -61,6 +81,7 @@ import { t } from "../../utils/i18n";
 interface NavItem {
   /// Hash id — used in URL and as the React key.
   id: string;
+  icon: LucideIcon;
   /// i18n key for the visible label.
   labelKey: string;
   /// Fallback label when the i18n key is missing.
@@ -87,12 +108,13 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "appearance-layout",
+        icon: Palette,
         labelKey: "settingsNavAppearanceLayout",
-        fallback: "Appearance & Layout",
+        fallback: "Appearance",
         tabs: APPEARANCE_LAYOUT_TABS,
         defaultTab: DEFAULT_APPEARANCE_LAYOUT_TAB,
       },
-      { id: "persona", labelKey: "settingsNavPersona", fallback: "Persona" },
+      { id: "persona", icon: UserRound, labelKey: "settingsNavPersona", fallback: "Persona" },
     ],
   },
   {
@@ -101,31 +123,37 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "models",
+        icon: Brain,
         labelKey: "settingsNavModels",
         fallback: "Models",
       },
       {
         id: "routing",
+        icon: Route,
         labelKey: "settingsNavRouting",
         fallback: "Routing",
       },
       {
         id: "tools",
+        icon: Wrench,
         labelKey: "settingsNavTools",
         fallback: "Tools",
       },
       {
         id: "subagents",
+        icon: GitBranch,
         labelKey: "settingsNavSubagents",
         fallback: "Subagents",
       },
       {
         id: "workflows",
+        icon: ListChecks,
         labelKey: "settingsNavWorkflows",
         fallback: "Workflows",
       },
       {
         id: "extensions",
+        icon: Cable,
         labelKey: "settingsNavExtensions",
         fallback: "Extensions",
         tabs: EXTENSIONS_TABS,
@@ -133,16 +161,19 @@ const NAV_GROUPS: NavGroup[] = [
       },
       {
         id: "permissions",
+        icon: ShieldCheck,
         labelKey: "settingsNavPermissions",
         fallback: "Permissions",
       },
       {
         id: "memory",
+        icon: MemoryStick,
         labelKey: "settingsNavMemory",
         fallback: "Memory",
       },
       {
         id: "channels",
+        icon: Database,
         labelKey: "settingsNavChannels",
         fallback: "Channels",
       },
@@ -154,16 +185,19 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         id: "projects",
+        icon: FileText,
         labelKey: "settingsNavProjects",
         fallback: "Projects",
       },
       {
         id: "labels",
+        icon: Tags,
         labelKey: "settingsNavLabels",
         fallback: "Labels",
       },
       {
         id: "system",
+        icon: SettingsIcon,
         labelKey: "settingsNavSystem",
         fallback: "System",
         tabs: SYSTEM_TABS,
@@ -175,6 +209,7 @@ const NAV_GROUPS: NavGroup[] = [
 
 const ALL_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 const FIRST_ID = ALL_ITEMS[0]?.id ?? "appearance-layout";
+const SETTINGS_TARGET_KEY = "jarvis.settings.target";
 
 /// Old hash → new (section, tab) tuple. Lets bookmarks like
 /// `/settings#providers` from the previous IA still land on the
@@ -190,6 +225,8 @@ const LEGACY_HASH_MAP: Record<string, { id: string; tab?: string }> = {
   providers: { id: "models" },
   "agent-profiles": { id: "subagents" },
   mcp: { id: "extensions", tab: "mcp" },
+  connectors: { id: "extensions", tab: "connectors" },
+  composio: { id: "extensions", tab: "connectors" },
   skills: { id: "extensions", tab: "skills" },
   plugins: { id: "extensions", tab: "plugins" },
   soul: { id: "persona" },
@@ -203,6 +240,26 @@ const LEGACY_HASH_MAP: Record<string, { id: string; tab?: string }> = {
 interface ParsedHash {
   id: string;
   tab?: string;
+}
+
+function takeRequestedTarget(): ParsedHash | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.sessionStorage.getItem(SETTINGS_TARGET_KEY);
+  if (!raw) return null;
+  window.sessionStorage.removeItem(SETTINGS_TARGET_KEY);
+  try {
+    const parsed = JSON.parse(raw) as Partial<ParsedHash>;
+    if (typeof parsed.id !== "string") return null;
+    const item = ALL_ITEMS.find((it) => it.id === parsed.id);
+    if (!item) return null;
+    const tab =
+      typeof parsed.tab === "string" && item.tabs?.includes(parsed.tab)
+        ? parsed.tab
+        : item.defaultTab;
+    return { id: item.id, tab };
+  } catch {
+    return null;
+  }
 }
 
 function parseHash(): ParsedHash {
@@ -254,13 +311,15 @@ export function SettingsPage() {
   const [parsed, setParsed] = useState<ParsedHash>(() => parseHash());
   const [query, setQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const syncSectionToHash = !isDesktopRuntime();
 
   // Listen for hashchange (back/forward, manual edits, deep
   // links). Also runs once on mount to normalise legacy hashes.
   useEffect(() => {
     const onHashChange = () => {
-      const next = parseHash();
+      const next = takeRequestedTarget() ?? parseHash();
       setParsed(next);
+      if (!syncSectionToHash) return;
       // Rewrite legacy hashes in-place so the URL bar matches the
       // active view going forward — no new history entry.
       const expected = buildHash(next.id, next.tab);
@@ -275,7 +334,7 @@ export function SettingsPage() {
     window.addEventListener("hashchange", onHashChange);
     onHashChange();
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
+  }, [syncSectionToHash]);
 
   // Global `/` shortcut focuses the search input. Skipped when the
   // user is already typing in another input/textarea or holding a
@@ -300,6 +359,7 @@ export function SettingsPage() {
   const setTab = (tab: string) => {
     const next: ParsedHash = { id: parsed.id, tab };
     setParsed(next);
+    if (!syncSectionToHash) return;
     const expected = buildHash(next.id, next.tab);
     if (window.location.hash !== expected) {
       window.history.replaceState(null, "", expected);
@@ -310,6 +370,7 @@ export function SettingsPage() {
     const item = ALL_ITEMS.find((it) => it.id === id);
     const next: ParsedHash = { id, tab: item?.defaultTab };
     setParsed(next);
+    if (!syncSectionToHash) return;
     window.location.hash = buildHash(id, next.tab);
   };
 
@@ -321,6 +382,7 @@ export function SettingsPage() {
     const next: ParsedHash = { id: sectionId, tab: tabId };
     setParsed(next);
     setQuery("");
+    if (!syncSectionToHash) return;
     const expected = buildHash(sectionId, tabId);
     if (window.location.hash !== expected) {
       window.location.hash = expected;
@@ -338,18 +400,13 @@ export function SettingsPage() {
   return (
     <div id="settings-page" className="settings-page">
       <a className="skip-link" href="#settings-main">{tx("setRootSkipToMain", "Skip to main content")}</a>
-      <header className="settings-header">
-        <Link to="/" className="settings-back" aria-label={tx("settingsBack", "Back to chat")}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m15 18-6-6 6-6" />
-          </svg>
-          <span>{tx("settingsBack", "Back to chat")}</span>
-        </Link>
-        <h1>{tx("settingsTitle", "Settings")}</h1>
-      </header>
-
+      <h1 className="sr-only">{tx("settingsTitle", "Settings")}</h1>
       <div className="settings-body">
         <nav className="settings-nav" aria-label={tx("settingsTitle", "Settings")}>
+          <Link to="/" className="settings-back settings-nav-back" aria-label={tx("settingsBack", "Back to chat")}>
+            <span aria-hidden="true">←</span>
+            <span>{tx("settingsBack", "Back to chat")}</span>
+          </Link>
           <div className="settings-nav-search">
             <svg
               className="settings-nav-search-icon"
@@ -393,7 +450,12 @@ export function SettingsPage() {
           </div>
 
           {searching ? (
-            <SearchResults hits={hits} active={parsed} onActivate={activateHit} />
+            <SearchResults
+              hits={hits}
+              active={parsed}
+              onActivate={activateHit}
+              syncSectionToHash={syncSectionToHash}
+            />
           ) : (
             <>
               {/* Mobile: a native select shows up via CSS at <720px. We render
@@ -430,7 +492,7 @@ export function SettingsPage() {
                   return (
                     <a
                       key={item.id}
-                      href={buildHash(item.id, item.defaultTab)}
+                      href={syncSectionToHash ? buildHash(item.id, item.defaultTab) : "#"}
                       className={"settings-nav-link" + (active ? " active" : "")}
                       aria-current={active ? "page" : undefined}
                       onClick={(e) => {
@@ -446,6 +508,7 @@ export function SettingsPage() {
                         setSection(item.id);
                       }}
                     >
+                      <Icon icon={item.icon} size={15} strokeWidth={1.8} />
                       {tx(item.labelKey, item.fallback)}
                     </a>
                   );
@@ -471,10 +534,12 @@ function SearchResults({
   hits,
   active,
   onActivate,
+  syncSectionToHash,
 }: {
   hits: SearchHit[];
   active: ParsedHash;
   onActivate: (hit: SearchHit) => void;
+  syncSectionToHash: boolean;
 }) {
   if (hits.length === 0) {
     return (
@@ -498,7 +563,7 @@ function SearchResults({
         return (
           <li key={`${e.sectionId}/${e.tabId ?? ""}/${idx}`}>
             <a
-              href={buildHash(e.sectionId, e.tabId)}
+              href={syncSectionToHash ? buildHash(e.sectionId, e.tabId) : "#"}
               className={
                 "settings-nav-result" + (isActive ? " active" : "")
               }

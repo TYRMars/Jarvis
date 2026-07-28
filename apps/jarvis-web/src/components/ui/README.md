@@ -21,9 +21,10 @@ small, typed, styled set the rest of the app can lean on.
 4. **Imperative escape hatches when promise semantics map cleanly.**
    `confirm()` is the obvious case: a Promise-based imperative API
    that any module (services, store actions, event handlers) can call.
-5. **Zero new dependencies.** Built on React + the existing CSS
-   tokens. We're not adding a Radix / shadcn / chakra layer — the
-   surface area is small enough to own outright.
+5. **One small icon dependency.** UI primitives stay owned locally;
+   `lucide-react` is the icon-system exception. New interface icons
+   should use `<Icon icon={...} />` from this folder rather than
+   hand-written SVG, unless the shape is genuinely app-specific.
 
 ---
 
@@ -38,6 +39,7 @@ small, typed, styled set the rest of the app can lean on.
 | `<TextField>` | bare `<input type="text">` | shipped |
 | `<Textarea>` | bare `<textarea>` | shipped |
 | `<Checkbox>` | bare `<input type="checkbox">` | shipped |
+| `<Icon>` | hand-written generic SVG icons | shipped, Lucide-backed |
 
 Roadmap (not yet built):
 

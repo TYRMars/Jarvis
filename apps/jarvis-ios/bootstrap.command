@@ -87,16 +87,16 @@ else
     ENV_PREFIX="JARVIS_PROVIDER=kimi"
   else
     echo "SERVER SKIPPED: 没有检测到任何 provider key (OPENAI/ANTHROPIC/KIMI 或 ~/.codex/auth.json)"
-    echo "app 可以打开,但聊天会显示连接错误。配置 key 后运行: cargo run -p jarvis"
+    echo "app 可以打开,但聊天会显示连接错误。配置 key 后运行: node --experimental-strip-types packages/jarvis-app/src/main.ts serve"
     echo ""
     echo "BOOTSTRAP OK (no server)"
     exit 0
   fi
-  echo "启动服务端 ($ENV_PREFIX cargo run -p jarvis),首次编译可能要几分钟..."
+  echo "启动服务端 ($ENV_PREFIX node --experimental-strip-types packages/jarvis-app/src/main.ts serve),首次编译可能要几分钟..."
   echo "服务端日志: $SERVER_LOG"
   ( cd "$REPO_ROOT" && env $ENV_PREFIX \
       JARVIS_ENABLE_FS_WRITE=1 JARVIS_ENABLE_FS_EDIT=1 JARVIS_ENABLE_SHELL_EXEC=1 \
-      nohup cargo run -p jarvis > "$SERVER_LOG" 2>&1 & )
+      nohup node --experimental-strip-types packages/jarvis-app/src/main.ts serve > "$SERVER_LOG" 2>&1 & )
   for i in $(seq 1 120); do
     if curl -sf -m 2 http://localhost:7001/health >/dev/null 2>&1; then
       echo "SERVER UP"

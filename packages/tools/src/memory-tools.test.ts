@@ -26,6 +26,11 @@ import {
   MemoryListTool,
   MemoryReadTool,
   MemoryWriteTool,
+  MemorySyncTool,
+  MemorySyncSetupTool,
+  MemorySyncStatusTool,
+  MemoryICloudSetupTool,
+  memorySyncBackendFromWire,
   addIncludeLine,
   directiveAsWire,
   parseIncludeDirectives,
@@ -546,4 +551,103 @@ test("registerMemoryTools registers the full family with correct gating", () => 
   for (const name of ungated) {
     assert.notEqual(registry.resolve(name)?.requiresApproval, true, `${name} should be ungated`);
   }
+});
+
+// ---------- git/iCloud sync (memory.sync / sync_setup / sync_status) --------
+
+test("memorySyncBackendFromWire parses the wire vocabulary", () => {
+  assert.equal(memorySyncBackendFromWire(""), "none");
+  assert.equal(memorySyncBackendFromWire("none"), "none");
+  assert.equal(memorySyncBackendFromWire("OFF"), "none");
+  assert.equal(memorySyncBackendFromWire("disabled"), "none");
+  assert.equal(memorySyncBackendFromWire("git"), "git");
+  assert.equal(memorySyncBackendFromWire("iCloud"), "icloud");
+  assert.equal(memorySyncBackendFromWire("icloud-drive"), "icloud");
+  assert.equal(memorySyncBackendFromWire("garbage"), undefined);
+});
+
+test("sync_status on a non-repo dir reports is_git_repo:false + a setup hint", async () => {
+  const ws = await mkTmp();
+  const out = JSON.parse(
+    await new MemorySyncStatusTool({ workspaceRoot: ws }).invoke({ scope: "workspace" }),
+  );
+  assert.equal(out.is_git_repo, false);
+  assert.match(out.setup_hint, /not a git repository/);
+});
+
+test("sync_setup_icloud errors off macOS", async () => {
+  const ws = await mkTmp();
+  const tool = new MemoryICloudSetupTool({ workspaceRoot: ws });
+  if (process.platform === "darwin") {
+    // On macOS the result depends on whether iCloud Drive is enabled — just
+    // assert it doesn't throw the platform error.
+    try {
+      await tool.invoke({});
+    } catch (e) {
+      assert.doesNotMatch(String(e), /macOS-only/);
+    }
+  } else {
+    await assert.rejects(() => tool.invoke({}), /macOS-only/);
+  }
+});
+
+test("git sync roundtrip: setup → status → sync → force-update + arg guards", async (t) => {
+  if (spawnSync("git", ["--version"]).status !== 0) {
+    t.skip("git not available");
+    return;
+  }
+  const git = (args: string[], cwd?: string) => {
+    const r = spawnSync("git", cwd ? ["-C", cwd, ...args] : args, { stdio: "ignore" });
+    assert.equal(r.status, 0, `git ${args.join(" ")} failed`);
+  };
+
+  const ws = await mkTmp();
+  const upstream = await mkTmp();
+  git(["init", "-q", "--bare", "-b", "main", upstream]);
+  const cfg = { workspaceRoot: ws };
+
+  // setup: git init + remote add + seed commit + push.
+  const setup = JSON.parse(
+    await new MemorySyncSetupTool(cfg).invoke({ scope: "workspace", remote_url: upstream }),
+  );
+  assert.equal(setup.initialized, true);
+  assert.equal(setup.push.ok, true, `push stderr: ${setup.push.stderr}`);
+
+  // status reflects the repo + remote.
+  const status = JSON.parse(await new MemorySyncStatusTool(cfg).invoke({ scope: "workspace" }));
+  assert.equal(status.is_git_repo, true);
+  assert.equal(status.branch, "main");
+  assert.equal(status.remote_url, upstream);
+
+  // sync: pull --rebase then push, both clean against the just-pushed remote.
+  const sync = JSON.parse(await new MemorySyncTool(cfg).invoke({ scope: "workspace" }));
+  assert.equal(sync.pull.ok, true, `pull stderr: ${sync.pull.stderr}`);
+  assert.equal(sync.push.ok, true, `push stderr: ${sync.push.stderr}`);
+  assert.match(sync.head, /^[0-9a-f]{40}$/);
+
+  // setup again without force → errors (idempotent guard).
+  const upstream2 = await mkTmp();
+  git(["init", "-q", "--bare", "-b", "main", upstream2]);
+  await assert.rejects(
+    () => new MemorySyncSetupTool(cfg).invoke({ scope: "workspace", remote_url: upstream2 }),
+    /already a git repository/,
+  );
+
+  // setup with force → just updates origin in place.
+  const forced = JSON.parse(
+    await new MemorySyncSetupTool(cfg).invoke({ scope: "workspace", remote_url: upstream2, force: true }),
+  );
+  assert.equal(forced.initialized, false);
+  const status2 = JSON.parse(await new MemorySyncStatusTool(cfg).invoke({ scope: "workspace" }));
+  assert.equal(status2.remote_url, upstream2);
+
+  // arg guards: flag-smuggling remote / branch names are rejected.
+  await assert.rejects(
+    () => new MemorySyncTool(cfg).invoke({ scope: "workspace", remote: "-x" }),
+    /invalid remote name/,
+  );
+  await assert.rejects(
+    () => new MemorySyncTool(cfg).invoke({ scope: "workspace", branch: "--upload-pack=evil" }),
+    /invalid branch name/,
+  );
 });

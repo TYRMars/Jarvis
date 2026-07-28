@@ -17,11 +17,18 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { Agent, ToolRegistry, type AgentConfig, type Approver, type LlmProvider, type Memory } from "@jarvis/core";
+import { Agent, ToolRegistry, type AgentConfig, type Approver, type HumanLayer, type LlmProvider, type Memory, type Tool } from "@jarvis/core";
 import { registerBuiltins, type BuiltinsConfig } from "@jarvis/tools";
 import { SlidingWindowMemory, SummarizingMemory, type SummaryStore } from "@jarvis/memory";
+import { lookupCapability, canonicalKind } from "@jarvis/llm";
 import type { StoreBundle } from "@jarvis/store";
-import { ChatRunRegistry, RoutePolicyStore, isRouteSlot, parseModelTarget } from "@jarvis/server";
+import {
+  ChatRunRegistry,
+  MemoryPermissionStore,
+  RoutePolicyStore,
+  isRouteSlot,
+  parseModelTarget,
+} from "@jarvis/server";
 import type { AppState, ProviderCatalog, ServerInfo } from "@jarvis/server";
 import type {
   ActivityStore,
@@ -191,15 +198,38 @@ export function buildMemory(
   summaryStore?: SummaryStore,
   routePolicy?: RoutePolicyStore,
 ): Memory | undefined {
-  if (config.memoryTokens === undefined) return undefined;
+  const budget = resolveMemoryBudget(config);
+  if (budget === undefined) return undefined;
   if (config.memoryMode === "summary") {
-    let sm = new SummarizingMemory(llm, config.memoryModel ?? config.model, config.memoryTokens);
+    let sm = new SummarizingMemory(llm, config.memoryModel ?? config.model, budget);
     // Honour the operator route policy's `summarization` slot (non-hollow
     // consumer of /v1/routing), mirroring the Rust LlmRouteResolver.
     if (routePolicy) sm = sm.withModelResolver(() => routePolicy.summarizationModel());
     return summaryStore !== undefined ? sm.withPersistence(summaryStore) : sm;
   }
-  return new SlidingWindowMemory(config.memoryTokens);
+  return new SlidingWindowMemory(budget);
+}
+
+/** Reserve carved out of a model's context window for output + system/tools
+ * headroom when deriving a default memory budget (mirrors opencode's
+ * COMPACTION_BUFFER cap). 20% of context, clamped to [4k, 20k] tokens. */
+function reservedTokens(contextWindow: number): number {
+  return Math.min(20_000, Math.max(4_000, Math.floor(contextWindow * 0.2)));
+}
+
+/**
+ * The effective memory token budget. Explicit `JARVIS_MEMORY_TOKENS` wins;
+ * otherwise derive `contextWindow - reserved` from the model's capability
+ * catalog so compaction adapts to the model's window instead of being off
+ * entirely. Returns `undefined` when neither is available (unknown model with
+ * no explicit budget) — the historical "no memory installed" behaviour.
+ */
+export function resolveMemoryBudget(config: JarvisConfig): number | undefined {
+  if (config.memoryTokens !== undefined) return config.memoryTokens;
+  const ctx = lookupCapability(canonicalKind(config.provider), config.model)?.contextWindow;
+  if (ctx === undefined || ctx <= 0) return undefined;
+  const budget = ctx - reservedTokens(ctx);
+  return budget > 0 ? budget : undefined;
 }
 
 /**
@@ -290,20 +320,32 @@ export async function buildAppState(
   }
   const memory = buildMemory(config, provider, summaryStore, routePolicy);
 
-  const createAgent = (approver?: Approver): Agent => {
+  const createAgent = (
+    approver?: Approver,
+    human?: HumanLayer,
+    toolFilter?: (tool: Tool) => boolean,
+  ): Agent => {
     const agentConfig: AgentConfig = {
       model: config.model,
       systemPrompt,
       // The registry is shared (read-only at request time); the per-socket
-      // approver lives on AgentConfig, not the registry, so this is safe.
+      // approver / human responder / tool filter live on AgentConfig, not the
+      // registry, so this is safe.
       tools: toolBundle.registry,
       maxIterations: 80,
       refreshSystemPromptOnResume: true,
     };
     if (approver !== undefined) agentConfig.approver = approver;
+    if (human !== undefined) agentConfig.human = human;
+    if (toolFilter !== undefined) agentConfig.toolFilter = toolFilter;
     if (memory !== undefined) agentConfig.memory = memory;
     return new Agent(provider, agentConfig);
   };
+
+  // The permission rule engine. Seeded with the resolved JARVIS_PERMISSION_MODE
+  // so the env var actually gates tool calls (each chat socket adopts this as
+  // its starting mode); `/v1/permissions*` edits the same table.
+  const permissionStore = new MemoryPermissionStore(config.permissionMode);
 
   // Static config snapshot for GET /v1/server/info + /v1/version (no secrets).
   const serverInfo: ServerInfo = {
@@ -314,7 +356,7 @@ export async function buildAppState(
     config_path: null,
     persistence: config.dbUrl ?? "json",
     project_store: stores.projects !== undefined,
-    memory: { mode: config.memoryMode, budget_tokens: config.memoryTokens ?? null },
+    memory: { mode: config.memoryMode, budget_tokens: resolveMemoryBudget(config) ?? null },
     approval_mode: config.permissionMode,
     coding_mode: codingMode(config),
     project_context: { loaded: config.includeProjectContext, max_bytes: config.projectContextMaxBytes },
@@ -333,6 +375,9 @@ export async function buildAppState(
     // lists the live catalog and `PATCH /v1/tools/:name` mutes take effect for
     // the next turn.
     tools: toolBundle.registry,
+    // Permission rule table + default mode: gates gated-tool dispatch on every
+    // chat socket and backs /v1/permissions*.
+    permissionStore,
     // In-process chat-run registry for the turn-status badge / Stop button.
     chatRuns: new ChatRunRegistry(),
     // MCP server manager backing /v1/mcp/servers* (shares the tool registry).
@@ -355,6 +400,18 @@ export async function buildAppState(
     providerCatalog: buildProviderCatalog(config),
     ...(config.webDistDir !== undefined ? { webDistDir: config.webDistDir } : {}),
     ...(deps.learningMemory !== undefined ? { learningMemory: deps.learningMemory } : {}),
+    // Memory tree roots + sync backend backing /v1/memory/sync* + /includes*.
+    // Only populated when JARVIS_ENABLE_MEMORY is set, so the routes otherwise
+    // 503 ("memory tools not enabled").
+    ...(config.enableMemory
+      ? {
+          memoryRuntime: {
+            workspaceRoot: config.fsRoot,
+            ...(config.memoryUserRoot !== undefined ? { userRoot: config.memoryUserRoot } : {}),
+            backend: config.memorySyncBackend,
+          },
+        }
+      : {}),
   };
 
   return {

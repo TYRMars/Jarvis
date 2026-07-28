@@ -21,6 +21,7 @@ import type { MemoryStore as LearningMemoryStore } from "@jarvis/learning";
 import type { ActivityStore, DocStore, ProjectStore, RequirementStore } from "@jarvis/project";
 import type { TodoStore } from "@jarvis/todo";
 
+import type { DiagnosticsHook } from "./diagnostics.ts";
 import { AskTextTool } from "./ask.ts";
 import { ProjectChecksTool } from "./checks.ts";
 import { EchoTool } from "./echo.ts";
@@ -65,6 +66,13 @@ export interface BuiltinsConfig {
    */
   httpMaxBytes?: number;
   /**
+   * Allow `http.fetch` to reach loopback / private / link-local / metadata
+   * hosts. Defaults to `false` (SSRF guard on). The composition root sets this
+   * from `JARVIS_HTTP_ALLOW_PRIVATE` when the operator wants the agent to hit
+   * `localhost` dev servers (P8.6).
+   */
+  httpAllowPrivateHosts?: boolean;
+  /**
    * Cap on file size (in bytes) for `fs.read`. Files larger than this are
    * truncated with a trailing marker so a single `fs.read` can't blow the
    * LLM context window. Defaults to 256 KiB.
@@ -94,6 +102,14 @@ export interface BuiltinsConfig {
    * execution against the host is the most dangerous primitive in the toolbox.
    */
   enableShellExec?: boolean;
+  /**
+   * Optional post-write diagnostics hook (an `@jarvis/lsp`-backed reporter,
+   * supplied by the composition root when `JARVIS_ENABLE_LSP` is set). When
+   * present, `fs.write` / `fs.edit` / `fs.patch` append an LSP `<diagnostics>`
+   * block for the files they wrote, so the model sees errors its edit
+   * introduced. Best-effort: never blocks or breaks an edit. Absent → no change.
+   */
+  diagnostics?: DiagnosticsHook;
   /**
    * Default timeout (ms) for `shell.exec` invocations that don't supply one.
    * The model can still pass a smaller value per call. Defaults to 30000.
@@ -193,7 +209,12 @@ export function registerBuiltins(registry: ToolRegistry, config: BuiltinsConfig 
   // Always-on, read-only group.
   registry.register(new EchoTool());
   registry.register(new TimeNowTool());
-  registry.register(new HttpFetchTool({ maxBytes: httpMaxBytes }));
+  registry.register(
+    new HttpFetchTool({
+      maxBytes: httpMaxBytes,
+      blockPrivateHosts: !(config.httpAllowPrivateHosts ?? false),
+    }),
+  );
   registry.register(new FsReadTool({ root, maxBytes: fsMaxBytes }));
   registry.register(new FsListTool({ root }));
   registry.register(new CodeGrepTool({ root }));
@@ -212,15 +233,18 @@ export function registerBuiltins(registry: ToolRegistry, config: BuiltinsConfig 
     registry.register(new EnterPlanModeTool());
   }
 
-  // Write / exec primitives: opt-in + approval-gated.
+  // Write / exec primitives: opt-in + approval-gated. The diagnostics hook
+  // (when configured) is threaded into each so a successful write surfaces the
+  // file's LSP errors back to the model.
+  const diagnostics = config.diagnostics;
   if (config.enableFsWrite ?? false) {
-    registry.register(new FsWriteTool({ root }));
+    registry.register(new FsWriteTool({ root, diagnostics }));
   }
   if (config.enableFsEdit ?? false) {
-    registry.register(new FsEditTool({ root }));
+    registry.register(new FsEditTool({ root, diagnostics }));
   }
   if (config.enableFsPatch ?? false) {
-    registry.register(new FsPatchTool({ root }));
+    registry.register(new FsPatchTool({ root, diagnostics }));
   }
   if (enableGitRead) {
     registry.register(new GitStatusTool({ root }));

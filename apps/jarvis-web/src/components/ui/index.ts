@@ -18,3 +18,4 @@ export { Checkbox } from "./Checkbox";
 export type { CheckboxProps } from "./Checkbox";
 export { Tabs } from "./Tabs";
 export type { TabsProps, TabItem } from "./Tabs";
+export * from "./Icon";
